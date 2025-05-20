@@ -76,7 +76,15 @@ func resourceKey() *schema.Resource {
 				Type:     schema.TypeString,
 				Optional: true,
 			},
-				"aliases": {
+			"duration": {
+				Type:     schema.TypeString,
+				Optional: true,
+				ValidateFunc: validation.StringMatch(
+					regexp.MustCompile(`^(\d+[smhd])$`),
+					"duration must be a duration string like '30s', '30m', '30h', or '30d'",
+				),
+			},
+			"aliases": {
 				Type:     schema.TypeMap,
 				Optional: true,
 				Elem:     &schema.Schema{Type: schema.TypeString},
