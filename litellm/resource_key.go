@@ -199,6 +199,7 @@ func mapResourceDataToKey(d *schema.ResourceData, key *Key) {
 	key.AllowedCacheControls = expandStringList(d.Get("allowed_cache_controls").([]interface{}))
 	key.SoftBudget = d.Get("soft_budget").(float64)
 	key.KeyAlias = d.Get("key_alias").(string)
+	key.Duration = d.Get("duration").(string)
 	key.Aliases = d.Get("aliases").(map[string]interface{})
 	key.Config = d.Get("config").(map[string]interface{})
 	key.Permissions = d.Get("permissions").(map[string]interface{})

@@ -1,7 +1,10 @@
 package litellm
 
-import (
+import (	
+	"regexp"
+
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 )
 
 func resourceKeySchema() map[string]*schema.Schema {
@@ -52,6 +55,10 @@ func resourceKeySchema() map[string]*schema.Schema {
 		"budget_duration": {
 			Type:     schema.TypeString,
 			Optional: true,
+			ValidateFunc: validation.StringMatch(
+				regexp.MustCompile(`^(\d+[smhd])$`),
+				"budget_duration must be a duration string like '30s', '30m', '30h', or '30d'",
+			),
 		},
 		"allowed_cache_controls": {
 			Type:     schema.TypeList,
@@ -69,6 +76,10 @@ func resourceKeySchema() map[string]*schema.Schema {
 		"duration": {
 			Type:     schema.TypeString,
 			Optional: true,
+			ValidateFunc: validation.StringMatch(
+				regexp.MustCompile(`^(\d+[smhd])$`),
+				"duration must be a duration string like '30s', '30m', '30h', or '30d'",
+			),
 		},
 		"aliases": {
 			Type:     schema.TypeMap,
