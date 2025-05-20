@@ -258,6 +258,9 @@ func mapKeyToResourceData(d *schema.ResourceData, key *Key) {
 	if key.KeyAlias != "" {
 		d.Set("key_alias", key.KeyAlias)
 	}
+	if key.Duration != "" {
+		d.Set("duration", key.Duration)
+	}
 	if key.Aliases != nil {
 		d.Set("aliases", key.Aliases)
 	}
