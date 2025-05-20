@@ -6,9 +6,11 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"regexp"
 
 	"github.com/google/uuid"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 )
 
 const (
@@ -54,6 +56,10 @@ func ResourceLiteLLMTeam() *schema.Resource {
 			"budget_duration": {
 				Type:     schema.TypeString,
 				Optional: true,
+				ValidateFunc: validation.StringMatch(
+					regexp.MustCompile(`^(\d+[smhd])$`),
+					"budget_duration must be a duration string like '30s', '30m', '30h', or '30d'",
+				),
 			},
 			"models": {
 				Type:     schema.TypeList,

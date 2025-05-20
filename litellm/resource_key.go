@@ -3,9 +3,11 @@ package litellm
 import (
 	"context"
 	"fmt"
+	"regexp"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 )
 
 func resourceKey() *schema.Resource {
@@ -56,6 +58,10 @@ func resourceKey() *schema.Resource {
 			"budget_duration": {
 				Type:     schema.TypeString,
 				Optional: true,
+				ValidateFunc: validation.StringMatch(
+					regexp.MustCompile(`^(\d+[smhd])$`),
+					"budget_duration must be a duration string like '30s', '30m', '30h', or '30d'",
+				),
 			},
 			"allowed_cache_controls": {
 				Type:     schema.TypeList,
@@ -70,11 +76,7 @@ func resourceKey() *schema.Resource {
 				Type:     schema.TypeString,
 				Optional: true,
 			},
-			"duration": {
-				Type:     schema.TypeString,
-				Optional: true,
-			},
-			"aliases": {
+				"aliases": {
 				Type:     schema.TypeMap,
 				Optional: true,
 				Elem:     &schema.Schema{Type: schema.TypeString},
@@ -197,7 +199,6 @@ func mapResourceDataToKey(d *schema.ResourceData, key *Key) {
 	key.AllowedCacheControls = expandStringList(d.Get("allowed_cache_controls").([]interface{}))
 	key.SoftBudget = d.Get("soft_budget").(float64)
 	key.KeyAlias = d.Get("key_alias").(string)
-	key.Duration = d.Get("duration").(string)
 	key.Aliases = d.Get("aliases").(map[string]interface{})
 	key.Config = d.Get("config").(map[string]interface{})
 	key.Permissions = d.Get("permissions").(map[string]interface{})
@@ -247,9 +248,6 @@ func mapKeyToResourceData(d *schema.ResourceData, key *Key) {
 	}
 	if key.KeyAlias != "" {
 		d.Set("key_alias", key.KeyAlias)
-	}
-	if key.Duration != "" {
-		d.Set("duration", key.Duration)
 	}
 	if key.Aliases != nil {
 		d.Set("aliases", key.Aliases)
