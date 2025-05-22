@@ -90,7 +90,7 @@ type Key struct {
 	Metadata             map[string]interface{} `json:"metadata,omitempty"`
 	TPMLimit             int                    `json:"tpm_limit,omitempty"`
 	RPMLimit             int                    `json:"rpm_limit,omitempty"`
-	BudgetDuration       string                 `json:"budget_duration"`
+	BudgetDuration       string                 `json:"budget_duration,omitempty"`
 	AllowedCacheControls []string               `json:"allowed_cache_controls,omitempty"`
 	SoftBudget           float64                `json:"soft_budget,omitempty"`
 	KeyAlias             string                 `json:"key_alias,omitempty"`

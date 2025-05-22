@@ -136,15 +136,18 @@ func resourceKeyCreate(ctx context.Context, d *schema.ResourceData, m interface{
 	if err != nil {
 		return diag.FromErr(fmt.Errorf("error creating key: %s", err))
 	}
-
-	d.SetId(createdKey.Key)
+	d.SetId(createdKey.KeyAlias)
+	d.Set("key", createdKey.Key)
 	return resourceKeyRead(ctx, d, m)
 }
 
 func resourceKeyRead(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	c := m.(*Client)
 
-	key, err := c.GetKey(d.Id())
+	// Using tag "key" for ommiter id value in plan and in apply terraform
+	keyValue := d.Get("key").(string)
+
+	key, err := c.GetKey(keyValue)
 	if err != nil {
 		return diag.FromErr(fmt.Errorf("error reading key: %s", err))
 	}
@@ -161,7 +164,10 @@ func resourceKeyRead(ctx context.Context, d *schema.ResourceData, m interface{})
 func resourceKeyUpdate(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	c := m.(*Client)
 
-	key := &Key{Key: d.Id()}
+	// Using tag "key" for ommiter id value in plan and in apply terraform
+	keyValue := d.Get("key").(string)
+
+	key := &Key{Key: keyValue}
 	mapResourceDataToKey(d, key)
 
 	_, err := c.UpdateKey(key)
@@ -175,7 +181,10 @@ func resourceKeyUpdate(ctx context.Context, d *schema.ResourceData, m interface{
 func resourceKeyDelete(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	c := m.(*Client)
 
-	err := c.DeleteKey(d.Id())
+	// Using tag "key" for ommiter id value in plan and in apply terraform
+	keyValue := d.Get("key").(string)
+
+	err := c.DeleteKey(keyValue)
 	if err != nil {
 		return diag.FromErr(fmt.Errorf("error deleting key: %s", err))
 	}
