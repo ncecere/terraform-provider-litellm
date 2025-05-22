@@ -185,28 +185,72 @@ func resourceKeyDelete(ctx context.Context, d *schema.ResourceData, m interface{
 }
 
 func mapResourceDataToKey(d *schema.ResourceData, key *Key) {
-	key.Models = expandStringList(d.Get("models").([]interface{}))
-	key.MaxBudget = d.Get("max_budget").(float64)
-	key.UserID = d.Get("user_id").(string)
-	key.TeamID = d.Get("team_id").(string)
-	key.MaxParallelRequests = d.Get("max_parallel_requests").(int)
-	key.Metadata = d.Get("metadata").(map[string]interface{})
-	key.TPMLimit = d.Get("tpm_limit").(int)
-	key.RPMLimit = d.Get("rpm_limit").(int)
-	key.BudgetDuration = d.Get("budget_duration").(string)
-	key.AllowedCacheControls = expandStringList(d.Get("allowed_cache_controls").([]interface{}))
-	key.SoftBudget = d.Get("soft_budget").(float64)
-	key.KeyAlias = d.Get("key_alias").(string)
-	key.Duration = d.Get("duration").(string)
-	key.Aliases = d.Get("aliases").(map[string]interface{})
-	key.Config = d.Get("config").(map[string]interface{})
-	key.Permissions = d.Get("permissions").(map[string]interface{})
-	key.ModelMaxBudget = d.Get("model_max_budget").(map[string]interface{})
-	key.ModelRPMLimit = d.Get("model_rpm_limit").(map[string]interface{})
-	key.ModelTPMLimit = d.Get("model_tpm_limit").(map[string]interface{})
-	key.Guardrails = expandStringList(d.Get("guardrails").([]interface{}))
-	key.Blocked = d.Get("blocked").(bool)
-	key.Tags = expandStringList(d.Get("tags").([]interface{}))
+	if v, ok := d.GetOk("models"); ok {
+		key.Models = expandStringList(v.([]interface{}))
+	}
+	if v, ok := d.GetOk("max_budget"); ok {
+		key.MaxBudget = v.(float64)
+	}
+	if v, ok := d.GetOk("user_id"); ok {
+		key.UserID = v.(string)
+	}
+	if v, ok := d.GetOk("team_id"); ok {
+		key.TeamID = v.(string)
+	}
+	if v, ok := d.GetOk("max_parallel_requests"); ok {
+		key.MaxParallelRequests = v.(int)
+	}
+	if v, ok := d.GetOk("metadata"); ok {
+		key.Metadata = v.(map[string]interface{})
+	}
+	if v, ok := d.GetOk("tpm_limit"); ok {
+		key.TPMLimit = v.(int)
+	}
+	if v, ok := d.GetOk("rpm_limit"); ok {
+		key.RPMLimit = v.(int)
+	}
+	if v, ok := d.GetOk("budget_duration"); ok {
+		key.BudgetDuration = v.(string)
+	}
+	if v, ok := d.GetOk("allowed_cache_controls"); ok {
+		key.AllowedCacheControls = expandStringList(v.([]interface{}))
+	}
+	if v, ok := d.GetOk("soft_budget"); ok {
+		key.SoftBudget = v.(float64)
+	}
+	if v, ok := d.GetOk("key_alias"); ok {
+		key.KeyAlias = v.(string)
+	}
+	if v, ok := d.GetOk("duration"); ok {
+		key.Duration = v.(string)
+	}
+	if v, ok := d.GetOk("aliases"); ok {
+		key.Aliases = v.(map[string]interface{})
+	}
+	if v, ok := d.GetOk("config"); ok {
+		key.Config = v.(map[string]interface{})
+	}
+	if v, ok := d.GetOk("permissions"); ok {
+		key.Permissions = v.(map[string]interface{})
+	}
+	if v, ok := d.GetOk("model_max_budget"); ok {
+		key.ModelMaxBudget = v.(map[string]interface{})
+	}
+	if v, ok := d.GetOk("model_rpm_limit"); ok {
+		key.ModelRPMLimit = v.(map[string]interface{})
+	}
+	if v, ok := d.GetOk("model_tpm_limit"); ok {
+		key.ModelTPMLimit = v.(map[string]interface{})
+	}
+	if v, ok := d.GetOk("guardrails"); ok {
+		key.Guardrails = expandStringList(v.([]interface{}))
+	}
+	if v, ok := d.GetOk("blocked"); ok {
+		key.Blocked = v.(bool)
+	}
+	if v, ok := d.GetOk("tags"); ok {
+		key.Tags = expandStringList(v.([]interface{}))
+	}
 }
 
 func mapKeyToResourceData(d *schema.ResourceData, key *Key) {
