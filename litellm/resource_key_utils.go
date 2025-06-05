@@ -76,6 +76,9 @@ func buildKeyData(d *schema.ResourceData) map[string]interface{} {
 	if v, ok := d.GetOkExists("tags"); ok {
 		keyData["tags"] = expandStringList(v.([]interface{}))
 	}
+	if v, ok := d.GetOkExists("send_invite_email"); ok {
+		keyData["send_invite_email"] = v.(bool)
+	}
 
 	return keyData
 }
@@ -106,6 +109,7 @@ func setKeyResourceData(d *schema.ResourceData, key *Key) error {
 		"guardrails":             key.Guardrails,
 		"blocked":                key.Blocked,
 		"tags":                   key.Tags,
+		"send_invite_email":      key.SendInviteEmail,
 	}
 
 	for field, value := range fields {
@@ -176,6 +180,8 @@ func mapToKey(data map[string]interface{}) *Key {
 			key.Blocked = v.(bool)
 		case "tags":
 			key.Tags = v.([]string)
+		case "send_invite_email":
+			key.SendInviteEmail = v.(bool)
 		}
 	}
 	return key

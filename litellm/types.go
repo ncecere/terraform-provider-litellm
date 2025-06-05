@@ -104,6 +104,7 @@ type Key struct {
 	Guardrails           []string               `json:"guardrails,omitempty"`
 	Blocked              bool                   `json:"blocked"`
 	Tags                 []string               `json:"tags,omitempty"`
+	SendInviteEmail      bool                   `json:"send_invite_email,omitempty"`
 }
 
 // KeyResponse represents a response from the API containing key information.
