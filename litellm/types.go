@@ -11,6 +11,9 @@ type ErrorResponse struct {
 	Error struct {
 		Message interface{} `json:"message"`
 	} `json:"error"`
+	Detail struct {
+		Error string `json:"error"`
+	} `json:"detail"`
 }
 
 // ModelResponse represents a response from the API containing model information.

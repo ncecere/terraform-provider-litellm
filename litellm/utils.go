@@ -24,6 +24,12 @@ func isModelNotFoundError(errResp ErrorResponse) bool {
 		}
 	}
 
+	if errResp.Detail.Error != "" {
+		if strings.Contains(errResp.Detail.Error, "not found on litellm proxy") {
+			return true
+		}
+	}
+
 	return false
 }
 
