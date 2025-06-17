@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/validation"
 )
 
 const (
@@ -43,7 +44,15 @@ func ResourceLiteLLMuser() *schema.Resource {
 			},
 			"user_role": {
 				Type:     schema.TypeString,
-				Optional: true,
+				Required: true,
+				ValidateFunc: validation.StringInSlice([]string{
+					"proxy_admin",
+					"proxy_admin_viewer",
+					"internal_user",
+					"internal_user_viewer",
+					"team",
+					"customer",
+				}, false),
 			},
 			"max_budget": {
 				Type:     schema.TypeFloat,
