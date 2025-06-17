@@ -8,6 +8,7 @@ Manages a user in LiteLLM. Users are created with a username, password, role and
 resource "litellm_user" "this" {
   user_id         = "foo.bar"
   user_email      = foo.bar@foobar.com
+  role            = "proxy_admin"
   models          = ["gpt-4-proxy", "claude-2"]
 
   tpm_limit       = 500000
@@ -25,6 +26,14 @@ The following arguments are supported:
 * `user_id` - (Required) A human-readable identifier for the user.
 
 * `user_email` - (Required) The email tied to the user. Sends invitation email if SMTP is configured.
+
+* `role` - (Optional) - The default role to assign to the user. Valid values are:
+  * `proxy_admin`
+  * `proxy_admin_viewer`
+  * `internal_user`
+  * `internal_user_viewer`
+  * `team`
+  * `customer`
 
 * `models` - (Optional) List of model names that this user can access.
 
