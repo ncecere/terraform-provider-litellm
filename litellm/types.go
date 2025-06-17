@@ -45,16 +45,17 @@ type TeamResponse struct {
 
 // User represents a response from the API containing user information.
 type UserResponse struct {
-	userID         string   `json:"user_id,omitempty"`
-	user_email     string   `json:"user_email,omitempty"`
-	userAlias      string   `json:"user_alias,omitempty"`
-	userRole       string   `json:"user_role,omitempty"`
-	MaxBudget      float64  `json:"max_budget,omitempty"`
-	Models         []string `json:"models"`
-	TPMLimit       int      `json:"tpm_limit,omitempty"`
-	RPMLimit       int      `json:"rpm_limit,omitempty"`
-	BudgetDuration string   `json:"budget_duration,omitempty"`
-	autoCreateKey  bool     `json:"auto_create_key,omitempty"`
+	userID          string   `json:"user_id,omitempty"`
+	userEmail       string   `json:"user_email,omitempty"`
+	userAlias       string   `json:"user_alias,omitempty"`
+	userRole        string   `json:"user_role,omitempty"`
+	MaxBudget       float64  `json:"max_budget,omitempty"`
+	Models          []string `json:"models"`
+	TPMLimit        int      `json:"tpm_limit,omitempty"`
+	RPMLimit        int      `json:"rpm_limit,omitempty"`
+	BudgetDuration  string   `json:"budget_duration,omitempty"`
+	autoCreateKey   bool     `json:"auto_create_key,omitempty"`
+	sendEmailInvite bool     `json:"send_email_invite,omitempty"`
 }
 
 // LiteLLMParams represents the parameters for LiteLLM.

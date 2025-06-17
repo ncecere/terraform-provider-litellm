@@ -66,6 +66,10 @@ func ResourceLiteLLMuser() *schema.Resource {
 				Type:     schema.TypeBool,
 				Optional: true,
 			},
+			"send_user_invite": {
+				Type:     schema.TypeBool,
+				Optional: true,
+			},
 		},
 	}
 }
@@ -171,7 +175,7 @@ func buildUserData(d *schema.ResourceData, userID string) map[string]interface{}
 		"user_alias": d.Get("user_alias").(string),
 	}
 
-	for _, key := range []string{"user_email", "user_alias", "key_alias", "user_role", "max_budget", "models", "tpm_limit", "rpm_limit", "auto_create_keys"} {
+	for _, key := range []string{"user_email", "user_alias", "key_alias", "user_role", "max_budget", "models", "tpm_limit", "rpm_limit", "auto_create_keys", "send_email_invite"} {
 		if v, ok := d.GetOk(key); ok {
 			userData[key] = v
 		}

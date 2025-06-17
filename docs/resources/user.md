@@ -25,7 +25,7 @@ The following arguments are supported:
 
 * `user_id` - (Required) A human-readable identifier for the user.
 
-* `user_email` - (Required) The email tied to the user. Sends invitation email if SMTP is configured.
+* `user_email` - (Required) The email tied to the user. Sends invitation email if SMTP is configured.  See `send_user_invite` below.
 
 * `role` - (Optional) - The default role to assign to the user. Valid values are:
   * `proxy_admin`
@@ -51,6 +51,8 @@ The following arguments are supported:
   * `yearly`
 
 * `auto_create_keys` - (Optional) Boolean value to enable or disable API keys on user creation.
+
+* `send_email_invite` - (Optional) Boolean value to send users an email invitation for the LiteLLM instance
 
 ## Attribute Reference
 
