@@ -56,18 +56,14 @@ The following arguments are supported:
 
 In addition to the arguments above, the following attributes are exported:
 
-* `id` - The unique identifier for the team.
+* `id` - The unique identifier for the user.
 
 ## Import
 
-Teams can be imported using the team ID:
+Users can be imported using the user ID:
 
 ```shell
-terraform import litellm_team.engineering <team-id>
+terraform import litellm_user.user <user-id>
 ```
 
-Note: The team ID is generated when the team is created and is different from the `team_alias`.
-
-## Note on Team Members
-
-Team members are managed through the separate `litellm_team_member` resource. This allows for more granular control over team membership and permissions. See the `litellm_team_member` resource documentation for details on managing team members.
+Note: The user ID is generated when the user is created and is different from the `user_alias`.
