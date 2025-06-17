@@ -1,4 +1,4 @@
-# litellm_team Resource
+# litellm_user Resource
 
 Manages a user in LiteLLM. Users are created with a username, password, role and their own budget and keys.
 
