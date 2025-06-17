@@ -49,6 +49,27 @@ func (c *Client) DeleteTeam(teamID string) error {
 	return err
 }
 
+// User methods
+func (c *Client) CreateUser(user map[string]interface{}) (map[string]interface{}, error) {
+	return c.sendRequest("POST", "/user/new", user)
+}
+
+func (c *Client) GetUser(userID string) (map[string]interface{}, error) {
+	return c.sendRequest("GET", fmt.Sprintf("/user/info?user_id=%s", userID), nil)
+}
+
+func (c *Client) UpdateUser(user map[string]interface{}) (map[string]interface{}, error) {
+	return c.sendRequest("POST", "/user/update", user)
+}
+
+func (c *Client) DeleteUser(userID string) error {
+	payload := map[string]interface{}{
+		"user_ids": []string{userID},
+	}
+	_, err := c.sendRequest("POST", "/user/delete", payload)
+	return err
+}
+
 // Key-related methods
 func (c *Client) CreateKey(key *Key) (*Key, error) {
 	resp, err := c.sendRequest("POST", "/key/generate", key)
