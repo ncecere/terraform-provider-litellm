@@ -1,8 +1,8 @@
 package main
 
 import (
+	"github.com/dannyburke1/terraform-provider-litellm/litellm"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/plugin"
-	"github.com/nicholas-cecere/terraform-provider-litellm/litellm"
 )
 
 // main is the entry point for the plugin. It serves the provider
