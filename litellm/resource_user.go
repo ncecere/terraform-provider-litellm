@@ -18,7 +18,7 @@ const (
 	endpointUserDelete = "/user/delete"
 )
 
-func ResourceLiteLLMuser() *schema.Resource {
+func ResourceLiteLLMUser() *schema.Resource {
 	return &schema.Resource{
 		Create: resourceLiteLLMUserCreate,
 		Read:   resourceLiteLLMUserRead,
