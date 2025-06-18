@@ -12,6 +12,7 @@ This Terraform provider allows you to manage LiteLLM resources through Infrastru
 - Specify model modes (e.g., completion, embedding, image generation)
 - Manage API keys with fine-grained controls
 - Support for reasoning effort configuration in the model resource
+- Managed Users as an individual resource, without needing a team
 
 ## Requirements
 
