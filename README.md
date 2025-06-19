@@ -12,7 +12,7 @@ This Terraform provider allows you to manage LiteLLM resources through Infrastru
 - Specify model modes (e.g., completion, embedding, image generation)
 - Manage API keys with fine-grained controls
 - Support for reasoning effort configuration in the model resource
-- Managed Users as an individual resource, without needing a team
+- Managed Users as an individual resource, without needing a tea
 
 ## Requirements
 
@@ -27,8 +27,8 @@ To use the LiteLLM provider in your Terraform configuration, you need to declare
 terraform {
   required_providers {
     litellm = {
-      source  = "ncecere/litellm"
-      version = "~> 0.2.3"
+      source  = "dannyburke1/litellm"
+      version = "~> 1.0.0"
     }
   }
 }
@@ -148,6 +148,7 @@ terraform-provider-litellm/
 │   ├── resource_team_member.go
 │   ├── resource_key.go
 │   ├── resource_key_utils.go
+│   ├── resource_user.go
 │   ├── types.go
 │   └── utils.go
 ├── main.go
