@@ -13,6 +13,7 @@ func Provider() *schema.Provider {
 			"litellm_team_member":     resourceLiteLLMTeamMember(),
 			"litellm_team_member_add": resourceLiteLLMTeamMemberAdd(),
 			"litellm_key":             resourceKey(),
+			"litellm_user":            ResourceLiteLLMUser(),
 		},
 		Schema: map[string]*schema.Schema{
 			"api_base": {

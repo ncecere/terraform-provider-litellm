@@ -8,7 +8,7 @@ The LiteLLM provider allows Terraform to manage LiteLLM resources. LiteLLM is a 
 terraform {
   required_providers {
     litellm = {
-      source  = "bitop/litellm"
+      source  = "ncecere/litellm"
       version = "~> 0.2.3"
     }
   }
