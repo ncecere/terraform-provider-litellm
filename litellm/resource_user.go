@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
@@ -103,6 +104,12 @@ func resourceLiteLLMUserCreate(d *schema.ResourceData, m interface{}) error {
 
 	d.SetId(userID)
 	log.Printf("[INFO] User created with ID: %s", userID)
+
+	/*
+		There is a bug when creating users that the email invitation doesn't contain the URL correctly.
+		I believe this could be due to a race condition and DB checks that happen on user creation.
+	*/
+	time.Sleep(2 * time.Second)
 
 	return resourceLiteLLMUserRead(d, m)
 }
