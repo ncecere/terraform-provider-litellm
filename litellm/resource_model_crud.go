@@ -3,6 +3,7 @@ package litellm
 import (
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -164,6 +165,11 @@ func resourceLiteLLMModelRead(d *schema.ResourceData, m interface{}) error {
 	modelResp, err := handleAPIResponse(resp, nil)
 	if err != nil {
 		if err.Error() == "model_not_found" {
+			d.SetId("")
+			return nil
+		}
+		// Custom: detect 'LLM Model List not loaded in' error and force recreation
+		if strings.Contains(err.Error(), "LLM Model List not loaded in") {
 			d.SetId("")
 			return nil
 		}
