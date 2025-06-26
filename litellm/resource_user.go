@@ -80,6 +80,10 @@ func ResourceLiteLLMUser() *schema.Resource {
 				Type:     schema.TypeBool,
 				Optional: true,
 			},
+			"teams": {
+				Type:     schema.TypeList,
+				Optional: true,
+			},
 		},
 	}
 }

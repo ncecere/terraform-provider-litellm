@@ -56,6 +56,7 @@ type UserResponse struct {
 	BudgetDuration  string   `json:"budget_duration,omitempty"`
 	autoCreateKey   bool     `json:"auto_create_key,omitempty"`
 	sendEmailInvite bool     `json:"send_email_invite,omitempty"`
+	Teams           []string `json:"teams"`
 }
 
 // LiteLLMParams represents the parameters for LiteLLM.
