@@ -16,7 +16,7 @@ resource "litellm_key" "example" {
   }
   tpm_limit            = 1000
   rpm_limit            = 60
-  budget_duration      = "monthly"
+  budget_duration      = "30d"
   allowed_cache_controls = ["no-cache", "max-age=3600"]
   soft_budget          = 80.0
   key_alias            = "prod-key-1"

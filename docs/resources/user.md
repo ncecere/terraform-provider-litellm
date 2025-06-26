@@ -14,7 +14,7 @@ resource "litellm_user" "this" {
   tpm_limit       = 500000
   rpm_limit       = 5000
   max_budget      = 1000.0
-  budget_duration = "monthly"
+  budget_duration = "30d"
   auto_create_keys = true
 }
 ```

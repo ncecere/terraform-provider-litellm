@@ -70,7 +70,7 @@ resource "litellm_key" "example_key" {
   max_parallel_requests = 5
   tpm_limit            = 1000
   rpm_limit            = 60
-  budget_duration      = "monthly"
+  budget_duration      = "30d"
   key_alias            = "prod-key-1"
   duration             = "30d"
   metadata             = {
@@ -109,7 +109,7 @@ The <code>litellm_key</code> resource supports the following options:
 - <code>user_id</code> and <code>team_id</code>: Associate the key with a user and team
 - <code>max_parallel_requests</code>: Limit concurrent requests
 - <code>tpm_limit</code> and <code>rpm_limit</code>: Set tokens and requests per minute limits
-- <code>budget_duration</code>: Specify budget duration (e.g., "monthly", "weekly")
+- <code>budget_duration</code>: Specify budget duration (e.g., "30d", "30s", "7d", "10m")
 - <code>key_alias</code>: Set a friendly name for the key
 - <code>duration</code>: Set the key's validity period
 - <code>metadata</code>: Add custom metadata to the key
