@@ -83,6 +83,7 @@ func ResourceLiteLLMUser() *schema.Resource {
 			"teams": {
 				Type:     schema.TypeList,
 				Optional: true,
+				Elem:     &schema.Schema{Type: schema.TypeString},
 			},
 		},
 	}
