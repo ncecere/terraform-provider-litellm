@@ -31,10 +31,6 @@ func ResourceLiteLLMUser() *schema.Resource {
 		},
 
 		Schema: map[string]*schema.Schema{
-			"user_id": {
-				Type:     schema.TypeString,
-				Required: true,
-			},
 			"user_email": {
 				Type:     schema.TypeString,
 				Optional: true,
