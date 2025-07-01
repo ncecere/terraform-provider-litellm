@@ -26,6 +26,10 @@ func ResourceLiteLLMUser() *schema.Resource {
 		Update: resourceLiteLLMUserUpdate,
 		Delete: resourceLiteLLMUserDelete,
 
+		Importer: &schema.ResourceImporter{
+			StateContext: schema.ImportStatePassthroughContext,
+		},
+
 		Schema: map[string]*schema.Schema{
 			"user_id": {
 				Type:     schema.TypeString,
@@ -141,11 +145,22 @@ func resourceLiteLLMUserRead(d *schema.ResourceData, m interface{}) error {
 		return fmt.Errorf("error decoding user info response: %w", err)
 	}
 
-	// Update the state with values from the response or fall back to the data passed in during creation
-	d.Set("user_alias", GetStringValue(userResp.userAlias, d.Get("user_alias").(string)))
+	// Set API response so we can import users into the state.
+	d.Set("user_id", userResp.userID)
+	d.Set("user_email", userResp.userEmail)
+	d.Set("user_alias", userResp.userAlias)
+	d.Set("user_role", userResp.userRole)
+	d.Set("max_budget", userResp.MaxBudget)
+	d.Set("models", userResp.Models)
+	d.Set("tpm_limit", userResp.TPMLimit)
+	d.Set("rpm_limit", userResp.RPMLimit)
+	d.Set("auto_create_key", userResp.autoCreateKey)
+	d.Set("send_user_invite", userResp.sendEmailInvite)
+	d.Set("teams", userResp.Teams)
 
 	return nil
 }
+
 func resourceLiteLLMUserUpdate(d *schema.ResourceData, m interface{}) error {
 	client := m.(*Client)
 
