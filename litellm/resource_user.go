@@ -146,7 +146,6 @@ func resourceLiteLLMUserRead(d *schema.ResourceData, m interface{}) error {
 	}
 
 	// Set API response so we can import users into the state.
-	d.Set("user_id", userResp.userID)
 	d.Set("user_email", userResp.userEmail)
 	d.Set("user_alias", userResp.userAlias)
 	d.Set("user_role", userResp.userRole)

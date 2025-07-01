@@ -45,7 +45,6 @@ type TeamResponse struct {
 
 // User represents a response from the API containing user information.
 type UserResponse struct {
-	userID          string   `json:"user_id,omitempty"`
 	userEmail       string   `json:"user_email,omitempty"`
 	userAlias       string   `json:"user_alias,omitempty"`
 	userRole        string   `json:"user_role,omitempty"`
