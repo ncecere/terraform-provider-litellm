@@ -58,8 +58,15 @@ func resourceLiteLLMTeamMemberCreate(d *schema.ResourceData, m interface{}) erro
 				"user_email": d.Get("user_email").(string),
 			},
 		},
-		"team_id":            d.Get("team_id").(string),
-		"max_budget_in_team": d.Get("max_budget_in_team").(float64),
+		"team_id": d.Get("team_id").(string),
+	}
+
+	// Handle max_budget_in_team properly - only include if set
+	if budget, ok := d.GetOk("max_budget_in_team"); ok {
+		memberData["max_budget_in_team"] = budget.(float64)
+		log.Printf("[DEBUG] Setting max_budget_in_team to: %v", budget.(float64))
+	} else {
+		log.Printf("[DEBUG] max_budget_in_team not set or is zero")
 	}
 
 	log.Printf("[DEBUG] Create team member request payload: %+v", memberData)
@@ -94,10 +101,18 @@ func resourceLiteLLMTeamMemberUpdate(d *schema.ResourceData, m interface{}) erro
 	client := m.(*Client)
 
 	updateData := map[string]interface{}{
-		"user_id":            d.Get("user_id").(string),
-		"user_email":         d.Get("user_email").(string),
-		"team_id":            d.Get("team_id").(string),
-		"max_budget_in_team": d.Get("max_budget_in_team").(float64),
+		"user_id":    d.Get("user_id").(string),
+		"user_email": d.Get("user_email").(string),
+		"team_id":    d.Get("team_id").(string),
+		"role":       d.Get("role").(string), // Added missing role field
+	}
+
+	// Handle max_budget_in_team properly - only include if set
+	if budget, ok := d.GetOk("max_budget_in_team"); ok {
+		updateData["max_budget_in_team"] = budget.(float64)
+		log.Printf("[DEBUG] Setting max_budget_in_team to: %v", budget.(float64))
+	} else {
+		log.Printf("[DEBUG] max_budget_in_team not set or is zero")
 	}
 
 	log.Printf("[DEBUG] Update team member request payload: %+v", updateData)

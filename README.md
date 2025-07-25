@@ -124,11 +124,51 @@ The <code>litellm_key</code> resource supports the following options:
 
 For full details on the <code>litellm_key</code> resource, see the [key resource documentation](docs/resources/key.md).
 
+Here's an example of managing team members:
+
+```hcl
+# Create a team
+resource "litellm_team" "engineering" {
+  team_alias      = "engineering-team"
+  organization_id = "org_123456"
+  models          = ["gpt-4-proxy", "claude-2"]
+  max_budget      = 1000.0
+  budget_duration = "monthly"
+}
+
+# Add individual team member
+resource "litellm_team_member" "engineer" {
+  team_id            = litellm_team.engineering.id
+  user_id            = "user_3"
+  user_email         = "engineer@example.com"
+  role               = "user"
+  max_budget_in_team = 200.0
+}
+
+# Add multiple team members in bulk
+resource "litellm_team_member_add" "bulk_members" {
+  team_id = litellm_team.engineering.id
+  
+  member {
+    user_id = "admin_1"
+    role    = "admin"
+  }
+
+  member {
+    user_email = "developer@example.com"
+    role       = "user"
+  }
+
+  max_budget_in_team = 150.0
+}
+```
+
 ### Available Resources
 
 - <code>litellm_model</code>: Manage model configurations. [Documentation](docs/resources/model.md)
 - <code>litellm_team</code>: Manage teams. [Documentation](docs/resources/team.md)
-- <code>litellm_team_member</code>: Manage team members. [Documentation](docs/resources/team_member.md)
+- <code>litellm_team_member</code>: Manage individual team members. [Documentation](docs/resources/team_member.md)
+- <code>litellm_team_member_add</code>: Manage multiple team members in bulk. [Documentation](docs/resources/team_member_add.md)
 - <code>litellm_key</code>: Manage API keys. [Documentation](docs/resources/key.md)
 
 ## Development
