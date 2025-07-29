@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Enhanced team member functionality merged into core `litellm_team_member` resource
+  - `update_user_record` flag for automatic user-level updates
+  - `cascade_delete_keys` flag for cleaning up API keys on deletion
+  - `cleanup_orphaned_user` flag for removing users with no team memberships
+  - `user_max_budget` and `budget_duration` fields for user-level budget management
+- New resources for enterprise management:
+  - `litellm_model_config` - Advanced model configuration management
+  - `litellm_budget_alert` - Budget monitoring and alerting
+  - `litellm_monitoring_config` - Observability integrations
+  - `litellm_router_config` - Advanced routing configuration
+  - `litellm_api_key_enhanced` - Enterprise API key lifecycle management
+- New data source:
+  - `litellm_spend_logs` - Query and analyze usage data
+- Supporting utilities:
+  - `cascading_cleanup.go` - Handles resource cleanup operations
+  - `client_user_methods.go` - User management API methods
+
+### Changed
+- Enhanced `litellm_team_member` Read operation to verify team membership
+- Improved state management and drift detection across all resources
+- All enhanced features default to `false` for backward compatibility
+
+### Fixed
+- Team member resource now properly updates user-level records when configured
+- API keys and users are cleaned up appropriately on deletion
+- State drift issues resolved with proper Read implementations
+
 ## [0.3.0] - 2025-04-23
 
 ### Fixed

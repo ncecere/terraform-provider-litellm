@@ -8,11 +8,22 @@ import (
 func Provider() *schema.Provider {
 	return &schema.Provider{
 		ResourcesMap: map[string]*schema.Resource{
-			"litellm_model":           resourceLiteLLMModel(),
-			"litellm_team":            ResourceLiteLLMTeam(),
-			"litellm_team_member":     resourceLiteLLMTeamMember(),
-			"litellm_team_member_add": resourceLiteLLMTeamMemberAdd(),
-			"litellm_key":             resourceKey(),
+			// Core resources
+			"litellm_model":                   resourceLiteLLMModel(),
+			"litellm_team":                    ResourceLiteLLMTeam(),
+			"litellm_team_member":             resourceLiteLLMTeamMember(),
+			"litellm_team_member_add":         resourceLiteLLMTeamMemberAdd(),
+			"litellm_key":                     resourceKey(),
+			
+			// Additional resources
+			"litellm_model_config":            resourceLiteLLMModelConfig(),
+			"litellm_budget_alert":            resourceLiteLLMBudgetAlert(),
+			"litellm_monitoring_config":       resourceLiteLLMMonitoringConfig(),
+			"litellm_router_config":           resourceLiteLLMRouterConfig(),
+			"litellm_api_key_enhanced":        resourceLiteLLMAPIKeyEnhanced(),
+		},
+		DataSourcesMap: map[string]*schema.Resource{
+			"litellm_spend_logs":              dataSourceLiteLLMSpendLogs(),
 		},
 		Schema: map[string]*schema.Schema{
 			"api_base": {
