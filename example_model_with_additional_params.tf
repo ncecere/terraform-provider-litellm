@@ -49,7 +49,9 @@ resource "litellm_model" "bedrock_model" {
   # Standard AWS parameters
   aws_access_key_id     = var.aws_access_key_id
   aws_secret_access_key = var.aws_secret_access_key
+  aws_session_name      = "litellm"
   aws_region_name       = "us-east-1"
+  aws_role_name         = "arn:aws:iam::123456789000:role/bedrock"
   
   # Additional custom parameters for Bedrock
   additional_litellm_params = {

@@ -29,7 +29,9 @@ resource "litellm_model" "gpt4" {
   # AWS-specific configuration (if applicable)
   aws_access_key_id     = var.aws_access_key_id
   aws_secret_access_key = var.aws_secret_access_key
+  aws_session_name      = var.aws_session_name
   aws_region_name       = var.aws_region
+  aws_role_name         = var.aws_role_name
 }
 ```
 
@@ -86,7 +88,11 @@ The following arguments are supported:
 
 * `aws_secret_access_key` - (Optional) AWS secret access key for AWS-based models.
 
+* `aws_session_name` - (Optional) AWS session name for AWS-based models.
+
 * `aws_region_name` - (Optional) AWS region name for AWS-based models.
+
+* `aws_role_name` - (Optional) AWS role name for AWS-based models.
 
 ## Attribute Reference
 

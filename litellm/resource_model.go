@@ -128,7 +128,15 @@ func resourceLiteLLMModel() *schema.Resource {
 				Optional:  true,
 				Sensitive: true,
 			},
+			"aws_session_name": {
+				Type:     schema.TypeString,
+				Optional: true,
+			},
 			"aws_region_name": {
+				Type:     schema.TypeString,
+				Optional: true,
+			},
+			"aws_role_name": {
 				Type:     schema.TypeString,
 				Optional: true,
 			},

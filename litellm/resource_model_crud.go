@@ -127,8 +127,14 @@ func createOrUpdateModel(d *schema.ResourceData, m interface{}, isUpdate bool) e
 	if awsSecretAccessKey := d.Get("aws_secret_access_key").(string); awsSecretAccessKey != "" {
 		litellmParams["aws_secret_access_key"] = awsSecretAccessKey
 	}
+	if awsSessionName := d.Get("aws_session_name").(string); awsSessionName != "" {
+		litellmParams["aws_session_name"] = awsSessionName
+	}
 	if awsRegionName := d.Get("aws_region_name").(string); awsRegionName != "" {
 		litellmParams["aws_region_name"] = awsRegionName
+	}
+	if awsRoleName := d.Get("aws_role_name").(string); awsRoleName != "" {
+		litellmParams["aws_role_name"] = awsRoleName
 	}
 	if vertexProject := d.Get("vertex_project").(string); vertexProject != "" {
 		litellmParams["vertex_project"] = vertexProject
@@ -254,7 +260,9 @@ func resourceLiteLLMModelRead(d *schema.ResourceData, m interface{}) error {
 	d.Set("model_api_key", d.Get("model_api_key"))
 	d.Set("aws_access_key_id", d.Get("aws_access_key_id"))
 	d.Set("aws_secret_access_key", d.Get("aws_secret_access_key"))
+	d.Set("aws_session_name", d.Get("aws_session_name"))
 	d.Set("aws_region_name", GetStringValue(modelResp.LiteLLMParams.AWSRegionName, d.Get("aws_region_name").(string)))
+	d.Set("aws_role_name", d.Get("aws_role_name"))
 
 	// Store cost information
 	d.Set("input_cost_per_million_tokens", d.Get("input_cost_per_million_tokens"))

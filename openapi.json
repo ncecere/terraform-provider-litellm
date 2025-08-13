@@ -29403,6 +29403,17 @@
             ],
             "title": "Aws Secret Access Key"
           },
+          "aws_session_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Aws Session Name"
+          },
           "aws_region_name": {
             "anyOf": [
               {
@@ -29413,6 +29424,17 @@
               }
             ],
             "title": "Aws Region Name"
+          },
+          "aws_role_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Aws Role Name"
           },
           "watsonx_region_name": {
             "anyOf": [
@@ -39865,6 +39887,17 @@
             ],
             "title": "Aws Secret Access Key"
           },
+          "aws_session_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Aws Session Name"
+          },
           "aws_region_name": {
             "anyOf": [
               {
@@ -39875,6 +39908,17 @@
               }
             ],
             "title": "Aws Region Name"
+          },
+          "aws_role_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Aws Role Name"
           },
           "watsonx_region_name": {
             "anyOf": [
