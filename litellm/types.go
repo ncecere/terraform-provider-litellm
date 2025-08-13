@@ -68,6 +68,8 @@ type LiteLLMParams struct {
 	AWSAccessKeyID                 string                 `json:"aws_access_key_id,omitempty"`
 	AWSSecretAccessKey             string                 `json:"aws_secret_access_key,omitempty"`
 	AWSRegionName                  string                 `json:"aws_region_name,omitempty"`
+	AWSSessionName                 string                 `json:"aws_session_name,omitempty"`
+	AWSRoleName                    string                 `json:"aws_role_name,omitempty"`
 	VertexProject                  string                 `json:"vertex_project,omitempty"`
 	VertexLocation                 string                 `json:"vertex_location,omitempty"`
 	VertexCredentials              string                 `json:"vertex_credentials,omitempty"`

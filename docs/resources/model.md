@@ -4,9 +4,27 @@ Manages a LiteLLM model configuration. This resource allows you to create, updat
 
 ## Example Usage
 
+### Basic OpenAI Model
+
 ```hcl
 resource "litellm_model" "gpt4" {
   model_name          = "gpt-4-proxy"
+  custom_llm_provider = "openai"
+  model_api_key       = var.openai_api_key
+  base_model          = "gpt-4"
+  tier                = "paid"
+  mode                = "chat"
+  
+  input_cost_per_million_tokens  = 30.0
+  output_cost_per_million_tokens = 60.0
+}
+```
+
+### Advanced Model with All Features
+
+```hcl
+resource "litellm_model" "advanced_gpt4" {
+  model_name          = "gpt-4-advanced"
   custom_llm_provider = "openai"
   model_api_key       = var.openai_api_key
   model_api_base      = "https://api.openai.com/v1"
@@ -14,7 +32,7 @@ resource "litellm_model" "gpt4" {
   base_model          = "gpt-4"
   tier                = "paid"
   team_id             = "team-123"
-  mode                = "completion"
+  mode                = "chat"
   reasoning_effort    = "medium"
   thinking_enabled    = true
   thinking_budget_tokens = 1024
@@ -25,11 +43,62 @@ resource "litellm_model" "gpt4" {
   # Cost configuration (per million tokens)
   input_cost_per_million_tokens  = 30.0    # $0.03 per 1k tokens = $30 per million
   output_cost_per_million_tokens = 60.0    # $0.06 per 1k tokens = $60 per million
+}
+```
 
-  # AWS-specific configuration (if applicable)
+### AWS Bedrock Model with Cross-Account Access
+
+```hcl
+resource "litellm_model" "bedrock_claude" {
+  model_name          = "bedrock-claude-proxy"
+  custom_llm_provider = "bedrock"
+  base_model          = "anthropic.claude-3-sonnet-20240229-v1:0"
+  tier                = "paid"
+  mode                = "chat"
+  
+  # AWS configuration with cross-account access
   aws_access_key_id     = var.aws_access_key_id
   aws_secret_access_key = var.aws_secret_access_key
-  aws_region_name       = var.aws_region
+  aws_region_name       = "us-east-1"
+  aws_session_name      = "litellm-cross-account-session"
+  aws_role_name         = "arn:aws:iam::123456789012:role/LiteLLMCrossAccountRole"
+  
+  input_cost_per_million_tokens  = 3.0
+  output_cost_per_million_tokens = 15.0
+}
+```
+
+### Anthropic Model
+
+```hcl
+resource "litellm_model" "claude" {
+  model_name          = "claude-proxy"
+  custom_llm_provider = "anthropic"
+  model_api_key       = var.anthropic_api_key
+  base_model          = "claude-3-sonnet-20240229"
+  tier                = "paid"
+  mode                = "chat"
+  
+  input_cost_per_million_tokens  = 3.0
+  output_cost_per_million_tokens = 15.0
+}
+```
+
+### Azure OpenAI Model
+
+```hcl
+resource "litellm_model" "azure_gpt4" {
+  model_name          = "azure-gpt4-proxy"
+  custom_llm_provider = "azure"
+  model_api_key       = var.azure_openai_key
+  model_api_base      = var.azure_openai_endpoint
+  api_version         = "2023-12-01-preview"
+  base_model          = "gpt-4"
+  tier                = "paid"
+  mode                = "chat"
+  
+  input_cost_per_million_tokens  = 30.0
+  output_cost_per_million_tokens = 60.0
 }
 ```
 
@@ -87,6 +156,10 @@ The following arguments are supported:
 * `aws_secret_access_key` - (Optional) AWS secret access key for AWS-based models.
 
 * `aws_region_name` - (Optional) AWS region name for AWS-based models.
+
+* `aws_session_name` - (Optional) AWS session name for cross-account access scenarios.
+
+* `aws_role_name` - (Optional) AWS IAM role name for cross-account access scenarios.
 
 ## Attribute Reference
 

@@ -4,29 +4,79 @@ Manages a team configuration in LiteLLM. Teams allow you to group users and mana
 
 ## Example Usage
 
+### Basic Team Configuration
+
 ```hcl
 resource "litellm_team" "engineering" {
-  team_alias      = "engineering-team"
+  team_alias = "engineering-team"
+  models     = ["gpt-4-proxy", "claude-2"]
+  max_budget = 1000.0
+}
+```
+
+### Team with Comprehensive Configuration
+
+```hcl
+resource "litellm_team" "advanced_team" {
+  team_alias      = "ai-research-team"
   organization_id = "org_123456"
-  models          = ["gpt-4-proxy", "claude-2"]
+  models          = ["gpt-4-proxy", "claude-2", "gpt-3.5-turbo"]
 
-  metadata = {
-    department = "Engineering"
-    project    = "AI Research"
-  }
-
-  blocked         = false
+  # Budget and rate limiting
+  max_budget      = 1000.0
+  budget_duration = "1mo"
   tpm_limit       = 500000
   rpm_limit       = 5000
-  max_budget      = 1000.0
-  budget_duration = "monthly"
-  
+  blocked         = false
+
   # Team member permissions
   team_member_permissions = [
     "create_key",
     "delete_key",
     "view_spend",
     "edit_team"
+  ]
+
+  # Metadata for organization
+  metadata = {
+    department = "Engineering"
+    project    = "AI Research"
+    cost_center = "R&D-001"
+  }
+}
+```
+
+### Team with Model Dependencies
+
+```hcl
+# First create models
+resource "litellm_model" "gpt4" {
+  model_name          = "gpt-4-proxy"
+  custom_llm_provider = "openai"
+  base_model          = "gpt-4"
+  model_api_key       = var.openai_api_key
+}
+
+resource "litellm_model" "claude" {
+  model_name          = "claude-proxy"
+  custom_llm_provider = "anthropic"
+  base_model          = "claude-3-sonnet-20240229"
+  model_api_key       = var.anthropic_api_key
+}
+
+# Then create team with access to these models
+resource "litellm_team" "model_dependent_team" {
+  team_alias = "model-users"
+  models = [
+    litellm_model.gpt4.model_name,
+    litellm_model.claude.model_name
+  ]
+  
+  max_budget      = 500.0
+  budget_duration = "1mo"
+  
+  team_member_permissions = [
+    "view_spend"
   ]
 }
 ```

@@ -30,6 +30,52 @@ resource "litellm_team_member_add" "example" {
 }
 ```
 
+### Complete Team Setup with Members
+
+```hcl
+# First create a team
+resource "litellm_team" "development" {
+  team_alias = "development-team"
+  max_budget = 500.0
+  models     = ["gpt-4", "gpt-3.5-turbo"]
+  
+  team_member_permissions = [
+    "create_key",
+    "view_spend"
+  ]
+}
+
+# Add members to the team
+resource "litellm_team_member_add" "dev_team_members" {
+  team_id = litellm_team.development.id
+  
+  # Team lead with admin role
+  member {
+    user_email = "team-lead@company.com"
+    role       = "admin"
+  }
+  
+  # Regular developers
+  member {
+    user_email = "developer1@company.com"
+    role       = "user"
+  }
+  
+  member {
+    user_email = "developer2@company.com"
+    role       = "user"
+  }
+  
+  member {
+    user_id = "existing-user-123"
+    role    = "user"
+  }
+  
+  # Budget per member
+  max_budget_in_team = 100.0
+}
+```
+
 ### Dynamic Members Using Locals
 
 ```hcl
@@ -64,6 +110,38 @@ resource "litellm_team_member_add" "dynamic_example" {
 
   max_budget_in_team = 200.0
 }
+```
+
+### Budget Update Example
+
+```hcl
+# This example demonstrates how budget updates work correctly
+resource "litellm_team_member_add" "budget_example" {
+  team_id = litellm_team.example.id
+  
+  # Initial budget of $100 per member
+  max_budget_in_team = 100.0
+  
+  member {
+    user_email = "user1@example.com"
+    role       = "admin"
+  }
+  
+  member {
+    user_email = "user2@example.com"
+    role       = "user"
+  }
+  
+  member {
+    user_id = "user123"
+    role    = "user"
+  }
+}
+
+# To update the budget:
+# 1. Change max_budget_in_team from 100.0 to 120.0
+# 2. Run terraform plan - it will show the budget change
+# 3. Run terraform apply - all existing members will be updated with the new budget
 ```
 
 ## Argument Reference

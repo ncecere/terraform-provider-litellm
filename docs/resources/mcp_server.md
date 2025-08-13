@@ -15,70 +15,122 @@ Manages an MCP (Model Context Protocol) server in LiteLLM. MCP servers provide t
 ### Basic HTTP MCP Server
 
 ```terraform
-resource "litellm_mcp_server" "example_http" {
-  server_name = "example-http-server"
-  alias       = "http-example"
-  description = "Example HTTP MCP server"
-  url         = "https://api.example.com/mcp"
+resource "litellm_mcp_server" "github_server" {
+  server_name = "github-mcp-server"
+  alias       = "github"
+  description = "GitHub MCP server for repository operations"
+  url         = "https://api.github.com/mcp"
   transport   = "http"
-  auth_type   = "none"
+  auth_type   = "bearer"
   
-  mcp_access_groups = ["dev_group", "prod_group"]
+  mcp_access_groups = ["dev_team", "devops_team"]
 }
 ```
 
-### SSE MCP Server with Cost Tracking
+### SSE MCP Server with Comprehensive Cost Tracking
 
 ```terraform
-resource "litellm_mcp_server" "example_sse" {
-  server_name  = "zapier-server"
+resource "litellm_mcp_server" "zapier_server" {
+  server_name  = "zapier-automation"
   alias        = "zapier"
-  description  = "Zapier MCP server for automation"
+  description  = "Zapier MCP server for workflow automation"
   url          = "https://actions.zapier.com/mcp/sk-xxxxx/sse"
   transport    = "sse"
   auth_type    = "bearer"
   spec_version = "2024-11-05"
   
-  mcp_access_groups = ["automation_team"]
+  mcp_access_groups = ["automation_team", "marketing_team"]
   
   mcp_info {
-    server_name = "Zapier Integration"
-    description = "Zapier MCP server for workflow automation"
-    logo_url    = "https://zapier.com/logo.png"
+    server_name = "Zapier Integration Server"
+    description = "Provides automation tools through Zapier's MCP interface"
+    logo_url    = "https://zapier.com/assets/images/zapier-logo.png"
     
     mcp_server_cost_info {
       default_cost_per_query = 0.01
       
       tool_name_to_cost_per_query = {
-        "send_email"      = 0.05
-        "create_document" = 0.03
-        "update_sheet"    = 0.02
+        "send_email"           = 0.05
+        "create_document"      = 0.03
+        "update_spreadsheet"   = 0.02
+        "post_to_slack"        = 0.01
+        "create_calendar_event" = 0.04
       }
     }
   }
 }
 ```
 
-### Stdio MCP Server
+### Stdio MCP Server for Local Development
 
 ```terraform
-resource "litellm_mcp_server" "example_stdio" {
-  server_name  = "local-tools"
-  alias        = "local"
-  description  = "Local MCP server using stdio"
-  url          = "stdio://local"
-  transport    = "stdio"
-  auth_type    = "none"
+resource "litellm_mcp_server" "local_dev_server" {
+  server_name = "local-development-tools"
+  alias       = "local-dev"
+  description = "Local MCP server for development tools"
+  url         = "stdio://local-dev"
+  transport   = "stdio"
+  auth_type   = "none"
   
   command = "python3"
-  args    = ["/path/to/mcp_server.py"]
+  args    = ["/opt/mcp-servers/dev-tools/server.py", "--verbose"]
   
   env = {
-    "PYTHONPATH" = "/path/to/modules"
-    "DEBUG"      = "true"
+    "PYTHONPATH"    = "/opt/mcp-servers/dev-tools"
+    "DEBUG"         = "true"
+    "LOG_LEVEL"     = "info"
+    "WORKSPACE_DIR" = "/workspace"
   }
   
-  mcp_access_groups = ["local_dev"]
+  mcp_access_groups = ["local_developers"]
+  
+  mcp_info {
+    server_name = "Development Tools"
+    description = "Local development utilities and tools"
+    
+    mcp_server_cost_info {
+      default_cost_per_query = 0.0  # Free for local development
+    }
+  }
+}
+```
+
+### Enterprise MCP Server with Full Configuration
+
+```terraform
+resource "litellm_mcp_server" "enterprise_api_server" {
+  server_name  = "enterprise-api-gateway"
+  alias        = "enterprise"
+  description  = "Enterprise API gateway MCP server"
+  url          = "https://api.enterprise.com/mcp/v1"
+  transport    = "http"
+  auth_type    = "bearer"
+  spec_version = "2024-11-05"
+  
+  mcp_access_groups = [
+    "enterprise_users",
+    "api_consumers",
+    "integration_team"
+  ]
+  
+  mcp_info {
+    server_name = "Enterprise API Gateway"
+    description = "Provides access to enterprise APIs and services"
+    logo_url    = "https://enterprise.com/logo.png"
+    
+    mcp_server_cost_info {
+      default_cost_per_query = 0.10
+      
+      tool_name_to_cost_per_query = {
+        "query_database"       = 0.25
+        "generate_report"      = 0.50
+        "send_notification"    = 0.05
+        "create_user"          = 0.15
+        "update_permissions"   = 0.20
+        "audit_log_query"      = 0.30
+      }
+    }
+  }
 }
 ```
 

@@ -130,6 +130,7 @@ For full details on the <code>litellm_key</code> resource, see the [key resource
 - <code>litellm_model</code>: Manage model configurations. [Documentation](docs/resources/model.md)
 - <code>litellm_team</code>: Manage teams. [Documentation](docs/resources/team.md)
 - <code>litellm_team_member</code>: Manage team members. [Documentation](docs/resources/team_member.md)
+- <code>litellm_team_member_add</code>: Add multiple members to teams. [Documentation](docs/resources/team_member_add.md)
 - <code>litellm_key</code>: Manage API keys. [Documentation](docs/resources/key.md)
 - <code>litellm_mcp_server</code>: Manage MCP (Model Context Protocol) servers. [Documentation](docs/resources/mcp_server.md)
 - <code>litellm_credential</code>: Manage credentials for secure authentication. [Documentation](docs/resources/credential.md)
@@ -212,6 +213,7 @@ This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENS
 ## Notes
 
 - Always use environment variables or secure secret management solutions to handle sensitive information like API keys and AWS credentials.
-- Refer to the `examples/` directory for more detailed usage examples.
+- Refer to the comprehensive documentation in the `docs/` directory for detailed usage examples and configuration options.
 - Make sure to keep your provider version updated for the latest features and bug fixes.
-- v0.2.3 introduces support for the <code>reasoning_effort</code> attribute in the <code>litellm_model</code> resource. This attribute accepts "low", "medium", or "high" to control the model's reasoning effort.
+- The provider now supports AWS cross-account access with `aws_session_name` and `aws_role_name` parameters in the model resource.
+- All example configurations have been consolidated into the documentation for better organization and maintenance.

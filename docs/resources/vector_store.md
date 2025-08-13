@@ -8,93 +8,180 @@ description: |-
 
 # litellm_vector_store (Resource)
 
-Manages a LiteLLM vector store for storing and retrieving vector embeddings. Vector stores can be used with various providers like Pinecone, Weaviate, Chroma, and others to enable semantic search and retrieval-augmented generation (RAG) capabilities.
+Manages a LiteLLM vector store for storing and retrieving vector embeddings. Vector stores enable semantic search and retrieval-augmented generation (RAG) capabilities using officially supported providers including AWS Bedrock Knowledge Bases, OpenAI Vector Stores, Azure Vector Stores, Vertex AI RAG Engine, and PG Vector.
 
 ## Example Usage
 
+### AWS Bedrock Knowledge Base
+
 ```terraform
-resource "litellm_credential" "pinecone_cred" {
-  credential_name = "pinecone-api-key"
+resource "litellm_credential" "bedrock_cred" {
+  credential_name = "bedrock-knowledge-base"
   
   credential_info = {
-    provider = "pinecone"
-    environment = "production"
+    provider = "bedrock"
+    region   = "us-east-1"
   }
   
   credential_values = {
-    api_key = "your-pinecone-api-key"
-    index_name = "your-index-name"
+    aws_access_key_id     = var.aws_access_key_id
+    aws_secret_access_key = var.aws_secret_access_key
+    aws_region            = "us-east-1"
   }
 }
 
-resource "litellm_vector_store" "example" {
-  vector_store_name        = "my-vector-store"
-  custom_llm_provider      = "pinecone"
-  litellm_credential_name  = litellm_credential.pinecone_cred.credential_name
+resource "litellm_vector_store" "bedrock_kb" {
+  vector_store_name        = "bedrock-litellm-website-knowledgebase"
+  custom_llm_provider      = "bedrock"
+  litellm_credential_name  = litellm_credential.bedrock_cred.credential_name
   
-  vector_store_description = "Production vector store for document embeddings"
+  vector_store_description = "Bedrock vector store for the LiteLLM website knowledgebase"
   
   vector_store_metadata = {
-    environment = "production"
-    team        = "ai-team"
-    purpose     = "document-search"
+    source = "https://www.litellm.com/docs"
   }
   
   litellm_params = {
-    dimension = "1536"
-    metric    = "cosine"
+    vector_store_id = "T37J8R4WTM"
   }
 }
 ```
 
-## Example Usage with Weaviate
+### OpenAI Vector Store
 
 ```terraform
-resource "litellm_credential" "weaviate_cred" {
-  credential_name = "weaviate-api-key"
+resource "litellm_credential" "openai_cred" {
+  credential_name = "openai-vector-store"
   
   credential_info = {
-    provider = "weaviate"
-    cluster_url = "https://your-cluster.weaviate.network"
+    provider = "openai"
   }
   
   credential_values = {
-    api_key = "your-weaviate-api-key"
+    api_key = var.openai_api_key
   }
 }
 
-resource "litellm_vector_store" "weaviate_store" {
-  vector_store_name        = "weaviate-documents"
-  custom_llm_provider      = "weaviate"
-  litellm_credential_name  = litellm_credential.weaviate_cred.credential_name
+resource "litellm_vector_store" "openai_store" {
+  vector_store_name        = "openai-knowledge-base"
+  custom_llm_provider      = "openai"
+  litellm_credential_name  = litellm_credential.openai_cred.credential_name
   
-  vector_store_description = "Weaviate vector store for semantic search"
+  vector_store_description = "OpenAI vector store for document search"
   
   vector_store_metadata = {
-    class_name = "Document"
-    schema_version = "v1"
+    environment = "production"
+    purpose     = "file-search"
+  }
+  
+  litellm_params = {
+    vector_store_id = "vs_687ae3b2439881918b433cb99d10662e"
   }
 }
 ```
 
-## Example Usage with Chroma
+### Azure Vector Store
 
 ```terraform
-resource "litellm_vector_store" "chroma_store" {
-  vector_store_name   = "chroma-local"
-  custom_llm_provider = "chroma"
+resource "litellm_credential" "azure_cred" {
+  credential_name = "azure-vector-store"
   
-  vector_store_description = "Local Chroma vector store"
-  
-  litellm_params = {
-    host = "localhost"
-    port = "8000"
-    collection_name = "documents"
+  credential_info = {
+    provider = "azure"
   }
   
+  credential_values = {
+    api_key      = var.azure_openai_key
+    api_base     = var.azure_openai_endpoint
+    api_version  = "2023-12-01-preview"
+  }
+}
+
+resource "litellm_vector_store" "azure_store" {
+  vector_store_name        = "azure-knowledge-base"
+  custom_llm_provider      = "azure"
+  litellm_credential_name  = litellm_credential.azure_cred.credential_name
+  
+  vector_store_description = "Azure vector store for enterprise search"
+  
   vector_store_metadata = {
-    embedding_model = "sentence-transformers/all-MiniLM-L6-v2"
-    chunk_size = "512"
+    environment = "production"
+    team        = "enterprise"
+  }
+  
+  litellm_params = {
+    vector_store_id = "vs_azure_example_id"
+  }
+}
+```
+
+### Vertex AI RAG Engine
+
+```terraform
+resource "litellm_credential" "vertex_cred" {
+  credential_name = "vertex-rag-engine"
+  
+  credential_info = {
+    provider = "vertex_ai"
+    project  = "your-gcp-project"
+  }
+  
+  credential_values = {
+    service_account_key = var.gcp_service_account_key
+  }
+}
+
+resource "litellm_vector_store" "vertex_rag" {
+  vector_store_name        = "vertex-rag-corpus"
+  custom_llm_provider      = "vertex_ai"
+  litellm_credential_name  = litellm_credential.vertex_cred.credential_name
+  
+  vector_store_description = "Vertex AI RAG Engine for enterprise knowledge"
+  
+  vector_store_metadata = {
+    project     = "your-gcp-project"
+    environment = "production"
+  }
+  
+  litellm_params = {
+    vector_store_id = "6917529027641081856"
+  }
+}
+```
+
+### PG Vector Store
+
+```terraform
+resource "litellm_credential" "pgvector_cred" {
+  credential_name = "pgvector-store"
+  
+  credential_info = {
+    provider = "pgvector"
+    host     = "your-pgvector-host.com"
+  }
+  
+  credential_values = {
+    api_key  = var.pgvector_api_key
+    api_base = "https://your-pgvector-host.com"
+  }
+}
+
+resource "litellm_vector_store" "pgvector_store" {
+  vector_store_name        = "postgres-vector-store"
+  custom_llm_provider      = "pgvector"
+  litellm_credential_name  = litellm_credential.pgvector_cred.credential_name
+  
+  vector_store_description = "PostgreSQL vector store with pgvector extension"
+  
+  vector_store_metadata = {
+    database    = "vector_db"
+    table       = "embeddings"
+    environment = "production"
+  }
+  
+  litellm_params = {
+    api_base = "https://your-pgvector-host.com"
+    api_key  = var.pgvector_api_key
   }
 }
 ```
@@ -104,7 +191,7 @@ resource "litellm_vector_store" "chroma_store" {
 The following arguments are supported:
 
 * `vector_store_name` - (Required) Name of the vector store.
-* `custom_llm_provider` - (Required) The vector store provider (e.g., "pinecone", "weaviate", "chroma", "qdrant").
+* `custom_llm_provider` - (Required) The vector store provider. Supported values: "bedrock", "openai", "azure", "vertex_ai", "pgvector".
 * `vector_store_description` - (Optional) Description of the vector store.
 * `vector_store_metadata` - (Optional) Map of metadata associated with the vector store.
 * `litellm_credential_name` - (Optional) Name of the LiteLLM credential to use for authentication.
@@ -120,45 +207,54 @@ In addition to all arguments above, the following attributes are exported:
 
 ## Supported Providers
 
-The following vector store providers are supported:
+The following vector store providers are officially supported by LiteLLM:
 
-* **Pinecone** - Managed vector database service
-* **Weaviate** - Open-source vector database
-* **Chroma** - Open-source embedding database
-* **Qdrant** - Vector similarity search engine
-* **Milvus** - Open-source vector database
-* **FAISS** - Facebook AI Similarity Search
+* **AWS Bedrock Knowledge Bases** - Managed knowledge bases on AWS Bedrock
+* **OpenAI Vector Stores** - OpenAI's native vector store service
+* **Azure Vector Stores** - Azure OpenAI vector store integration
+* **Vertex AI RAG Engine** - Google Cloud's RAG API for vector search
+* **PG Vector** - PostgreSQL with pgvector extension
 
 ## Provider-Specific Parameters
 
-### Pinecone
+### AWS Bedrock Knowledge Base
 
 ```terraform
 litellm_params = {
-  dimension = "1536"
-  metric    = "cosine"
-  pods      = "1"
-  replicas  = "1"
-  pod_type  = "p1.x1"
+  vector_store_id = "T37J8R4WTM"  # Your Bedrock Knowledge Base ID
 }
 ```
 
-### Weaviate
+### OpenAI Vector Store
 
 ```terraform
 litellm_params = {
-  class_name = "Document"
-  vectorizer = "text2vec-openai"
+  vector_store_id = "vs_687ae3b2439881918b433cb99d10662e"  # Your OpenAI Vector Store ID
 }
 ```
 
-### Chroma
+### Azure Vector Store
 
 ```terraform
 litellm_params = {
-  host            = "localhost"
-  port            = "8000"
-  collection_name = "documents"
+  vector_store_id = "vs_azure_example_id"  # Your Azure Vector Store ID
+}
+```
+
+### Vertex AI RAG Engine
+
+```terraform
+litellm_params = {
+  vector_store_id = "6917529027641081856"  # Your Vertex AI RAG Engine ID
+}
+```
+
+### PG Vector
+
+```terraform
+litellm_params = {
+  api_base = "https://your-pgvector-host.com"
+  api_key  = var.pgvector_api_key
 }
 ```
 
@@ -174,5 +270,7 @@ terraform import litellm_vector_store.example "vector-store-id"
 
 * Vector stores require appropriate credentials for the chosen provider.
 * The `litellm_params` field allows provider-specific configuration.
-* Some providers may require additional setup outside of Terraform (e.g., creating indexes in Pinecone).
+* Some providers may require additional setup outside of Terraform (e.g., creating Knowledge Bases in AWS Bedrock, Vector Stores in OpenAI).
 * Ensure your vector store provider is properly configured and accessible from your LiteLLM instance.
+* Only the officially supported providers listed above are guaranteed to work with LiteLLM's vector store integration.
+* For the most up-to-date list of supported providers, refer to the [LiteLLM documentation](https://docs.litellm.ai/docs/completion/knowledgebase).

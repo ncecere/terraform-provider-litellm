@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.12] - 2025-08-13
+
+### Added
+- **New AWS Parameters**: Added `aws_session_name` and `aws_role_name` to model resource for cross-account access scenarios
+  - Support for AWS session names in cross-account access configurations
+  - Support for AWS IAM role names for cross-account access
+  - Enhanced AWS Bedrock integration capabilities
+
+### Changed
+- **Documentation Overhaul**: Comprehensive update to all provider documentation
+  - Updated provider source references from `bitop/litellm` to `registry.terraform.io/ncecere/litellm`
+  - Consolidated all scattered example files into organized documentation structure
+  - Enhanced all resource documentation with multiple real-world examples
+  - Added comprehensive cross-resource integration examples
+- **Vector Store Documentation**: Updated to reflect only officially supported LiteLLM providers
+  - Removed unsupported providers (Pinecone, Weaviate, Chroma, Qdrant, Milvus, FAISS)
+  - Added accurate examples for supported providers: AWS Bedrock Knowledge Bases, OpenAI Vector Stores, Azure Vector Stores, Vertex AI RAG Engine, PG Vector
+  - Updated provider-specific parameters with correct configurations
+  - Added references to official LiteLLM documentation
+- **Project Organization**: Cleaned up project structure
+  - Removed scattered example files from root directory
+  - Consolidated all examples into comprehensive documentation
+  - Updated README.md to reflect current capabilities and structure
+
+### Fixed
+- Corrected vector store provider documentation to match LiteLLM's official capabilities
+- Updated all documentation links and references for accuracy
+
 ## [0.3.11] - 2025-08-10
 
 ### Added

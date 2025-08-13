@@ -12,6 +12,8 @@ Manages a LiteLLM credential for storing sensitive authentication information. C
 
 ## Example Usage
 
+### Basic OpenAI Credential
+
 ```terraform
 resource "litellm_credential" "openai_cred" {
   credential_name = "openai-api-key"
@@ -20,32 +22,55 @@ resource "litellm_credential" "openai_cred" {
   credential_info = {
     provider = "openai"
     region   = "us-east-1"
+    purpose  = "chat-completions"
   }
   
   credential_values = {
-    api_key = "sk-..."
-    org_id  = "org-..."
+    api_key = var.openai_api_key
+    org_id  = var.openai_org_id
   }
 }
 ```
 
-## Example Usage with Vector Store
+### Anthropic Credential
 
 ```terraform
-resource "litellm_credential" "pinecone_cred" {
-  credential_name = "pinecone-api-key"
+resource "litellm_credential" "anthropic_cred" {
+  credential_name = "anthropic-api-key"
   
   credential_info = {
-    provider = "pinecone"
-    environment = "production"
+    provider = "anthropic"
+    purpose  = "text-generation"
   }
   
   credential_values = {
-    api_key = "your-pinecone-api-key"
-    index_name = "your-index-name"
+    api_key = var.anthropic_api_key
   }
 }
+```
 
+### Pinecone Vector Store Credential
+
+```terraform
+resource "litellm_credential" "pinecone_cred" {
+  credential_name = "pinecone-production"
+  
+  credential_info = {
+    provider    = "pinecone"
+    environment = "production"
+    region      = "us-east-1"
+  }
+  
+  credential_values = {
+    api_key    = var.pinecone_api_key
+    index_name = "document-embeddings"
+  }
+}
+```
+
+### Using Credentials with Vector Store
+
+```terraform
 resource "litellm_vector_store" "example" {
   vector_store_name        = "my-vector-store"
   custom_llm_provider      = "pinecone"
@@ -56,6 +81,43 @@ resource "litellm_vector_store" "example" {
   vector_store_metadata = {
     environment = "production"
     team        = "ai-team"
+  }
+}
+```
+
+### Multiple Provider Credentials
+
+```terraform
+# AWS Bedrock credential
+resource "litellm_credential" "aws_bedrock" {
+  credential_name = "aws-bedrock-cred"
+  
+  credential_info = {
+    provider = "aws"
+    service  = "bedrock"
+    region   = "us-east-1"
+  }
+  
+  credential_values = {
+    aws_access_key_id     = var.aws_access_key_id
+    aws_secret_access_key = var.aws_secret_access_key
+    aws_region            = "us-east-1"
+  }
+}
+
+# Azure OpenAI credential
+resource "litellm_credential" "azure_openai" {
+  credential_name = "azure-openai-cred"
+  
+  credential_info = {
+    provider = "azure"
+    service  = "openai"
+  }
+  
+  credential_values = {
+    api_key      = var.azure_openai_key
+    api_base     = var.azure_openai_endpoint
+    api_version  = "2023-12-01-preview"
   }
 }
 ```
