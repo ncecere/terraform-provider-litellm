@@ -8,6 +8,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 
+## [0.3.14] - 2025-08-24
+
+### Added
+- **Enhanced JSON Parsing**: Added support for JSON string parsing in `additional_litellm_params`
+  - JSON objects and arrays (starting with `{` or `[`) are now automatically parsed
+  - Maintains backward compatibility with existing string-to-type conversion
+  - Enables complex nested parameter configurations
+- **Parameter Dropping Feature**: Added `additional_drop_params` special parameter
+  - Allows removal of unwanted parameters from final `litellm_params` before API submission
+  - Specified as JSON array string: `"additional_drop_params" = "[\"reasoningEffort\"]"`
+  - Useful for overriding or removing built-in parameters when needed
+- **Enhanced Examples**: Updated `examples/model_additional_params.tf` with comprehensive JSON parsing examples
+  - Demonstrates all supported value types (boolean, integer, float, string, JSON objects/arrays)
+  - Includes real-world Azure model configuration with parameter dropping
+  - Shows both simple and complex use cases
+
+### Changed
+- **Documentation Enhancement**: Updated `docs/resources/model.md` with detailed JSON parsing documentation
+  - Added comprehensive explanation of conversion rules and behavior
+  - Included special `additional_drop_params` parameter documentation
+  - Enhanced examples showing all supported parameter types and JSON parsing capabilities
+
+### Technical Details
+- Enhanced parameter processing logic in `createOrUpdateModel()` function
+- Added JSON detection and parsing for string values starting with `[` or `{`
+- Implemented parameter filtering system for `additional_drop_params`
+- Maintains full backward compatibility with existing configurations
+
 ## [0.3.13] - 2025-08-24
 
 ### Changed
