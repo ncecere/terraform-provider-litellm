@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+
+## [0.3.13] - 2025-08-24
+
+### Changed
+- Documentation: Performed a documentation audit and improvements across resources and data-sources. Added missing argument references, clarified types/defaults, documented implementation behaviors (e.g., additional_litellm_params parsing and state-preservation), and added an `examples/` directory with runnable HCL examples (starting with `examples/model_additional_params.tf`).
+- Docs: Updated `docs/resources/model.md` with missing fields (`vertex_*`, pixel/second cost fields, and `additional_litellm_params`) and added conversion rules and an example.
+- Docs Index: Added references to the new `examples/` directory in `docs/index.md`.
+
 ## [0.3.12] - 2025-08-13
 
 ### Added
