@@ -103,3 +103,15 @@ The following arguments are supported in the provider block:
 4. Use data sources to reference existing configurations
 
 For detailed examples and configuration options, see the individual resource and data source documentation pages.
+
+## Examples
+
+This repository includes an `examples/` directory with curated, ready-to-run HCL examples that demonstrate common and advanced usages of the provider. Examples are grouped by resource and illustrate provider-specific configuration, handling of sensitive values, and advanced options such as `additional_litellm_params`.
+
+See:
+* `examples/model_additional_params.tf` — demonstrates how to use `additional_litellm_params` (booleans, integers, floats, and strings).
+* Other example files will be added to `examples/` for credentials, vector stores, and MCP servers.
+
+You can reference these examples directly or copy snippets into your Terraform configurations for quick starts.
+
+For detailed examples and configuration options, see the individual resource and data source documentation pages.

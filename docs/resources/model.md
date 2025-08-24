@@ -106,23 +106,23 @@ resource "litellm_model" "azure_gpt4" {
 
 The following arguments are supported:
 
-* `model_name` - (Required) The name of the model configuration. This will be used to identify the model in API calls.
+* `model_name` - (Required) string. The name of the model configuration used to identify the model in API calls.
 
-* `custom_llm_provider` - (Required) The LLM provider for this model (e.g., "openai", "anthropic", "azure", "bedrock").
+* `custom_llm_provider` - (Required) string. The LLM provider for this model (e.g., "openai", "anthropic", "azure", "bedrock").
 
-* `model_api_key` - (Optional) The API key for the underlying model provider.
+* `model_api_key` - (Optional) string (Sensitive). The API key for the underlying model provider.
 
-* `model_api_base` - (Optional) The base URL for the model provider's API.
+* `model_api_base` - (Optional) string. The base URL for the model provider's API.
 
-* `api_version` - (Optional) The API version to use for the model provider.
+* `api_version` - (Optional) string. The API version to use for the model provider.
 
-* `base_model` - (Required) The actual model identifier from the provider (e.g., "gpt-4", "claude-2").
+* `base_model` - (Required) string. The actual model identifier from the provider (e.g., "gpt-4", "claude-2").
 
-* `tier` - (Optional) The usage tier for this model. Valid values are "free" or "paid". Default is "free".
+* `tier` - (Optional) string. The usage tier for this model. Valid values are `"free"` or `"paid"`. Default: `"free"`.
 
-* `team_id` - (Optional) Associate the model with a specific team.
+* `team_id` - (Optional) string. Associate the model with a specific team.
 
-* `mode` - (Optional) The intended use of the model. Valid values are:
+* `mode` - (Optional) string. The intended use of the model. Valid values are:
   * `completion`
   * `embedding`
   * `image_generation`
@@ -130,36 +130,88 @@ The following arguments are supported:
   * `moderation`
   * `audio_transcription`
 
-* `tpm` - (Optional) Tokens per minute limit for this model.
+* `tpm` - (Optional) integer. Tokens per minute limit for this model.
 
-* `rpm` - (Optional) Requests per minute limit for this model.
+* `rpm` - (Optional) integer. Requests per minute limit for this model.
 
-* `reasoning_effort` - (Optional) Configures the model's reasoning effort level. Valid values are:
+* `reasoning_effort` - (Optional) string. Configures the model's reasoning effort level. Valid values are:
   * `low`
   * `medium`
   * `high`
 
-* `thinking_enabled` - (Optional) Enables the model's thinking capability. Default is `false`.
+* `thinking_enabled` - (Optional) boolean. Enables the model's thinking capability. Default: `false`.
 
-* `thinking_budget_tokens` - (Optional) Sets the token budget for the model's thinking capability. Default is `1024`.
+* `thinking_budget_tokens` - (Optional) integer. Sets the token budget for the model's thinking capability. Default: `1024`. Note: this field is only relevant when `thinking_enabled = true`.
 
-* `merge_reasoning_content_in_choices` - (Optional) When set to `true`, merges reasoning content into the model's choices.
+* `merge_reasoning_content_in_choices` - (Optional) boolean. When set to `true`, merges reasoning content into the model's choices.
 
-* `input_cost_per_million_tokens` - (Optional) Cost per million input tokens. This will be automatically converted to the per-token cost required by the API.
+* `input_cost_per_million_tokens` - (Optional) float. Cost per million input tokens. The provider converts this to a per-token cost sent to the API.
 
-* `output_cost_per_million_tokens` - (Optional) Cost per million output tokens. This will be automatically converted to the per-token cost required by the API.
+* `output_cost_per_million_tokens` - (Optional) float. Cost per million output tokens. The provider converts this to a per-token cost sent to the API.
+
+* `input_cost_per_pixel` - (Optional) float. Cost applied per input pixel for models that charge by image size.
+
+* `output_cost_per_pixel` - (Optional) float. Cost applied per output pixel for image-generation models.
+
+* `input_cost_per_second` - (Optional) float. Cost applied per input second for audio/transcription models.
+
+* `output_cost_per_second` - (Optional) float. Cost applied per output second for audio/transcription models.
+
+* `vertex_project` - (Optional) string. Vertex AI project id (for `custom_llm_provider = "vertex"`).
+
+* `vertex_location` - (Optional) string. Vertex AI location (e.g., `us-central1`).
+
+* `vertex_credentials` - (Optional) string. Vertex credentials (JSON string or path depending on your setup).
+
+* `additional_litellm_params` - (Optional) map(string). A map of arbitrary additional parameters that will be merged into the `litellm_params` object sent to the LiteLLM API. This is intended for provider-specific or experimental options not exposed as dedicated arguments.
+
+  Conversion and behavior rules (how the provider handles values):
+  * When values in the map are strings the provider will attempt to coerce them:
+    * `"true"` / `"false"` (strings) -> boolean true / false
+    * Numeric strings are parsed first as integers; if integer parsing fails, parsed as floats (e.g., `"16384"` -> 16384, `"0.75"` -> 0.75)
+    * JSON strings (starting with `[` or `{`) are parsed as JSON objects/arrays
+    * Non-convertible strings remain strings
+  * Non-string map values (if supplied) are passed through unchanged.
+  * The provider merges these keys into the `litellm_params` payload sent to the API.
+  * Note: the remote API may not echo back all custom parameters; this provider preserves `additional_litellm_params` in state when present in configuration.
+
+  **Special parameter: `additional_drop_params`**
+  * When `additional_drop_params` is provided as a JSON array string, it specifies parameters to remove from the final `litellm_params` before sending to the API
+  * This allows you to override or remove built-in parameters if needed
+  * The `additional_drop_params` key itself is not included in the final parameters
+
+  Example showing booleans, integers, floats, strings, and parameter dropping:
+
+  ```hcl
+  resource "litellm_model" "with_additional" {
+    model_name          = "custom-model"
+    custom_llm_provider = "openai"
+    model_api_key       = var.openai_api_key
+    base_model          = "gpt-4"
+    mode                = "chat"
+
+    additional_litellm_params = {
+      "use_fine_tune"          = "true"                    # becomes boolean true
+      "max_context"            = "16384"                   # becomes integer 16384
+      "scale"                  = "0.75"                    # becomes float 0.75
+      "note"                   = "for testing"             # stays string
+      "complex_config"         = "{\"nested\": {\"value\": 42}}"  # parsed as JSON object
+      "additional_drop_params" = "[\"reasoningEffort\"]"   # removes reasoningEffort parameter
+    }
+  }
+  ```
 
 ### AWS-specific Configuration
 
-* `aws_access_key_id` - (Optional) AWS access key ID for AWS-based models.
+* `aws_access_key_id` - (Optional) string (Sensitive). AWS access key ID for AWS-based models.
 
-* `aws_secret_access_key` - (Optional) AWS secret access key for AWS-based models.
+* `aws_secret_access_key` - (Optional) string (Sensitive). AWS secret access key for AWS-based models.
 
-* `aws_region_name` - (Optional) AWS region name for AWS-based models.
+* `aws_region_name` - (Optional) string. AWS region name for AWS-based models.
 
-* `aws_session_name` - (Optional) AWS session name for cross-account access scenarios.
+* `aws_session_name` - (Optional) string (Sensitive). AWS session name for cross-account access scenarios.
 
-* `aws_role_name` - (Optional) AWS IAM role name for cross-account access scenarios.
+* `aws_role_name` - (Optional) string (Sensitive). AWS IAM role name for cross-account access scenarios.
 
 ## Attribute Reference
 
