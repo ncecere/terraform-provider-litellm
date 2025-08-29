@@ -29,6 +29,10 @@ func retryModelRead(d *schema.ResourceData, m interface{}, maxRetries int) error
 			return nil
 		}
 
+		if err != nil {
+			return err
+		}
+
 		if i < maxRetries-1 {
 			log.Printf("[INFO] Model not found yet, retrying in %v...", delay)
 			time.Sleep(delay)
