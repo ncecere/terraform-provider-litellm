@@ -18,6 +18,7 @@ resource "litellm_team" "engineering" {
 
 ```hcl
 resource "litellm_team" "advanced_team" {
+  team_id    = "ai-research-team-id"
   team_alias      = "ai-research-team"
   organization_id = "org_123456"
   models          = ["gpt-4-proxy", "claude-2", "gpt-3.5-turbo"]
@@ -84,6 +85,8 @@ resource "litellm_team" "model_dependent_team" {
 ## Argument Reference
 
 The following arguments are supported:
+
+* `team_id` - (Optional) The unique identifier for the team. If not provided, a UUID will be automatically generated. Once set, this value cannot be changed.
 
 * `team_alias` - (Required) A human-readable identifier for the team.
 
