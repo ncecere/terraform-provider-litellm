@@ -39,6 +39,7 @@ func resourceKey() *schema.Resource {
 			"max_parallel_requests": {
 				Type:     schema.TypeInt,
 				Optional: true,
+				Computed: true,
 			},
 			"metadata": {
 				Type:     schema.TypeMap,
@@ -48,10 +49,12 @@ func resourceKey() *schema.Resource {
 			"tpm_limit": {
 				Type:     schema.TypeInt,
 				Optional: true,
+				Computed: true,
 			},
 			"rpm_limit": {
 				Type:     schema.TypeInt,
 				Optional: true,
+				Computed: true,
 			},
 			"budget_duration": {
 				Type:     schema.TypeString,
@@ -97,12 +100,12 @@ func resourceKey() *schema.Resource {
 			"model_rpm_limit": {
 				Type:     schema.TypeMap,
 				Optional: true,
-				Elem:     &schema.Schema{Type: schema.TypeInt},
+				Elem:     &schema.Schema{Type: schema.TypeInt, Computed: true},
 			},
 			"model_tpm_limit": {
 				Type:     schema.TypeMap,
 				Optional: true,
-				Elem:     &schema.Schema{Type: schema.TypeInt},
+				Elem:     &schema.Schema{Type: schema.TypeInt, Computed: true},
 			},
 			"guardrails": {
 				Type:     schema.TypeList,
