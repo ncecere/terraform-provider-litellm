@@ -27,6 +27,7 @@ func resourceKey() *schema.Resource {
 			"max_budget": {
 				Type:     schema.TypeFloat,
 				Optional: true,
+				Computed: true,
 			},
 			"user_id": {
 				Type:     schema.TypeString,
@@ -68,6 +69,7 @@ func resourceKey() *schema.Resource {
 			"soft_budget": {
 				Type:     schema.TypeFloat,
 				Optional: true,
+				Computed: true,
 			},
 			"key_alias": {
 				Type:     schema.TypeString,
@@ -95,7 +97,7 @@ func resourceKey() *schema.Resource {
 			"model_max_budget": {
 				Type:     schema.TypeMap,
 				Optional: true,
-				Elem:     &schema.Schema{Type: schema.TypeFloat},
+				Elem:     &schema.Schema{Type: schema.TypeFloat, Computed: true},
 			},
 			"model_rpm_limit": {
 				Type:     schema.TypeMap,
