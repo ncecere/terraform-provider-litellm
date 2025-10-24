@@ -18,18 +18,18 @@ func retryModelRead(d *schema.ResourceData, m interface{}, maxRetries int) error
 	delay := 1 * time.Second
 	maxDelay := 10 * time.Second
 
+	var model_id = d.Id()
+
 	for i := 0; i < maxRetries; i++ {
 		log.Printf("[INFO] Attempting to read model (attempt %d/%d)", i+1, maxRetries)
 
 		err = resourceLiteLLMModelRead(d, m)
-		if err == nil {
+		if err == nil && d.Id() != "" {
 			log.Printf("[INFO] Successfully read model after %d attempts", i+1)
 			return nil
 		}
 
-		// Check if this is a "model not found" error
-		if err.Error() != "failed to read model: API request failed: Status: 400 Bad Request, Response: {\"detail\":{\"error\":\"Model id = "+d.Id()+" not found on litellm proxy\"}}, Request: null" {
-			// If it's a different error, don't retry
+		if err != nil {
 			return err
 		}
 
@@ -43,6 +43,7 @@ func retryModelRead(d *schema.ResourceData, m interface{}, maxRetries int) error
 				delay = maxDelay
 			}
 		}
+		d.SetId(model_id)
 	}
 
 	log.Printf("[WARN] Failed to read model after %d attempts: %v", maxRetries, err)
