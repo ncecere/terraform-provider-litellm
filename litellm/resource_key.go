@@ -27,6 +27,7 @@ func resourceKey() *schema.Resource {
 			"max_budget": {
 				Type:     schema.TypeFloat,
 				Optional: true,
+				Computed: true,
 			},
 			"user_id": {
 				Type:     schema.TypeString,
@@ -39,6 +40,7 @@ func resourceKey() *schema.Resource {
 			"max_parallel_requests": {
 				Type:     schema.TypeInt,
 				Optional: true,
+				Computed: true,
 			},
 			"metadata": {
 				Type:     schema.TypeMap,
@@ -48,10 +50,12 @@ func resourceKey() *schema.Resource {
 			"tpm_limit": {
 				Type:     schema.TypeInt,
 				Optional: true,
+				Computed: true,
 			},
 			"rpm_limit": {
 				Type:     schema.TypeInt,
 				Optional: true,
+				Computed: true,
 			},
 			"budget_duration": {
 				Type:     schema.TypeString,
@@ -65,6 +69,7 @@ func resourceKey() *schema.Resource {
 			"soft_budget": {
 				Type:     schema.TypeFloat,
 				Optional: true,
+				Computed: true,
 			},
 			"key_alias": {
 				Type:     schema.TypeString,
@@ -92,17 +97,17 @@ func resourceKey() *schema.Resource {
 			"model_max_budget": {
 				Type:     schema.TypeMap,
 				Optional: true,
-				Elem:     &schema.Schema{Type: schema.TypeFloat},
+				Elem:     &schema.Schema{Type: schema.TypeFloat, Computed: true},
 			},
 			"model_rpm_limit": {
 				Type:     schema.TypeMap,
 				Optional: true,
-				Elem:     &schema.Schema{Type: schema.TypeInt},
+				Elem:     &schema.Schema{Type: schema.TypeInt, Computed: true},
 			},
 			"model_tpm_limit": {
 				Type:     schema.TypeMap,
 				Optional: true,
-				Elem:     &schema.Schema{Type: schema.TypeInt},
+				Elem:     &schema.Schema{Type: schema.TypeInt, Computed: true},
 			},
 			"guardrails": {
 				Type:     schema.TypeList,
