@@ -28,6 +28,13 @@ func ResourceLiteLLMTeam() *schema.Resource {
 		Delete: resourceLiteLLMTeamDelete,
 
 		Schema: map[string]*schema.Schema{
+			"team_id": {
+				Type:        schema.TypeString,
+				Optional:    true,
+				Computed:    true,
+				ForceNew:    true,
+				Description: "The unique identifier for the team. If not provided, a UUID will be generated. Cannot be changed after creation.",
+			},
 			"team_alias": {
 				Type:     schema.TypeString,
 				Required: true,
@@ -79,7 +86,14 @@ func ResourceLiteLLMTeam() *schema.Resource {
 func resourceLiteLLMTeamCreate(d *schema.ResourceData, m interface{}) error {
 	client := m.(*Client)
 
-	teamID := uuid.New().String()
+	// Use provided team_id or generate a new UUID
+	var teamID string
+	if v, ok := d.GetOk("team_id"); ok {
+		teamID = v.(string)
+	} else {
+		teamID = uuid.New().String()
+	}
+
 	teamData := buildTeamData(d, teamID)
 
 	log.Printf("[DEBUG] Create team request payload: %+v", teamData)
@@ -123,6 +137,7 @@ func resourceLiteLLMTeamRead(d *schema.ResourceData, m interface{}) error {
 	}
 
 	// Update the state with values from the response or fall back to the data passed in during creation
+	d.Set("team_id", GetStringValue(teamResp.TeamID, d.Id()))
 	d.Set("team_alias", GetStringValue(teamResp.TeamAlias, d.Get("team_alias").(string)))
 	d.Set("organization_id", GetStringValue(teamResp.OrganizationID, d.Get("organization_id").(string)))
 
