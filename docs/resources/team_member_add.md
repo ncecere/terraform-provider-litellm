@@ -159,3 +159,4 @@ Team members can be imported using a composite ID of the team ID and user ID:
 
 ```shell
 terraform import litellm_team_member_add.example team-123:user-456
+```
