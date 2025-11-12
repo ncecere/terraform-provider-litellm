@@ -26,6 +26,9 @@ func ResourceLiteLLMTeam() *schema.Resource {
 		Read:   resourceLiteLLMTeamRead,
 		Update: resourceLiteLLMTeamUpdate,
 		Delete: resourceLiteLLMTeamDelete,
+		Importer: &schema.ResourceImporter{
+			StateContext: schema.ImportStatePassthroughContext,
+		},
 
 		Schema: map[string]*schema.Schema{
 			"team_alias": {
@@ -123,37 +126,37 @@ func resourceLiteLLMTeamRead(d *schema.ResourceData, m interface{}) error {
 	}
 
 	// Update the state with values from the response or fall back to the data passed in during creation
-	d.Set("team_alias", GetStringValue(teamResp.TeamAlias, d.Get("team_alias").(string)))
-	d.Set("organization_id", GetStringValue(teamResp.OrganizationID, d.Get("organization_id").(string)))
+	d.Set("team_alias", GetStringValue(teamResp.TeamInfo.TeamAlias, d.Get("team_alias").(string)))
+	d.Set("organization_id", GetStringValue(teamResp.TeamInfo.OrganizationID, d.Get("organization_id").(string)))
 
 	// Handle metadata separately as it's a map
-	if teamResp.Metadata != nil {
-		d.Set("metadata", teamResp.Metadata)
+	if teamResp.TeamInfo.Metadata != nil {
+		d.Set("metadata", teamResp.TeamInfo.Metadata)
 	} else {
 		d.Set("metadata", d.Get("metadata"))
 	}
 
-	d.Set("tpm_limit", GetIntValue(teamResp.TPMLimit, d.Get("tpm_limit").(int)))
-	d.Set("rpm_limit", GetIntValue(teamResp.RPMLimit, d.Get("rpm_limit").(int)))
-	d.Set("max_budget", GetFloatValue(teamResp.MaxBudget, d.Get("max_budget").(float64)))
-	d.Set("budget_duration", GetStringValue(teamResp.BudgetDuration, d.Get("budget_duration").(string)))
+	d.Set("tpm_limit", GetIntValue(teamResp.TeamInfo.TPMLimit, d.Get("tpm_limit").(int)))
+	d.Set("rpm_limit", GetIntValue(teamResp.TeamInfo.RPMLimit, d.Get("rpm_limit").(int)))
+	d.Set("max_budget", GetFloatValue(teamResp.TeamInfo.MaxBudget, d.Get("max_budget").(float64)))
+	d.Set("budget_duration", GetStringValue(teamResp.TeamInfo.BudgetDuration, d.Get("budget_duration").(string)))
 
 	// Handle models separately as it's a list
-	if teamResp.Models != nil {
-		d.Set("models", teamResp.Models)
+	if teamResp.TeamInfo.Models != nil {
+		d.Set("models", teamResp.TeamInfo.Models)
 	} else {
 		d.Set("models", d.Get("models"))
 	}
 
-	d.Set("blocked", GetBoolValue(teamResp.Blocked, d.Get("blocked").(bool)))
+	d.Set("blocked", GetBoolValue(teamResp.TeamInfo.Blocked, d.Get("blocked").(bool)))
 
 	// Explicitly fetch the current permissions from the API
 	permResp, err := getTeamPermissions(client, d.Id())
 	if err != nil {
 		log.Printf("[WARN] Error fetching team permissions: %s", err)
 		// Fall back to the permissions from the team info response
-		if teamResp.TeamMemberPermissions != nil {
-			d.Set("team_member_permissions", teamResp.TeamMemberPermissions)
+		if teamResp.TeamInfo.TeamMemberPermissions != nil {
+			d.Set("team_member_permissions", teamResp.TeamInfo.TeamMemberPermissions)
 		} else {
 			d.Set("team_member_permissions", d.Get("team_member_permissions"))
 		}

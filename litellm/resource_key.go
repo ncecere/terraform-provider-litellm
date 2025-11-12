@@ -14,6 +14,9 @@ func resourceKey() *schema.Resource {
 		ReadContext:   resourceKeyRead,
 		UpdateContext: resourceKeyUpdate,
 		DeleteContext: resourceKeyDelete,
+		Importer: &schema.ResourceImporter{
+			StateContext: schema.ImportStatePassthroughContext,
+		},
 		Schema: map[string]*schema.Schema{
 			"key": {
 				Type:     schema.TypeString,
