@@ -18,7 +18,7 @@ func resourceKey() *schema.Resource {
 			"key": {
 				Type:      schema.TypeString,
 				Computed:  true,
-				Sensitive: true
+				Sensitive: true,
 			},
 			"models": {
 				Type:     schema.TypeList,
