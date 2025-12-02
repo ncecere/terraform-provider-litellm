@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.15] - 2025-12-01
 
 ### Added
 - `litellm_key`: Support service account keys (calls `/key/service-account/generate`), `allowed_routes`/`allowed_passthrough_routes`, and auto team-all-models default when `team_id` is set without `models`. (Issues #32, #28 context)
