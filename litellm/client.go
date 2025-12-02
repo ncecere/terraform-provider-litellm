@@ -59,6 +59,16 @@ func (c *Client) CreateKey(key *Key) (*Key, error) {
 	return c.parseKeyResponse(resp)
 }
 
+// CreateServiceAccountKey creates a key owned by a team service account.
+func (c *Client) CreateServiceAccountKey(key *Key) (*Key, error) {
+	resp, err := c.sendRequest("POST", "/key/service-account/generate", key)
+	if err != nil {
+		return nil, err
+	}
+
+	return c.parseKeyResponse(resp)
+}
+
 func (c *Client) GetKey(keyID string) (*Key, error) {
 	resp, err := c.sendRequest("GET", fmt.Sprintf("/key/info?key=%s", keyID), nil)
 	if err != nil {
@@ -71,23 +81,25 @@ func (c *Client) GetKey(keyID string) (*Key, error) {
 func (c *Client) UpdateKey(key *Key) (*Key, error) {
 	// Create a new map with only the fields that can be updated
 	updateData := map[string]interface{}{
-		"key":                   key.Key,
-		"models":                key.Models,
-		"max_budget":            key.MaxBudget,
-		"team_id":               key.TeamID,
-		"max_parallel_requests": key.MaxParallelRequests,
-		"metadata":              key.Metadata,
-		"tpm_limit":             key.TPMLimit,
-		"rpm_limit":             key.RPMLimit,
-		"budget_duration":       key.BudgetDuration,
-		"key_alias":             key.KeyAlias,
-		"aliases":               key.Aliases,
-		"permissions":           key.Permissions,
-		"model_max_budget":      key.ModelMaxBudget,
-		"model_rpm_limit":       key.ModelRPMLimit,
-		"model_tpm_limit":       key.ModelTPMLimit,
-		"guardrails":            key.Guardrails,
-		"blocked":               key.Blocked,
+		"key":                        key.Key,
+		"models":                     key.Models,
+		"allowed_routes":             key.AllowedRoutes,
+		"allowed_passthrough_routes": key.AllowedPassthroughRoutes,
+		"max_budget":                 key.MaxBudget,
+		"team_id":                    key.TeamID,
+		"max_parallel_requests":      key.MaxParallelRequests,
+		"metadata":                   key.Metadata,
+		"tpm_limit":                  key.TPMLimit,
+		"rpm_limit":                  key.RPMLimit,
+		"budget_duration":            key.BudgetDuration,
+		"key_alias":                  key.KeyAlias,
+		"aliases":                    key.Aliases,
+		"permissions":                key.Permissions,
+		"model_max_budget":           key.ModelMaxBudget,
+		"model_rpm_limit":            key.ModelRPMLimit,
+		"model_tpm_limit":            key.ModelTPMLimit,
+		"guardrails":                 key.Guardrails,
+		"blocked":                    key.Blocked,
 	}
 
 	resp, err := c.sendRequest("POST", "/key/update", updateData)
@@ -129,6 +141,24 @@ func (c *Client) parseKeyResponse(resp map[string]interface{}) (*Key, error) {
 				for i, model := range models {
 					if s, ok := model.(string); ok {
 						createdKey.Models[i] = s
+					}
+				}
+			}
+		case "allowed_routes":
+			if routes, ok := v.([]interface{}); ok {
+				createdKey.AllowedRoutes = make([]string, len(routes))
+				for i, route := range routes {
+					if s, ok := route.(string); ok {
+						createdKey.AllowedRoutes[i] = s
+					}
+				}
+			}
+		case "allowed_passthrough_routes":
+			if routes, ok := v.([]interface{}); ok {
+				createdKey.AllowedPassthroughRoutes = make([]string, len(routes))
+				for i, route := range routes {
+					if s, ok := route.(string); ok {
+						createdKey.AllowedPassthroughRoutes[i] = s
 					}
 				}
 			}

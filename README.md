@@ -64,6 +64,7 @@ Here's an example of creating an API key with various options:
 ```hcl
 resource "litellm_key" "example_key" {
   models               = ["gpt-4", "claude-3.5-sonnet"]
+  allowed_routes       = ["/chat/completions", "/keys/*"]
   max_budget           = 100.0
   user_id              = "user123"
   team_id              = "team456"
@@ -105,8 +106,10 @@ resource "litellm_key" "example_key" {
 The <code>litellm_key</code> resource supports the following options:
 
 - <code>models</code>: List of allowed models for this key
+- <code>allowed_routes</code> / <code>allowed_passthrough_routes</code>: Restrict which LiteLLM proxy routes this key may call
 - <code>max_budget</code>: Maximum budget for the key
 - <code>user_id</code> and <code>team_id</code>: Associate the key with a user and team
+- <code>service_account_id</code>: Create a team-owned service account key (defaults <code>key_alias</code> and injects metadata)
 - <code>max_parallel_requests</code>: Limit concurrent requests
 - <code>tpm_limit</code> and <code>rpm_limit</code>: Set tokens and requests per minute limits
 - <code>budget_duration</code>: Specify budget duration (e.g., "monthly", "weekly")
@@ -122,6 +125,8 @@ The <code>litellm_key</code> resource supports the following options:
 - <code>guardrails</code>: Apply specific guardrails to the key
 - <code>blocked</code>: Flag to block/unblock the key
 - <code>tags</code>: Add tags for organization and filtering
+
+When <code>team_id</code> is set and <code>models</code> is omitted, the provider automatically allows the key to use all models in that team by sending <code>["all-team-models"]</code> to the API.
 
 For full details on the <code>litellm_key</code> resource, see the [key resource documentation](docs/resources/key.md).
 

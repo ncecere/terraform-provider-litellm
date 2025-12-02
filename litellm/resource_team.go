@@ -37,9 +37,9 @@ func ResourceLiteLLMTeam() *schema.Resource {
 				Optional: true,
 			},
 			"metadata": {
-				Type:     schema.TypeMap,
-				Optional: true,
-				Elem:     &schema.Schema{Type: schema.TypeString},
+				Type:        schema.TypeMap,
+				Optional:    true,
+				Description: "Arbitrary metadata; supports nested maps and lists.",
 			},
 			"tpm_limit": {
 				Type:     schema.TypeInt,

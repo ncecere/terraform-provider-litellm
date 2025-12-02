@@ -12,23 +12,31 @@ import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
 )
 
-// retryModelRead attempts to read a model with exponential backoff
+// retryModelRead attempts to read a model with exponential backoff.
+// If the read path clears the ID (e.g., transient 404 right after create),
+// we treat it as retryable instead of accepting an empty state.
 func retryModelRead(d *schema.ResourceData, m interface{}, maxRetries int) error {
 	var err error
 	delay := 1 * time.Second
 	maxDelay := 10 * time.Second
+	origID := d.Id()
 
 	for i := 0; i < maxRetries; i++ {
 		log.Printf("[INFO] Attempting to read model (attempt %d/%d)", i+1, maxRetries)
 
 		err = resourceLiteLLMModelRead(d, m)
+		// If read succeeded but wiped the ID, treat as not found so we retry.
+		if err == nil && d.Id() == "" {
+			d.SetId(origID)
+			err = fmt.Errorf("model_not_found")
+		}
+
 		if err == nil {
 			log.Printf("[INFO] Successfully read model after %d attempts", i+1)
 			return nil
 		}
 
-		// Check if this is a "model not found" error
-		if err.Error() != "failed to read model: API request failed: Status: 400 Bad Request, Response: {\"detail\":{\"error\":\"Model id = "+d.Id()+" not found on litellm proxy\"}}, Request: null" {
+		if !strings.Contains(err.Error(), "model_not_found") {
 			// If it's a different error, don't retry
 			return err
 		}

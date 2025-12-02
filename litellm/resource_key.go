@@ -24,6 +24,16 @@ func resourceKey() *schema.Resource {
 				Optional: true,
 				Elem:     &schema.Schema{Type: schema.TypeString},
 			},
+			"allowed_routes": {
+				Type:     schema.TypeList,
+				Optional: true,
+				Elem:     &schema.Schema{Type: schema.TypeString},
+			},
+			"allowed_passthrough_routes": {
+				Type:     schema.TypeList,
+				Optional: true,
+				Elem:     &schema.Schema{Type: schema.TypeString},
+			},
 			"max_budget": {
 				Type:     schema.TypeFloat,
 				Optional: true,
@@ -36,6 +46,12 @@ func resourceKey() *schema.Resource {
 			"team_id": {
 				Type:     schema.TypeString,
 				Optional: true,
+			},
+			"service_account_id": {
+				Type:        schema.TypeString,
+				Optional:    true,
+				ForceNew:    true,
+				Description: "Create a team-owned service account key using this identifier",
 			},
 			"max_parallel_requests": {
 				Type:     schema.TypeInt,
@@ -137,7 +153,15 @@ func resourceKeyCreate(ctx context.Context, d *schema.ResourceData, m interface{
 	key := &Key{}
 	mapResourceDataToKey(d, key)
 
-	createdKey, err := c.CreateKey(key)
+	var (
+		createdKey *Key
+		err        error
+	)
+	if d.Get("service_account_id").(string) != "" {
+		createdKey, err = c.CreateServiceAccountKey(key)
+	} else {
+		createdKey, err = c.CreateKey(key)
+	}
 	if err != nil {
 		return diag.FromErr(fmt.Errorf("error creating key: %s", err))
 	}
@@ -190,10 +214,26 @@ func resourceKeyDelete(ctx context.Context, d *schema.ResourceData, m interface{
 }
 
 func mapResourceDataToKey(d *schema.ResourceData, key *Key) {
-	key.Models = expandStringList(d.Get("models").([]interface{}))
+	teamID := d.Get("team_id").(string)
+	key.TeamID = teamID
+	if modelsRaw, ok := d.GetOkExists("models"); ok {
+		key.Models = expandStringList(modelsRaw.([]interface{}))
+		if len(key.Models) == 0 && teamID != "" {
+			key.Models = []string{"all-team-models"}
+		}
+	} else if teamID != "" {
+		key.Models = []string{"all-team-models"}
+	}
+
+	if routesRaw, ok := d.GetOkExists("allowed_routes"); ok {
+		key.AllowedRoutes = expandStringList(routesRaw.([]interface{}))
+	}
+	if routesRaw, ok := d.GetOkExists("allowed_passthrough_routes"); ok {
+		key.AllowedPassthroughRoutes = expandStringList(routesRaw.([]interface{}))
+	}
+
 	key.MaxBudget = d.Get("max_budget").(float64)
 	key.UserID = d.Get("user_id").(string)
-	key.TeamID = d.Get("team_id").(string)
 	key.MaxParallelRequests = d.Get("max_parallel_requests").(int)
 	key.Metadata = d.Get("metadata").(map[string]interface{})
 	key.TPMLimit = d.Get("tpm_limit").(int)
@@ -212,6 +252,8 @@ func mapResourceDataToKey(d *schema.ResourceData, key *Key) {
 	key.Guardrails = expandStringList(d.Get("guardrails").([]interface{}))
 	key.Blocked = d.Get("blocked").(bool)
 	key.Tags = expandStringList(d.Get("tags").([]interface{}))
+
+	applyServiceAccountSettings(d, key)
 }
 
 func mapKeyToResourceData(d *schema.ResourceData, key *Key) {
@@ -219,6 +261,12 @@ func mapKeyToResourceData(d *schema.ResourceData, key *Key) {
 
 	if len(key.Models) > 0 {
 		d.Set("models", key.Models)
+	}
+	if len(key.AllowedRoutes) > 0 {
+		d.Set("allowed_routes", key.AllowedRoutes)
+	}
+	if len(key.AllowedPassthroughRoutes) > 0 {
+		d.Set("allowed_passthrough_routes", key.AllowedPassthroughRoutes)
 	}
 	if key.MaxBudget != 0 {
 		d.Set("max_budget", key.MaxBudget)
@@ -283,5 +331,22 @@ func mapKeyToResourceData(d *schema.ResourceData, key *Key) {
 	}
 	if key.Spend != 0 {
 		d.Set("spend", key.Spend)
+	}
+}
+
+func applyServiceAccountSettings(d *schema.ResourceData, key *Key) {
+	serviceAccountID := d.Get("service_account_id").(string)
+	if serviceAccountID == "" {
+		return
+	}
+
+	if key.Metadata == nil {
+		key.Metadata = make(map[string]interface{})
+	}
+	if _, exists := key.Metadata["service_account_id"]; !exists {
+		key.Metadata["service_account_id"] = serviceAccountID
+	}
+	if key.KeyAlias == "" {
+		key.KeyAlias = serviceAccountID
 	}
 }

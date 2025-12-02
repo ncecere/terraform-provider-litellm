@@ -129,6 +129,7 @@ The following arguments are supported:
   * `chat`
   * `moderation`
   * `audio_transcription`
+  * `batch`
 
 * `tpm` - (Optional) integer. Tokens per minute limit for this model.
 

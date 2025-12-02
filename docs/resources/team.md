@@ -91,7 +91,7 @@ The following arguments are supported:
 
 * `models` - (Optional) List of model names that this team can access.
 
-* `metadata` - (Optional) A map of metadata key-value pairs associated with the team.
+* `metadata` - (Optional) A map of metadata associated with the team. Supports nested maps/lists (e.g., logging callbacks, guardrail configs).
 
 * `blocked` - (Optional) Whether the team is blocked from making requests. Default is `false`.
 

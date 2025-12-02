@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `litellm_key`: Support service account keys (calls `/key/service-account/generate`), `allowed_routes`/`allowed_passthrough_routes`, and auto team-all-models default when `team_id` is set without `models`. (Issues #32, #28 context)
+- `litellm_model`: Allow `mode = "batch"` for batch-capable models. (Issue #37)
+- `litellm_team`: Metadata now accepts nested maps/lists instead of string-only values. (Issue #38)
+
+### Fixed
+- `litellm_model`: Added a safer post-create read retry that treats transient 404/not-found responses as retryable instead of clearing state, reducing "inconsistent result after apply" errors under concurrent creates. (Issue #41)
+
+### Fixed
+- `litellm_key`: Preserve state/readback for new key fields; optional fields remain backwards-compatible.
+- `litellm_team_member_add`: Removing `max_budget_in_team` now clears the budget instead of setting it to `0`, avoiding accidental lockouts. (Issue #36)
 
 ## [0.3.14] - 2025-08-24
 

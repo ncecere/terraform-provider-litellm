@@ -16,6 +16,16 @@ func resourceKeySchema() map[string]*schema.Schema {
 			Optional: true,
 			Elem:     &schema.Schema{Type: schema.TypeString},
 		},
+		"allowed_routes": {
+			Type:     schema.TypeList,
+			Optional: true,
+			Elem:     &schema.Schema{Type: schema.TypeString},
+		},
+		"allowed_passthrough_routes": {
+			Type:     schema.TypeList,
+			Optional: true,
+			Elem:     &schema.Schema{Type: schema.TypeString},
+		},
 		"spend": {
 			Type:     schema.TypeFloat,
 			Computed: true,
@@ -23,6 +33,7 @@ func resourceKeySchema() map[string]*schema.Schema {
 		"max_budget": {
 			Type:     schema.TypeFloat,
 			Optional: true,
+			Computed: true,
 		},
 		"user_id": {
 			Type:     schema.TypeString,
@@ -31,6 +42,12 @@ func resourceKeySchema() map[string]*schema.Schema {
 		"team_id": {
 			Type:     schema.TypeString,
 			Optional: true,
+		},
+		"service_account_id": {
+			Type:        schema.TypeString,
+			Optional:    true,
+			ForceNew:    true,
+			Description: "Create a team-owned service account key using this identifier",
 		},
 		"max_parallel_requests": {
 			Type:     schema.TypeInt,

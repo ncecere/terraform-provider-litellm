@@ -7,6 +7,7 @@ Manages a LiteLLM API key.
 ```hcl
 resource "litellm_key" "example" {
   models               = ["gpt-3.5-turbo", "gpt-4"]
+  allowed_routes       = ["/chat/completions", "/embeddings"]
   max_budget           = 100.0
   user_id              = "user123"
   team_id              = "team456"
@@ -43,6 +44,23 @@ resource "litellm_key" "example" {
   blocked              = false
   tags                 = ["production", "api"]
 }
+
+# Service account key owned by a team
+resource "litellm_key" "service_account" {
+  service_account_id = "github-ci"
+  team_id            = "team456"
+
+  # When team_id is set and models are omitted, the provider
+  # automatically allows the key to call all team models.
+  metadata = {
+    "environment" = "automation"
+  }
+
+  allowed_routes = [
+    "/chat/completions",
+    "/keys/*"
+  ]
+}
 ```
 
 ## Argument Reference
@@ -56,6 +74,13 @@ The following arguments are supported:
 * `user_id` - (Optional) User ID associated with this key. This links the key to a specific user in the LiteLLM system.
 
 * `team_id` - (Optional) Team ID associated with this key. This links the key to a specific team in the LiteLLM system.
+  * If `team_id` is set and `models` is omitted, the provider automatically allows the key to use all models that belong to the team by sending `"all-team-models"` to the API.
+
+* `service_account_id` - (Optional, ForceNew) Identifier for a team-owned service account. When set the provider calls the service-account API, defaults `key_alias` to this value, and persists the id in the metadata payload.
+
+* `allowed_routes` - (Optional) List of LiteLLM proxy routes this key is allowed to call.
+
+* `allowed_passthrough_routes` - (Optional) Pass-through endpoints the key is allowed to access when using custom routes.
 
 * `max_parallel_requests` - (Optional) Maximum number of parallel requests allowed for this key. This helps in controlling concurrent usage.
 
