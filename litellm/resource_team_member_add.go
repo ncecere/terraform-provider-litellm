@@ -60,7 +60,6 @@ func resourceLiteLLMTeamMemberAddCreate(d *schema.ResourceData, m interface{}) e
 	members := d.Get("member").(*schema.Set)
 	maxBudget := d.Get("max_budget_in_team").(float64)
 	hasMaxBudget := d.GetRawConfig().GetAttr("max_budget_in_team").IsNull() == false
-	hasMaxBudget := d.GetRawConfig().GetAttr("max_budget_in_team").IsNull() == false
 
 	// Convert members to the expected format
 	membersList := make([]map[string]interface{}, 0, members.Len())

@@ -1,5 +1,7 @@
 # LiteLLM Terraform Provider
 
+> Heads-up: In January 2026 this provider will undergo a major rewrite. Releases will track LiteLLM versions directly (provider version = targeted LiteLLM version), with monthly updates on stable LiteLLM releases only. Expect breaking changes during this transition.
+
 This Terraform provider allows you to manage LiteLLM resources through Infrastructure as Code. It provides support for managing models, teams, team members, and API keys via the LiteLLM REST API.
 
 ## Features
