@@ -70,9 +70,6 @@ func buildKeyData(d *schema.ResourceData) map[string]interface{} {
 	if v, ok := d.GetOkExists("guardrails"); ok {
 		keyData["guardrails"] = expandStringList(v.([]interface{}))
 	}
-	if v, ok := d.GetOkExists("blocked"); ok {
-		keyData["blocked"] = v.(bool)
-	}
 	if v, ok := d.GetOkExists("tags"); ok {
 		keyData["tags"] = expandStringList(v.([]interface{}))
 	}
@@ -104,7 +101,6 @@ func setKeyResourceData(d *schema.ResourceData, key *Key) error {
 		"model_rpm_limit":        key.ModelRPMLimit,
 		"model_tpm_limit":        key.ModelTPMLimit,
 		"guardrails":             key.Guardrails,
-		"blocked":                key.Blocked,
 		"tags":                   key.Tags,
 	}
 
@@ -172,8 +168,6 @@ func mapToKey(data map[string]interface{}) *Key {
 			key.ModelTPMLimit = v.(map[string]interface{})
 		case "guardrails":
 			key.Guardrails = v.([]string)
-		case "blocked":
-			key.Blocked = v.(bool)
 		case "tags":
 			key.Tags = v.([]string)
 		}

@@ -130,10 +130,6 @@ func resourceKey() *schema.Resource {
 				Optional: true,
 				Elem:     &schema.Schema{Type: schema.TypeString},
 			},
-			"blocked": {
-				Type:     schema.TypeBool,
-				Optional: true,
-			},
 			"tags": {
 				Type:     schema.TypeList,
 				Optional: true,
@@ -250,7 +246,6 @@ func mapResourceDataToKey(d *schema.ResourceData, key *Key) {
 	key.ModelRPMLimit = d.Get("model_rpm_limit").(map[string]interface{})
 	key.ModelTPMLimit = d.Get("model_tpm_limit").(map[string]interface{})
 	key.Guardrails = expandStringList(d.Get("guardrails").([]interface{}))
-	key.Blocked = d.Get("blocked").(bool)
 	key.Tags = expandStringList(d.Get("tags").([]interface{}))
 
 	applyServiceAccountSettings(d, key)
@@ -325,7 +320,6 @@ func mapKeyToResourceData(d *schema.ResourceData, key *Key) {
 	if len(key.Guardrails) > 0 {
 		d.Set("guardrails", key.Guardrails)
 	}
-	d.Set("blocked", key.Blocked)
 	if len(key.Tags) > 0 {
 		d.Set("tags", key.Tags)
 	}
