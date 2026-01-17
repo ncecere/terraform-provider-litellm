@@ -134,6 +134,50 @@ resource "litellm_mcp_server" "enterprise_api_server" {
 }
 ```
 
+### MCP Server with OAuth Configuration
+
+```terraform
+resource "litellm_mcp_server" "oauth_server" {
+  server_name  = "oauth-protected-server"
+  alias        = "oauth-mcp"
+  description  = "MCP server with OAuth 2.0 authentication"
+  url          = "https://api.example.com/mcp"
+  transport    = "http"
+  auth_type    = "bearer"
+  
+  # OAuth configuration
+  authorization_url = "https://auth.example.com/oauth/authorize"
+  token_url         = "https://auth.example.com/oauth/token"
+  registration_url  = "https://auth.example.com/oauth/register"
+  
+  credentials = {
+    "client_id"     = var.oauth_client_id
+    "client_secret" = var.oauth_client_secret
+  }
+  
+  extra_headers = {
+    "X-API-Version" = "2024-01"
+  }
+  
+  static_headers = {
+    "Accept" = "application/json"
+  }
+  
+  allow_all_keys = false
+  allowed_tools  = ["read_data", "write_data", "query"]
+}
+```
+
+### Minimal MCP Server
+
+```terraform
+resource "litellm_mcp_server" "simple" {
+  server_name = "simple-mcp"
+  url         = "https://mcp.example.com"
+  transport   = "http"
+}
+```
+
 ## Argument Reference
 
 The following arguments are supported:
@@ -154,6 +198,14 @@ The following arguments are supported:
 * `command` - (Optional) Command to run for stdio transport.
 * `args` - (Optional) List of arguments for the command (stdio transport only).
 * `env` - (Optional) Map of environment variables for the command (stdio transport only).
+* `credentials` - (Optional, Sensitive) Map of credentials for MCP server authentication.
+* `allowed_tools` - (Optional) List of allowed tool names for this MCP server.
+* `extra_headers` - (Optional) Map of extra headers to send with requests to the MCP server.
+* `static_headers` - (Optional) Map of static headers to always include with requests.
+* `authorization_url` - (Optional) OAuth authorization URL for the MCP server.
+* `token_url` - (Optional) OAuth token URL for the MCP server.
+* `registration_url` - (Optional) OAuth registration URL for the MCP server.
+* `allow_all_keys` - (Optional) Boolean. Whether to allow all API keys to access this MCP server.
 
 ### MCP Info Block
 

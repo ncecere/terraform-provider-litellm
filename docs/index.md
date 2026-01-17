@@ -18,46 +18,55 @@ provider "litellm" {
   api_key  = var.litellm_api_key
 }
 
-# Basic model configuration
+# Create a credential for storing API keys securely
+resource "litellm_credential" "openai" {
+  credential_name = "openai-production"
+  credential_values = {
+    "api_key" = var.openai_api_key
+  }
+}
+
+# Basic model configuration using credential
 resource "litellm_model" "gpt4" {
-  model_name          = "gpt-4-proxy"
-  custom_llm_provider = "openai"
-  model_api_key       = var.openai_api_key
-  base_model          = "gpt-4"
-  tier                = "paid"
-  mode                = "chat"
+  model_name              = "gpt-4-proxy"
+  custom_llm_provider     = "openai"
+  base_model              = "gpt-4"
+  tier                    = "paid"
+  mode                    = "chat"
+  litellm_credential_name = litellm_credential.openai.credential_name
   
   input_cost_per_million_tokens  = 30.0
   output_cost_per_million_tokens = 60.0
 }
 
-# Team configuration
+# Organization and team hierarchy
+resource "litellm_organization" "company" {
+  organization_alias = "my-company"
+  max_budget         = 5000.0
+}
+
 resource "litellm_team" "dev_team" {
-  team_alias = "development-team"
-  models     = [litellm_model.gpt4.model_name]
-  max_budget = 100.0
+  team_alias      = "development-team"
+  organization_id = litellm_organization.company.organization_id
+  models          = [litellm_model.gpt4.model_name]
+  max_budget      = 1000.0
+}
+
+# Create an API key for the team
+resource "litellm_key" "dev_key" {
+  key_alias = "dev-api-key"
+  team_id   = litellm_team.dev_team.team_id
 }
 ```
 
-## Available Resources
+## Provider Arguments
 
-The LiteLLM provider supports the following resources:
+The following arguments are supported in the provider block:
 
-* [`litellm_model`](./resources/model) - Manage LiteLLM model configurations
-* [`litellm_team`](./resources/team) - Manage teams and their permissions
-* [`litellm_team_member`](./resources/team_member) - Manage team member configurations
-* [`litellm_team_member_add`](./resources/team_member_add) - Add members to teams
-* [`litellm_key`](./resources/key) - Manage API keys
-* [`litellm_mcp_server`](./resources/mcp_server) - Manage MCP (Model Context Protocol) servers
-* [`litellm_credential`](./resources/credential) - Manage credentials for various providers
-* [`litellm_vector_store`](./resources/vector_store) - Manage vector stores
-
-## Available Data Sources
-
-The LiteLLM provider supports the following data sources:
-
-* [`litellm_credential`](./data-sources/credential) - Retrieve credential information
-* [`litellm_vector_store`](./data-sources/vector_store) - Retrieve vector store information
+* `api_base` - (Required) The base URL of your LiteLLM instance. Can also be set via the `LITELLM_API_BASE` environment variable.
+* `api_key` - (Required) The API key for authenticating with LiteLLM. Can also be set via the `LITELLM_API_KEY` environment variable.
+* `insecure_skip_verify` - (Optional) Skip TLS certificate verification. Defaults to `false`.
+* `litellm_changed_by` - (Optional) Value for the litellm-changed-by header to track actions performed by authorized users.
 
 ## Authentication
 
@@ -65,53 +74,113 @@ The LiteLLM provider requires an API key and base URL for authentication. These 
 
 ### Environment Variables
 
-- `LITELLM_API_BASE` - The base URL of your LiteLLM instance
-- `LITELLM_API_KEY` - Your LiteLLM API key
-
-### Example with Environment Variables
-
 ```bash
 export LITELLM_API_BASE="https://your-litellm-proxy.com"
 export LITELLM_API_KEY="your-api-key"
 ```
 
 ```hcl
-terraform {
-  required_providers {
-    litellm = {
-      source = "registry.terraform.io/ncecere/litellm"
-    }
-  }
-}
-
 # Provider will automatically use environment variables
 provider "litellm" {}
 ```
 
-## Provider Arguments
+## Available Resources
 
-The following arguments are supported in the provider block:
+The LiteLLM provider supports the following resources:
 
-* `api_base` - (Required) The base URL of your LiteLLM instance. This can also be provided via the `LITELLM_API_BASE` environment variable.
-* `api_key` - (Required) The API key used to authenticate with LiteLLM. This can also be provided via the `LITELLM_API_KEY` environment variable.
+### Core Resources
+
+* [`litellm_model`](./resources/model.md) - Manage LiteLLM model configurations
+* [`litellm_key`](./resources/key.md) - Manage API keys
+* [`litellm_key_block`](./resources/key_block.md) - Block/unblock API keys
+* [`litellm_credential`](./resources/credential.md) - Manage credentials for various providers
+
+### Organization & Team Management
+
+* [`litellm_organization`](./resources/organization.md) - Manage organizations
+* [`litellm_organization_member`](./resources/organization_member.md) - Manage organization memberships
+* [`litellm_team`](./resources/team.md) - Manage teams and their permissions
+* [`litellm_team_block`](./resources/team_block.md) - Block/unblock teams
+* [`litellm_team_member`](./resources/team_member.md) - Manage team member configurations
+* [`litellm_team_member_add`](./resources/team_member_add.md) - Add members to teams
+* [`litellm_user`](./resources/user.md) - Manage users
+
+### Budget & Access Control
+
+* [`litellm_budget`](./resources/budget.md) - Manage budget configurations
+* [`litellm_access_group`](./resources/access_group.md) - Manage model access groups
+* [`litellm_tag`](./resources/tag.md) - Manage tags for organization
+
+### AI Safety & Configuration
+
+* [`litellm_prompt`](./resources/prompt.md) - Manage prompt templates
+* [`litellm_guardrail`](./resources/guardrail.md) - Manage content guardrails
+
+### Integrations
+
+* [`litellm_mcp_server`](./resources/mcp_server.md) - Manage MCP (Model Context Protocol) servers
+* [`litellm_search_tool`](./resources/search_tool.md) - Manage search tool configurations
+* [`litellm_vector_store`](./resources/vector_store.md) - Manage vector stores
+
+## Available Data Sources
+
+### Single Resource Lookups
+
+* [`litellm_model`](./data-sources/model.md) - Retrieve model information
+* [`litellm_key`](./data-sources/key.md) - Retrieve API key information
+* [`litellm_team`](./data-sources/team.md) - Retrieve team information
+* [`litellm_organization`](./data-sources/organization.md) - Retrieve organization information
+* [`litellm_user`](./data-sources/user.md) - Retrieve user information
+* [`litellm_credential`](./data-sources/credential.md) - Retrieve credential information
+* [`litellm_budget`](./data-sources/budget.md) - Retrieve budget information
+* [`litellm_tag`](./data-sources/tag.md) - Retrieve tag information
+* [`litellm_access_group`](./data-sources/access_group.md) - Retrieve access group information
+* [`litellm_prompt`](./data-sources/prompt.md) - Retrieve prompt information
+* [`litellm_guardrail`](./data-sources/guardrail.md) - Retrieve guardrail information
+* [`litellm_mcp_server`](./data-sources/mcp_server.md) - Retrieve MCP server information
+* [`litellm_search_tool`](./data-sources/search_tool.md) - Retrieve search tool information
+* [`litellm_vector_store`](./data-sources/vector_store.md) - Retrieve vector store information
+
+### List Data Sources
+
+* [`litellm_models`](./data-sources/models.md) - List all models
+* [`litellm_keys`](./data-sources/keys.md) - List all API keys
+* [`litellm_teams`](./data-sources/teams.md) - List all teams
+* [`litellm_organizations`](./data-sources/organizations.md) - List all organizations
+* [`litellm_users`](./data-sources/users.md) - List all users
+* [`litellm_budgets`](./data-sources/budgets.md) - List all budgets
+* [`litellm_tags`](./data-sources/tags.md) - List all tags
+* [`litellm_access_groups`](./data-sources/access_groups.md) - List all access groups
+* [`litellm_prompts`](./data-sources/prompts.md) - List all prompts
+* [`litellm_guardrails`](./data-sources/guardrails.md) - List all guardrails
+* [`litellm_mcp_servers`](./data-sources/mcp_servers.md) - List all MCP servers
+* [`litellm_search_tools`](./data-sources/search_tools.md) - List all search tools
+
+## Examples
+
+The provider includes comprehensive examples in the `examples/` directory:
+
+| Example | Description |
+|---------|-------------|
+| [minimal](https://github.com/ncecere/terraform-provider-litellm/tree/main/examples/minimal) | Simplest possible setup |
+| [complete](https://github.com/ncecere/terraform-provider-litellm/tree/main/examples/complete) | Full enterprise configuration |
+| [multi-provider](https://github.com/ncecere/terraform-provider-litellm/tree/main/examples/multi-provider) | Multiple LLM providers |
+| [data-sources](https://github.com/ncecere/terraform-provider-litellm/tree/main/examples/data-sources) | Using data sources |
+| [mcp-servers](https://github.com/ncecere/terraform-provider-litellm/tree/main/examples/mcp-servers) | MCP server configurations |
+| [search-tools](https://github.com/ncecere/terraform-provider-litellm/tree/main/examples/search-tools) | Search tool configurations |
 
 ## Getting Started
 
 1. Install the provider by adding it to your Terraform configuration
 2. Configure your LiteLLM instance URL and API key
-3. Start creating resources like models, teams, and credentials
-4. Use data sources to reference existing configurations
+3. Start with the [minimal example](https://github.com/ncecere/terraform-provider-litellm/tree/main/examples/minimal) to create basic resources
+4. Explore the [complete example](https://github.com/ncecere/terraform-provider-litellm/tree/main/examples/complete) for enterprise configurations
 
-For detailed examples and configuration options, see the individual resource and data source documentation pages.
+## Best Practices
 
-## Examples
-
-This repository includes an `examples/` directory with curated, ready-to-run HCL examples that demonstrate common and advanced usages of the provider. Examples are grouped by resource and illustrate provider-specific configuration, handling of sensitive values, and advanced options such as `additional_litellm_params`.
-
-See:
-* `examples/model_additional_params.tf` — demonstrates how to use `additional_litellm_params` (booleans, integers, floats, and strings).
-* Other example files will be added to `examples/` for credentials, vector stores, and MCP servers.
-
-You can reference these examples directly or copy snippets into your Terraform configurations for quick starts.
-
-For detailed examples and configuration options, see the individual resource and data source documentation pages.
+1. **Use credentials** - Store API keys in `litellm_credential` resources instead of directly in model configurations
+2. **Organize with hierarchy** - Use organizations → teams → users for proper access control
+3. **Set budget limits** - Always configure `max_budget` on teams and keys
+4. **Use access groups** - Simplify model access management with access groups
+5. **Configure guardrails** - Protect against harmful content with guardrails
+6. **Tag resources** - Use tags for cost allocation and filtering
