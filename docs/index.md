@@ -67,6 +67,7 @@ The following arguments are supported in the provider block:
 * `api_key` - (Required) The API key for authenticating with LiteLLM. Can also be set via the `LITELLM_API_KEY` environment variable.
 * `insecure_skip_verify` - (Optional) Skip TLS certificate verification. Defaults to `false`.
 * `litellm_changed_by` - (Optional) Value for the litellm-changed-by header to track actions performed by authorized users.
+* `additional_headers` - (Optional) Additional HTTP headers to set on requests to the LiteLLM API.
 
 ## Authentication
 

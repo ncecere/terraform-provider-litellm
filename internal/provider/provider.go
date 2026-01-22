@@ -31,14 +31,16 @@ type LiteLLMProviderModel struct {
 	APIKey             types.String `tfsdk:"api_key"`
 	InsecureSkipVerify types.Bool   `tfsdk:"insecure_skip_verify"`
 	LiteLLMChangedBy   types.String `tfsdk:"litellm_changed_by"`
+	AdditionalHeaders  types.Map    `tfsdk:"additional_headers"`
 }
 
 // Client holds the HTTP client and configuration for API calls.
 type Client struct {
-	APIBase          string
-	APIKey           string
-	LiteLLMChangedBy string
-	HTTPClient       *http.Client
+	APIBase           string
+	APIKey            string
+	LiteLLMChangedBy  string
+	HTTPClient        *http.Client
+	AdditionalHeaders map[string]string
 }
 
 func (p *LiteLLMProvider) Metadata(ctx context.Context, req provider.MetadataRequest, resp *provider.MetadataResponse) {
@@ -66,6 +68,11 @@ func (p *LiteLLMProvider) Schema(ctx context.Context, req provider.SchemaRequest
 			"litellm_changed_by": schema.StringAttribute{
 				Description: "Value for the litellm-changed-by header to track actions performed by authorized users.",
 				Optional:    true,
+			},
+			"additional_headers": schema.MapAttribute{
+				Description: "Additional HTTP headers to set on requests to the LiteLLM API.",
+				Optional:    true,
+				ElementType: types.StringType,
 			},
 		},
 	}
@@ -121,15 +128,23 @@ func (p *LiteLLMProvider) Configure(ctx context.Context, req provider.ConfigureR
 		litellmChangedBy = config.LiteLLMChangedBy.ValueString()
 	}
 
+	additionalHeaders := make(map[string]string)
+	if !config.AdditionalHeaders.IsNull() {
+		for key, value := range config.AdditionalHeaders.Elements() {
+			additionalHeaders[key] = value.(types.String).ValueString()
+		}
+	}
+
 	// Create HTTP client with TLS configuration
 	tr := &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: insecureSkipVerify},
 	}
 
 	client := &Client{
-		APIBase:          apiBase,
-		APIKey:           apiKey,
-		LiteLLMChangedBy: litellmChangedBy,
+		APIBase:           apiBase,
+		APIKey:            apiKey,
+		LiteLLMChangedBy:  litellmChangedBy,
+		AdditionalHeaders: additionalHeaders,
 		HTTPClient: &http.Client{
 			Transport: tr,
 			Timeout:   30 * time.Second,

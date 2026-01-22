@@ -36,6 +36,10 @@ func (c *Client) DoRequest(ctx context.Context, method, path string, body interf
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("x-api-key", c.APIKey)
 
+	for key, value := range c.AdditionalHeaders {
+		req.Header.Set(key, value)
+	}
+
 	if c.LiteLLMChangedBy != "" {
 		req.Header.Set("litellm-changed-by", c.LiteLLMChangedBy)
 	}
