@@ -80,6 +80,9 @@ func (r *GuardrailResource) Schema(ctx context.Context, req resource.SchemaReque
 			"litellm_params": schema.StringAttribute{
 				Description: "JSON string containing additional provider-specific parameters for the guardrail.",
 				Optional:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"guardrail_info": schema.StringAttribute{
 				Description: "JSON string containing additional metadata for the guardrail.",
@@ -324,17 +327,33 @@ func (r *GuardrailResource) readGuardrail(ctx context.Context, data *GuardrailRe
 			}
 		}
 
+		// Get the keys from the user's configuration
+		configuredKeys := make(map[string]bool)
+		if !data.LitellmParams.IsNull() {
+			var configuredParams map[string]interface{}
+			if err := json.Unmarshal([]byte(data.LitellmParams.ValueString()), &configuredParams); err == nil {
+				for k := range configuredParams {
+					configuredKeys[k] = true
+				}
+			}
+		}
+
 		// Store other litellm_params as JSON (excluding guardrail, mode, default_on)
+		// and only including keys that are in the user's configuration
 		otherParams := make(map[string]interface{})
 		for k, v := range litellmParams {
 			if k != "guardrail" && k != "mode" && k != "default_on" {
-				otherParams[k] = v
+				if configuredKeys[k] {
+					otherParams[k] = v
+				}
 			}
 		}
 		if len(otherParams) > 0 {
 			if jsonBytes, err := json.Marshal(otherParams); err == nil {
 				data.LitellmParams = types.StringValue(string(jsonBytes))
 			}
+		} else {
+			data.LitellmParams = types.StringNull()
 		}
 	}
 
