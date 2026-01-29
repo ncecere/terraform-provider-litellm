@@ -80,26 +80,69 @@ func (c *Client) GetKey(keyID string) (*Key, error) {
 
 func (c *Client) UpdateKey(key *Key) (*Key, error) {
 	// Create a new map with only the fields that can be updated
+	// Only include optional fields when they have non-zero values (matching omitempty behavior)
 	updateData := map[string]interface{}{
-		"key":                        key.Key,
-		"models":                     key.Models,
-		"allowed_routes":             key.AllowedRoutes,
-		"allowed_passthrough_routes": key.AllowedPassthroughRoutes,
-		"max_budget":                 key.MaxBudget,
-		"team_id":                    key.TeamID,
-		"max_parallel_requests":      key.MaxParallelRequests,
-		"metadata":                   key.Metadata,
-		"tpm_limit":                  key.TPMLimit,
-		"rpm_limit":                  key.RPMLimit,
-		"budget_duration":            key.BudgetDuration,
-		"key_alias":                  key.KeyAlias,
-		"aliases":                    key.Aliases,
-		"permissions":                key.Permissions,
-		"model_max_budget":           key.ModelMaxBudget,
-		"model_rpm_limit":            key.ModelRPMLimit,
-		"model_tpm_limit":            key.ModelTPMLimit,
-		"guardrails":                 key.Guardrails,
-		"blocked":                    key.Blocked,
+		"key":     key.Key,
+		"blocked": key.Blocked,
+	}
+
+	// Include arrays/slices only when non-empty
+	if len(key.Models) > 0 {
+		updateData["models"] = key.Models
+	}
+	if len(key.AllowedRoutes) > 0 {
+		updateData["allowed_routes"] = key.AllowedRoutes
+	}
+	if len(key.AllowedPassthroughRoutes) > 0 {
+		updateData["allowed_passthrough_routes"] = key.AllowedPassthroughRoutes
+	}
+	if len(key.Guardrails) > 0 {
+		updateData["guardrails"] = key.Guardrails
+	}
+
+	// Include numeric fields only when non-zero
+	if key.MaxBudget != 0 {
+		updateData["max_budget"] = key.MaxBudget
+	}
+	if key.MaxParallelRequests != 0 {
+		updateData["max_parallel_requests"] = key.MaxParallelRequests
+	}
+	if key.TPMLimit != 0 {
+		updateData["tpm_limit"] = key.TPMLimit
+	}
+	if key.RPMLimit != 0 {
+		updateData["rpm_limit"] = key.RPMLimit
+	}
+
+	// Include string fields only when non-empty
+	if key.TeamID != "" {
+		updateData["team_id"] = key.TeamID
+	}
+	if key.BudgetDuration != "" {
+		updateData["budget_duration"] = key.BudgetDuration
+	}
+	if key.KeyAlias != "" {
+		updateData["key_alias"] = key.KeyAlias
+	}
+
+	// Include maps only when non-nil
+	if key.Metadata != nil {
+		updateData["metadata"] = key.Metadata
+	}
+	if key.Aliases != nil {
+		updateData["aliases"] = key.Aliases
+	}
+	if key.Permissions != nil {
+		updateData["permissions"] = key.Permissions
+	}
+	if key.ModelMaxBudget != nil {
+		updateData["model_max_budget"] = key.ModelMaxBudget
+	}
+	if key.ModelRPMLimit != nil {
+		updateData["model_rpm_limit"] = key.ModelRPMLimit
+	}
+	if key.ModelTPMLimit != nil {
+		updateData["model_tpm_limit"] = key.ModelTPMLimit
 	}
 
 	resp, err := c.sendRequest("POST", "/key/update", updateData)
