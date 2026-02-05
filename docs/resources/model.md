@@ -102,6 +102,57 @@ resource "litellm_model" "azure_gpt4" {
 }
 ```
 
+### Model with Credential Reference
+
+```hcl
+# First, create a credential to store API keys securely
+resource "litellm_credential" "openai_creds" {
+  credential_name = "openai-production"
+  credential_values = {
+    "api_key" = var.openai_api_key
+  }
+}
+
+# Then, reference the credential in your model
+resource "litellm_model" "gpt4_with_credential" {
+  model_name             = "gpt-4-with-cred"
+  custom_llm_provider    = "openai"
+  base_model             = "gpt-4"
+  tier                   = "paid"
+  mode                   = "chat"
+  litellm_credential_name = litellm_credential.openai_creds.credential_name
+  
+  input_cost_per_million_tokens  = 30.0
+  output_cost_per_million_tokens = 60.0
+}
+```
+
+### Model with Access Groups
+
+```hcl
+# Create models and assign them to access groups
+resource "litellm_model" "gpt4_premium" {
+  model_name          = "gpt-4-premium"
+  custom_llm_provider = "openai"
+  model_api_key       = var.openai_api_key
+  base_model          = "gpt-4"
+  tier                = "paid"
+  mode                = "chat"
+  
+  # Assign to access groups - teams/keys with these groups can use this model
+  access_groups = ["premium-models", "gpt4-access"]
+  
+  input_cost_per_million_tokens  = 30.0
+  output_cost_per_million_tokens = 60.0
+}
+
+# Teams can reference access group names in their models list
+resource "litellm_team" "premium_team" {
+  team_alias = "premium-users"
+  models     = ["premium-models"]  # Access group name, grants access to all models in this group
+}
+```
+
 ## Argument Reference
 
 The following arguments are supported:
@@ -121,6 +172,8 @@ The following arguments are supported:
 * `tier` - (Optional) string. The usage tier for this model. Valid values are `"free"` or `"paid"`. Default: `"free"`.
 
 * `team_id` - (Optional) string. Associate the model with a specific team.
+
+* `access_groups` - (Optional) list(string). List of access groups this model belongs to. Teams and keys with access to these groups can use this model. See [LiteLLM Access Groups](https://docs.litellm.ai/docs/proxy/model_access_groups) for more details.
 
 * `mode` - (Optional) string. The intended use of the model. Valid values are:
   * `completion`
@@ -163,6 +216,8 @@ The following arguments are supported:
 * `vertex_location` - (Optional) string. Vertex AI location (e.g., `us-central1`).
 
 * `vertex_credentials` - (Optional) string. Vertex credentials (JSON string or path depending on your setup).
+
+* `litellm_credential_name` - (Optional) string. Name of a credential created via `litellm_credential` resource. This allows you to reference stored credentials instead of providing API keys directly in the model configuration.
 
 * `additional_litellm_params` - (Optional) map(string). A map of arbitrary additional parameters that will be merged into the `litellm_params` object sent to the LiteLLM API. This is intended for provider-specific or experimental options not exposed as dedicated arguments.
 

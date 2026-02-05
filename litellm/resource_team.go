@@ -62,10 +62,6 @@ func ResourceLiteLLMTeam() *schema.Resource {
 				Optional: true,
 				Elem:     &schema.Schema{Type: schema.TypeString},
 			},
-			"blocked": {
-				Type:     schema.TypeBool,
-				Optional: true,
-			},
 			"team_member_permissions": {
 				Type:        schema.TypeList,
 				Optional:    true,
@@ -144,8 +140,6 @@ func resourceLiteLLMTeamRead(d *schema.ResourceData, m interface{}) error {
 	} else {
 		d.Set("models", d.Get("models"))
 	}
-
-	d.Set("blocked", GetBoolValue(teamResp.Blocked, d.Get("blocked").(bool)))
 
 	// Explicitly fetch the current permissions from the API
 	permResp, err := getTeamPermissions(client, d.Id())
@@ -234,7 +228,7 @@ func buildTeamData(d *schema.ResourceData, teamID string) map[string]interface{}
 		"team_alias": d.Get("team_alias").(string),
 	}
 
-	for _, key := range []string{"organization_id", "metadata", "tpm_limit", "rpm_limit", "max_budget", "budget_duration", "models", "blocked", "team_member_permissions"} {
+	for _, key := range []string{"organization_id", "metadata", "tpm_limit", "rpm_limit", "max_budget", "budget_duration", "models", "team_member_permissions"} {
 		if v, ok := d.GetOk(key); ok {
 			teamData[key] = v
 		}

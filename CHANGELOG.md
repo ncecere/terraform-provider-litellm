@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] - 2026-02-05
+
+### Added
+- **Complete Provider Rewrite**: Migrated from terraform-plugin-sdk to terraform-plugin-framework v1.17.0
+- **19 Resources**: model, key, key_block, team, team_block, team_member, team_member_add, mcp_server, credential, vector_store, organization, organization_member, user, budget, tag, access_group, prompt, guardrail, search_tool
+- **26 Data Sources**: Single and list versions for all resources (model/models, key/keys, team/teams, etc.)
+- **`litellm_model`**: Added `access_groups` field to assign models to access groups for team/key-based access control
+- **New Resources**:
+  - `litellm_budget` - Manage budget configurations
+  - `litellm_tag` - Manage tags for cost tracking
+  - `litellm_access_group` - Manage access groups for model access control
+  - `litellm_prompt` - Manage prompt templates
+  - `litellm_guardrail` - Manage guardrails for content moderation
+  - `litellm_search_tool` - Manage search tools for RAG
+  - `litellm_organization` - Manage organizations
+  - `litellm_organization_member` - Manage organization memberships
+  - `litellm_user` - Manage users
+  - `litellm_key_block` - Block/unblock API keys
+  - `litellm_team_block` - Block/unblock teams
+- **Comprehensive Examples**: Added examples/ directory with minimal, complete, multi-provider, data-sources, mcp-servers, and search-tools configurations
+
+### Changed
+- Provider now uses terraform-plugin-framework for improved type safety and better Terraform integration
+- Reorganized provider code into internal/provider/ package structure
+
 ## [0.3.16] - 2025-12-01
 
 ### Added
