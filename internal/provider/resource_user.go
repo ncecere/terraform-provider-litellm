@@ -276,50 +276,63 @@ func (r *UserResource) ImportState(ctx context.Context, req resource.ImportState
 func (r *UserResource) buildUserRequest(ctx context.Context, data *UserResourceModel) map[string]interface{} {
 	userReq := map[string]interface{}{}
 
-	if !data.UserID.IsNull() && data.UserID.ValueString() != "" {
+	// String fields - check IsNull, IsUnknown, and empty string
+	if !data.UserID.IsNull() && !data.UserID.IsUnknown() && data.UserID.ValueString() != "" {
 		userReq["user_id"] = data.UserID.ValueString()
 	}
-	if !data.UserAlias.IsNull() && data.UserAlias.ValueString() != "" {
+	if !data.UserAlias.IsNull() && !data.UserAlias.IsUnknown() && data.UserAlias.ValueString() != "" {
 		userReq["user_alias"] = data.UserAlias.ValueString()
 	}
-	if !data.UserEmail.IsNull() && data.UserEmail.ValueString() != "" {
+	if !data.UserEmail.IsNull() && !data.UserEmail.IsUnknown() && data.UserEmail.ValueString() != "" {
 		userReq["user_email"] = data.UserEmail.ValueString()
 	}
-	if !data.UserRole.IsNull() && data.UserRole.ValueString() != "" {
+	if !data.UserRole.IsNull() && !data.UserRole.IsUnknown() && data.UserRole.ValueString() != "" {
 		userReq["user_role"] = data.UserRole.ValueString()
 	}
-	if !data.MaxBudget.IsNull() {
-		userReq["max_budget"] = data.MaxBudget.ValueFloat64()
-	}
-	if !data.BudgetDuration.IsNull() && data.BudgetDuration.ValueString() != "" {
+	if !data.BudgetDuration.IsNull() && !data.BudgetDuration.IsUnknown() && data.BudgetDuration.ValueString() != "" {
 		userReq["budget_duration"] = data.BudgetDuration.ValueString()
 	}
-	if !data.TPMLimit.IsNull() {
+
+	// Numeric fields - check IsNull and IsUnknown
+	if !data.MaxBudget.IsNull() && !data.MaxBudget.IsUnknown() {
+		userReq["max_budget"] = data.MaxBudget.ValueFloat64()
+	}
+	if !data.TPMLimit.IsNull() && !data.TPMLimit.IsUnknown() {
 		userReq["tpm_limit"] = data.TPMLimit.ValueInt64()
 	}
-	if !data.RPMLimit.IsNull() {
+	if !data.RPMLimit.IsNull() && !data.RPMLimit.IsUnknown() {
 		userReq["rpm_limit"] = data.RPMLimit.ValueInt64()
 	}
-	if !data.AutoCreateKey.IsNull() {
+
+	// Boolean fields - check IsNull and IsUnknown (auto_create_key has default)
+	if !data.AutoCreateKey.IsNull() && !data.AutoCreateKey.IsUnknown() {
 		userReq["auto_create_key"] = data.AutoCreateKey.ValueBool()
 	}
 
-	if !data.Teams.IsNull() {
+	// List fields - check IsNull, IsUnknown, and len > 0
+	if !data.Teams.IsNull() && !data.Teams.IsUnknown() {
 		var teams []string
 		data.Teams.ElementsAs(ctx, &teams, false)
-		userReq["teams"] = teams
+		if len(teams) > 0 {
+			userReq["teams"] = teams
+		}
 	}
 
-	if !data.Models.IsNull() {
+	if !data.Models.IsNull() && !data.Models.IsUnknown() {
 		var models []string
 		data.Models.ElementsAs(ctx, &models, false)
-		userReq["models"] = models
+		if len(models) > 0 {
+			userReq["models"] = models
+		}
 	}
 
-	if !data.Metadata.IsNull() {
+	// Map fields - check IsNull, IsUnknown, and len > 0
+	if !data.Metadata.IsNull() && !data.Metadata.IsUnknown() {
 		var metadata map[string]string
 		data.Metadata.ElementsAs(ctx, &metadata, false)
-		userReq["metadata"] = metadata
+		if len(metadata) > 0 {
+			userReq["metadata"] = metadata
+		}
 	}
 
 	return userReq

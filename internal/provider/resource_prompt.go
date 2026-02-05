@@ -220,26 +220,29 @@ func (r *PromptResource) buildPromptRequest(ctx context.Context, data *PromptRes
 		"prompt_integration": data.PromptIntegration.ValueString(),
 	}
 
-	if !data.APIBase.IsNull() && data.APIBase.ValueString() != "" {
+	// String fields - check IsNull, IsUnknown, and empty string
+	if !data.APIBase.IsNull() && !data.APIBase.IsUnknown() && data.APIBase.ValueString() != "" {
 		litellmParams["api_base"] = data.APIBase.ValueString()
 	}
-	if !data.APIKey.IsNull() && data.APIKey.ValueString() != "" {
+	if !data.APIKey.IsNull() && !data.APIKey.IsUnknown() && data.APIKey.ValueString() != "" {
 		litellmParams["api_key"] = data.APIKey.ValueString()
 	}
-	if !data.IgnorePromptManagerModel.IsNull() {
-		litellmParams["ignore_prompt_manager_model"] = data.IgnorePromptManagerModel.ValueBool()
-	}
-	if !data.IgnorePromptManagerOptionalParams.IsNull() {
-		litellmParams["ignore_prompt_manager_optional_params"] = data.IgnorePromptManagerOptionalParams.ValueBool()
-	}
-	if !data.DotpromptContent.IsNull() && data.DotpromptContent.ValueString() != "" {
+	if !data.DotpromptContent.IsNull() && !data.DotpromptContent.IsUnknown() && data.DotpromptContent.ValueString() != "" {
 		litellmParams["dotprompt_content"] = data.DotpromptContent.ValueString()
 	}
-	if !data.ProviderSpecificQueryParams.IsNull() && data.ProviderSpecificQueryParams.ValueString() != "" {
+	if !data.ProviderSpecificQueryParams.IsNull() && !data.ProviderSpecificQueryParams.IsUnknown() && data.ProviderSpecificQueryParams.ValueString() != "" {
 		var params map[string]interface{}
 		if err := json.Unmarshal([]byte(data.ProviderSpecificQueryParams.ValueString()), &params); err == nil {
 			litellmParams["provider_specific_query_params"] = params
 		}
+	}
+
+	// Boolean fields - check IsNull and IsUnknown
+	if !data.IgnorePromptManagerModel.IsNull() && !data.IgnorePromptManagerModel.IsUnknown() {
+		litellmParams["ignore_prompt_manager_model"] = data.IgnorePromptManagerModel.ValueBool()
+	}
+	if !data.IgnorePromptManagerOptionalParams.IsNull() && !data.IgnorePromptManagerOptionalParams.IsUnknown() {
+		litellmParams["ignore_prompt_manager_optional_params"] = data.IgnorePromptManagerOptionalParams.ValueBool()
 	}
 
 	promptReq := map[string]interface{}{
@@ -247,7 +250,7 @@ func (r *PromptResource) buildPromptRequest(ctx context.Context, data *PromptRes
 		"litellm_params": litellmParams,
 	}
 
-	if !data.PromptType.IsNull() && data.PromptType.ValueString() != "" {
+	if !data.PromptType.IsNull() && !data.PromptType.IsUnknown() && data.PromptType.ValueString() != "" {
 		promptReq["prompt_info"] = map[string]interface{}{
 			"prompt_type": data.PromptType.ValueString(),
 		}

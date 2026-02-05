@@ -234,39 +234,46 @@ func (r *TagResource) buildTagRequest(ctx context.Context, data *TagResourceMode
 		"name": data.Name.ValueString(),
 	}
 
-	if !data.Description.IsNull() && data.Description.ValueString() != "" {
+	// String fields - check IsNull, IsUnknown, and empty string
+	if !data.Description.IsNull() && !data.Description.IsUnknown() && data.Description.ValueString() != "" {
 		tagReq["description"] = data.Description.ValueString()
 	}
-	if !data.Models.IsNull() {
-		var models []string
-		data.Models.ElementsAs(ctx, &models, false)
-		tagReq["models"] = models
-	}
-	if !data.BudgetID.IsNull() && data.BudgetID.ValueString() != "" {
+	if !data.BudgetID.IsNull() && !data.BudgetID.IsUnknown() && data.BudgetID.ValueString() != "" {
 		tagReq["budget_id"] = data.BudgetID.ValueString()
 	}
-	if !data.MaxBudget.IsNull() {
-		tagReq["max_budget"] = data.MaxBudget.ValueFloat64()
-	}
-	if !data.SoftBudget.IsNull() {
-		tagReq["soft_budget"] = data.SoftBudget.ValueFloat64()
-	}
-	if !data.MaxParallelRequests.IsNull() {
-		tagReq["max_parallel_requests"] = data.MaxParallelRequests.ValueInt64()
-	}
-	if !data.TPMLimit.IsNull() {
-		tagReq["tpm_limit"] = data.TPMLimit.ValueInt64()
-	}
-	if !data.RPMLimit.IsNull() {
-		tagReq["rpm_limit"] = data.RPMLimit.ValueInt64()
-	}
-	if !data.BudgetDuration.IsNull() && data.BudgetDuration.ValueString() != "" {
+	if !data.BudgetDuration.IsNull() && !data.BudgetDuration.IsUnknown() && data.BudgetDuration.ValueString() != "" {
 		tagReq["budget_duration"] = data.BudgetDuration.ValueString()
 	}
-	if !data.ModelMaxBudget.IsNull() && data.ModelMaxBudget.ValueString() != "" {
+	if !data.ModelMaxBudget.IsNull() && !data.ModelMaxBudget.IsUnknown() && data.ModelMaxBudget.ValueString() != "" {
 		var modelBudget map[string]interface{}
 		if err := json.Unmarshal([]byte(data.ModelMaxBudget.ValueString()), &modelBudget); err == nil {
 			tagReq["model_max_budget"] = modelBudget
+		}
+	}
+
+	// Numeric fields - check IsNull and IsUnknown
+	if !data.MaxBudget.IsNull() && !data.MaxBudget.IsUnknown() {
+		tagReq["max_budget"] = data.MaxBudget.ValueFloat64()
+	}
+	if !data.SoftBudget.IsNull() && !data.SoftBudget.IsUnknown() {
+		tagReq["soft_budget"] = data.SoftBudget.ValueFloat64()
+	}
+	if !data.MaxParallelRequests.IsNull() && !data.MaxParallelRequests.IsUnknown() {
+		tagReq["max_parallel_requests"] = data.MaxParallelRequests.ValueInt64()
+	}
+	if !data.TPMLimit.IsNull() && !data.TPMLimit.IsUnknown() {
+		tagReq["tpm_limit"] = data.TPMLimit.ValueInt64()
+	}
+	if !data.RPMLimit.IsNull() && !data.RPMLimit.IsUnknown() {
+		tagReq["rpm_limit"] = data.RPMLimit.ValueInt64()
+	}
+
+	// List fields - check IsNull, IsUnknown, and len > 0
+	if !data.Models.IsNull() && !data.Models.IsUnknown() {
+		var models []string
+		data.Models.ElementsAs(ctx, &models, false)
+		if len(models) > 0 {
+			tagReq["models"] = models
 		}
 	}
 

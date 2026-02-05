@@ -243,12 +243,13 @@ func (r *GuardrailResource) buildGuardrailRequest(ctx context.Context, data *Gua
 		litellmParams["mode"] = modeStr
 	}
 
-	if !data.DefaultOn.IsNull() {
+	// Boolean fields - check IsNull and IsUnknown
+	if !data.DefaultOn.IsNull() && !data.DefaultOn.IsUnknown() {
 		litellmParams["default_on"] = data.DefaultOn.ValueBool()
 	}
 
 	// Merge additional litellm_params if provided
-	if !data.LitellmParams.IsNull() && data.LitellmParams.ValueString() != "" {
+	if !data.LitellmParams.IsNull() && !data.LitellmParams.IsUnknown() && data.LitellmParams.ValueString() != "" {
 		var additionalParams map[string]interface{}
 		if err := json.Unmarshal([]byte(data.LitellmParams.ValueString()), &additionalParams); err == nil {
 			for k, v := range additionalParams {
@@ -262,11 +263,12 @@ func (r *GuardrailResource) buildGuardrailRequest(ctx context.Context, data *Gua
 		"litellm_params": litellmParams,
 	}
 
-	if !data.GuardrailID.IsNull() && data.GuardrailID.ValueString() != "" {
+	// String fields - check IsNull, IsUnknown, and empty string
+	if !data.GuardrailID.IsNull() && !data.GuardrailID.IsUnknown() && data.GuardrailID.ValueString() != "" {
 		guardrail["guardrail_id"] = data.GuardrailID.ValueString()
 	}
 
-	if !data.GuardrailInfo.IsNull() && data.GuardrailInfo.ValueString() != "" {
+	if !data.GuardrailInfo.IsNull() && !data.GuardrailInfo.IsUnknown() && data.GuardrailInfo.ValueString() != "" {
 		var guardrailInfo map[string]interface{}
 		if err := json.Unmarshal([]byte(data.GuardrailInfo.ValueString()), &guardrailInfo); err == nil {
 			guardrail["guardrail_info"] = guardrailInfo

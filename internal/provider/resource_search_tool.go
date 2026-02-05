@@ -228,25 +228,27 @@ func (r *SearchToolResource) buildSearchToolRequest(ctx context.Context, data *S
 		"search_provider": data.SearchProvider.ValueString(),
 	}
 
-	if !data.APIKey.IsNull() && data.APIKey.ValueString() != "" {
+	// String fields - check IsNull, IsUnknown, and empty string
+	if !data.APIKey.IsNull() && !data.APIKey.IsUnknown() && data.APIKey.ValueString() != "" {
 		litellmParams["api_key"] = data.APIKey.ValueString()
 	}
 
-	if !data.APIBase.IsNull() && data.APIBase.ValueString() != "" {
+	if !data.APIBase.IsNull() && !data.APIBase.IsUnknown() && data.APIBase.ValueString() != "" {
 		litellmParams["api_base"] = data.APIBase.ValueString()
 	}
 
-	if !data.Timeout.IsNull() {
+	// Numeric fields - check IsNull and IsUnknown
+	if !data.Timeout.IsNull() && !data.Timeout.IsUnknown() {
 		litellmParams["timeout"] = data.Timeout.ValueFloat64()
 	}
 
-	if !data.MaxRetries.IsNull() {
+	if !data.MaxRetries.IsNull() && !data.MaxRetries.IsUnknown() {
 		litellmParams["max_retries"] = data.MaxRetries.ValueInt64()
 	}
 
 	searchReq["litellm_params"] = litellmParams
 
-	if !data.SearchToolInfo.IsNull() && data.SearchToolInfo.ValueString() != "" {
+	if !data.SearchToolInfo.IsNull() && !data.SearchToolInfo.IsUnknown() && data.SearchToolInfo.ValueString() != "" {
 		searchReq["search_tool_info"] = data.SearchToolInfo.ValueString()
 	}
 

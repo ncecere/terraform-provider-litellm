@@ -196,22 +196,27 @@ func (r *CredentialResource) buildCredentialRequest(ctx context.Context, data *C
 		"credential_name": data.CredentialName.ValueString(),
 	}
 
-	if !data.ModelID.IsNull() && data.ModelID.ValueString() != "" {
+	// String fields - check IsNull, IsUnknown, and empty string
+	if !data.ModelID.IsNull() && !data.ModelID.IsUnknown() && data.ModelID.ValueString() != "" {
 		credReq["model_id"] = data.ModelID.ValueString()
 	}
 
-	if !data.CredentialInfo.IsNull() {
+	// Map fields - check IsNull, IsUnknown, and len > 0
+	if !data.CredentialInfo.IsNull() && !data.CredentialInfo.IsUnknown() {
 		var credInfo map[string]string
 		data.CredentialInfo.ElementsAs(ctx, &credInfo, false)
-		// Convert to map[string]interface{} for JSON
-		credInfoInterface := make(map[string]interface{})
-		for k, v := range credInfo {
-			credInfoInterface[k] = v
+		if len(credInfo) > 0 {
+			// Convert to map[string]interface{} for JSON
+			credInfoInterface := make(map[string]interface{})
+			for k, v := range credInfo {
+				credInfoInterface[k] = v
+			}
+			credReq["credential_info"] = credInfoInterface
 		}
-		credReq["credential_info"] = credInfoInterface
 	}
 
-	if !data.CredentialValues.IsNull() {
+	// credential_values is required, so we always include it if present
+	if !data.CredentialValues.IsNull() && !data.CredentialValues.IsUnknown() {
 		var credValues map[string]string
 		data.CredentialValues.ElementsAs(ctx, &credValues, false)
 		// Convert to map[string]interface{} for JSON

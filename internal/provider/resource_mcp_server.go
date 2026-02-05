@@ -393,99 +393,115 @@ func (r *MCPServerResource) buildMCPServerRequest(ctx context.Context, data *MCP
 		"auth_type":    data.AuthType.ValueString(),
 	}
 
-	if !data.Alias.IsNull() && data.Alias.ValueString() != "" {
+	// String fields - check IsNull, IsUnknown, and empty string
+	if !data.Alias.IsNull() && !data.Alias.IsUnknown() && data.Alias.ValueString() != "" {
 		mcpReq["alias"] = data.Alias.ValueString()
 	}
-	if !data.Description.IsNull() && data.Description.ValueString() != "" {
+	if !data.Description.IsNull() && !data.Description.IsUnknown() && data.Description.ValueString() != "" {
 		mcpReq["description"] = data.Description.ValueString()
 	}
-	if !data.Command.IsNull() && data.Command.ValueString() != "" {
+	if !data.Command.IsNull() && !data.Command.IsUnknown() && data.Command.ValueString() != "" {
 		mcpReq["command"] = data.Command.ValueString()
 	}
-
-	if !data.MCPAccessGroups.IsNull() {
-		var groups []string
-		data.MCPAccessGroups.ElementsAs(ctx, &groups, false)
-		mcpReq["mcp_access_groups"] = groups
-	}
-
-	if !data.Args.IsNull() {
-		var args []string
-		data.Args.ElementsAs(ctx, &args, false)
-		mcpReq["args"] = args
-	}
-
-	if !data.Env.IsNull() {
-		var env map[string]string
-		data.Env.ElementsAs(ctx, &env, false)
-		mcpReq["env"] = env
-	}
-
-	// New fields
-	if !data.Credentials.IsNull() {
-		var credentials map[string]string
-		data.Credentials.ElementsAs(ctx, &credentials, false)
-		mcpReq["credentials"] = credentials
-	}
-
-	if !data.AllowedTools.IsNull() {
-		var allowedTools []string
-		data.AllowedTools.ElementsAs(ctx, &allowedTools, false)
-		mcpReq["allowed_tools"] = allowedTools
-	}
-
-	if !data.ExtraHeaders.IsNull() {
-		var extraHeaders map[string]string
-		data.ExtraHeaders.ElementsAs(ctx, &extraHeaders, false)
-		mcpReq["extra_headers"] = extraHeaders
-	}
-
-	if !data.StaticHeaders.IsNull() {
-		var staticHeaders map[string]string
-		data.StaticHeaders.ElementsAs(ctx, &staticHeaders, false)
-		mcpReq["static_headers"] = staticHeaders
-	}
-
-	if !data.AuthorizationURL.IsNull() && data.AuthorizationURL.ValueString() != "" {
+	if !data.AuthorizationURL.IsNull() && !data.AuthorizationURL.IsUnknown() && data.AuthorizationURL.ValueString() != "" {
 		mcpReq["authorization_url"] = data.AuthorizationURL.ValueString()
 	}
-
-	if !data.TokenURL.IsNull() && data.TokenURL.ValueString() != "" {
+	if !data.TokenURL.IsNull() && !data.TokenURL.IsUnknown() && data.TokenURL.ValueString() != "" {
 		mcpReq["token_url"] = data.TokenURL.ValueString()
 	}
-
-	if !data.RegistrationURL.IsNull() && data.RegistrationURL.ValueString() != "" {
+	if !data.RegistrationURL.IsNull() && !data.RegistrationURL.IsUnknown() && data.RegistrationURL.ValueString() != "" {
 		mcpReq["registration_url"] = data.RegistrationURL.ValueString()
 	}
 
-	if !data.AllowAllKeys.IsNull() {
+	// Boolean fields - check IsNull and IsUnknown
+	if !data.AllowAllKeys.IsNull() && !data.AllowAllKeys.IsUnknown() {
 		mcpReq["allow_all_keys"] = data.AllowAllKeys.ValueBool()
+	}
+
+	// List fields - check IsNull, IsUnknown, and len > 0
+	if !data.MCPAccessGroups.IsNull() && !data.MCPAccessGroups.IsUnknown() {
+		var groups []string
+		data.MCPAccessGroups.ElementsAs(ctx, &groups, false)
+		if len(groups) > 0 {
+			mcpReq["mcp_access_groups"] = groups
+		}
+	}
+
+	if !data.Args.IsNull() && !data.Args.IsUnknown() {
+		var args []string
+		data.Args.ElementsAs(ctx, &args, false)
+		if len(args) > 0 {
+			mcpReq["args"] = args
+		}
+	}
+
+	if !data.AllowedTools.IsNull() && !data.AllowedTools.IsUnknown() {
+		var allowedTools []string
+		data.AllowedTools.ElementsAs(ctx, &allowedTools, false)
+		if len(allowedTools) > 0 {
+			mcpReq["allowed_tools"] = allowedTools
+		}
+	}
+
+	// Map fields - check IsNull, IsUnknown, and len > 0
+	if !data.Env.IsNull() && !data.Env.IsUnknown() {
+		var env map[string]string
+		data.Env.ElementsAs(ctx, &env, false)
+		if len(env) > 0 {
+			mcpReq["env"] = env
+		}
+	}
+
+	if !data.Credentials.IsNull() && !data.Credentials.IsUnknown() {
+		var credentials map[string]string
+		data.Credentials.ElementsAs(ctx, &credentials, false)
+		if len(credentials) > 0 {
+			mcpReq["credentials"] = credentials
+		}
+	}
+
+	if !data.ExtraHeaders.IsNull() && !data.ExtraHeaders.IsUnknown() {
+		var extraHeaders map[string]string
+		data.ExtraHeaders.ElementsAs(ctx, &extraHeaders, false)
+		if len(extraHeaders) > 0 {
+			mcpReq["extra_headers"] = extraHeaders
+		}
+	}
+
+	if !data.StaticHeaders.IsNull() && !data.StaticHeaders.IsUnknown() {
+		var staticHeaders map[string]string
+		data.StaticHeaders.ElementsAs(ctx, &staticHeaders, false)
+		if len(staticHeaders) > 0 {
+			mcpReq["static_headers"] = staticHeaders
+		}
 	}
 
 	// Handle mcp_info block
 	if data.MCPInfo != nil {
 		mcpInfo := map[string]interface{}{}
 
-		if !data.MCPInfo.ServerName.IsNull() {
+		if !data.MCPInfo.ServerName.IsNull() && !data.MCPInfo.ServerName.IsUnknown() && data.MCPInfo.ServerName.ValueString() != "" {
 			mcpInfo["server_name"] = data.MCPInfo.ServerName.ValueString()
 		}
-		if !data.MCPInfo.Description.IsNull() {
+		if !data.MCPInfo.Description.IsNull() && !data.MCPInfo.Description.IsUnknown() && data.MCPInfo.Description.ValueString() != "" {
 			mcpInfo["description"] = data.MCPInfo.Description.ValueString()
 		}
-		if !data.MCPInfo.LogoURL.IsNull() {
+		if !data.MCPInfo.LogoURL.IsNull() && !data.MCPInfo.LogoURL.IsUnknown() && data.MCPInfo.LogoURL.ValueString() != "" {
 			mcpInfo["logo_url"] = data.MCPInfo.LogoURL.ValueString()
 		}
 
 		if data.MCPInfo.MCPServerCostInfo != nil {
 			costInfo := map[string]interface{}{}
 
-			if !data.MCPInfo.MCPServerCostInfo.DefaultCostPerQuery.IsNull() {
+			if !data.MCPInfo.MCPServerCostInfo.DefaultCostPerQuery.IsNull() && !data.MCPInfo.MCPServerCostInfo.DefaultCostPerQuery.IsUnknown() {
 				costInfo["default_cost_per_query"] = data.MCPInfo.MCPServerCostInfo.DefaultCostPerQuery.ValueFloat64()
 			}
-			if !data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery.IsNull() {
+			if !data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery.IsNull() && !data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery.IsUnknown() {
 				var toolCosts map[string]float64
 				data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery.ElementsAs(ctx, &toolCosts, false)
-				costInfo["tool_name_to_cost_per_query"] = toolCosts
+				if len(toolCosts) > 0 {
+					costInfo["tool_name_to_cost_per_query"] = toolCosts
+				}
 			}
 
 			if len(costInfo) > 0 {

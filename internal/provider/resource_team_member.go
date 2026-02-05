@@ -113,7 +113,7 @@ func (r *TeamMemberResource) Create(ctx context.Context, req resource.CreateRequ
 		"team_id": data.TeamID.ValueString(),
 	}
 
-	if !data.MaxBudgetInTeam.IsNull() {
+	if !data.MaxBudgetInTeam.IsNull() && !data.MaxBudgetInTeam.IsUnknown() {
 		memberReq["max_budget_in_team"] = data.MaxBudgetInTeam.ValueFloat64()
 	}
 
@@ -162,7 +162,7 @@ func (r *TeamMemberResource) Update(ctx context.Context, req resource.UpdateRequ
 		"team_id":    data.TeamID.ValueString(),
 	}
 
-	if !data.MaxBudgetInTeam.IsNull() {
+	if !data.MaxBudgetInTeam.IsNull() && !data.MaxBudgetInTeam.IsUnknown() {
 		updateReq["max_budget_in_team"] = data.MaxBudgetInTeam.ValueFloat64()
 	}
 

@@ -231,34 +231,40 @@ func (r *VectorStoreResource) buildVectorStoreRequest(ctx context.Context, data 
 		"custom_llm_provider": data.CustomLLMProvider.ValueString(),
 	}
 
-	if !data.VectorStoreDescription.IsNull() && data.VectorStoreDescription.ValueString() != "" {
+	// String fields - check IsNull, IsUnknown, and empty string
+	if !data.VectorStoreDescription.IsNull() && !data.VectorStoreDescription.IsUnknown() && data.VectorStoreDescription.ValueString() != "" {
 		vsReq["vector_store_description"] = data.VectorStoreDescription.ValueString()
 	}
 
-	if !data.LiteLLMCredentialName.IsNull() && data.LiteLLMCredentialName.ValueString() != "" {
+	if !data.LiteLLMCredentialName.IsNull() && !data.LiteLLMCredentialName.IsUnknown() && data.LiteLLMCredentialName.ValueString() != "" {
 		vsReq["litellm_credential_name"] = data.LiteLLMCredentialName.ValueString()
 	}
 
-	if !data.VectorStoreMetadata.IsNull() {
+	// Map fields - check IsNull, IsUnknown, and len > 0
+	if !data.VectorStoreMetadata.IsNull() && !data.VectorStoreMetadata.IsUnknown() {
 		var metadata map[string]string
 		data.VectorStoreMetadata.ElementsAs(ctx, &metadata, false)
-		// Convert to map[string]interface{} for JSON
-		metadataInterface := make(map[string]interface{})
-		for k, v := range metadata {
-			metadataInterface[k] = v
+		if len(metadata) > 0 {
+			// Convert to map[string]interface{} for JSON
+			metadataInterface := make(map[string]interface{})
+			for k, v := range metadata {
+				metadataInterface[k] = v
+			}
+			vsReq["vector_store_metadata"] = metadataInterface
 		}
-		vsReq["vector_store_metadata"] = metadataInterface
 	}
 
-	if !data.LiteLLMParams.IsNull() {
+	if !data.LiteLLMParams.IsNull() && !data.LiteLLMParams.IsUnknown() {
 		var params map[string]string
 		data.LiteLLMParams.ElementsAs(ctx, &params, false)
-		// Convert to map[string]interface{} for JSON
-		paramsInterface := make(map[string]interface{})
-		for k, v := range params {
-			paramsInterface[k] = v
+		if len(params) > 0 {
+			// Convert to map[string]interface{} for JSON
+			paramsInterface := make(map[string]interface{})
+			for k, v := range params {
+				paramsInterface[k] = v
+			}
+			vsReq["litellm_params"] = paramsInterface
 		}
-		vsReq["litellm_params"] = paramsInterface
 	}
 
 	return vsReq

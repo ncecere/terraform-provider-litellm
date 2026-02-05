@@ -125,7 +125,7 @@ func (r *TeamMemberAddResource) Create(ctx context.Context, req resource.CreateR
 		"team_id": data.TeamID.ValueString(),
 	}
 
-	if !data.MaxBudgetInTeam.IsNull() {
+	if !data.MaxBudgetInTeam.IsNull() && !data.MaxBudgetInTeam.IsUnknown() {
 		memberReq["max_budget_in_team"] = data.MaxBudgetInTeam.ValueFloat64()
 	}
 
@@ -206,7 +206,7 @@ func (r *TeamMemberAddResource) Update(ctx context.Context, req resource.UpdateR
 			"member":  membersToAdd,
 			"team_id": plan.TeamID.ValueString(),
 		}
-		if !plan.MaxBudgetInTeam.IsNull() {
+		if !plan.MaxBudgetInTeam.IsNull() && !plan.MaxBudgetInTeam.IsUnknown() {
 			memberReq["max_budget_in_team"] = plan.MaxBudgetInTeam.ValueFloat64()
 		}
 		if err := r.client.DoRequestWithResponse(ctx, "POST", "/team/member_add", memberReq, nil); err != nil {

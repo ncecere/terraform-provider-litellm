@@ -348,38 +348,38 @@ func (r *ModelResource) createOrUpdateModel(ctx context.Context, data *ModelReso
 	}
 
 	// Add cost parameters
-	if !data.InputCostPerMillionTokens.IsNull() {
+	if !data.InputCostPerMillionTokens.IsNull() && !data.InputCostPerMillionTokens.IsUnknown() {
 		litellmParams["input_cost_per_token"] = data.InputCostPerMillionTokens.ValueFloat64() / 1000000.0
 	}
-	if !data.OutputCostPerMillionTokens.IsNull() {
+	if !data.OutputCostPerMillionTokens.IsNull() && !data.OutputCostPerMillionTokens.IsUnknown() {
 		litellmParams["output_cost_per_token"] = data.OutputCostPerMillionTokens.ValueFloat64() / 1000000.0
 	}
 
 	// Add optional parameters
-	if !data.TPM.IsNull() && data.TPM.ValueInt64() > 0 {
+	if !data.TPM.IsNull() && !data.TPM.IsUnknown() && data.TPM.ValueInt64() > 0 {
 		litellmParams["tpm"] = data.TPM.ValueInt64()
 	}
-	if !data.RPM.IsNull() && data.RPM.ValueInt64() > 0 {
+	if !data.RPM.IsNull() && !data.RPM.IsUnknown() && data.RPM.ValueInt64() > 0 {
 		litellmParams["rpm"] = data.RPM.ValueInt64()
 	}
-	if !data.ModelAPIKey.IsNull() {
+	if !data.ModelAPIKey.IsNull() && !data.ModelAPIKey.IsUnknown() && data.ModelAPIKey.ValueString() != "" {
 		litellmParams["api_key"] = data.ModelAPIKey.ValueString()
 	}
-	if !data.ModelAPIBase.IsNull() {
+	if !data.ModelAPIBase.IsNull() && !data.ModelAPIBase.IsUnknown() && data.ModelAPIBase.ValueString() != "" {
 		litellmParams["api_base"] = data.ModelAPIBase.ValueString()
 	}
-	if !data.APIVersion.IsNull() {
+	if !data.APIVersion.IsNull() && !data.APIVersion.IsUnknown() && data.APIVersion.ValueString() != "" {
 		litellmParams["api_version"] = data.APIVersion.ValueString()
 	}
-	if !data.ReasoningEffort.IsNull() {
+	if !data.ReasoningEffort.IsNull() && !data.ReasoningEffort.IsUnknown() && data.ReasoningEffort.ValueString() != "" {
 		litellmParams["reasoning_effort"] = data.ReasoningEffort.ValueString()
 	}
-	if !data.MergeReasoningContentInChoices.IsNull() {
+	if !data.MergeReasoningContentInChoices.IsNull() && !data.MergeReasoningContentInChoices.IsUnknown() {
 		litellmParams["merge_reasoning_content_in_choices"] = data.MergeReasoningContentInChoices.ValueBool()
 	}
 
 	// Thinking configuration
-	if data.ThinkingEnabled.ValueBool() {
+	if !data.ThinkingEnabled.IsNull() && !data.ThinkingEnabled.IsUnknown() && data.ThinkingEnabled.ValueBool() {
 		litellmParams["thinking"] = map[string]interface{}{
 			"type":          "enabled",
 			"budget_tokens": data.ThinkingBudgetTokens.ValueInt64(),
@@ -387,49 +387,49 @@ func (r *ModelResource) createOrUpdateModel(ctx context.Context, data *ModelReso
 	}
 
 	// AWS parameters
-	if !data.AWSAccessKeyID.IsNull() {
+	if !data.AWSAccessKeyID.IsNull() && !data.AWSAccessKeyID.IsUnknown() && data.AWSAccessKeyID.ValueString() != "" {
 		litellmParams["aws_access_key_id"] = data.AWSAccessKeyID.ValueString()
 	}
-	if !data.AWSSecretAccessKey.IsNull() {
+	if !data.AWSSecretAccessKey.IsNull() && !data.AWSSecretAccessKey.IsUnknown() && data.AWSSecretAccessKey.ValueString() != "" {
 		litellmParams["aws_secret_access_key"] = data.AWSSecretAccessKey.ValueString()
 	}
-	if !data.AWSRegionName.IsNull() {
+	if !data.AWSRegionName.IsNull() && !data.AWSRegionName.IsUnknown() && data.AWSRegionName.ValueString() != "" {
 		litellmParams["aws_region_name"] = data.AWSRegionName.ValueString()
 	}
-	if !data.AWSSessionName.IsNull() {
+	if !data.AWSSessionName.IsNull() && !data.AWSSessionName.IsUnknown() && data.AWSSessionName.ValueString() != "" {
 		litellmParams["aws_session_name"] = data.AWSSessionName.ValueString()
 	}
-	if !data.AWSRoleName.IsNull() {
+	if !data.AWSRoleName.IsNull() && !data.AWSRoleName.IsUnknown() && data.AWSRoleName.ValueString() != "" {
 		litellmParams["aws_role_name"] = data.AWSRoleName.ValueString()
 	}
 
 	// Vertex parameters
-	if !data.VertexProject.IsNull() {
+	if !data.VertexProject.IsNull() && !data.VertexProject.IsUnknown() && data.VertexProject.ValueString() != "" {
 		litellmParams["vertex_project"] = data.VertexProject.ValueString()
 	}
-	if !data.VertexLocation.IsNull() {
+	if !data.VertexLocation.IsNull() && !data.VertexLocation.IsUnknown() && data.VertexLocation.ValueString() != "" {
 		litellmParams["vertex_location"] = data.VertexLocation.ValueString()
 	}
-	if !data.VertexCredentials.IsNull() {
+	if !data.VertexCredentials.IsNull() && !data.VertexCredentials.IsUnknown() && data.VertexCredentials.ValueString() != "" {
 		litellmParams["vertex_credentials"] = data.VertexCredentials.ValueString()
 	}
 
 	// Credential reference
-	if !data.LiteLLMCredentialName.IsNull() {
+	if !data.LiteLLMCredentialName.IsNull() && !data.LiteLLMCredentialName.IsUnknown() && data.LiteLLMCredentialName.ValueString() != "" {
 		litellmParams["litellm_credential_name"] = data.LiteLLMCredentialName.ValueString()
 	}
 
 	// Cost per pixel/second
-	if !data.InputCostPerPixel.IsNull() {
+	if !data.InputCostPerPixel.IsNull() && !data.InputCostPerPixel.IsUnknown() {
 		litellmParams["input_cost_per_pixel"] = data.InputCostPerPixel.ValueFloat64()
 	}
-	if !data.OutputCostPerPixel.IsNull() {
+	if !data.OutputCostPerPixel.IsNull() && !data.OutputCostPerPixel.IsUnknown() {
 		litellmParams["output_cost_per_pixel"] = data.OutputCostPerPixel.ValueFloat64()
 	}
-	if !data.InputCostPerSecond.IsNull() {
+	if !data.InputCostPerSecond.IsNull() && !data.InputCostPerSecond.IsUnknown() {
 		litellmParams["input_cost_per_second"] = data.InputCostPerSecond.ValueFloat64()
 	}
-	if !data.OutputCostPerSecond.IsNull() {
+	if !data.OutputCostPerSecond.IsNull() && !data.OutputCostPerSecond.IsUnknown() {
 		litellmParams["output_cost_per_second"] = data.OutputCostPerSecond.ValueFloat64()
 	}
 
@@ -437,9 +437,17 @@ func (r *ModelResource) createOrUpdateModel(ctx context.Context, data *ModelReso
 		"id":         modelID,
 		"db_model":   true,
 		"base_model": baseModel,
-		"tier":       data.Tier.ValueString(),
-		"mode":       data.Mode.ValueString(),
-		"team_id":    data.TeamID.ValueString(),
+	}
+
+	// Only add optional model_info fields if they have values
+	if !data.Tier.IsNull() && !data.Tier.IsUnknown() && data.Tier.ValueString() != "" {
+		modelInfo["tier"] = data.Tier.ValueString()
+	}
+	if !data.Mode.IsNull() && !data.Mode.IsUnknown() && data.Mode.ValueString() != "" {
+		modelInfo["mode"] = data.Mode.ValueString()
+	}
+	if !data.TeamID.IsNull() && !data.TeamID.IsUnknown() && data.TeamID.ValueString() != "" {
+		modelInfo["team_id"] = data.TeamID.ValueString()
 	}
 
 	// Add access_groups to model_info if specified
@@ -576,38 +584,38 @@ func (r *ModelResource) patchModel(ctx context.Context, data *ModelResourceModel
 	}
 
 	// Add cost parameters
-	if !data.InputCostPerMillionTokens.IsNull() {
+	if !data.InputCostPerMillionTokens.IsNull() && !data.InputCostPerMillionTokens.IsUnknown() {
 		litellmParams["input_cost_per_token"] = data.InputCostPerMillionTokens.ValueFloat64() / 1000000.0
 	}
-	if !data.OutputCostPerMillionTokens.IsNull() {
+	if !data.OutputCostPerMillionTokens.IsNull() && !data.OutputCostPerMillionTokens.IsUnknown() {
 		litellmParams["output_cost_per_token"] = data.OutputCostPerMillionTokens.ValueFloat64() / 1000000.0
 	}
 
 	// Add optional parameters
-	if !data.TPM.IsNull() && data.TPM.ValueInt64() > 0 {
+	if !data.TPM.IsNull() && !data.TPM.IsUnknown() && data.TPM.ValueInt64() > 0 {
 		litellmParams["tpm"] = data.TPM.ValueInt64()
 	}
-	if !data.RPM.IsNull() && data.RPM.ValueInt64() > 0 {
+	if !data.RPM.IsNull() && !data.RPM.IsUnknown() && data.RPM.ValueInt64() > 0 {
 		litellmParams["rpm"] = data.RPM.ValueInt64()
 	}
-	if !data.ModelAPIKey.IsNull() {
+	if !data.ModelAPIKey.IsNull() && !data.ModelAPIKey.IsUnknown() && data.ModelAPIKey.ValueString() != "" {
 		litellmParams["api_key"] = data.ModelAPIKey.ValueString()
 	}
-	if !data.ModelAPIBase.IsNull() {
+	if !data.ModelAPIBase.IsNull() && !data.ModelAPIBase.IsUnknown() && data.ModelAPIBase.ValueString() != "" {
 		litellmParams["api_base"] = data.ModelAPIBase.ValueString()
 	}
-	if !data.APIVersion.IsNull() {
+	if !data.APIVersion.IsNull() && !data.APIVersion.IsUnknown() && data.APIVersion.ValueString() != "" {
 		litellmParams["api_version"] = data.APIVersion.ValueString()
 	}
-	if !data.ReasoningEffort.IsNull() {
+	if !data.ReasoningEffort.IsNull() && !data.ReasoningEffort.IsUnknown() && data.ReasoningEffort.ValueString() != "" {
 		litellmParams["reasoning_effort"] = data.ReasoningEffort.ValueString()
 	}
-	if !data.MergeReasoningContentInChoices.IsNull() {
+	if !data.MergeReasoningContentInChoices.IsNull() && !data.MergeReasoningContentInChoices.IsUnknown() {
 		litellmParams["merge_reasoning_content_in_choices"] = data.MergeReasoningContentInChoices.ValueBool()
 	}
 
 	// Thinking configuration
-	if data.ThinkingEnabled.ValueBool() {
+	if !data.ThinkingEnabled.IsNull() && !data.ThinkingEnabled.IsUnknown() && data.ThinkingEnabled.ValueBool() {
 		litellmParams["thinking"] = map[string]interface{}{
 			"type":          "enabled",
 			"budget_tokens": data.ThinkingBudgetTokens.ValueInt64(),
@@ -615,62 +623,70 @@ func (r *ModelResource) patchModel(ctx context.Context, data *ModelResourceModel
 	}
 
 	// AWS parameters
-	if !data.AWSAccessKeyID.IsNull() {
+	if !data.AWSAccessKeyID.IsNull() && !data.AWSAccessKeyID.IsUnknown() && data.AWSAccessKeyID.ValueString() != "" {
 		litellmParams["aws_access_key_id"] = data.AWSAccessKeyID.ValueString()
 	}
-	if !data.AWSSecretAccessKey.IsNull() {
+	if !data.AWSSecretAccessKey.IsNull() && !data.AWSSecretAccessKey.IsUnknown() && data.AWSSecretAccessKey.ValueString() != "" {
 		litellmParams["aws_secret_access_key"] = data.AWSSecretAccessKey.ValueString()
 	}
-	if !data.AWSRegionName.IsNull() {
+	if !data.AWSRegionName.IsNull() && !data.AWSRegionName.IsUnknown() && data.AWSRegionName.ValueString() != "" {
 		litellmParams["aws_region_name"] = data.AWSRegionName.ValueString()
 	}
-	if !data.AWSSessionName.IsNull() {
+	if !data.AWSSessionName.IsNull() && !data.AWSSessionName.IsUnknown() && data.AWSSessionName.ValueString() != "" {
 		litellmParams["aws_session_name"] = data.AWSSessionName.ValueString()
 	}
-	if !data.AWSRoleName.IsNull() {
+	if !data.AWSRoleName.IsNull() && !data.AWSRoleName.IsUnknown() && data.AWSRoleName.ValueString() != "" {
 		litellmParams["aws_role_name"] = data.AWSRoleName.ValueString()
 	}
 
 	// Vertex parameters
-	if !data.VertexProject.IsNull() {
+	if !data.VertexProject.IsNull() && !data.VertexProject.IsUnknown() && data.VertexProject.ValueString() != "" {
 		litellmParams["vertex_project"] = data.VertexProject.ValueString()
 	}
-	if !data.VertexLocation.IsNull() {
+	if !data.VertexLocation.IsNull() && !data.VertexLocation.IsUnknown() && data.VertexLocation.ValueString() != "" {
 		litellmParams["vertex_location"] = data.VertexLocation.ValueString()
 	}
-	if !data.VertexCredentials.IsNull() {
+	if !data.VertexCredentials.IsNull() && !data.VertexCredentials.IsUnknown() && data.VertexCredentials.ValueString() != "" {
 		litellmParams["vertex_credentials"] = data.VertexCredentials.ValueString()
 	}
 
 	// Credential reference
-	if !data.LiteLLMCredentialName.IsNull() {
+	if !data.LiteLLMCredentialName.IsNull() && !data.LiteLLMCredentialName.IsUnknown() && data.LiteLLMCredentialName.ValueString() != "" {
 		litellmParams["litellm_credential_name"] = data.LiteLLMCredentialName.ValueString()
 	}
 
 	// Cost per pixel/second
-	if !data.InputCostPerPixel.IsNull() {
+	if !data.InputCostPerPixel.IsNull() && !data.InputCostPerPixel.IsUnknown() {
 		litellmParams["input_cost_per_pixel"] = data.InputCostPerPixel.ValueFloat64()
 	}
-	if !data.OutputCostPerPixel.IsNull() {
+	if !data.OutputCostPerPixel.IsNull() && !data.OutputCostPerPixel.IsUnknown() {
 		litellmParams["output_cost_per_pixel"] = data.OutputCostPerPixel.ValueFloat64()
 	}
-	if !data.InputCostPerSecond.IsNull() {
+	if !data.InputCostPerSecond.IsNull() && !data.InputCostPerSecond.IsUnknown() {
 		litellmParams["input_cost_per_second"] = data.InputCostPerSecond.ValueFloat64()
 	}
-	if !data.OutputCostPerSecond.IsNull() {
+	if !data.OutputCostPerSecond.IsNull() && !data.OutputCostPerSecond.IsUnknown() {
 		litellmParams["output_cost_per_second"] = data.OutputCostPerSecond.ValueFloat64()
 	}
 
 	// Build model_info for the PATCH request
 	modelInfo := map[string]interface{}{
 		"base_model": baseModel,
-		"tier":       data.Tier.ValueString(),
-		"mode":       data.Mode.ValueString(),
-		"team_id":    data.TeamID.ValueString(),
+	}
+
+	// Only add optional model_info fields if they have values
+	if !data.Tier.IsNull() && !data.Tier.IsUnknown() && data.Tier.ValueString() != "" {
+		modelInfo["tier"] = data.Tier.ValueString()
+	}
+	if !data.Mode.IsNull() && !data.Mode.IsUnknown() && data.Mode.ValueString() != "" {
+		modelInfo["mode"] = data.Mode.ValueString()
+	}
+	if !data.TeamID.IsNull() && !data.TeamID.IsUnknown() && data.TeamID.ValueString() != "" {
+		modelInfo["team_id"] = data.TeamID.ValueString()
 	}
 
 	// Add access_groups to model_info if specified
-	if !data.AccessGroups.IsNull() {
+	if !data.AccessGroups.IsNull() && !data.AccessGroups.IsUnknown() {
 		var accessGroups []string
 		data.AccessGroups.ElementsAs(ctx, &accessGroups, false)
 		if len(accessGroups) > 0 {

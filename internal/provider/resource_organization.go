@@ -269,57 +269,73 @@ func (r *OrganizationResource) buildOrganizationRequest(ctx context.Context, dat
 		"organization_alias": data.OrganizationAlias.ValueString(),
 	}
 
-	if !data.OrganizationID.IsNull() && data.OrganizationID.ValueString() != "" {
+	// String fields - check IsNull, IsUnknown, and empty string
+	if !data.OrganizationID.IsNull() && !data.OrganizationID.IsUnknown() && data.OrganizationID.ValueString() != "" {
 		orgReq["organization_id"] = data.OrganizationID.ValueString()
 	}
-
-	if !data.Models.IsNull() {
-		var models []string
-		data.Models.ElementsAs(ctx, &models, false)
-		orgReq["models"] = models
-	}
-
-	if !data.BudgetID.IsNull() && data.BudgetID.ValueString() != "" {
+	if !data.BudgetID.IsNull() && !data.BudgetID.IsUnknown() && data.BudgetID.ValueString() != "" {
 		orgReq["budget_id"] = data.BudgetID.ValueString()
 	}
-	if !data.MaxBudget.IsNull() {
-		orgReq["max_budget"] = data.MaxBudget.ValueFloat64()
-	}
-	if !data.TPMLimit.IsNull() {
-		orgReq["tpm_limit"] = data.TPMLimit.ValueInt64()
-	}
-	if !data.RPMLimit.IsNull() {
-		orgReq["rpm_limit"] = data.RPMLimit.ValueInt64()
-	}
-	if !data.BudgetDuration.IsNull() && data.BudgetDuration.ValueString() != "" {
+	if !data.BudgetDuration.IsNull() && !data.BudgetDuration.IsUnknown() && data.BudgetDuration.ValueString() != "" {
 		orgReq["budget_duration"] = data.BudgetDuration.ValueString()
 	}
-	if !data.Blocked.IsNull() {
+
+	// Numeric fields - check IsNull and IsUnknown
+	if !data.MaxBudget.IsNull() && !data.MaxBudget.IsUnknown() {
+		orgReq["max_budget"] = data.MaxBudget.ValueFloat64()
+	}
+	if !data.TPMLimit.IsNull() && !data.TPMLimit.IsUnknown() {
+		orgReq["tpm_limit"] = data.TPMLimit.ValueInt64()
+	}
+	if !data.RPMLimit.IsNull() && !data.RPMLimit.IsUnknown() {
+		orgReq["rpm_limit"] = data.RPMLimit.ValueInt64()
+	}
+
+	// Boolean fields - check IsNull and IsUnknown
+	if !data.Blocked.IsNull() && !data.Blocked.IsUnknown() {
 		orgReq["blocked"] = data.Blocked.ValueBool()
 	}
 
-	if !data.ModelRPMLimit.IsNull() {
-		var modelRPM map[string]int64
-		data.ModelRPMLimit.ElementsAs(ctx, &modelRPM, false)
-		orgReq["model_rpm_limit"] = modelRPM
+	// List fields - check IsNull, IsUnknown, and len > 0
+	if !data.Models.IsNull() && !data.Models.IsUnknown() {
+		var models []string
+		data.Models.ElementsAs(ctx, &models, false)
+		if len(models) > 0 {
+			orgReq["models"] = models
+		}
 	}
 
-	if !data.ModelTPMLimit.IsNull() {
-		var modelTPM map[string]int64
-		data.ModelTPMLimit.ElementsAs(ctx, &modelTPM, false)
-		orgReq["model_tpm_limit"] = modelTPM
-	}
-
-	if !data.Metadata.IsNull() {
-		var metadata map[string]string
-		data.Metadata.ElementsAs(ctx, &metadata, false)
-		orgReq["metadata"] = metadata
-	}
-
-	if !data.Tags.IsNull() {
+	if !data.Tags.IsNull() && !data.Tags.IsUnknown() {
 		var tags []string
 		data.Tags.ElementsAs(ctx, &tags, false)
-		orgReq["tags"] = tags
+		if len(tags) > 0 {
+			orgReq["tags"] = tags
+		}
+	}
+
+	// Map fields - check IsNull, IsUnknown, and len > 0
+	if !data.ModelRPMLimit.IsNull() && !data.ModelRPMLimit.IsUnknown() {
+		var modelRPM map[string]int64
+		data.ModelRPMLimit.ElementsAs(ctx, &modelRPM, false)
+		if len(modelRPM) > 0 {
+			orgReq["model_rpm_limit"] = modelRPM
+		}
+	}
+
+	if !data.ModelTPMLimit.IsNull() && !data.ModelTPMLimit.IsUnknown() {
+		var modelTPM map[string]int64
+		data.ModelTPMLimit.ElementsAs(ctx, &modelTPM, false)
+		if len(modelTPM) > 0 {
+			orgReq["model_tpm_limit"] = modelTPM
+		}
+	}
+
+	if !data.Metadata.IsNull() && !data.Metadata.IsUnknown() {
+		var metadata map[string]string
+		data.Metadata.ElementsAs(ctx, &metadata, false)
+		if len(metadata) > 0 {
+			orgReq["metadata"] = metadata
+		}
 	}
 
 	return orgReq

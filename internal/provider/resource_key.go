@@ -364,154 +364,190 @@ func (r *KeyResource) ImportState(ctx context.Context, req resource.ImportStateR
 func (r *KeyResource) buildKeyRequest(ctx context.Context, data *KeyResourceModel) map[string]interface{} {
 	keyReq := make(map[string]interface{})
 
-	if !data.Key.IsNull() && data.Key.ValueString() != "" {
+	// String fields - check IsNull, IsUnknown, and empty string
+	if !data.Key.IsNull() && !data.Key.IsUnknown() && data.Key.ValueString() != "" {
 		keyReq["key"] = data.Key.ValueString()
 	}
-
-	if !data.Models.IsNull() {
-		var models []string
-		data.Models.ElementsAs(ctx, &models, false)
-		if len(models) == 0 && !data.TeamID.IsNull() && data.TeamID.ValueString() != "" {
-			models = []string{"all-team-models"}
-		}
-		keyReq["models"] = models
-	} else if !data.TeamID.IsNull() && data.TeamID.ValueString() != "" {
-		keyReq["models"] = []string{"all-team-models"}
-	}
-
-	if !data.AllowedRoutes.IsNull() {
-		var routes []string
-		data.AllowedRoutes.ElementsAs(ctx, &routes, false)
-		keyReq["allowed_routes"] = routes
-	}
-
-	if !data.AllowedPassthroughRoutes.IsNull() {
-		var routes []string
-		data.AllowedPassthroughRoutes.ElementsAs(ctx, &routes, false)
-		keyReq["allowed_passthrough_routes"] = routes
-	}
-
-	if !data.MaxBudget.IsNull() {
-		keyReq["max_budget"] = data.MaxBudget.ValueFloat64()
-	}
-	if !data.UserID.IsNull() {
+	if !data.UserID.IsNull() && !data.UserID.IsUnknown() && data.UserID.ValueString() != "" {
 		keyReq["user_id"] = data.UserID.ValueString()
 	}
-	if !data.TeamID.IsNull() {
+	if !data.TeamID.IsNull() && !data.TeamID.IsUnknown() && data.TeamID.ValueString() != "" {
 		keyReq["team_id"] = data.TeamID.ValueString()
 	}
-	if !data.OrganizationID.IsNull() && data.OrganizationID.ValueString() != "" {
+	if !data.OrganizationID.IsNull() && !data.OrganizationID.IsUnknown() && data.OrganizationID.ValueString() != "" {
 		keyReq["organization_id"] = data.OrganizationID.ValueString()
 	}
-	if !data.BudgetID.IsNull() && data.BudgetID.ValueString() != "" {
+	if !data.BudgetID.IsNull() && !data.BudgetID.IsUnknown() && data.BudgetID.ValueString() != "" {
 		keyReq["budget_id"] = data.BudgetID.ValueString()
 	}
-	if !data.MaxParallelRequests.IsNull() {
-		keyReq["max_parallel_requests"] = data.MaxParallelRequests.ValueInt64()
-	}
-	if !data.TPMLimit.IsNull() {
-		keyReq["tpm_limit"] = data.TPMLimit.ValueInt64()
-	}
-	if !data.RPMLimit.IsNull() {
-		keyReq["rpm_limit"] = data.RPMLimit.ValueInt64()
-	}
-	if !data.TPMLimitType.IsNull() && data.TPMLimitType.ValueString() != "" {
+	if !data.TPMLimitType.IsNull() && !data.TPMLimitType.IsUnknown() && data.TPMLimitType.ValueString() != "" {
 		keyReq["tpm_limit_type"] = data.TPMLimitType.ValueString()
 	}
-	if !data.RPMLimitType.IsNull() && data.RPMLimitType.ValueString() != "" {
+	if !data.RPMLimitType.IsNull() && !data.RPMLimitType.IsUnknown() && data.RPMLimitType.ValueString() != "" {
 		keyReq["rpm_limit_type"] = data.RPMLimitType.ValueString()
 	}
-	if !data.BudgetDuration.IsNull() {
+	if !data.BudgetDuration.IsNull() && !data.BudgetDuration.IsUnknown() && data.BudgetDuration.ValueString() != "" {
 		keyReq["budget_duration"] = data.BudgetDuration.ValueString()
 	}
-	if !data.SoftBudget.IsNull() {
-		keyReq["soft_budget"] = data.SoftBudget.ValueFloat64()
-	}
-	if !data.KeyAlias.IsNull() {
+	if !data.KeyAlias.IsNull() && !data.KeyAlias.IsUnknown() && data.KeyAlias.ValueString() != "" {
 		keyReq["key_alias"] = data.KeyAlias.ValueString()
 	}
-	if !data.Duration.IsNull() {
+	if !data.Duration.IsNull() && !data.Duration.IsUnknown() && data.Duration.ValueString() != "" {
 		keyReq["duration"] = data.Duration.ValueString()
 	}
 
-	if !data.AllowedCacheControls.IsNull() {
-		var cacheControls []string
-		data.AllowedCacheControls.ElementsAs(ctx, &cacheControls, false)
-		keyReq["allowed_cache_controls"] = cacheControls
+	// Numeric fields - check IsNull and IsUnknown
+	if !data.MaxBudget.IsNull() && !data.MaxBudget.IsUnknown() {
+		keyReq["max_budget"] = data.MaxBudget.ValueFloat64()
+	}
+	if !data.MaxParallelRequests.IsNull() && !data.MaxParallelRequests.IsUnknown() {
+		keyReq["max_parallel_requests"] = data.MaxParallelRequests.ValueInt64()
+	}
+	if !data.TPMLimit.IsNull() && !data.TPMLimit.IsUnknown() {
+		keyReq["tpm_limit"] = data.TPMLimit.ValueInt64()
+	}
+	if !data.RPMLimit.IsNull() && !data.RPMLimit.IsUnknown() {
+		keyReq["rpm_limit"] = data.RPMLimit.ValueInt64()
+	}
+	if !data.SoftBudget.IsNull() && !data.SoftBudget.IsUnknown() {
+		keyReq["soft_budget"] = data.SoftBudget.ValueFloat64()
 	}
 
-	if !data.Guardrails.IsNull() {
-		var guardrails []string
-		data.Guardrails.ElementsAs(ctx, &guardrails, false)
-		keyReq["guardrails"] = guardrails
-	}
-
-	if !data.Prompts.IsNull() {
-		var prompts []string
-		data.Prompts.ElementsAs(ctx, &prompts, false)
-		keyReq["prompts"] = prompts
-	}
-
-	if !data.EnforcedParams.IsNull() {
-		var enforcedParams []string
-		data.EnforcedParams.ElementsAs(ctx, &enforcedParams, false)
-		keyReq["enforced_params"] = enforcedParams
-	}
-
-	if !data.Tags.IsNull() {
-		var tags []string
-		data.Tags.ElementsAs(ctx, &tags, false)
-		keyReq["tags"] = tags
-	}
-
-	if !data.Metadata.IsNull() {
-		var metadata map[string]string
-		data.Metadata.ElementsAs(ctx, &metadata, false)
-		keyReq["metadata"] = metadata
-	}
-
-	if !data.Aliases.IsNull() {
-		var aliases map[string]string
-		data.Aliases.ElementsAs(ctx, &aliases, false)
-		keyReq["aliases"] = aliases
-	}
-
-	if !data.Config.IsNull() {
-		var config map[string]string
-		data.Config.ElementsAs(ctx, &config, false)
-		keyReq["config"] = config
-	}
-
-	if !data.Permissions.IsNull() {
-		var permissions map[string]string
-		data.Permissions.ElementsAs(ctx, &permissions, false)
-		keyReq["permissions"] = permissions
-	}
-
-	if !data.ModelMaxBudget.IsNull() {
-		var modelMaxBudget map[string]float64
-		data.ModelMaxBudget.ElementsAs(ctx, &modelMaxBudget, false)
-		keyReq["model_max_budget"] = modelMaxBudget
-	}
-
-	if !data.ModelRPMLimit.IsNull() {
-		var modelRPMLimit map[string]int64
-		data.ModelRPMLimit.ElementsAs(ctx, &modelRPMLimit, false)
-		keyReq["model_rpm_limit"] = modelRPMLimit
-	}
-
-	if !data.ModelTPMLimit.IsNull() {
-		var modelTPMLimit map[string]int64
-		data.ModelTPMLimit.ElementsAs(ctx, &modelTPMLimit, false)
-		keyReq["model_tpm_limit"] = modelTPMLimit
-	}
-
-	if !data.Blocked.IsNull() {
+	// Boolean fields - check IsNull and IsUnknown
+	if !data.Blocked.IsNull() && !data.Blocked.IsUnknown() {
 		keyReq["blocked"] = data.Blocked.ValueBool()
 	}
 
+	// Models list - special handling for team models
+	if !data.Models.IsNull() && !data.Models.IsUnknown() {
+		var models []string
+		data.Models.ElementsAs(ctx, &models, false)
+		if len(models) == 0 && !data.TeamID.IsNull() && !data.TeamID.IsUnknown() && data.TeamID.ValueString() != "" {
+			models = []string{"all-team-models"}
+		}
+		if len(models) > 0 {
+			keyReq["models"] = models
+		}
+	} else if !data.TeamID.IsNull() && !data.TeamID.IsUnknown() && data.TeamID.ValueString() != "" {
+		keyReq["models"] = []string{"all-team-models"}
+	}
+
+	// List fields - check IsNull, IsUnknown, and len > 0
+	if !data.AllowedRoutes.IsNull() && !data.AllowedRoutes.IsUnknown() {
+		var routes []string
+		data.AllowedRoutes.ElementsAs(ctx, &routes, false)
+		if len(routes) > 0 {
+			keyReq["allowed_routes"] = routes
+		}
+	}
+
+	if !data.AllowedPassthroughRoutes.IsNull() && !data.AllowedPassthroughRoutes.IsUnknown() {
+		var routes []string
+		data.AllowedPassthroughRoutes.ElementsAs(ctx, &routes, false)
+		if len(routes) > 0 {
+			keyReq["allowed_passthrough_routes"] = routes
+		}
+	}
+
+	if !data.AllowedCacheControls.IsNull() && !data.AllowedCacheControls.IsUnknown() {
+		var cacheControls []string
+		data.AllowedCacheControls.ElementsAs(ctx, &cacheControls, false)
+		if len(cacheControls) > 0 {
+			keyReq["allowed_cache_controls"] = cacheControls
+		}
+	}
+
+	if !data.Guardrails.IsNull() && !data.Guardrails.IsUnknown() {
+		var guardrails []string
+		data.Guardrails.ElementsAs(ctx, &guardrails, false)
+		if len(guardrails) > 0 {
+			keyReq["guardrails"] = guardrails
+		}
+	}
+
+	if !data.Prompts.IsNull() && !data.Prompts.IsUnknown() {
+		var prompts []string
+		data.Prompts.ElementsAs(ctx, &prompts, false)
+		if len(prompts) > 0 {
+			keyReq["prompts"] = prompts
+		}
+	}
+
+	if !data.EnforcedParams.IsNull() && !data.EnforcedParams.IsUnknown() {
+		var enforcedParams []string
+		data.EnforcedParams.ElementsAs(ctx, &enforcedParams, false)
+		if len(enforcedParams) > 0 {
+			keyReq["enforced_params"] = enforcedParams
+		}
+	}
+
+	if !data.Tags.IsNull() && !data.Tags.IsUnknown() {
+		var tags []string
+		data.Tags.ElementsAs(ctx, &tags, false)
+		if len(tags) > 0 {
+			keyReq["tags"] = tags
+		}
+	}
+
+	// Map fields - check IsNull, IsUnknown, and len > 0
+	if !data.Metadata.IsNull() && !data.Metadata.IsUnknown() {
+		var metadata map[string]string
+		data.Metadata.ElementsAs(ctx, &metadata, false)
+		if len(metadata) > 0 {
+			keyReq["metadata"] = metadata
+		}
+	}
+
+	if !data.Aliases.IsNull() && !data.Aliases.IsUnknown() {
+		var aliases map[string]string
+		data.Aliases.ElementsAs(ctx, &aliases, false)
+		if len(aliases) > 0 {
+			keyReq["aliases"] = aliases
+		}
+	}
+
+	if !data.Config.IsNull() && !data.Config.IsUnknown() {
+		var config map[string]string
+		data.Config.ElementsAs(ctx, &config, false)
+		if len(config) > 0 {
+			keyReq["config"] = config
+		}
+	}
+
+	if !data.Permissions.IsNull() && !data.Permissions.IsUnknown() {
+		var permissions map[string]string
+		data.Permissions.ElementsAs(ctx, &permissions, false)
+		if len(permissions) > 0 {
+			keyReq["permissions"] = permissions
+		}
+	}
+
+	if !data.ModelMaxBudget.IsNull() && !data.ModelMaxBudget.IsUnknown() {
+		var modelMaxBudget map[string]float64
+		data.ModelMaxBudget.ElementsAs(ctx, &modelMaxBudget, false)
+		if len(modelMaxBudget) > 0 {
+			keyReq["model_max_budget"] = modelMaxBudget
+		}
+	}
+
+	if !data.ModelRPMLimit.IsNull() && !data.ModelRPMLimit.IsUnknown() {
+		var modelRPMLimit map[string]int64
+		data.ModelRPMLimit.ElementsAs(ctx, &modelRPMLimit, false)
+		if len(modelRPMLimit) > 0 {
+			keyReq["model_rpm_limit"] = modelRPMLimit
+		}
+	}
+
+	if !data.ModelTPMLimit.IsNull() && !data.ModelTPMLimit.IsUnknown() {
+		var modelTPMLimit map[string]int64
+		data.ModelTPMLimit.ElementsAs(ctx, &modelTPMLimit, false)
+		if len(modelTPMLimit) > 0 {
+			keyReq["model_tpm_limit"] = modelTPMLimit
+		}
+	}
+
 	// Handle service account
-	if !data.ServiceAccountID.IsNull() && data.ServiceAccountID.ValueString() != "" {
+	if !data.ServiceAccountID.IsNull() && !data.ServiceAccountID.IsUnknown() && data.ServiceAccountID.ValueString() != "" {
 		saID := data.ServiceAccountID.ValueString()
 		if keyReq["metadata"] == nil {
 			keyReq["metadata"] = map[string]interface{}{}

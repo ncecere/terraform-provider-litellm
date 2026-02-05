@@ -145,7 +145,7 @@ func (r *OrganizationMemberResource) Create(ctx context.Context, req resource.Cr
 		"member":          member,
 	}
 
-	if !data.MaxBudgetInOrganization.IsNull() {
+	if !data.MaxBudgetInOrganization.IsNull() && !data.MaxBudgetInOrganization.IsUnknown() {
 		addReq["max_budget_in_organization"] = data.MaxBudgetInOrganization.ValueFloat64()
 	}
 
@@ -253,7 +253,7 @@ func (r *OrganizationMemberResource) Update(ctx context.Context, req resource.Up
 		"member":          member,
 	}
 
-	if !data.MaxBudgetInOrganization.IsNull() {
+	if !data.MaxBudgetInOrganization.IsNull() && !data.MaxBudgetInOrganization.IsUnknown() {
 		updateReq["max_budget_in_organization"] = data.MaxBudgetInOrganization.ValueFloat64()
 	}
 

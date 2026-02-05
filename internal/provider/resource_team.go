@@ -293,96 +293,117 @@ func (r *TeamResource) buildTeamRequest(ctx context.Context, data *TeamResourceM
 		"team_alias": data.TeamAlias.ValueString(),
 	}
 
-	if !data.OrganizationID.IsNull() {
+	// String fields - check IsNull, IsUnknown, and empty string
+	if !data.OrganizationID.IsNull() && !data.OrganizationID.IsUnknown() && data.OrganizationID.ValueString() != "" {
 		teamReq["organization_id"] = data.OrganizationID.ValueString()
 	}
-	if !data.TPMLimit.IsNull() {
-		teamReq["tpm_limit"] = data.TPMLimit.ValueInt64()
-	}
-	if !data.RPMLimit.IsNull() {
-		teamReq["rpm_limit"] = data.RPMLimit.ValueInt64()
-	}
-	if !data.TPMLimitType.IsNull() && data.TPMLimitType.ValueString() != "" {
+	if !data.TPMLimitType.IsNull() && !data.TPMLimitType.IsUnknown() && data.TPMLimitType.ValueString() != "" {
 		teamReq["tpm_limit_type"] = data.TPMLimitType.ValueString()
 	}
-	if !data.RPMLimitType.IsNull() && data.RPMLimitType.ValueString() != "" {
+	if !data.RPMLimitType.IsNull() && !data.RPMLimitType.IsUnknown() && data.RPMLimitType.ValueString() != "" {
 		teamReq["rpm_limit_type"] = data.RPMLimitType.ValueString()
 	}
-	if !data.MaxBudget.IsNull() {
-		teamReq["max_budget"] = data.MaxBudget.ValueFloat64()
-	}
-	if !data.BudgetDuration.IsNull() {
+	if !data.BudgetDuration.IsNull() && !data.BudgetDuration.IsUnknown() && data.BudgetDuration.ValueString() != "" {
 		teamReq["budget_duration"] = data.BudgetDuration.ValueString()
 	}
 
-	if !data.Models.IsNull() {
-		var models []string
-		data.Models.ElementsAs(ctx, &models, false)
-		teamReq["models"] = models
+	// Numeric fields - check IsNull and IsUnknown
+	if !data.TPMLimit.IsNull() && !data.TPMLimit.IsUnknown() {
+		teamReq["tpm_limit"] = data.TPMLimit.ValueInt64()
 	}
-
-	if !data.ModelAliases.IsNull() {
-		var modelAliases map[string]string
-		data.ModelAliases.ElementsAs(ctx, &modelAliases, false)
-		teamReq["model_aliases"] = modelAliases
+	if !data.RPMLimit.IsNull() && !data.RPMLimit.IsUnknown() {
+		teamReq["rpm_limit"] = data.RPMLimit.ValueInt64()
 	}
-
-	if !data.ModelRPMLimit.IsNull() {
-		var modelRPM map[string]int64
-		data.ModelRPMLimit.ElementsAs(ctx, &modelRPM, false)
-		teamReq["model_rpm_limit"] = modelRPM
+	if !data.MaxBudget.IsNull() && !data.MaxBudget.IsUnknown() {
+		teamReq["max_budget"] = data.MaxBudget.ValueFloat64()
 	}
-
-	if !data.ModelTPMLimit.IsNull() {
-		var modelTPM map[string]int64
-		data.ModelTPMLimit.ElementsAs(ctx, &modelTPM, false)
-		teamReq["model_tpm_limit"] = modelTPM
-	}
-
-	if !data.Tags.IsNull() {
-		var tags []string
-		data.Tags.ElementsAs(ctx, &tags, false)
-		teamReq["tags"] = tags
-	}
-
-	if !data.Guardrails.IsNull() {
-		var guardrails []string
-		data.Guardrails.ElementsAs(ctx, &guardrails, false)
-		teamReq["guardrails"] = guardrails
-	}
-
-	if !data.Prompts.IsNull() {
-		var prompts []string
-		data.Prompts.ElementsAs(ctx, &prompts, false)
-		teamReq["prompts"] = prompts
-	}
-
-	if !data.Blocked.IsNull() {
-		teamReq["blocked"] = data.Blocked.ValueBool()
-	}
-
-	if !data.TeamMemberPermissions.IsNull() {
-		var permissions []string
-		data.TeamMemberPermissions.ElementsAs(ctx, &permissions, false)
-		teamReq["team_member_permissions"] = permissions
-	}
-
-	if !data.TeamMemberBudget.IsNull() {
+	if !data.TeamMemberBudget.IsNull() && !data.TeamMemberBudget.IsUnknown() {
 		teamReq["team_member_budget"] = data.TeamMemberBudget.ValueFloat64()
 	}
-
-	if !data.TeamMemberRPMLimit.IsNull() {
+	if !data.TeamMemberRPMLimit.IsNull() && !data.TeamMemberRPMLimit.IsUnknown() {
 		teamReq["team_member_rpm_limit"] = data.TeamMemberRPMLimit.ValueInt64()
 	}
-
-	if !data.TeamMemberTPMLimit.IsNull() {
+	if !data.TeamMemberTPMLimit.IsNull() && !data.TeamMemberTPMLimit.IsUnknown() {
 		teamReq["team_member_tpm_limit"] = data.TeamMemberTPMLimit.ValueInt64()
 	}
 
-	if !data.Metadata.IsNull() {
+	// Boolean fields - check IsNull and IsUnknown
+	if !data.Blocked.IsNull() && !data.Blocked.IsUnknown() {
+		teamReq["blocked"] = data.Blocked.ValueBool()
+	}
+
+	// List fields - check IsNull, IsUnknown, and len > 0
+	if !data.Models.IsNull() && !data.Models.IsUnknown() {
+		var models []string
+		data.Models.ElementsAs(ctx, &models, false)
+		if len(models) > 0 {
+			teamReq["models"] = models
+		}
+	}
+
+	if !data.Tags.IsNull() && !data.Tags.IsUnknown() {
+		var tags []string
+		data.Tags.ElementsAs(ctx, &tags, false)
+		if len(tags) > 0 {
+			teamReq["tags"] = tags
+		}
+	}
+
+	if !data.Guardrails.IsNull() && !data.Guardrails.IsUnknown() {
+		var guardrails []string
+		data.Guardrails.ElementsAs(ctx, &guardrails, false)
+		if len(guardrails) > 0 {
+			teamReq["guardrails"] = guardrails
+		}
+	}
+
+	if !data.Prompts.IsNull() && !data.Prompts.IsUnknown() {
+		var prompts []string
+		data.Prompts.ElementsAs(ctx, &prompts, false)
+		if len(prompts) > 0 {
+			teamReq["prompts"] = prompts
+		}
+	}
+
+	if !data.TeamMemberPermissions.IsNull() && !data.TeamMemberPermissions.IsUnknown() {
+		var permissions []string
+		data.TeamMemberPermissions.ElementsAs(ctx, &permissions, false)
+		if len(permissions) > 0 {
+			teamReq["team_member_permissions"] = permissions
+		}
+	}
+
+	// Map fields - check IsNull, IsUnknown, and len > 0
+	if !data.ModelAliases.IsNull() && !data.ModelAliases.IsUnknown() {
+		var modelAliases map[string]string
+		data.ModelAliases.ElementsAs(ctx, &modelAliases, false)
+		if len(modelAliases) > 0 {
+			teamReq["model_aliases"] = modelAliases
+		}
+	}
+
+	if !data.ModelRPMLimit.IsNull() && !data.ModelRPMLimit.IsUnknown() {
+		var modelRPM map[string]int64
+		data.ModelRPMLimit.ElementsAs(ctx, &modelRPM, false)
+		if len(modelRPM) > 0 {
+			teamReq["model_rpm_limit"] = modelRPM
+		}
+	}
+
+	if !data.ModelTPMLimit.IsNull() && !data.ModelTPMLimit.IsUnknown() {
+		var modelTPM map[string]int64
+		data.ModelTPMLimit.ElementsAs(ctx, &modelTPM, false)
+		if len(modelTPM) > 0 {
+			teamReq["model_tpm_limit"] = modelTPM
+		}
+	}
+
+	if !data.Metadata.IsNull() && !data.Metadata.IsUnknown() {
 		var metadata map[string]string
 		data.Metadata.ElementsAs(ctx, &metadata, false)
-		teamReq["metadata"] = metadata
+		if len(metadata) > 0 {
+			teamReq["metadata"] = metadata
+		}
 	}
 
 	return teamReq

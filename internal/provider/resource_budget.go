@@ -226,33 +226,36 @@ func (r *BudgetResource) ImportState(ctx context.Context, req resource.ImportSta
 func (r *BudgetResource) buildBudgetRequest(ctx context.Context, data *BudgetResourceModel) map[string]interface{} {
 	budgetReq := map[string]interface{}{}
 
-	if !data.BudgetID.IsNull() && data.BudgetID.ValueString() != "" {
+	// String fields - check IsNull, IsUnknown, and empty string
+	if !data.BudgetID.IsNull() && !data.BudgetID.IsUnknown() && data.BudgetID.ValueString() != "" {
 		budgetReq["budget_id"] = data.BudgetID.ValueString()
 	}
-	if !data.MaxBudget.IsNull() {
-		budgetReq["max_budget"] = data.MaxBudget.ValueFloat64()
-	}
-	if !data.SoftBudget.IsNull() {
-		budgetReq["soft_budget"] = data.SoftBudget.ValueFloat64()
-	}
-	if !data.MaxParallelRequests.IsNull() {
-		budgetReq["max_parallel_requests"] = data.MaxParallelRequests.ValueInt64()
-	}
-	if !data.TPMLimit.IsNull() {
-		budgetReq["tpm_limit"] = data.TPMLimit.ValueInt64()
-	}
-	if !data.RPMLimit.IsNull() {
-		budgetReq["rpm_limit"] = data.RPMLimit.ValueInt64()
-	}
-	if !data.BudgetDuration.IsNull() && data.BudgetDuration.ValueString() != "" {
+	if !data.BudgetDuration.IsNull() && !data.BudgetDuration.IsUnknown() && data.BudgetDuration.ValueString() != "" {
 		budgetReq["budget_duration"] = data.BudgetDuration.ValueString()
 	}
-	if !data.ModelMaxBudget.IsNull() && data.ModelMaxBudget.ValueString() != "" {
+	if !data.ModelMaxBudget.IsNull() && !data.ModelMaxBudget.IsUnknown() && data.ModelMaxBudget.ValueString() != "" {
 		// Parse JSON string to map for API
 		var modelBudget map[string]interface{}
 		if err := json.Unmarshal([]byte(data.ModelMaxBudget.ValueString()), &modelBudget); err == nil {
 			budgetReq["model_max_budget"] = modelBudget
 		}
+	}
+
+	// Numeric fields - check IsNull and IsUnknown
+	if !data.MaxBudget.IsNull() && !data.MaxBudget.IsUnknown() {
+		budgetReq["max_budget"] = data.MaxBudget.ValueFloat64()
+	}
+	if !data.SoftBudget.IsNull() && !data.SoftBudget.IsUnknown() {
+		budgetReq["soft_budget"] = data.SoftBudget.ValueFloat64()
+	}
+	if !data.MaxParallelRequests.IsNull() && !data.MaxParallelRequests.IsUnknown() {
+		budgetReq["max_parallel_requests"] = data.MaxParallelRequests.ValueInt64()
+	}
+	if !data.TPMLimit.IsNull() && !data.TPMLimit.IsUnknown() {
+		budgetReq["tpm_limit"] = data.TPMLimit.ValueInt64()
+	}
+	if !data.RPMLimit.IsNull() && !data.RPMLimit.IsUnknown() {
+		budgetReq["rpm_limit"] = data.RPMLimit.ValueInt64()
 	}
 
 	return budgetReq
