@@ -147,7 +147,7 @@ func (r *ModelResource) Schema(ctx context.Context, req resource.SchemaRequest, 
 				Optional:    true,
 			},
 			"mode": schema.StringAttribute{
-				Description: "Model mode (completion, embedding, image_generation, chat, moderation, audio_transcription, batch).",
+				Description: "Model mode. Supported values: chat, completion, embedding, audio_speech, audio_transcription, image_generation, video_generation, batch, rerank, realtime, responses, ocr, moderation.",
 				Optional:    true,
 			},
 			"litellm_credential_name": schema.StringAttribute{

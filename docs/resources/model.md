@@ -175,14 +175,7 @@ The following arguments are supported:
 
 * `access_groups` - (Optional) list(string). List of access groups this model belongs to. Teams and keys with access to these groups can use this model. See [LiteLLM Access Groups](https://docs.litellm.ai/docs/proxy/model_access_groups) for more details.
 
-* `mode` - (Optional) string. The intended use of the model. Valid values are:
-  * `completion`
-  * `embedding`
-  * `image_generation`
-  * `chat`
-  * `moderation`
-  * `audio_transcription`
-  * `batch`
+* `mode` - (Optional) string. The intended use of the model. Valid values (aligned with LiteLLM proxy API): `chat`, `completion`, `embedding`, `audio_speech`, `audio_transcription`, `image_generation`, `video_generation`, `batch`, `rerank`, `realtime`, `responses`, `ocr`, `moderation`.
 
 * `tpm` - (Optional) integer. Tokens per minute limit for this model.
 
