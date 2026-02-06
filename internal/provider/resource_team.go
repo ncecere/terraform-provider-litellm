@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -75,6 +76,7 @@ func (r *TeamResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 			"metadata": schema.MapAttribute{
 				Description: "Arbitrary metadata for the team.",
 				Optional:    true,
+				Computed:    true,
 				ElementType: types.StringType,
 			},
 			"tpm_limit": schema.Int64Attribute{
@@ -104,36 +106,43 @@ func (r *TeamResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 			"models": schema.ListAttribute{
 				Description: "List of models the team can access.",
 				Optional:    true,
+				Computed:    true,
 				ElementType: types.StringType,
 			},
 			"model_aliases": schema.MapAttribute{
 				Description: "Model alias mappings for the team.",
 				Optional:    true,
+				Computed:    true,
 				ElementType: types.StringType,
 			},
 			"model_rpm_limit": schema.MapAttribute{
 				Description: "Per-model RPM limits for the team.",
 				Optional:    true,
+				Computed:    true,
 				ElementType: types.Int64Type,
 			},
 			"model_tpm_limit": schema.MapAttribute{
 				Description: "Per-model TPM limits for the team.",
 				Optional:    true,
+				Computed:    true,
 				ElementType: types.Int64Type,
 			},
 			"tags": schema.ListAttribute{
 				Description: "Tags for the team (for spend tracking and routing).",
 				Optional:    true,
+				Computed:    true,
 				ElementType: types.StringType,
 			},
 			"guardrails": schema.ListAttribute{
 				Description: "Guardrails for the team.",
 				Optional:    true,
+				Computed:    true,
 				ElementType: types.StringType,
 			},
 			"prompts": schema.ListAttribute{
 				Description: "List of prompt IDs the team can access.",
 				Optional:    true,
+				Computed:    true,
 				ElementType: types.StringType,
 			},
 			"blocked": schema.BoolAttribute{
@@ -144,6 +153,7 @@ func (r *TeamResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 			"team_member_permissions": schema.ListAttribute{
 				Description: "List of permissions granted to team members.",
 				Optional:    true,
+				Computed:    true,
 				ElementType: types.StringType,
 			},
 			"team_member_budget": schema.Float64Attribute{
@@ -440,11 +450,11 @@ func (r *TeamResource) readTeam(ctx context.Context, data *TeamResourceModel) er
 		data.Blocked = types.BoolValue(blocked)
 	}
 
-	// Fetch permissions separately
+	// Fetch permissions separately - preserve null when API returns empty and config didn't specify permissions
 	permEndpoint := fmt.Sprintf("/team/permissions_list?team_id=%s", data.ID.ValueString())
 	var permResult map[string]interface{}
 	if err := r.client.DoRequestWithResponse(ctx, "GET", permEndpoint, nil, &permResult); err == nil {
-		if perms, ok := permResult["team_member_permissions"].([]interface{}); ok {
+		if perms, ok := permResult["team_member_permissions"].([]interface{}); ok && len(perms) > 0 {
 			permissions := make([]string, len(perms))
 			for i, p := range perms {
 				if s, ok := p.(string); ok {
@@ -452,6 +462,8 @@ func (r *TeamResource) readTeam(ctx context.Context, data *TeamResourceModel) er
 				}
 			}
 			data.TeamMemberPermissions, _ = types.ListValueFrom(ctx, types.StringType, permissions)
+		} else if !data.TeamMemberPermissions.IsNull() {
+			data.TeamMemberPermissions, _ = types.ListValue(types.StringType, []attr.Value{})
 		}
 	}
 

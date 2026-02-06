@@ -61,6 +61,7 @@ func (r *CredentialResource) Schema(ctx context.Context, req resource.SchemaRequ
 			"credential_info": schema.MapAttribute{
 				Description: "Additional information about the credential.",
 				Optional:    true,
+				Computed:    true,
 				ElementType: types.StringType,
 			},
 			"credential_values": schema.MapAttribute{
@@ -252,8 +253,8 @@ func (r *CredentialResource) readCredential(ctx context.Context, data *Credentia
 		data.ID = types.StringValue(credName)
 	}
 
-	// Handle credential_info
-	if credInfo, ok := result["credential_info"].(map[string]interface{}); ok {
+	// Handle credential_info - preserve null when API returns empty and config didn't specify
+	if credInfo, ok := result["credential_info"].(map[string]interface{}); ok && len(credInfo) > 0 {
 		infoMap := make(map[string]attr.Value)
 		for k, v := range credInfo {
 			if str, ok := v.(string); ok {
@@ -261,6 +262,8 @@ func (r *CredentialResource) readCredential(ctx context.Context, data *Credentia
 			}
 		}
 		data.CredentialInfo, _ = types.MapValue(types.StringType, infoMap)
+	} else if !data.CredentialInfo.IsNull() {
+		data.CredentialInfo, _ = types.MapValue(types.StringType, map[string]attr.Value{})
 	}
 
 	// Note: We don't update credential_values from the response for security reasons

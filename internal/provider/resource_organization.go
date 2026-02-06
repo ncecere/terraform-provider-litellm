@@ -75,6 +75,7 @@ func (r *OrganizationResource) Schema(ctx context.Context, req resource.SchemaRe
 			"models": schema.ListAttribute{
 				Description: "The models the organization has access to.",
 				Optional:    true,
+				Computed:    true,
 				ElementType: types.StringType,
 			},
 			"budget_id": schema.StringAttribute{
@@ -96,11 +97,13 @@ func (r *OrganizationResource) Schema(ctx context.Context, req resource.SchemaRe
 			"model_rpm_limit": schema.MapAttribute{
 				Description: "The RPM (Requests Per Minute) limit per model for this organization.",
 				Optional:    true,
+				Computed:    true,
 				ElementType: types.Int64Type,
 			},
 			"model_tpm_limit": schema.MapAttribute{
 				Description: "The TPM (Tokens Per Minute) limit per model for this organization.",
 				Optional:    true,
+				Computed:    true,
 				ElementType: types.Int64Type,
 			},
 			"budget_duration": schema.StringAttribute{
@@ -110,6 +113,7 @@ func (r *OrganizationResource) Schema(ctx context.Context, req resource.SchemaRe
 			"metadata": schema.MapAttribute{
 				Description: "Metadata for the organization.",
 				Optional:    true,
+				Computed:    true,
 				ElementType: types.StringType,
 			},
 			"blocked": schema.BoolAttribute{
@@ -120,6 +124,7 @@ func (r *OrganizationResource) Schema(ctx context.Context, req resource.SchemaRe
 			"tags": schema.ListAttribute{
 				Description: "Tags for tracking spend and/or tag-based routing.",
 				Optional:    true,
+				Computed:    true,
 				ElementType: types.StringType,
 			},
 			"spend": schema.Float64Attribute{
@@ -394,8 +399,8 @@ func (r *OrganizationResource) readOrganization(ctx context.Context, data *Organ
 		data.Blocked = types.BoolValue(blocked)
 	}
 
-	// Handle models list
-	if models, ok := result["models"].([]interface{}); ok {
+	// Handle models list - preserve null when API returns empty and config didn't specify models
+	if models, ok := result["models"].([]interface{}); ok && len(models) > 0 {
 		modelsList := make([]attr.Value, len(models))
 		for i, m := range models {
 			if str, ok := m.(string); ok {
@@ -403,10 +408,12 @@ func (r *OrganizationResource) readOrganization(ctx context.Context, data *Organ
 			}
 		}
 		data.Models, _ = types.ListValue(types.StringType, modelsList)
+	} else if !data.Models.IsNull() {
+		data.Models, _ = types.ListValue(types.StringType, []attr.Value{})
 	}
 
-	// Handle tags list
-	if tags, ok := result["tags"].([]interface{}); ok {
+	// Handle tags list - preserve null when API returns empty and config didn't specify tags
+	if tags, ok := result["tags"].([]interface{}); ok && len(tags) > 0 {
 		tagsList := make([]attr.Value, len(tags))
 		for i, t := range tags {
 			if str, ok := t.(string); ok {
@@ -414,10 +421,12 @@ func (r *OrganizationResource) readOrganization(ctx context.Context, data *Organ
 			}
 		}
 		data.Tags, _ = types.ListValue(types.StringType, tagsList)
+	} else if !data.Tags.IsNull() {
+		data.Tags, _ = types.ListValue(types.StringType, []attr.Value{})
 	}
 
-	// Handle metadata map
-	if metadata, ok := result["metadata"].(map[string]interface{}); ok {
+	// Handle metadata map - preserve null when API returns empty and config didn't specify metadata
+	if metadata, ok := result["metadata"].(map[string]interface{}); ok && len(metadata) > 0 {
 		metaMap := make(map[string]attr.Value)
 		for k, v := range metadata {
 			if str, ok := v.(string); ok {
@@ -425,10 +434,12 @@ func (r *OrganizationResource) readOrganization(ctx context.Context, data *Organ
 			}
 		}
 		data.Metadata, _ = types.MapValue(types.StringType, metaMap)
+	} else if !data.Metadata.IsNull() {
+		data.Metadata, _ = types.MapValue(types.StringType, map[string]attr.Value{})
 	}
 
-	// Handle model_rpm_limit map
-	if modelRPM, ok := result["model_rpm_limit"].(map[string]interface{}); ok {
+	// Handle model_rpm_limit map - preserve null when API returns empty and config didn't specify model_rpm_limit
+	if modelRPM, ok := result["model_rpm_limit"].(map[string]interface{}); ok && len(modelRPM) > 0 {
 		rpmMap := make(map[string]attr.Value)
 		for k, v := range modelRPM {
 			if num, ok := v.(float64); ok {
@@ -436,10 +447,12 @@ func (r *OrganizationResource) readOrganization(ctx context.Context, data *Organ
 			}
 		}
 		data.ModelRPMLimit, _ = types.MapValue(types.Int64Type, rpmMap)
+	} else if !data.ModelRPMLimit.IsNull() {
+		data.ModelRPMLimit, _ = types.MapValue(types.Int64Type, map[string]attr.Value{})
 	}
 
-	// Handle model_tpm_limit map
-	if modelTPM, ok := result["model_tpm_limit"].(map[string]interface{}); ok {
+	// Handle model_tpm_limit map - preserve null when API returns empty and config didn't specify model_tpm_limit
+	if modelTPM, ok := result["model_tpm_limit"].(map[string]interface{}); ok && len(modelTPM) > 0 {
 		tpmMap := make(map[string]attr.Value)
 		for k, v := range modelTPM {
 			if num, ok := v.(float64); ok {
@@ -447,6 +460,8 @@ func (r *OrganizationResource) readOrganization(ctx context.Context, data *Organ
 			}
 		}
 		data.ModelTPMLimit, _ = types.MapValue(types.Int64Type, tpmMap)
+	} else if !data.ModelTPMLimit.IsNull() {
+		data.ModelTPMLimit, _ = types.MapValue(types.Int64Type, map[string]attr.Value{})
 	}
 
 	return nil

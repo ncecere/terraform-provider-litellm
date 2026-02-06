@@ -87,16 +87,19 @@ func (r *KeyResource) Schema(ctx context.Context, req resource.SchemaRequest, re
 			"models": schema.ListAttribute{
 				Description: "List of models this key can access.",
 				Optional:    true,
+				Computed:    true,
 				ElementType: types.StringType,
 			},
 			"allowed_routes": schema.ListAttribute{
 				Description: "List of allowed API routes.",
 				Optional:    true,
+				Computed:    true,
 				ElementType: types.StringType,
 			},
 			"allowed_passthrough_routes": schema.ListAttribute{
 				Description: "List of allowed passthrough routes.",
 				Optional:    true,
+				Computed:    true,
 				ElementType: types.StringType,
 			},
 			"max_budget": schema.Float64Attribute{
@@ -132,6 +135,7 @@ func (r *KeyResource) Schema(ctx context.Context, req resource.SchemaRequest, re
 			"metadata": schema.MapAttribute{
 				Description: "Metadata for the key.",
 				Optional:    true,
+				Computed:    true,
 				ElementType: types.StringType,
 			},
 			"tpm_limit": schema.Int64Attribute{
@@ -159,6 +163,7 @@ func (r *KeyResource) Schema(ctx context.Context, req resource.SchemaRequest, re
 			"allowed_cache_controls": schema.ListAttribute{
 				Description: "Allowed cache control values.",
 				Optional:    true,
+				Computed:    true,
 				ElementType: types.StringType,
 			},
 			"soft_budget": schema.Float64Attribute{
@@ -177,51 +182,61 @@ func (r *KeyResource) Schema(ctx context.Context, req resource.SchemaRequest, re
 			"aliases": schema.MapAttribute{
 				Description: "Model alias mappings.",
 				Optional:    true,
+				Computed:    true,
 				ElementType: types.StringType,
 			},
 			"config": schema.MapAttribute{
 				Description: "Key-specific configuration.",
 				Optional:    true,
+				Computed:    true,
 				ElementType: types.StringType,
 			},
 			"permissions": schema.MapAttribute{
 				Description: "Key permissions.",
 				Optional:    true,
+				Computed:    true,
 				ElementType: types.StringType,
 			},
 			"model_max_budget": schema.MapAttribute{
 				Description: "Per-model budget limits.",
 				Optional:    true,
+				Computed:    true,
 				ElementType: types.Float64Type,
 			},
 			"model_rpm_limit": schema.MapAttribute{
 				Description: "Per-model RPM limits.",
 				Optional:    true,
+				Computed:    true,
 				ElementType: types.Int64Type,
 			},
 			"model_tpm_limit": schema.MapAttribute{
 				Description: "Per-model TPM limits.",
 				Optional:    true,
+				Computed:    true,
 				ElementType: types.Int64Type,
 			},
 			"guardrails": schema.ListAttribute{
 				Description: "Guardrails for the key.",
 				Optional:    true,
+				Computed:    true,
 				ElementType: types.StringType,
 			},
 			"prompts": schema.ListAttribute{
 				Description: "List of prompt IDs this key can access.",
 				Optional:    true,
+				Computed:    true,
 				ElementType: types.StringType,
 			},
 			"enforced_params": schema.ListAttribute{
 				Description: "List of enforced params for this key (params that must be present in requests).",
 				Optional:    true,
+				Computed:    true,
 				ElementType: types.StringType,
 			},
 			"tags": schema.ListAttribute{
 				Description: "Tags for the key.",
 				Optional:    true,
+				Computed:    true,
 				ElementType: types.StringType,
 			},
 			"blocked": schema.BoolAttribute{

@@ -136,6 +136,7 @@ func (r *MCPServerResource) Schema(ctx context.Context, req resource.SchemaReque
 			"mcp_access_groups": schema.ListAttribute{
 				Description: "List of access groups for the MCP server.",
 				Optional:    true,
+				Computed:    true,
 				ElementType: types.StringType,
 			},
 			"command": schema.StringAttribute{
@@ -145,32 +146,38 @@ func (r *MCPServerResource) Schema(ctx context.Context, req resource.SchemaReque
 			"args": schema.ListAttribute{
 				Description: "Arguments for the command (stdio transport).",
 				Optional:    true,
+				Computed:    true,
 				ElementType: types.StringType,
 			},
 			"env": schema.MapAttribute{
 				Description: "Environment variables for the command (stdio transport).",
 				Optional:    true,
+				Computed:    true,
 				ElementType: types.StringType,
 			},
 			"credentials": schema.MapAttribute{
 				Description: "Credentials map for the MCP server authentication.",
 				Optional:    true,
+				Computed:    true,
 				Sensitive:   true,
 				ElementType: types.StringType,
 			},
 			"allowed_tools": schema.ListAttribute{
 				Description: "List of allowed tool names for this MCP server.",
 				Optional:    true,
+				Computed:    true,
 				ElementType: types.StringType,
 			},
 			"extra_headers": schema.MapAttribute{
 				Description: "Extra headers to send with requests to the MCP server.",
 				Optional:    true,
+				Computed:    true,
 				ElementType: types.StringType,
 			},
 			"static_headers": schema.MapAttribute{
 				Description: "Static headers to always include with requests.",
 				Optional:    true,
+				Computed:    true,
 				ElementType: types.StringType,
 			},
 			"authorization_url": schema.StringAttribute{
@@ -246,6 +253,7 @@ func (r *MCPServerResource) Schema(ctx context.Context, req resource.SchemaReque
 							"tool_name_to_cost_per_query": schema.MapAttribute{
 								Description: "Map of tool names to their cost per query.",
 								Optional:    true,
+								Computed:    true,
 								ElementType: types.Float64Type,
 							},
 						},
@@ -581,8 +589,8 @@ func (r *MCPServerResource) readMCPServer(ctx context.Context, data *MCPServerRe
 		data.HealthCheckError = types.StringValue(healthCheckError)
 	}
 
-	// Handle access groups
-	if accessGroups, ok := result["mcp_access_groups"].([]interface{}); ok {
+	// Handle access groups - preserve null when API returns empty and config didn't specify
+	if accessGroups, ok := result["mcp_access_groups"].([]interface{}); ok && len(accessGroups) > 0 {
 		groups := make([]attr.Value, len(accessGroups))
 		for i, g := range accessGroups {
 			if str, ok := g.(string); ok {
@@ -590,10 +598,12 @@ func (r *MCPServerResource) readMCPServer(ctx context.Context, data *MCPServerRe
 			}
 		}
 		data.MCPAccessGroups, _ = types.ListValue(types.StringType, groups)
+	} else if !data.MCPAccessGroups.IsNull() {
+		data.MCPAccessGroups, _ = types.ListValue(types.StringType, []attr.Value{})
 	}
 
-	// Handle args
-	if args, ok := result["args"].([]interface{}); ok {
+	// Handle args - preserve null when API returns empty and config didn't specify
+	if args, ok := result["args"].([]interface{}); ok && len(args) > 0 {
 		argsList := make([]attr.Value, len(args))
 		for i, a := range args {
 			if str, ok := a.(string); ok {
@@ -601,10 +611,12 @@ func (r *MCPServerResource) readMCPServer(ctx context.Context, data *MCPServerRe
 			}
 		}
 		data.Args, _ = types.ListValue(types.StringType, argsList)
+	} else if !data.Args.IsNull() {
+		data.Args, _ = types.ListValue(types.StringType, []attr.Value{})
 	}
 
-	// Handle env
-	if env, ok := result["env"].(map[string]interface{}); ok {
+	// Handle env - preserve null when API returns empty and config didn't specify
+	if env, ok := result["env"].(map[string]interface{}); ok && len(env) > 0 {
 		envMap := make(map[string]attr.Value)
 		for k, v := range env {
 			if str, ok := v.(string); ok {
@@ -612,10 +624,12 @@ func (r *MCPServerResource) readMCPServer(ctx context.Context, data *MCPServerRe
 			}
 		}
 		data.Env, _ = types.MapValue(types.StringType, envMap)
+	} else if !data.Env.IsNull() {
+		data.Env, _ = types.MapValue(types.StringType, map[string]attr.Value{})
 	}
 
-	// Handle new fields
-	if credentials, ok := result["credentials"].(map[string]interface{}); ok {
+	// Handle credentials - preserve null when API returns empty and config didn't specify
+	if credentials, ok := result["credentials"].(map[string]interface{}); ok && len(credentials) > 0 {
 		credMap := make(map[string]attr.Value)
 		for k, v := range credentials {
 			if str, ok := v.(string); ok {
@@ -623,9 +637,12 @@ func (r *MCPServerResource) readMCPServer(ctx context.Context, data *MCPServerRe
 			}
 		}
 		data.Credentials, _ = types.MapValue(types.StringType, credMap)
+	} else if !data.Credentials.IsNull() {
+		data.Credentials, _ = types.MapValue(types.StringType, map[string]attr.Value{})
 	}
 
-	if allowedTools, ok := result["allowed_tools"].([]interface{}); ok {
+	// Handle allowed_tools - preserve null when API returns empty and config didn't specify
+	if allowedTools, ok := result["allowed_tools"].([]interface{}); ok && len(allowedTools) > 0 {
 		tools := make([]attr.Value, len(allowedTools))
 		for i, t := range allowedTools {
 			if str, ok := t.(string); ok {
@@ -633,9 +650,12 @@ func (r *MCPServerResource) readMCPServer(ctx context.Context, data *MCPServerRe
 			}
 		}
 		data.AllowedTools, _ = types.ListValue(types.StringType, tools)
+	} else if !data.AllowedTools.IsNull() {
+		data.AllowedTools, _ = types.ListValue(types.StringType, []attr.Value{})
 	}
 
-	if extraHeaders, ok := result["extra_headers"].(map[string]interface{}); ok {
+	// Handle extra_headers - preserve null when API returns empty and config didn't specify
+	if extraHeaders, ok := result["extra_headers"].(map[string]interface{}); ok && len(extraHeaders) > 0 {
 		headersMap := make(map[string]attr.Value)
 		for k, v := range extraHeaders {
 			if str, ok := v.(string); ok {
@@ -643,9 +663,12 @@ func (r *MCPServerResource) readMCPServer(ctx context.Context, data *MCPServerRe
 			}
 		}
 		data.ExtraHeaders, _ = types.MapValue(types.StringType, headersMap)
+	} else if !data.ExtraHeaders.IsNull() {
+		data.ExtraHeaders, _ = types.MapValue(types.StringType, map[string]attr.Value{})
 	}
 
-	if staticHeaders, ok := result["static_headers"].(map[string]interface{}); ok {
+	// Handle static_headers - preserve null when API returns empty and config didn't specify
+	if staticHeaders, ok := result["static_headers"].(map[string]interface{}); ok && len(staticHeaders) > 0 {
 		headersMap := make(map[string]attr.Value)
 		for k, v := range staticHeaders {
 			if str, ok := v.(string); ok {
@@ -653,6 +676,8 @@ func (r *MCPServerResource) readMCPServer(ctx context.Context, data *MCPServerRe
 			}
 		}
 		data.StaticHeaders, _ = types.MapValue(types.StringType, headersMap)
+	} else if !data.StaticHeaders.IsNull() {
+		data.StaticHeaders, _ = types.MapValue(types.StringType, map[string]attr.Value{})
 	}
 
 	if authURL, ok := result["authorization_url"].(string); ok {

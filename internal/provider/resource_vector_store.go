@@ -74,6 +74,7 @@ func (r *VectorStoreResource) Schema(ctx context.Context, req resource.SchemaReq
 			"vector_store_metadata": schema.MapAttribute{
 				Description: "Metadata associated with the vector store.",
 				Optional:    true,
+				Computed:    true,
 				ElementType: types.StringType,
 			},
 			"litellm_credential_name": schema.StringAttribute{
@@ -83,6 +84,7 @@ func (r *VectorStoreResource) Schema(ctx context.Context, req resource.SchemaReq
 			"litellm_params": schema.MapAttribute{
 				Description: "Additional LiteLLM parameters.",
 				Optional:    true,
+				Computed:    true,
 				ElementType: types.StringType,
 			},
 			"created_at": schema.StringAttribute{
@@ -309,8 +311,8 @@ func (r *VectorStoreResource) readVectorStore(ctx context.Context, data *VectorS
 		data.UpdatedAt = types.StringValue(updatedAt)
 	}
 
-	// Handle vector_store_metadata
-	if metadata, ok := result["vector_store_metadata"].(map[string]interface{}); ok {
+	// Handle vector_store_metadata - preserve null when API returns empty and config didn't specify
+	if metadata, ok := result["vector_store_metadata"].(map[string]interface{}); ok && len(metadata) > 0 {
 		metaMap := make(map[string]attr.Value)
 		for k, v := range metadata {
 			if str, ok := v.(string); ok {
@@ -318,10 +320,12 @@ func (r *VectorStoreResource) readVectorStore(ctx context.Context, data *VectorS
 			}
 		}
 		data.VectorStoreMetadata, _ = types.MapValue(types.StringType, metaMap)
+	} else if !data.VectorStoreMetadata.IsNull() {
+		data.VectorStoreMetadata, _ = types.MapValue(types.StringType, map[string]attr.Value{})
 	}
 
-	// Handle litellm_params
-	if params, ok := result["litellm_params"].(map[string]interface{}); ok {
+	// Handle litellm_params - preserve null when API returns empty and config didn't specify
+	if params, ok := result["litellm_params"].(map[string]interface{}); ok && len(params) > 0 {
 		paramsMap := make(map[string]attr.Value)
 		for k, v := range params {
 			if str, ok := v.(string); ok {
@@ -329,6 +333,8 @@ func (r *VectorStoreResource) readVectorStore(ctx context.Context, data *VectorS
 			}
 		}
 		data.LiteLLMParams, _ = types.MapValue(types.StringType, paramsMap)
+	} else if !data.LiteLLMParams.IsNull() {
+		data.LiteLLMParams, _ = types.MapValue(types.StringType, map[string]attr.Value{})
 	}
 
 	return nil

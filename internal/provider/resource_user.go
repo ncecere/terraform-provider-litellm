@@ -94,11 +94,13 @@ func (r *UserResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 			"teams": schema.ListAttribute{
 				Description: "List of team IDs the user belongs to.",
 				Optional:    true,
+				Computed:    true,
 				ElementType: types.StringType,
 			},
 			"models": schema.ListAttribute{
 				Description: "Model names the user is allowed to call. Set to ['no-default-models'] to block all model access.",
 				Optional:    true,
+				Computed:    true,
 				ElementType: types.StringType,
 			},
 			"max_budget": schema.Float64Attribute{
@@ -126,6 +128,7 @@ func (r *UserResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 			"metadata": schema.MapAttribute{
 				Description: "Metadata for the user.",
 				Optional:    true,
+				Computed:    true,
 				ElementType: types.StringType,
 			},
 			"spend": schema.Float64Attribute{
@@ -389,8 +392,8 @@ func (r *UserResource) readUser(ctx context.Context, data *UserResourceModel) er
 		data.RPMLimit = types.Int64Value(int64(rpmLimit))
 	}
 
-	// Handle teams list
-	if teams, ok := userInfo["teams"].([]interface{}); ok {
+	// Handle teams list - preserve null when API returns empty and config didn't specify teams
+	if teams, ok := userInfo["teams"].([]interface{}); ok && len(teams) > 0 {
 		teamsList := make([]attr.Value, len(teams))
 		for i, t := range teams {
 			if str, ok := t.(string); ok {
@@ -398,10 +401,13 @@ func (r *UserResource) readUser(ctx context.Context, data *UserResourceModel) er
 			}
 		}
 		data.Teams, _ = types.ListValue(types.StringType, teamsList)
+	} else if !data.Teams.IsNull() {
+		// User specified teams in config but API returned empty — set to empty list
+		data.Teams, _ = types.ListValue(types.StringType, []attr.Value{})
 	}
 
-	// Handle models list
-	if models, ok := userInfo["models"].([]interface{}); ok {
+	// Handle models list - preserve null when API returns empty and config didn't specify models
+	if models, ok := userInfo["models"].([]interface{}); ok && len(models) > 0 {
 		modelsList := make([]attr.Value, len(models))
 		for i, m := range models {
 			if str, ok := m.(string); ok {
@@ -409,10 +415,13 @@ func (r *UserResource) readUser(ctx context.Context, data *UserResourceModel) er
 			}
 		}
 		data.Models, _ = types.ListValue(types.StringType, modelsList)
+	} else if !data.Models.IsNull() {
+		// User specified models in config but API returned empty — set to empty list
+		data.Models, _ = types.ListValue(types.StringType, []attr.Value{})
 	}
 
-	// Handle metadata map
-	if metadata, ok := userInfo["metadata"].(map[string]interface{}); ok {
+	// Handle metadata map - preserve null when API returns empty and config didn't specify metadata
+	if metadata, ok := userInfo["metadata"].(map[string]interface{}); ok && len(metadata) > 0 {
 		metaMap := make(map[string]attr.Value)
 		for k, v := range metadata {
 			if str, ok := v.(string); ok {
@@ -420,6 +429,9 @@ func (r *UserResource) readUser(ctx context.Context, data *UserResourceModel) er
 			}
 		}
 		data.Metadata, _ = types.MapValue(types.StringType, metaMap)
+	} else if !data.Metadata.IsNull() {
+		// User specified metadata in config but API returned empty — set to empty map
+		data.Metadata, _ = types.MapValue(types.StringType, map[string]attr.Value{})
 	}
 
 	return nil

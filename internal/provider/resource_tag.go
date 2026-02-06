@@ -69,6 +69,7 @@ func (r *TagResource) Schema(ctx context.Context, req resource.SchemaRequest, re
 			"models": schema.ListAttribute{
 				Description: "Models associated with this tag.",
 				Optional:    true,
+				Computed:    true,
 				ElementType: types.StringType,
 			},
 			"budget_id": schema.StringAttribute{
@@ -332,8 +333,8 @@ func (r *TagResource) readTag(ctx context.Context, data *TagResourceModel) error
 		data.BudgetDuration = types.StringValue(budgetDuration)
 	}
 
-	// Handle models list
-	if models, ok := result["models"].([]interface{}); ok {
+	// Handle models list - preserve null when API returns empty and config didn't specify models
+	if models, ok := result["models"].([]interface{}); ok && len(models) > 0 {
 		modelsList := make([]attr.Value, len(models))
 		for i, m := range models {
 			if str, ok := m.(string); ok {
@@ -341,6 +342,8 @@ func (r *TagResource) readTag(ctx context.Context, data *TagResourceModel) error
 			}
 		}
 		data.Models, _ = types.ListValue(types.StringType, modelsList)
+	} else if !data.Models.IsNull() {
+		data.Models, _ = types.ListValue(types.StringType, []attr.Value{})
 	}
 
 	// Handle model_max_budget

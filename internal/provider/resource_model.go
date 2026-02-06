@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -218,11 +219,13 @@ func (r *ModelResource) Schema(ctx context.Context, req resource.SchemaRequest, 
 			"access_groups": schema.ListAttribute{
 				Description: "List of access groups this model belongs to. Teams and keys with access to these groups can use this model.",
 				Optional:    true,
+				Computed:    true,
 				ElementType: types.StringType,
 			},
 			"additional_litellm_params": schema.MapAttribute{
 				Description: "Additional parameters to pass to litellm_params.",
 				Optional:    true,
+				Computed:    true,
 				ElementType: types.StringType,
 			},
 		},
@@ -523,7 +526,7 @@ func (r *ModelResource) readModel(ctx context.Context, data *ModelResourceModel)
 		if teamID, ok := modelInfo["team_id"].(string); ok && teamID != "" {
 			data.TeamID = types.StringValue(teamID)
 		}
-		// Read access_groups from model_info
+		// Read access_groups from model_info - preserve null when API returns empty and config didn't specify access_groups
 		if accessGroups, ok := modelInfo["access_groups"].([]interface{}); ok && len(accessGroups) > 0 {
 			groupStrings := make([]string, 0, len(accessGroups))
 			for _, g := range accessGroups {
@@ -537,6 +540,8 @@ func (r *ModelResource) readModel(ctx context.Context, data *ModelResourceModel)
 					data.AccessGroups = listValue
 				}
 			}
+		} else if !data.AccessGroups.IsNull() {
+			data.AccessGroups, _ = types.ListValue(types.StringType, []attr.Value{})
 		}
 	}
 

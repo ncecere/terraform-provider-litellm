@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-02-06
+
+### Fixed
+- **`litellm_user`**: Fixed "Provider produced inconsistent result after apply" error when creating a user without specifying `teams`, `models`, or `metadata` ([#51](https://github.com/ncecere/terraform-provider-litellm/issues/51))
+- **All resources with optional list/map attributes**: Applied the same null-preservation fix across all affected resources to prevent empty API responses from overwriting null state values with empty collections
+  - `litellm_user`: `teams`, `models`, `metadata`
+  - `litellm_team`: `models`, `tags`, `guardrails`, `prompts`, `metadata`, `model_aliases`, `model_rpm_limit`, `model_tpm_limit`, `team_member_permissions`
+  - `litellm_organization`: `models`, `tags`, `metadata`, `model_rpm_limit`, `model_tpm_limit`
+  - `litellm_key`: `models`, `allowed_routes`, `allowed_passthrough_routes`, `metadata`, `allowed_cache_controls`, `aliases`, `config`, `permissions`, `model_max_budget`, `model_rpm_limit`, `model_tpm_limit`, `guardrails`, `prompts`, `enforced_params`, `tags`
+  - `litellm_tag`: `models`
+  - `litellm_model`: `access_groups`, `additional_litellm_params`
+  - `litellm_mcp_server`: `mcp_access_groups`, `args`, `env`, `credentials`, `allowed_tools`, `extra_headers`, `static_headers`, `tool_name_to_cost_per_query`
+  - `litellm_credential`: `credential_info`
+  - `litellm_vector_store`: `vector_store_metadata`, `litellm_params`
+
+### Changed
+- All optional list and map attributes across all resources are now marked as `Optional + Computed` instead of `Optional` only, allowing the provider to correctly manage state when these attributes are omitted from configuration
+
+### Added
+- Unit tests for null-preservation logic validating correct behavior for list and map attributes
+
 ## [1.0.0] - 2026-02-05
 
 ### Added
