@@ -14,7 +14,7 @@ resource "litellm_model" "gpt4" {
   base_model          = "gpt-4"
   tier                = "paid"
   mode                = "chat"
-  
+
   input_cost_per_million_tokens  = 30.0
   output_cost_per_million_tokens = 60.0
 }
@@ -39,7 +39,7 @@ resource "litellm_model" "advanced_gpt4" {
   merge_reasoning_content_in_choices = true
   tpm                 = 100000
   rpm                 = 1000
-  
+
   # Cost configuration (per million tokens)
   input_cost_per_million_tokens  = 30.0    # $0.03 per 1k tokens = $30 per million
   output_cost_per_million_tokens = 60.0    # $0.06 per 1k tokens = $60 per million
@@ -55,14 +55,14 @@ resource "litellm_model" "bedrock_claude" {
   base_model          = "anthropic.claude-3-sonnet-20240229-v1:0"
   tier                = "paid"
   mode                = "chat"
-  
+
   # AWS configuration with cross-account access
   aws_access_key_id     = var.aws_access_key_id
   aws_secret_access_key = var.aws_secret_access_key
   aws_region_name       = "us-east-1"
   aws_session_name      = "litellm-cross-account-session"
   aws_role_name         = "arn:aws:iam::123456789012:role/LiteLLMCrossAccountRole"
-  
+
   input_cost_per_million_tokens  = 3.0
   output_cost_per_million_tokens = 15.0
 }
@@ -78,7 +78,7 @@ resource "litellm_model" "claude" {
   base_model          = "claude-3-sonnet-20240229"
   tier                = "paid"
   mode                = "chat"
-  
+
   input_cost_per_million_tokens  = 3.0
   output_cost_per_million_tokens = 15.0
 }
@@ -96,7 +96,7 @@ resource "litellm_model" "azure_gpt4" {
   base_model          = "gpt-4"
   tier                = "paid"
   mode                = "chat"
-  
+
   input_cost_per_million_tokens  = 30.0
   output_cost_per_million_tokens = 60.0
 }
@@ -121,7 +121,7 @@ resource "litellm_model" "gpt4_with_credential" {
   tier                   = "paid"
   mode                   = "chat"
   litellm_credential_name = litellm_credential.openai_creds.credential_name
-  
+
   input_cost_per_million_tokens  = 30.0
   output_cost_per_million_tokens = 60.0
 }
@@ -138,10 +138,10 @@ resource "litellm_model" "gpt4_premium" {
   base_model          = "gpt-4"
   tier                = "paid"
   mode                = "chat"
-  
+
   # Assign to access groups - teams/keys with these groups can use this model
   access_groups = ["premium-models", "gpt4-access"]
-  
+
   input_cost_per_million_tokens  = 30.0
   output_cost_per_million_tokens = 60.0
 }
@@ -175,7 +175,20 @@ The following arguments are supported:
 
 * `access_groups` - (Optional) list(string). List of access groups this model belongs to. Teams and keys with access to these groups can use this model. See [LiteLLM Access Groups](https://docs.litellm.ai/docs/proxy/model_access_groups) for more details.
 
-* `mode` - (Optional) string. The intended use of the model. Valid values (aligned with LiteLLM proxy API): `chat`, `completion`, `embedding`, `audio_speech`, `audio_transcription`, `image_generation`, `video_generation`, `batch`, `rerank`, `realtime`, `responses`, `ocr`, `moderation`.
+* `mode` - (Optional) string. The intended use of the model. Valid values (aligned with LiteLLM proxy API):
+  * `chat`
+  * `completion`
+  * `embedding`
+  * `audio_speech`
+  * `audio_transcription`
+  * `image_generation`
+  * `video_generation`
+  * `batch`
+  * `rerank`
+  * `realtime`
+  * `responses`
+  * `ocr`
+  * `moderation`
 
 * `tpm` - (Optional) integer. Tokens per minute limit for this model.
 
