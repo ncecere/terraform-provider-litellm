@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.2] - 2026-02-07
+
+### Changed
+- **`litellm_model`**: Aligned `mode` values with the LiteLLM proxy API across validation and documentation. Supported values are now: `chat`, `completion`, `embedding`, `audio_speech`, `audio_transcription`, `image_generation`, `video_generation`, `batch`, `rerank`, `realtime`, `responses`, `ocr`, `moderation` ([#52](https://github.com/ncecere/terraform-provider-litellm/pull/52))
+- **Documentation**: Updated `mode` list formatting in `docs/resources/model.md` for better readability and consistency
+
+### Contributors
+- Nick Silva (`@antisilent`) for [#52](https://github.com/ncecere/terraform-provider-litellm/pull/52)
+
 ## [1.0.1] - 2026-02-06
 
 ### Fixed
