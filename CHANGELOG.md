@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.3] - 2026-02-09
+
+### Fixed
+- **`litellm_team`**: Fixed "Provider returned invalid result object after apply" for omitted optional attributes by fully populating all `Optional + Computed` list/map fields in read state (`models`, `tags`, `guardrails`, `prompts`, `metadata`, `model_aliases`, `model_rpm_limit`, `model_tpm_limit`, `team_member_permissions`) ([#53](https://github.com/ncecere/terraform-provider-litellm/issues/53))
+- **`litellm_model`**: Fixed "Provider returned invalid result object after apply" for omitted optional attributes by resolving unknown `access_groups` and `additional_litellm_params` values during readback ([#53](https://github.com/ncecere/terraform-provider-litellm/issues/53))
+- **`litellm_key`**: Fixed incomplete readback for `Optional + Computed` fields that could leave unknown values after apply (`models`, `allowed_routes`, `allowed_passthrough_routes`, `allowed_cache_controls`, `guardrails`, `prompts`, `enforced_params`, `tags`, `metadata`, `aliases`, `config`, `permissions`, `model_max_budget`, `model_rpm_limit`, `model_tpm_limit`) and added update readback refresh.
+- **`litellm_mcp_server`**: Fixed nested `Optional + Computed` readback for `mcp_info.mcp_server_cost_info.tool_name_to_cost_per_query` so unknown values are resolved.
+- **`litellm_organization_member`**: Fixed `user_id` (`Optional + Computed`) hydration when membership is created via `user_email`, by matching on email during reads and persisting the resolved user ID in state.
+
+### Added
+- Regression tests for team/model/key/MCP server readback behavior and organization member matching to ensure optional+computed attributes are always known after apply.
+
 ## [1.0.2] - 2026-02-07
 
 ### Changed

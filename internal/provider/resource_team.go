@@ -270,6 +270,10 @@ func (r *TeamResource) Update(ctx context.Context, req resource.UpdateRequest, r
 		}
 	}
 
+	if err := r.readTeam(ctx, &data); err != nil {
+		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Team updated but failed to read back: %s", err))
+	}
+
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
@@ -449,6 +453,125 @@ func (r *TeamResource) readTeam(ctx context.Context, data *TeamResourceModel) er
 	if blocked, ok := result["blocked"].(bool); ok {
 		data.Blocked = types.BoolValue(blocked)
 	}
+	if tpmLimitType, ok := result["tpm_limit_type"].(string); ok && tpmLimitType != "" {
+		data.TPMLimitType = types.StringValue(tpmLimitType)
+	}
+	if rpmLimitType, ok := result["rpm_limit_type"].(string); ok && rpmLimitType != "" {
+		data.RPMLimitType = types.StringValue(rpmLimitType)
+	}
+	if teamMemberBudget, ok := result["team_member_budget"].(float64); ok {
+		data.TeamMemberBudget = types.Float64Value(teamMemberBudget)
+	}
+	if teamMemberRPMLimit, ok := result["team_member_rpm_limit"].(float64); ok {
+		data.TeamMemberRPMLimit = types.Int64Value(int64(teamMemberRPMLimit))
+	}
+	if teamMemberTPMLimit, ok := result["team_member_tpm_limit"].(float64); ok {
+		data.TeamMemberTPMLimit = types.Int64Value(int64(teamMemberTPMLimit))
+	}
+
+	// Handle models list - preserve null when API returns empty and config didn't specify models
+	if models, ok := result["models"].([]interface{}); ok && len(models) > 0 {
+		modelsList := make([]attr.Value, 0, len(models))
+		for _, m := range models {
+			if str, ok := m.(string); ok {
+				modelsList = append(modelsList, types.StringValue(str))
+			}
+		}
+		data.Models, _ = types.ListValue(types.StringType, modelsList)
+	} else if !data.Models.IsNull() {
+		data.Models, _ = types.ListValue(types.StringType, []attr.Value{})
+	}
+
+	// Handle tags list - preserve null when API returns empty and config didn't specify tags
+	if tags, ok := result["tags"].([]interface{}); ok && len(tags) > 0 {
+		tagsList := make([]attr.Value, 0, len(tags))
+		for _, t := range tags {
+			if str, ok := t.(string); ok {
+				tagsList = append(tagsList, types.StringValue(str))
+			}
+		}
+		data.Tags, _ = types.ListValue(types.StringType, tagsList)
+	} else if !data.Tags.IsNull() {
+		data.Tags, _ = types.ListValue(types.StringType, []attr.Value{})
+	}
+
+	// Handle guardrails list - preserve null when API returns empty and config didn't specify guardrails
+	if guardrails, ok := result["guardrails"].([]interface{}); ok && len(guardrails) > 0 {
+		guardrailsList := make([]attr.Value, 0, len(guardrails))
+		for _, g := range guardrails {
+			if str, ok := g.(string); ok {
+				guardrailsList = append(guardrailsList, types.StringValue(str))
+			}
+		}
+		data.Guardrails, _ = types.ListValue(types.StringType, guardrailsList)
+	} else if !data.Guardrails.IsNull() {
+		data.Guardrails, _ = types.ListValue(types.StringType, []attr.Value{})
+	}
+
+	// Handle prompts list - preserve null when API returns empty and config didn't specify prompts
+	if prompts, ok := result["prompts"].([]interface{}); ok && len(prompts) > 0 {
+		promptsList := make([]attr.Value, 0, len(prompts))
+		for _, p := range prompts {
+			if str, ok := p.(string); ok {
+				promptsList = append(promptsList, types.StringValue(str))
+			}
+		}
+		data.Prompts, _ = types.ListValue(types.StringType, promptsList)
+	} else if !data.Prompts.IsNull() {
+		data.Prompts, _ = types.ListValue(types.StringType, []attr.Value{})
+	}
+
+	// Handle metadata map - preserve null when API returns empty and config didn't specify metadata
+	if metadata, ok := result["metadata"].(map[string]interface{}); ok && len(metadata) > 0 {
+		metaMap := make(map[string]attr.Value)
+		for k, v := range metadata {
+			if str, ok := v.(string); ok {
+				metaMap[k] = types.StringValue(str)
+			}
+		}
+		data.Metadata, _ = types.MapValue(types.StringType, metaMap)
+	} else if !data.Metadata.IsNull() {
+		data.Metadata, _ = types.MapValue(types.StringType, map[string]attr.Value{})
+	}
+
+	// Handle model_aliases map - preserve null when API returns empty and config didn't specify model_aliases
+	if modelAliases, ok := result["model_aliases"].(map[string]interface{}); ok && len(modelAliases) > 0 {
+		aliasMap := make(map[string]attr.Value)
+		for k, v := range modelAliases {
+			if str, ok := v.(string); ok {
+				aliasMap[k] = types.StringValue(str)
+			}
+		}
+		data.ModelAliases, _ = types.MapValue(types.StringType, aliasMap)
+	} else if !data.ModelAliases.IsNull() {
+		data.ModelAliases, _ = types.MapValue(types.StringType, map[string]attr.Value{})
+	}
+
+	// Handle model_rpm_limit map - preserve null when API returns empty and config didn't specify model_rpm_limit
+	if modelRPM, ok := result["model_rpm_limit"].(map[string]interface{}); ok && len(modelRPM) > 0 {
+		rpmMap := make(map[string]attr.Value)
+		for k, v := range modelRPM {
+			if num, ok := v.(float64); ok {
+				rpmMap[k] = types.Int64Value(int64(num))
+			}
+		}
+		data.ModelRPMLimit, _ = types.MapValue(types.Int64Type, rpmMap)
+	} else if !data.ModelRPMLimit.IsNull() {
+		data.ModelRPMLimit, _ = types.MapValue(types.Int64Type, map[string]attr.Value{})
+	}
+
+	// Handle model_tpm_limit map - preserve null when API returns empty and config didn't specify model_tpm_limit
+	if modelTPM, ok := result["model_tpm_limit"].(map[string]interface{}); ok && len(modelTPM) > 0 {
+		tpmMap := make(map[string]attr.Value)
+		for k, v := range modelTPM {
+			if num, ok := v.(float64); ok {
+				tpmMap[k] = types.Int64Value(int64(num))
+			}
+		}
+		data.ModelTPMLimit, _ = types.MapValue(types.Int64Type, tpmMap)
+	} else if !data.ModelTPMLimit.IsNull() {
+		data.ModelTPMLimit, _ = types.MapValue(types.Int64Type, map[string]attr.Value{})
+	}
 
 	// Fetch permissions separately - preserve null when API returns empty and config didn't specify permissions
 	permEndpoint := fmt.Sprintf("/team/permissions_list?team_id=%s", data.ID.ValueString())
@@ -465,6 +588,8 @@ func (r *TeamResource) readTeam(ctx context.Context, data *TeamResourceModel) er
 		} else if !data.TeamMemberPermissions.IsNull() {
 			data.TeamMemberPermissions, _ = types.ListValue(types.StringType, []attr.Value{})
 		}
+	} else if !data.TeamMemberPermissions.IsNull() {
+		data.TeamMemberPermissions, _ = types.ListValue(types.StringType, []attr.Value{})
 	}
 
 	return nil

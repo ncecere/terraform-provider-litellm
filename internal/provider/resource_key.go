@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -348,6 +349,10 @@ func (r *KeyResource) Update(ctx context.Context, req resource.UpdateRequest, re
 		return
 	}
 
+	if err := r.readKey(ctx, &data); err != nil {
+		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Key updated but failed to read back: %s", err))
+	}
+
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
@@ -618,6 +623,226 @@ func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error
 	}
 	if budgetID, ok := result["budget_id"].(string); ok && budgetID != "" {
 		data.BudgetID = types.StringValue(budgetID)
+	}
+	if keyAlias, ok := result["key_alias"].(string); ok && keyAlias != "" {
+		data.KeyAlias = types.StringValue(keyAlias)
+	}
+	if duration, ok := result["duration"].(string); ok && duration != "" {
+		data.Duration = types.StringValue(duration)
+	}
+	if tpmLimitType, ok := result["tpm_limit_type"].(string); ok && tpmLimitType != "" {
+		data.TPMLimitType = types.StringValue(tpmLimitType)
+	}
+	if rpmLimitType, ok := result["rpm_limit_type"].(string); ok && rpmLimitType != "" {
+		data.RPMLimitType = types.StringValue(rpmLimitType)
+	}
+	if budgetDuration, ok := result["budget_duration"].(string); ok && budgetDuration != "" {
+		data.BudgetDuration = types.StringValue(budgetDuration)
+	}
+	if teamID, ok := result["team_id"].(string); ok && teamID != "" {
+		data.TeamID = types.StringValue(teamID)
+	}
+	if userID, ok := result["user_id"].(string); ok && userID != "" {
+		data.UserID = types.StringValue(userID)
+	}
+	if keyValue, ok := result["key"].(string); ok && keyValue != "" {
+		data.Key = types.StringValue(keyValue)
+		data.ID = types.StringValue(keyValue)
+	}
+
+	// Handle models list - preserve null when API returns empty and config didn't specify models
+	if models, ok := result["models"].([]interface{}); ok && len(models) > 0 {
+		modelsList := make([]attr.Value, 0, len(models))
+		for _, m := range models {
+			if str, ok := m.(string); ok {
+				modelsList = append(modelsList, types.StringValue(str))
+			}
+		}
+		data.Models, _ = types.ListValue(types.StringType, modelsList)
+	} else if !data.Models.IsNull() {
+		data.Models, _ = types.ListValue(types.StringType, []attr.Value{})
+	}
+
+	// Handle allowed_routes list - preserve null when API returns empty and config didn't specify allowed_routes
+	if routes, ok := result["allowed_routes"].([]interface{}); ok && len(routes) > 0 {
+		routesList := make([]attr.Value, 0, len(routes))
+		for _, r := range routes {
+			if str, ok := r.(string); ok {
+				routesList = append(routesList, types.StringValue(str))
+			}
+		}
+		data.AllowedRoutes, _ = types.ListValue(types.StringType, routesList)
+	} else if !data.AllowedRoutes.IsNull() {
+		data.AllowedRoutes, _ = types.ListValue(types.StringType, []attr.Value{})
+	}
+
+	// Handle allowed_passthrough_routes list - preserve null when API returns empty and config didn't specify allowed_passthrough_routes
+	if routes, ok := result["allowed_passthrough_routes"].([]interface{}); ok && len(routes) > 0 {
+		routesList := make([]attr.Value, 0, len(routes))
+		for _, r := range routes {
+			if str, ok := r.(string); ok {
+				routesList = append(routesList, types.StringValue(str))
+			}
+		}
+		data.AllowedPassthroughRoutes, _ = types.ListValue(types.StringType, routesList)
+	} else if !data.AllowedPassthroughRoutes.IsNull() {
+		data.AllowedPassthroughRoutes, _ = types.ListValue(types.StringType, []attr.Value{})
+	}
+
+	// Handle allowed_cache_controls list - preserve null when API returns empty and config didn't specify allowed_cache_controls
+	if controls, ok := result["allowed_cache_controls"].([]interface{}); ok && len(controls) > 0 {
+		controlsList := make([]attr.Value, 0, len(controls))
+		for _, c := range controls {
+			if str, ok := c.(string); ok {
+				controlsList = append(controlsList, types.StringValue(str))
+			}
+		}
+		data.AllowedCacheControls, _ = types.ListValue(types.StringType, controlsList)
+	} else if !data.AllowedCacheControls.IsNull() {
+		data.AllowedCacheControls, _ = types.ListValue(types.StringType, []attr.Value{})
+	}
+
+	// Handle guardrails list - preserve null when API returns empty and config didn't specify guardrails
+	if guardrails, ok := result["guardrails"].([]interface{}); ok && len(guardrails) > 0 {
+		guardrailsList := make([]attr.Value, 0, len(guardrails))
+		for _, g := range guardrails {
+			if str, ok := g.(string); ok {
+				guardrailsList = append(guardrailsList, types.StringValue(str))
+			}
+		}
+		data.Guardrails, _ = types.ListValue(types.StringType, guardrailsList)
+	} else if !data.Guardrails.IsNull() {
+		data.Guardrails, _ = types.ListValue(types.StringType, []attr.Value{})
+	}
+
+	// Handle prompts list - preserve null when API returns empty and config didn't specify prompts
+	if prompts, ok := result["prompts"].([]interface{}); ok && len(prompts) > 0 {
+		promptsList := make([]attr.Value, 0, len(prompts))
+		for _, p := range prompts {
+			if str, ok := p.(string); ok {
+				promptsList = append(promptsList, types.StringValue(str))
+			}
+		}
+		data.Prompts, _ = types.ListValue(types.StringType, promptsList)
+	} else if !data.Prompts.IsNull() {
+		data.Prompts, _ = types.ListValue(types.StringType, []attr.Value{})
+	}
+
+	// Handle enforced_params list - preserve null when API returns empty and config didn't specify enforced_params
+	if enforcedParams, ok := result["enforced_params"].([]interface{}); ok && len(enforcedParams) > 0 {
+		paramsList := make([]attr.Value, 0, len(enforcedParams))
+		for _, p := range enforcedParams {
+			if str, ok := p.(string); ok {
+				paramsList = append(paramsList, types.StringValue(str))
+			}
+		}
+		data.EnforcedParams, _ = types.ListValue(types.StringType, paramsList)
+	} else if !data.EnforcedParams.IsNull() {
+		data.EnforcedParams, _ = types.ListValue(types.StringType, []attr.Value{})
+	}
+
+	// Handle tags list - preserve null when API returns empty and config didn't specify tags
+	if tags, ok := result["tags"].([]interface{}); ok && len(tags) > 0 {
+		tagsList := make([]attr.Value, 0, len(tags))
+		for _, t := range tags {
+			if str, ok := t.(string); ok {
+				tagsList = append(tagsList, types.StringValue(str))
+			}
+		}
+		data.Tags, _ = types.ListValue(types.StringType, tagsList)
+	} else if !data.Tags.IsNull() {
+		data.Tags, _ = types.ListValue(types.StringType, []attr.Value{})
+	}
+
+	// Handle metadata map - preserve null when API returns empty and config didn't specify metadata
+	if metadata, ok := result["metadata"].(map[string]interface{}); ok && len(metadata) > 0 {
+		metaMap := make(map[string]attr.Value)
+		for k, v := range metadata {
+			if str, ok := v.(string); ok {
+				metaMap[k] = types.StringValue(str)
+			}
+		}
+		data.Metadata, _ = types.MapValue(types.StringType, metaMap)
+	} else if !data.Metadata.IsNull() {
+		data.Metadata, _ = types.MapValue(types.StringType, map[string]attr.Value{})
+	}
+
+	// Handle aliases map - preserve null when API returns empty and config didn't specify aliases
+	if aliases, ok := result["aliases"].(map[string]interface{}); ok && len(aliases) > 0 {
+		aliasMap := make(map[string]attr.Value)
+		for k, v := range aliases {
+			if str, ok := v.(string); ok {
+				aliasMap[k] = types.StringValue(str)
+			}
+		}
+		data.Aliases, _ = types.MapValue(types.StringType, aliasMap)
+	} else if !data.Aliases.IsNull() {
+		data.Aliases, _ = types.MapValue(types.StringType, map[string]attr.Value{})
+	}
+
+	// Handle config map - preserve null when API returns empty and config didn't specify config
+	if configMapRaw, ok := result["config"].(map[string]interface{}); ok && len(configMapRaw) > 0 {
+		configMap := make(map[string]attr.Value)
+		for k, v := range configMapRaw {
+			if str, ok := v.(string); ok {
+				configMap[k] = types.StringValue(str)
+			}
+		}
+		data.Config, _ = types.MapValue(types.StringType, configMap)
+	} else if !data.Config.IsNull() {
+		data.Config, _ = types.MapValue(types.StringType, map[string]attr.Value{})
+	}
+
+	// Handle permissions map - preserve null when API returns empty and config didn't specify permissions
+	if permissions, ok := result["permissions"].(map[string]interface{}); ok && len(permissions) > 0 {
+		permMap := make(map[string]attr.Value)
+		for k, v := range permissions {
+			if str, ok := v.(string); ok {
+				permMap[k] = types.StringValue(str)
+			}
+		}
+		data.Permissions, _ = types.MapValue(types.StringType, permMap)
+	} else if !data.Permissions.IsNull() {
+		data.Permissions, _ = types.MapValue(types.StringType, map[string]attr.Value{})
+	}
+
+	// Handle model_max_budget map - preserve null when API returns empty and config didn't specify model_max_budget
+	if modelMaxBudget, ok := result["model_max_budget"].(map[string]interface{}); ok && len(modelMaxBudget) > 0 {
+		budgetMap := make(map[string]attr.Value)
+		for k, v := range modelMaxBudget {
+			if num, ok := v.(float64); ok {
+				budgetMap[k] = types.Float64Value(num)
+			}
+		}
+		data.ModelMaxBudget, _ = types.MapValue(types.Float64Type, budgetMap)
+	} else if !data.ModelMaxBudget.IsNull() {
+		data.ModelMaxBudget, _ = types.MapValue(types.Float64Type, map[string]attr.Value{})
+	}
+
+	// Handle model_rpm_limit map - preserve null when API returns empty and config didn't specify model_rpm_limit
+	if modelRPM, ok := result["model_rpm_limit"].(map[string]interface{}); ok && len(modelRPM) > 0 {
+		rpmMap := make(map[string]attr.Value)
+		for k, v := range modelRPM {
+			if num, ok := v.(float64); ok {
+				rpmMap[k] = types.Int64Value(int64(num))
+			}
+		}
+		data.ModelRPMLimit, _ = types.MapValue(types.Int64Type, rpmMap)
+	} else if !data.ModelRPMLimit.IsNull() {
+		data.ModelRPMLimit, _ = types.MapValue(types.Int64Type, map[string]attr.Value{})
+	}
+
+	// Handle model_tpm_limit map - preserve null when API returns empty and config didn't specify model_tpm_limit
+	if modelTPM, ok := result["model_tpm_limit"].(map[string]interface{}); ok && len(modelTPM) > 0 {
+		tpmMap := make(map[string]attr.Value)
+		for k, v := range modelTPM {
+			if num, ok := v.(float64); ok {
+				tpmMap[k] = types.Int64Value(int64(num))
+			}
+		}
+		data.ModelTPMLimit, _ = types.MapValue(types.Int64Type, tpmMap)
+	} else if !data.ModelTPMLimit.IsNull() {
+		data.ModelTPMLimit, _ = types.MapValue(types.Int64Type, map[string]attr.Value{})
 	}
 
 	return nil

@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -317,6 +318,10 @@ func (r *ModelResource) Update(ctx context.Context, req resource.UpdateRequest, 
 		return
 	}
 
+	if err := r.readModel(ctx, &data); err != nil {
+		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Model updated but failed to read back: %s", err))
+	}
+
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
@@ -505,15 +510,79 @@ func (r *ModelResource) readModel(ctx context.Context, data *ModelResourceModel)
 		if rpm, ok := litellmParams["rpm"].(float64); ok {
 			data.RPM = types.Int64Value(int64(rpm))
 		}
+		if tpm, ok := litellmParams["tpm"].(int64); ok {
+			data.TPM = types.Int64Value(tpm)
+		}
+		if rpm, ok := litellmParams["rpm"].(int64); ok {
+			data.RPM = types.Int64Value(rpm)
+		}
 		if awsRegion, ok := litellmParams["aws_region_name"].(string); ok && awsRegion != "" {
 			data.AWSRegionName = types.StringValue(awsRegion)
 		}
 		if credName, ok := litellmParams["litellm_credential_name"].(string); ok && credName != "" {
 			data.LiteLLMCredentialName = types.StringValue(credName)
 		}
+
+		// Handle additional_litellm_params map - preserve state when API omits custom params.
+		knownLiteLLMParams := map[string]struct{}{
+			"custom_llm_provider":                {},
+			"model":                              {},
+			"input_cost_per_token":               {},
+			"output_cost_per_token":              {},
+			"tpm":                                {},
+			"rpm":                                {},
+			"api_key":                            {},
+			"api_base":                           {},
+			"api_version":                        {},
+			"reasoning_effort":                   {},
+			"merge_reasoning_content_in_choices": {},
+			"thinking":                           {},
+			"aws_access_key_id":                  {},
+			"aws_secret_access_key":              {},
+			"aws_region_name":                    {},
+			"aws_session_name":                   {},
+			"aws_role_name":                      {},
+			"vertex_project":                     {},
+			"vertex_location":                    {},
+			"vertex_credentials":                 {},
+			"litellm_credential_name":            {},
+			"input_cost_per_pixel":               {},
+			"output_cost_per_pixel":              {},
+			"input_cost_per_second":              {},
+			"output_cost_per_second":             {},
+		}
+
+		additionalParams := make(map[string]attr.Value)
+		for key, rawValue := range litellmParams {
+			if _, isKnown := knownLiteLLMParams[key]; isKnown {
+				continue
+			}
+
+			switch v := rawValue.(type) {
+			case string:
+				additionalParams[key] = types.StringValue(v)
+			case bool:
+				additionalParams[key] = types.StringValue(strconv.FormatBool(v))
+			case float64:
+				additionalParams[key] = types.StringValue(strconv.FormatFloat(v, 'f', -1, 64))
+			case int:
+				additionalParams[key] = types.StringValue(strconv.Itoa(v))
+			case int64:
+				additionalParams[key] = types.StringValue(strconv.FormatInt(v, 10))
+			}
+		}
+
+		if len(additionalParams) > 0 {
+			data.AdditionalLiteLLMParams, _ = types.MapValue(types.StringType, additionalParams)
+		} else if data.AdditionalLiteLLMParams.IsUnknown() {
+			data.AdditionalLiteLLMParams, _ = types.MapValue(types.StringType, map[string]attr.Value{})
+		}
+	} else if data.AdditionalLiteLLMParams.IsUnknown() {
+		data.AdditionalLiteLLMParams, _ = types.MapValue(types.StringType, map[string]attr.Value{})
 	}
 
-	if modelInfo, ok := result["model_info"].(map[string]interface{}); ok {
+	modelInfo, hasModelInfo := result["model_info"].(map[string]interface{})
+	if hasModelInfo {
 		if baseModel, ok := modelInfo["base_model"].(string); ok && baseModel != "" {
 			data.BaseModel = types.StringValue(baseModel)
 		}
@@ -543,6 +612,8 @@ func (r *ModelResource) readModel(ctx context.Context, data *ModelResourceModel)
 		} else if !data.AccessGroups.IsNull() {
 			data.AccessGroups, _ = types.ListValue(types.StringType, []attr.Value{})
 		}
+	} else if !data.AccessGroups.IsNull() {
+		data.AccessGroups, _ = types.ListValue(types.StringType, []attr.Value{})
 	}
 
 	return nil

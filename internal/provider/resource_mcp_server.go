@@ -696,5 +696,46 @@ func (r *MCPServerResource) readMCPServer(ctx context.Context, data *MCPServerRe
 		data.AllowAllKeys = types.BoolValue(allowAllKeys)
 	}
 
+	// Handle mcp_info block, including Optional+Computed nested tool_name_to_cost_per_query.
+	if mcpInfoRaw, ok := result["mcp_info"].(map[string]interface{}); ok {
+		if data.MCPInfo == nil {
+			data.MCPInfo = &MCPInfoModel{}
+		}
+		if serverName, ok := mcpInfoRaw["server_name"].(string); ok {
+			data.MCPInfo.ServerName = types.StringValue(serverName)
+		}
+		if description, ok := mcpInfoRaw["description"].(string); ok {
+			data.MCPInfo.Description = types.StringValue(description)
+		}
+		if logoURL, ok := mcpInfoRaw["logo_url"].(string); ok {
+			data.MCPInfo.LogoURL = types.StringValue(logoURL)
+		}
+
+		if costInfoRaw, ok := mcpInfoRaw["mcp_server_cost_info"].(map[string]interface{}); ok {
+			if data.MCPInfo.MCPServerCostInfo == nil {
+				data.MCPInfo.MCPServerCostInfo = &MCPServerCostInfoModel{}
+			}
+			if defaultCost, ok := costInfoRaw["default_cost_per_query"].(float64); ok {
+				data.MCPInfo.MCPServerCostInfo.DefaultCostPerQuery = types.Float64Value(defaultCost)
+			}
+
+			if toolCostsRaw, ok := costInfoRaw["tool_name_to_cost_per_query"].(map[string]interface{}); ok && len(toolCostsRaw) > 0 {
+				toolCosts := make(map[string]attr.Value)
+				for k, v := range toolCostsRaw {
+					if num, ok := v.(float64); ok {
+						toolCosts[k] = types.Float64Value(num)
+					}
+				}
+				data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery, _ = types.MapValue(types.Float64Type, toolCosts)
+			} else if !data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery.IsNull() {
+				data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery, _ = types.MapValue(types.Float64Type, map[string]attr.Value{})
+			}
+		} else if data.MCPInfo.MCPServerCostInfo != nil && !data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery.IsNull() {
+			data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery, _ = types.MapValue(types.Float64Type, map[string]attr.Value{})
+		}
+	} else if data.MCPInfo != nil && data.MCPInfo.MCPServerCostInfo != nil && !data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery.IsNull() {
+		data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery, _ = types.MapValue(types.Float64Type, map[string]attr.Value{})
+	}
+
 	return nil
 }

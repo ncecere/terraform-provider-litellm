@@ -194,17 +194,37 @@ func (r *OrganizationMemberResource) Read(ctx context.Context, req resource.Read
 		return
 	}
 
-	// Check if user is still a member
-	userID := data.UserID.ValueString()
+	// Check if user is still a member.
+	// If user_id was not known at create time (email-only workflow), match by user_email and hydrate user_id.
+	userID := ""
+	if !data.UserID.IsNull() && !data.UserID.IsUnknown() {
+		userID = data.UserID.ValueString()
+	}
+	userEmail := ""
+	if !data.UserEmail.IsNull() && !data.UserEmail.IsUnknown() {
+		userEmail = data.UserEmail.ValueString()
+	}
 	found := false
 
 	if members, ok := result["members"].([]interface{}); ok {
 		for _, m := range members {
 			if memberMap, ok := m.(map[string]interface{}); ok {
-				if id, ok := memberMap["user_id"].(string); ok && id == userID {
+				memberUserID, _ := memberMap["user_id"].(string)
+				memberUserEmail, _ := memberMap["user_email"].(string)
+
+				if matchOrganizationMember(memberUserID, memberUserEmail, userID, userEmail) {
 					found = true
+					if memberUserID != "" {
+						data.UserID = types.StringValue(memberUserID)
+					}
+					if memberUserEmail != "" {
+						data.UserEmail = types.StringValue(memberUserEmail)
+					}
 					if role, ok := memberMap["role"].(string); ok {
 						data.Role = types.StringValue(role)
+					}
+					if maxBudget, ok := memberMap["max_budget_in_organization"].(float64); ok {
+						data.MaxBudgetInOrganization = types.Float64Value(maxBudget)
 					}
 					break
 				}
@@ -218,7 +238,27 @@ func (r *OrganizationMemberResource) Read(ctx context.Context, req resource.Read
 		return
 	}
 
+	memberIdentifier := ""
+	if !data.UserID.IsNull() && !data.UserID.IsUnknown() && data.UserID.ValueString() != "" {
+		memberIdentifier = data.UserID.ValueString()
+	} else if !data.UserEmail.IsNull() && !data.UserEmail.IsUnknown() {
+		memberIdentifier = data.UserEmail.ValueString()
+	}
+	if memberIdentifier != "" {
+		data.ID = types.StringValue(fmt.Sprintf("%s:%s", data.OrganizationID.ValueString(), memberIdentifier))
+	}
+
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+}
+
+func matchOrganizationMember(memberUserID, memberUserEmail, targetUserID, targetUserEmail string) bool {
+	if targetUserID != "" {
+		return memberUserID == targetUserID
+	}
+	if targetUserEmail != "" {
+		return memberUserEmail == targetUserEmail
+	}
+	return false
 }
 
 func (r *OrganizationMemberResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
