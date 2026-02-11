@@ -58,7 +58,6 @@ type KeyResourceModel struct {
 	EnforcedParams           types.List    `tfsdk:"enforced_params"`
 	Tags                     types.List    `tfsdk:"tags"`
 	Blocked                  types.Bool    `tfsdk:"blocked"`
-	Spend                    types.Float64 `tfsdk:"spend"`
 }
 
 func (r *KeyResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -243,10 +242,6 @@ func (r *KeyResource) Schema(ctx context.Context, req resource.SchemaRequest, re
 			"blocked": schema.BoolAttribute{
 				Description: "Whether the key is blocked.",
 				Optional:    true,
-				Computed:    true,
-			},
-			"spend": schema.Float64Attribute{
-				Description: "Amount spent by this key.",
 				Computed:    true,
 			},
 		},
@@ -596,62 +591,88 @@ func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error
 		return err
 	}
 
-	// Update computed fields from response
-	if spend, ok := result["spend"].(float64); ok {
-		data.Spend = types.Float64Value(spend)
+	// The /key/info endpoint may return key data nested inside "info"
+	info := result
+	if nested, ok := result["info"].(map[string]interface{}); ok {
+		info = nested
 	}
-	if maxBudget, ok := result["max_budget"].(float64); ok {
+
+	// Update computed fields from response.
+	// For Optional+Computed scalars, resolve Unknown to Null when the API
+	// returns nil so Terraform never sees an unknown value after apply.
+	if maxBudget, ok := info["max_budget"].(float64); ok {
 		data.MaxBudget = types.Float64Value(maxBudget)
+	} else if data.MaxBudget.IsUnknown() {
+		data.MaxBudget = types.Float64Null()
 	}
-	if tpmLimit, ok := result["tpm_limit"].(float64); ok {
+	if tpmLimit, ok := info["tpm_limit"].(float64); ok {
 		data.TPMLimit = types.Int64Value(int64(tpmLimit))
+	} else if data.TPMLimit.IsUnknown() {
+		data.TPMLimit = types.Int64Null()
 	}
-	if rpmLimit, ok := result["rpm_limit"].(float64); ok {
+	if rpmLimit, ok := info["rpm_limit"].(float64); ok {
 		data.RPMLimit = types.Int64Value(int64(rpmLimit))
+	} else if data.RPMLimit.IsUnknown() {
+		data.RPMLimit = types.Int64Null()
 	}
-	if maxParallel, ok := result["max_parallel_requests"].(float64); ok {
+	if maxParallel, ok := info["max_parallel_requests"].(float64); ok {
 		data.MaxParallelRequests = types.Int64Value(int64(maxParallel))
+	} else if data.MaxParallelRequests.IsUnknown() {
+		data.MaxParallelRequests = types.Int64Null()
 	}
-	if softBudget, ok := result["soft_budget"].(float64); ok {
+	if softBudget, ok := info["soft_budget"].(float64); ok {
 		data.SoftBudget = types.Float64Value(softBudget)
+	} else if data.SoftBudget.IsUnknown() {
+		data.SoftBudget = types.Float64Null()
 	}
-	if blocked, ok := result["blocked"].(bool); ok {
+	if blocked, ok := info["blocked"].(bool); ok {
 		data.Blocked = types.BoolValue(blocked)
+	} else if data.Blocked.IsUnknown() {
+		data.Blocked = types.BoolNull()
 	}
-	if orgID, ok := result["organization_id"].(string); ok && orgID != "" {
+	if orgID, ok := info["organization_id"].(string); ok && orgID != "" {
 		data.OrganizationID = types.StringValue(orgID)
 	}
-	if budgetID, ok := result["budget_id"].(string); ok && budgetID != "" {
-		data.BudgetID = types.StringValue(budgetID)
+	// Only set budget_id if the user explicitly configured it or if the
+	// current value is unknown (needs resolving). The API auto-creates budgets
+	// but we don't want to adopt server-side budget IDs into state.
+	if budgetID, ok := info["budget_id"].(string); ok && budgetID != "" {
+		if !data.BudgetID.IsNull() {
+			data.BudgetID = types.StringValue(budgetID)
+		}
 	}
-	if keyAlias, ok := result["key_alias"].(string); ok && keyAlias != "" {
+	if keyAlias, ok := info["key_alias"].(string); ok && keyAlias != "" {
 		data.KeyAlias = types.StringValue(keyAlias)
 	}
-	if duration, ok := result["duration"].(string); ok && duration != "" {
+	if duration, ok := info["duration"].(string); ok && duration != "" {
 		data.Duration = types.StringValue(duration)
 	}
-	if tpmLimitType, ok := result["tpm_limit_type"].(string); ok && tpmLimitType != "" {
+	if tpmLimitType, ok := info["tpm_limit_type"].(string); ok && tpmLimitType != "" {
 		data.TPMLimitType = types.StringValue(tpmLimitType)
 	}
-	if rpmLimitType, ok := result["rpm_limit_type"].(string); ok && rpmLimitType != "" {
+	if rpmLimitType, ok := info["rpm_limit_type"].(string); ok && rpmLimitType != "" {
 		data.RPMLimitType = types.StringValue(rpmLimitType)
 	}
-	if budgetDuration, ok := result["budget_duration"].(string); ok && budgetDuration != "" {
+	if budgetDuration, ok := info["budget_duration"].(string); ok && budgetDuration != "" {
 		data.BudgetDuration = types.StringValue(budgetDuration)
 	}
-	if teamID, ok := result["team_id"].(string); ok && teamID != "" {
+	if teamID, ok := info["team_id"].(string); ok && teamID != "" {
 		data.TeamID = types.StringValue(teamID)
 	}
-	if userID, ok := result["user_id"].(string); ok && userID != "" {
+	if userID, ok := info["user_id"].(string); ok && userID != "" {
 		data.UserID = types.StringValue(userID)
 	}
+	// "key" may be at top level or inside "info" (as "token" or "key")
 	if keyValue, ok := result["key"].(string); ok && keyValue != "" {
+		data.Key = types.StringValue(keyValue)
+		data.ID = types.StringValue(keyValue)
+	} else if keyValue, ok := info["token"].(string); ok && keyValue != "" {
 		data.Key = types.StringValue(keyValue)
 		data.ID = types.StringValue(keyValue)
 	}
 
 	// Handle models list - preserve null when API returns empty and config didn't specify models
-	if models, ok := result["models"].([]interface{}); ok && len(models) > 0 {
+	if models, ok := info["models"].([]interface{}); ok && len(models) > 0 {
 		modelsList := make([]attr.Value, 0, len(models))
 		for _, m := range models {
 			if str, ok := m.(string); ok {
@@ -664,7 +685,7 @@ func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error
 	}
 
 	// Handle allowed_routes list - preserve null when API returns empty and config didn't specify allowed_routes
-	if routes, ok := result["allowed_routes"].([]interface{}); ok && len(routes) > 0 {
+	if routes, ok := info["allowed_routes"].([]interface{}); ok && len(routes) > 0 {
 		routesList := make([]attr.Value, 0, len(routes))
 		for _, r := range routes {
 			if str, ok := r.(string); ok {
@@ -677,7 +698,7 @@ func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error
 	}
 
 	// Handle allowed_passthrough_routes list - preserve null when API returns empty and config didn't specify allowed_passthrough_routes
-	if routes, ok := result["allowed_passthrough_routes"].([]interface{}); ok && len(routes) > 0 {
+	if routes, ok := info["allowed_passthrough_routes"].([]interface{}); ok && len(routes) > 0 {
 		routesList := make([]attr.Value, 0, len(routes))
 		for _, r := range routes {
 			if str, ok := r.(string); ok {
@@ -690,7 +711,7 @@ func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error
 	}
 
 	// Handle allowed_cache_controls list - preserve null when API returns empty and config didn't specify allowed_cache_controls
-	if controls, ok := result["allowed_cache_controls"].([]interface{}); ok && len(controls) > 0 {
+	if controls, ok := info["allowed_cache_controls"].([]interface{}); ok && len(controls) > 0 {
 		controlsList := make([]attr.Value, 0, len(controls))
 		for _, c := range controls {
 			if str, ok := c.(string); ok {
@@ -703,7 +724,7 @@ func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error
 	}
 
 	// Handle guardrails list - preserve null when API returns empty and config didn't specify guardrails
-	if guardrails, ok := result["guardrails"].([]interface{}); ok && len(guardrails) > 0 {
+	if guardrails, ok := info["guardrails"].([]interface{}); ok && len(guardrails) > 0 {
 		guardrailsList := make([]attr.Value, 0, len(guardrails))
 		for _, g := range guardrails {
 			if str, ok := g.(string); ok {
@@ -716,7 +737,7 @@ func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error
 	}
 
 	// Handle prompts list - preserve null when API returns empty and config didn't specify prompts
-	if prompts, ok := result["prompts"].([]interface{}); ok && len(prompts) > 0 {
+	if prompts, ok := info["prompts"].([]interface{}); ok && len(prompts) > 0 {
 		promptsList := make([]attr.Value, 0, len(prompts))
 		for _, p := range prompts {
 			if str, ok := p.(string); ok {
@@ -729,7 +750,7 @@ func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error
 	}
 
 	// Handle enforced_params list - preserve null when API returns empty and config didn't specify enforced_params
-	if enforcedParams, ok := result["enforced_params"].([]interface{}); ok && len(enforcedParams) > 0 {
+	if enforcedParams, ok := info["enforced_params"].([]interface{}); ok && len(enforcedParams) > 0 {
 		paramsList := make([]attr.Value, 0, len(enforcedParams))
 		for _, p := range enforcedParams {
 			if str, ok := p.(string); ok {
@@ -742,7 +763,7 @@ func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error
 	}
 
 	// Handle tags list - preserve null when API returns empty and config didn't specify tags
-	if tags, ok := result["tags"].([]interface{}); ok && len(tags) > 0 {
+	if tags, ok := info["tags"].([]interface{}); ok && len(tags) > 0 {
 		tagsList := make([]attr.Value, 0, len(tags))
 		for _, t := range tags {
 			if str, ok := t.(string); ok {
@@ -754,21 +775,40 @@ func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error
 		data.Tags, _ = types.ListValue(types.StringType, []attr.Value{})
 	}
 
-	// Handle metadata map - preserve null when API returns empty and config didn't specify metadata
-	if metadata, ok := result["metadata"].(map[string]interface{}); ok && len(metadata) > 0 {
+	// Handle metadata map - preserve null when API returns empty and config didn't specify metadata.
+	// The API may inject internal keys (e.g. tpm_limit_type, rpm_limit_type) into metadata.
+	// Only include keys that were in the user's original config to avoid drift.
+	if metadata, ok := info["metadata"].(map[string]interface{}); ok && len(metadata) > 0 {
+		// Build set of user-configured metadata keys
+		configuredKeys := make(map[string]bool)
+		if !data.Metadata.IsNull() && !data.Metadata.IsUnknown() {
+			var currentMeta map[string]string
+			data.Metadata.ElementsAs(ctx, &currentMeta, false)
+			for k := range currentMeta {
+				configuredKeys[k] = true
+			}
+		}
+
 		metaMap := make(map[string]attr.Value)
 		for k, v := range metadata {
 			if str, ok := v.(string); ok {
-				metaMap[k] = types.StringValue(str)
+				// If user had specific keys, only keep those. Otherwise keep all.
+				if len(configuredKeys) == 0 || configuredKeys[k] {
+					metaMap[k] = types.StringValue(str)
+				}
 			}
 		}
-		data.Metadata, _ = types.MapValue(types.StringType, metaMap)
-	} else if !data.Metadata.IsNull() {
+		if len(metaMap) > 0 {
+			data.Metadata, _ = types.MapValue(types.StringType, metaMap)
+		} else if data.Metadata.IsUnknown() {
+			data.Metadata, _ = types.MapValue(types.StringType, map[string]attr.Value{})
+		}
+	} else if data.Metadata.IsUnknown() {
 		data.Metadata, _ = types.MapValue(types.StringType, map[string]attr.Value{})
 	}
 
 	// Handle aliases map - preserve null when API returns empty and config didn't specify aliases
-	if aliases, ok := result["aliases"].(map[string]interface{}); ok && len(aliases) > 0 {
+	if aliases, ok := info["aliases"].(map[string]interface{}); ok && len(aliases) > 0 {
 		aliasMap := make(map[string]attr.Value)
 		for k, v := range aliases {
 			if str, ok := v.(string); ok {
@@ -781,7 +821,7 @@ func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error
 	}
 
 	// Handle config map - preserve null when API returns empty and config didn't specify config
-	if configMapRaw, ok := result["config"].(map[string]interface{}); ok && len(configMapRaw) > 0 {
+	if configMapRaw, ok := info["config"].(map[string]interface{}); ok && len(configMapRaw) > 0 {
 		configMap := make(map[string]attr.Value)
 		for k, v := range configMapRaw {
 			if str, ok := v.(string); ok {
@@ -794,7 +834,7 @@ func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error
 	}
 
 	// Handle permissions map - preserve null when API returns empty and config didn't specify permissions
-	if permissions, ok := result["permissions"].(map[string]interface{}); ok && len(permissions) > 0 {
+	if permissions, ok := info["permissions"].(map[string]interface{}); ok && len(permissions) > 0 {
 		permMap := make(map[string]attr.Value)
 		for k, v := range permissions {
 			if str, ok := v.(string); ok {
@@ -807,7 +847,7 @@ func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error
 	}
 
 	// Handle model_max_budget map - preserve null when API returns empty and config didn't specify model_max_budget
-	if modelMaxBudget, ok := result["model_max_budget"].(map[string]interface{}); ok && len(modelMaxBudget) > 0 {
+	if modelMaxBudget, ok := info["model_max_budget"].(map[string]interface{}); ok && len(modelMaxBudget) > 0 {
 		budgetMap := make(map[string]attr.Value)
 		for k, v := range modelMaxBudget {
 			if num, ok := v.(float64); ok {
@@ -819,8 +859,9 @@ func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error
 		data.ModelMaxBudget, _ = types.MapValue(types.Float64Type, map[string]attr.Value{})
 	}
 
-	// Handle model_rpm_limit map - preserve null when API returns empty and config didn't specify model_rpm_limit
-	if modelRPM, ok := result["model_rpm_limit"].(map[string]interface{}); ok && len(modelRPM) > 0 {
+	// Handle model_rpm_limit map
+	// The API may not echo back per-model limits, so only clear on Unknown.
+	if modelRPM, ok := info["model_rpm_limit"].(map[string]interface{}); ok && len(modelRPM) > 0 {
 		rpmMap := make(map[string]attr.Value)
 		for k, v := range modelRPM {
 			if num, ok := v.(float64); ok {
@@ -828,12 +869,13 @@ func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error
 			}
 		}
 		data.ModelRPMLimit, _ = types.MapValue(types.Int64Type, rpmMap)
-	} else if !data.ModelRPMLimit.IsNull() {
+	} else if data.ModelRPMLimit.IsUnknown() {
 		data.ModelRPMLimit, _ = types.MapValue(types.Int64Type, map[string]attr.Value{})
 	}
 
-	// Handle model_tpm_limit map - preserve null when API returns empty and config didn't specify model_tpm_limit
-	if modelTPM, ok := result["model_tpm_limit"].(map[string]interface{}); ok && len(modelTPM) > 0 {
+	// Handle model_tpm_limit map
+	// The API may not echo back per-model limits, so only clear on Unknown.
+	if modelTPM, ok := info["model_tpm_limit"].(map[string]interface{}); ok && len(modelTPM) > 0 {
 		tpmMap := make(map[string]attr.Value)
 		for k, v := range modelTPM {
 			if num, ok := v.(float64); ok {
@@ -841,7 +883,7 @@ func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error
 			}
 		}
 		data.ModelTPMLimit, _ = types.MapValue(types.Int64Type, tpmMap)
-	} else if !data.ModelTPMLimit.IsNull() {
+	} else if data.ModelTPMLimit.IsUnknown() {
 		data.ModelTPMLimit, _ = types.MapValue(types.Int64Type, map[string]attr.Value{})
 	}
 

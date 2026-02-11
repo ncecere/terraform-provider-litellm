@@ -595,7 +595,9 @@ func (r *ModelResource) readModel(ctx context.Context, data *ModelResourceModel)
 		if teamID, ok := modelInfo["team_id"].(string); ok && teamID != "" {
 			data.TeamID = types.StringValue(teamID)
 		}
-		// Read access_groups from model_info - preserve null when API returns empty and config didn't specify access_groups
+		// Read access_groups from model_info
+		// The API may not echo back access_groups, so only update if the API
+		// actually returns them. If the API is silent, preserve the current value.
 		if accessGroups, ok := modelInfo["access_groups"].([]interface{}); ok && len(accessGroups) > 0 {
 			groupStrings := make([]string, 0, len(accessGroups))
 			for _, g := range accessGroups {
@@ -609,10 +611,13 @@ func (r *ModelResource) readModel(ctx context.Context, data *ModelResourceModel)
 					data.AccessGroups = listValue
 				}
 			}
-		} else if !data.AccessGroups.IsNull() {
+		} else if data.AccessGroups.IsUnknown() {
+			// Resolve unknown to empty list
 			data.AccessGroups, _ = types.ListValue(types.StringType, []attr.Value{})
 		}
-	} else if !data.AccessGroups.IsNull() {
+		// If the API didn't return access_groups and we already have a concrete
+		// value (from config/state), leave it as-is.
+	} else if data.AccessGroups.IsUnknown() {
 		data.AccessGroups, _ = types.ListValue(types.StringType, []attr.Value{})
 	}
 

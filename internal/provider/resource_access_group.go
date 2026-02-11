@@ -8,7 +8,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -26,10 +25,9 @@ type AccessGroupResource struct {
 }
 
 type AccessGroupResourceModel struct {
-	ID            types.String `tfsdk:"id"`
-	AccessGroup   types.String `tfsdk:"access_group"`
-	ModelNames    types.List   `tfsdk:"model_names"`
-	ModelsUpdated types.Int64  `tfsdk:"models_updated"`
+	ID          types.String `tfsdk:"id"`
+	AccessGroup types.String `tfsdk:"access_group"`
+	ModelNames  types.List   `tfsdk:"model_names"`
 }
 
 func (r *AccessGroupResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -58,13 +56,6 @@ func (r *AccessGroupResource) Schema(ctx context.Context, req resource.SchemaReq
 				Description: "List of model names (model_name from litellm_model) to include in this access group.",
 				Required:    true,
 				ElementType: types.StringType,
-			},
-			"models_updated": schema.Int64Attribute{
-				Description: "Number of model deployments updated when the access group was created/updated.",
-				Computed:    true,
-				PlanModifiers: []planmodifier.Int64{
-					int64planmodifier.UseStateForUnknown(),
-				},
 			},
 		},
 	}
@@ -110,11 +101,6 @@ func (r *AccessGroupResource) Create(ctx context.Context, req resource.CreateReq
 	}
 
 	data.ID = data.AccessGroup
-
-	// Extract models_updated from response
-	if modelsUpdated, ok := result["models_updated"].(float64); ok {
-		data.ModelsUpdated = types.Int64Value(int64(modelsUpdated))
-	}
 
 	// Read back for full state
 	if err := r.readAccessGroup(ctx, &data); err != nil {
@@ -174,11 +160,6 @@ func (r *AccessGroupResource) Update(ctx context.Context, req resource.UpdateReq
 	if err := r.client.DoRequestWithResponse(ctx, "PUT", endpoint, updateReq, &result); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to update access group: %s", err))
 		return
-	}
-
-	// Extract models_updated from response
-	if modelsUpdated, ok := result["models_updated"].(float64); ok {
-		data.ModelsUpdated = types.Int64Value(int64(modelsUpdated))
 	}
 
 	// Read back for full state

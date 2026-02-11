@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/google/uuid"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -34,7 +35,6 @@ type VectorStoreResourceModel struct {
 	LiteLLMCredentialName  types.String `tfsdk:"litellm_credential_name"`
 	LiteLLMParams          types.Map    `tfsdk:"litellm_params"`
 	CreatedAt              types.String `tfsdk:"created_at"`
-	UpdatedAt              types.String `tfsdk:"updated_at"`
 }
 
 func (r *VectorStoreResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -90,10 +90,9 @@ func (r *VectorStoreResource) Schema(ctx context.Context, req resource.SchemaReq
 			"created_at": schema.StringAttribute{
 				Description: "Timestamp when the vector store was created.",
 				Computed:    true,
-			},
-			"updated_at": schema.StringAttribute{
-				Description: "Timestamp when the vector store was last updated.",
-				Computed:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 		},
 	}
@@ -124,16 +123,19 @@ func (r *VectorStoreResource) Create(ctx context.Context, req resource.CreateReq
 		return
 	}
 
+	// Generate a UUID for vector_store_id if not already set
+	vsID := uuid.New().String()
+	data.VectorStoreID = types.StringValue(vsID)
+	data.ID = types.StringValue(vsID)
+
 	vsReq := r.buildVectorStoreRequest(ctx, &data)
+	vsReq["vector_store_id"] = vsID
 
 	var result map[string]interface{}
 	if err := r.client.DoRequestWithResponse(ctx, "POST", "/vector_store/new", vsReq, &result); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to create vector store: %s", err))
 		return
 	}
-
-	// Set temporary ID to the name (we'll get the real ID on read)
-	data.ID = data.VectorStoreName
 
 	// Read back for full state including the actual vector_store_id
 	if err := r.readVectorStore(ctx, &data); err != nil {
@@ -266,7 +268,12 @@ func (r *VectorStoreResource) buildVectorStoreRequest(ctx context.Context, data 
 				paramsInterface[k] = v
 			}
 			vsReq["litellm_params"] = paramsInterface
+		} else {
+			vsReq["litellm_params"] = map[string]interface{}{}
 		}
+	} else {
+		// API requires litellm_params even if empty
+		vsReq["litellm_params"] = map[string]interface{}{}
 	}
 
 	return vsReq
@@ -285,6 +292,11 @@ func (r *VectorStoreResource) readVectorStore(ctx context.Context, data *VectorS
 	var result map[string]interface{}
 	if err := r.client.DoRequestWithResponse(ctx, "POST", "/vector_store/info", infoReq, &result); err != nil {
 		return err
+	}
+
+	// Unwrap nested response - API returns {"vector_store": {...}}
+	if nested, ok := result["vector_store"].(map[string]interface{}); ok {
+		result = nested
 	}
 
 	// Update fields from response
@@ -307,10 +319,6 @@ func (r *VectorStoreResource) readVectorStore(ctx context.Context, data *VectorS
 	if createdAt, ok := result["created_at"].(string); ok {
 		data.CreatedAt = types.StringValue(createdAt)
 	}
-	if updatedAt, ok := result["updated_at"].(string); ok {
-		data.UpdatedAt = types.StringValue(updatedAt)
-	}
-
 	// Handle vector_store_metadata - preserve null when API returns empty and config didn't specify
 	if metadata, ok := result["vector_store_metadata"].(map[string]interface{}); ok && len(metadata) > 0 {
 		metaMap := make(map[string]attr.Value)
@@ -320,21 +328,39 @@ func (r *VectorStoreResource) readVectorStore(ctx context.Context, data *VectorS
 			}
 		}
 		data.VectorStoreMetadata, _ = types.MapValue(types.StringType, metaMap)
-	} else if !data.VectorStoreMetadata.IsNull() {
+	} else if data.VectorStoreMetadata.IsUnknown() {
 		data.VectorStoreMetadata, _ = types.MapValue(types.StringType, map[string]attr.Value{})
 	}
 
-	// Handle litellm_params - preserve null when API returns empty and config didn't specify
+	// Handle litellm_params - filter out server-injected keys, only keep user-configured keys
 	if params, ok := result["litellm_params"].(map[string]interface{}); ok && len(params) > 0 {
+		// Build set of user-configured keys
+		userKeys := make(map[string]bool)
+		if !data.LiteLLMParams.IsNull() && !data.LiteLLMParams.IsUnknown() {
+			var existingParams map[string]string
+			data.LiteLLMParams.ElementsAs(ctx, &existingParams, false)
+			for k := range existingParams {
+				userKeys[k] = true
+			}
+		}
+
 		paramsMap := make(map[string]attr.Value)
 		for k, v := range params {
+			// Only include keys the user originally configured
+			if len(userKeys) > 0 && !userKeys[k] {
+				continue
+			}
 			if str, ok := v.(string); ok {
 				paramsMap[k] = types.StringValue(str)
 			}
 		}
-		data.LiteLLMParams, _ = types.MapValue(types.StringType, paramsMap)
-	} else if !data.LiteLLMParams.IsNull() {
-		data.LiteLLMParams, _ = types.MapValue(types.StringType, map[string]attr.Value{})
+		if len(paramsMap) > 0 {
+			data.LiteLLMParams, _ = types.MapValue(types.StringType, paramsMap)
+		} else if data.LiteLLMParams.IsUnknown() {
+			data.LiteLLMParams = types.MapNull(types.StringType)
+		}
+	} else if data.LiteLLMParams.IsUnknown() {
+		data.LiteLLMParams = types.MapNull(types.StringType)
 	}
 
 	return nil

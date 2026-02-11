@@ -1,0 +1,4 @@
+# These match the docker-compose.yml defaults.
+# Copy this file to terraform.tfvars -- it will work out of the box.
+litellm_api_base = "http://localhost:4000"
+litellm_api_key  = "sk-testing-key"

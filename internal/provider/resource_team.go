@@ -431,46 +431,52 @@ func (r *TeamResource) readTeam(ctx context.Context, data *TeamResourceModel) er
 		return err
 	}
 
+	// The /team/info endpoint may return team data nested inside "team_info"
+	teamInfo := result
+	if nested, ok := result["team_info"].(map[string]interface{}); ok {
+		teamInfo = nested
+	}
+
 	// Update fields from response
-	if teamAlias, ok := result["team_alias"].(string); ok && teamAlias != "" {
+	if teamAlias, ok := teamInfo["team_alias"].(string); ok && teamAlias != "" {
 		data.TeamAlias = types.StringValue(teamAlias)
 	}
-	if orgID, ok := result["organization_id"].(string); ok && orgID != "" {
+	if orgID, ok := teamInfo["organization_id"].(string); ok && orgID != "" {
 		data.OrganizationID = types.StringValue(orgID)
 	}
-	if tpm, ok := result["tpm_limit"].(float64); ok {
+	if tpm, ok := teamInfo["tpm_limit"].(float64); ok {
 		data.TPMLimit = types.Int64Value(int64(tpm))
 	}
-	if rpm, ok := result["rpm_limit"].(float64); ok {
+	if rpm, ok := teamInfo["rpm_limit"].(float64); ok {
 		data.RPMLimit = types.Int64Value(int64(rpm))
 	}
-	if maxBudget, ok := result["max_budget"].(float64); ok {
+	if maxBudget, ok := teamInfo["max_budget"].(float64); ok {
 		data.MaxBudget = types.Float64Value(maxBudget)
 	}
-	if budgetDuration, ok := result["budget_duration"].(string); ok && budgetDuration != "" {
+	if budgetDuration, ok := teamInfo["budget_duration"].(string); ok && budgetDuration != "" {
 		data.BudgetDuration = types.StringValue(budgetDuration)
 	}
-	if blocked, ok := result["blocked"].(bool); ok {
+	if blocked, ok := teamInfo["blocked"].(bool); ok {
 		data.Blocked = types.BoolValue(blocked)
 	}
-	if tpmLimitType, ok := result["tpm_limit_type"].(string); ok && tpmLimitType != "" {
+	if tpmLimitType, ok := teamInfo["tpm_limit_type"].(string); ok && tpmLimitType != "" {
 		data.TPMLimitType = types.StringValue(tpmLimitType)
 	}
-	if rpmLimitType, ok := result["rpm_limit_type"].(string); ok && rpmLimitType != "" {
+	if rpmLimitType, ok := teamInfo["rpm_limit_type"].(string); ok && rpmLimitType != "" {
 		data.RPMLimitType = types.StringValue(rpmLimitType)
 	}
-	if teamMemberBudget, ok := result["team_member_budget"].(float64); ok {
+	if teamMemberBudget, ok := teamInfo["team_member_budget"].(float64); ok {
 		data.TeamMemberBudget = types.Float64Value(teamMemberBudget)
 	}
-	if teamMemberRPMLimit, ok := result["team_member_rpm_limit"].(float64); ok {
+	if teamMemberRPMLimit, ok := teamInfo["team_member_rpm_limit"].(float64); ok {
 		data.TeamMemberRPMLimit = types.Int64Value(int64(teamMemberRPMLimit))
 	}
-	if teamMemberTPMLimit, ok := result["team_member_tpm_limit"].(float64); ok {
+	if teamMemberTPMLimit, ok := teamInfo["team_member_tpm_limit"].(float64); ok {
 		data.TeamMemberTPMLimit = types.Int64Value(int64(teamMemberTPMLimit))
 	}
 
 	// Handle models list - preserve null when API returns empty and config didn't specify models
-	if models, ok := result["models"].([]interface{}); ok && len(models) > 0 {
+	if models, ok := teamInfo["models"].([]interface{}); ok && len(models) > 0 {
 		modelsList := make([]attr.Value, 0, len(models))
 		for _, m := range models {
 			if str, ok := m.(string); ok {
@@ -483,7 +489,7 @@ func (r *TeamResource) readTeam(ctx context.Context, data *TeamResourceModel) er
 	}
 
 	// Handle tags list - preserve null when API returns empty and config didn't specify tags
-	if tags, ok := result["tags"].([]interface{}); ok && len(tags) > 0 {
+	if tags, ok := teamInfo["tags"].([]interface{}); ok && len(tags) > 0 {
 		tagsList := make([]attr.Value, 0, len(tags))
 		for _, t := range tags {
 			if str, ok := t.(string); ok {
@@ -496,7 +502,7 @@ func (r *TeamResource) readTeam(ctx context.Context, data *TeamResourceModel) er
 	}
 
 	// Handle guardrails list - preserve null when API returns empty and config didn't specify guardrails
-	if guardrails, ok := result["guardrails"].([]interface{}); ok && len(guardrails) > 0 {
+	if guardrails, ok := teamInfo["guardrails"].([]interface{}); ok && len(guardrails) > 0 {
 		guardrailsList := make([]attr.Value, 0, len(guardrails))
 		for _, g := range guardrails {
 			if str, ok := g.(string); ok {
@@ -509,7 +515,7 @@ func (r *TeamResource) readTeam(ctx context.Context, data *TeamResourceModel) er
 	}
 
 	// Handle prompts list - preserve null when API returns empty and config didn't specify prompts
-	if prompts, ok := result["prompts"].([]interface{}); ok && len(prompts) > 0 {
+	if prompts, ok := teamInfo["prompts"].([]interface{}); ok && len(prompts) > 0 {
 		promptsList := make([]attr.Value, 0, len(prompts))
 		for _, p := range prompts {
 			if str, ok := p.(string); ok {
@@ -521,21 +527,39 @@ func (r *TeamResource) readTeam(ctx context.Context, data *TeamResourceModel) er
 		data.Prompts, _ = types.ListValue(types.StringType, []attr.Value{})
 	}
 
-	// Handle metadata map - preserve null when API returns empty and config didn't specify metadata
-	if metadata, ok := result["metadata"].(map[string]interface{}); ok && len(metadata) > 0 {
+	// Handle metadata map - preserve null when API returns empty and config didn't specify metadata.
+	// The API may inject internal keys (e.g. tpm_limit_type, rpm_limit_type) into metadata.
+	// Only include keys that were in the user's original config to avoid drift.
+	if metadata, ok := teamInfo["metadata"].(map[string]interface{}); ok && len(metadata) > 0 {
+		configuredKeys := make(map[string]bool)
+		if !data.Metadata.IsNull() && !data.Metadata.IsUnknown() {
+			var currentMeta map[string]string
+			data.Metadata.ElementsAs(ctx, &currentMeta, false)
+			for k := range currentMeta {
+				configuredKeys[k] = true
+			}
+		}
+
 		metaMap := make(map[string]attr.Value)
 		for k, v := range metadata {
 			if str, ok := v.(string); ok {
-				metaMap[k] = types.StringValue(str)
+				if len(configuredKeys) == 0 || configuredKeys[k] {
+					metaMap[k] = types.StringValue(str)
+				}
 			}
 		}
-		data.Metadata, _ = types.MapValue(types.StringType, metaMap)
-	} else if !data.Metadata.IsNull() {
+		if len(metaMap) > 0 {
+			data.Metadata, _ = types.MapValue(types.StringType, metaMap)
+		} else if data.Metadata.IsUnknown() {
+			data.Metadata, _ = types.MapValue(types.StringType, map[string]attr.Value{})
+		}
+	} else if data.Metadata.IsUnknown() {
 		data.Metadata, _ = types.MapValue(types.StringType, map[string]attr.Value{})
 	}
 
-	// Handle model_aliases map - preserve null when API returns empty and config didn't specify model_aliases
-	if modelAliases, ok := result["model_aliases"].(map[string]interface{}); ok && len(modelAliases) > 0 {
+	// Handle model_aliases map
+	// The API may not echo back model_aliases, so only clear on Unknown.
+	if modelAliases, ok := teamInfo["model_aliases"].(map[string]interface{}); ok && len(modelAliases) > 0 {
 		aliasMap := make(map[string]attr.Value)
 		for k, v := range modelAliases {
 			if str, ok := v.(string); ok {
@@ -543,12 +567,13 @@ func (r *TeamResource) readTeam(ctx context.Context, data *TeamResourceModel) er
 			}
 		}
 		data.ModelAliases, _ = types.MapValue(types.StringType, aliasMap)
-	} else if !data.ModelAliases.IsNull() {
+	} else if data.ModelAliases.IsUnknown() {
 		data.ModelAliases, _ = types.MapValue(types.StringType, map[string]attr.Value{})
 	}
 
-	// Handle model_rpm_limit map - preserve null when API returns empty and config didn't specify model_rpm_limit
-	if modelRPM, ok := result["model_rpm_limit"].(map[string]interface{}); ok && len(modelRPM) > 0 {
+	// Handle model_rpm_limit map
+	// The API may not echo back per-model limits, so only clear on Unknown.
+	if modelRPM, ok := teamInfo["model_rpm_limit"].(map[string]interface{}); ok && len(modelRPM) > 0 {
 		rpmMap := make(map[string]attr.Value)
 		for k, v := range modelRPM {
 			if num, ok := v.(float64); ok {
@@ -556,12 +581,13 @@ func (r *TeamResource) readTeam(ctx context.Context, data *TeamResourceModel) er
 			}
 		}
 		data.ModelRPMLimit, _ = types.MapValue(types.Int64Type, rpmMap)
-	} else if !data.ModelRPMLimit.IsNull() {
+	} else if data.ModelRPMLimit.IsUnknown() {
 		data.ModelRPMLimit, _ = types.MapValue(types.Int64Type, map[string]attr.Value{})
 	}
 
-	// Handle model_tpm_limit map - preserve null when API returns empty and config didn't specify model_tpm_limit
-	if modelTPM, ok := result["model_tpm_limit"].(map[string]interface{}); ok && len(modelTPM) > 0 {
+	// Handle model_tpm_limit map
+	// The API may not echo back per-model limits, so only clear on Unknown.
+	if modelTPM, ok := teamInfo["model_tpm_limit"].(map[string]interface{}); ok && len(modelTPM) > 0 {
 		tpmMap := make(map[string]attr.Value)
 		for k, v := range modelTPM {
 			if num, ok := v.(float64); ok {
@@ -569,7 +595,7 @@ func (r *TeamResource) readTeam(ctx context.Context, data *TeamResourceModel) er
 			}
 		}
 		data.ModelTPMLimit, _ = types.MapValue(types.Int64Type, tpmMap)
-	} else if !data.ModelTPMLimit.IsNull() {
+	} else if data.ModelTPMLimit.IsUnknown() {
 		data.ModelTPMLimit, _ = types.MapValue(types.Int64Type, map[string]attr.Value{})
 	}
 

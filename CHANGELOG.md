@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.4] - 2026-02-11
+
+### Fixed
+- **All resources**: Resolved "Provider produced inconsistent result after apply" and "unknown values after apply" errors caused by three systemic bug patterns across the provider ([#53](https://github.com/ncecere/terraform-provider-litellm/issues/53)):
+
+  **Pattern 1 — API response nesting:** Read functions accessed fields from the top-level response, but the LiteLLM API nests data under wrapper keys (e.g., `/key/info` returns `{"info": {...}}`, `/vector_store/info` returns `{"vector_store": {...}}`). Added unwrapping logic to all affected resources and datasources.
+  - `litellm_key`, `litellm_team`, `litellm_organization` (resources and datasources)
+  - `litellm_vector_store`
+
+  **Pattern 2 — Else-clause zeroing (`!IsNull()` → `IsUnknown()`):** When the API didn't echo back a field, `else if !data.X.IsNull()` clauses zeroed out user-configured values to empty lists/maps, contradicting the planned value. Changed all such clauses to `else if data.X.IsUnknown()` so concrete config values are preserved.
+  - `litellm_organization`: `models`, `tags`, `metadata`, `model_rpm_limit`, `model_tpm_limit`
+  - `litellm_mcp_server`: `mcp_access_groups`, `args`, `env`, `credentials`, `allowed_tools`, `extra_headers`, `static_headers`, `tool_name_to_cost_per_query`
+  - `litellm_vector_store`: `vector_store_metadata`, `litellm_params`
+  - `litellm_key`: `model_rpm_limit`, `model_tpm_limit`
+  - `litellm_team`: `model_aliases`, `model_rpm_limit`, `model_tpm_limit`
+  - `litellm_model`: `access_groups`
+
+  **Pattern 3 — API-injected defaults appearing in state:** The API returns default values for fields the user never configured (e.g., `budget_id`, `alias`, `allow_all_keys`, `mcp_info`, server-injected metadata keys). These caused "was null, but now has value" errors. Fixed by only setting these fields in state when the user originally configured them.
+  - `litellm_key`: `budget_id`, `metadata` (filters server-injected `tpm_limit_type`/`rpm_limit_type`)
+  - `litellm_team`: `metadata` (same filtering)
+  - `litellm_organization`: `budget_id`
+  - `litellm_mcp_server`: `alias`, `description`, `command`, `allow_all_keys`, `authorization_url`, `token_url`, `registration_url`, `mcp_info` block
+  - `litellm_guardrail`: `default_on`, `litellm_params`
+  - `litellm_vector_store`: `litellm_params` (filters server-injected keys)
+
+- **`litellm_key`**: Fixed scalar `Optional+Computed` fields (`max_budget`, `tpm_limit`, `rpm_limit`, `max_parallel_requests`, `soft_budget`, `blocked`) remaining Unknown after apply when API returned null. Added explicit Unknown-to-Null resolution.
+- **`litellm_organization`**: Fixed `blocked` remaining Unknown after apply.
+- **`litellm_vector_store`**: Fixed create failing with "`where.vector_store_id`: A value is required" by generating a UUID client-side. Fixed create failing with `'litellm_params'` error by always sending `litellm_params` (even if empty) as the API requires it.
+- **`litellm_search_tool`**: Fixed create/update requests not wrapped in `{"search_tool": {...}}` as the API requires. Fixed response parsing to unwrap nested `"search_tool"` key.
+- **`litellm_tag`**: Fixed read function to handle changed API response format (`/tag/info` returns `{"tag-name": {...}}` map instead of array).
+- **`litellm_key_block`**, **`litellm_team_block`**: Added `UseStateForUnknown` plan modifiers for immutable computed attributes (`created_at`, `created_by`, `key`, `blocked`).
+
+### Removed
+- **All resources**: Removed server-side runtime metrics from resource schemas (`spend`, `updated_at`, `status`, `budget_reset_at`, `models_updated`) that change outside Terraform and cause perpetual drift. These remain available in datasources.
+
+### Added
+- Regression tests for key and team readback behavior with nested API responses.
+- Internal testing infrastructure (`internal_testing/`) with Docker Compose stack (LiteLLM proxy + Postgres 16) and Terraform test files for all 19 resources and 27 datasources.
+
 ## [1.0.3] - 2026-02-09
 
 ### Fixed

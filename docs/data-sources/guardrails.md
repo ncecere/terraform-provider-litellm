@@ -4,14 +4,6 @@ Retrieves a list of all LiteLLM guardrail configurations.
 
 ## Example Usage
 
-### Minimal Example
-
-```hcl
-data "litellm_guardrails" "all" {}
-```
-
-### Full Example
-
 ```hcl
 data "litellm_guardrails" "all" {}
 
@@ -27,7 +19,7 @@ output "guardrail_names" {
 locals {
   pre_call_guardrails = [
     for g in data.litellm_guardrails.all.guardrails : g
-    if can(regex("pre_call", g.litellm_params))
+    if g.mode == "pre_call"
   ]
 }
 
@@ -42,13 +34,13 @@ This data source has no required arguments.
 
 ## Attribute Reference
 
-The following attributes are exported:
-
 * `id` - Placeholder identifier.
 * `guardrails` - List of guardrail objects, each containing:
   * `guardrail_id` - The unique identifier.
-  * `guardrail_name` - The guardrail name.
-  * `litellm_params` - JSON string of configuration.
-  * `description` - Description.
+  * `guardrail_name` - Human-readable name for the guardrail.
+  * `guardrail` - The guardrail integration type.
+  * `mode` - When to apply the guardrail.
+  * `default_on` - Whether the guardrail is enabled by default.
+  * `litellm_params` - JSON string of provider-specific configuration.
   * `created_at` - Creation timestamp.
   * `updated_at` - Last update timestamp.

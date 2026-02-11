@@ -39,9 +39,7 @@ type OrganizationResourceModel struct {
 	Metadata          types.Map     `tfsdk:"metadata"`
 	Blocked           types.Bool    `tfsdk:"blocked"`
 	Tags              types.List    `tfsdk:"tags"`
-	Spend             types.Float64 `tfsdk:"spend"`
 	CreatedAt         types.String  `tfsdk:"created_at"`
-	UpdatedAt         types.String  `tfsdk:"updated_at"`
 }
 
 func (r *OrganizationResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -127,17 +125,12 @@ func (r *OrganizationResource) Schema(ctx context.Context, req resource.SchemaRe
 				Computed:    true,
 				ElementType: types.StringType,
 			},
-			"spend": schema.Float64Attribute{
-				Description: "Amount spent by this organization.",
-				Computed:    true,
-			},
 			"created_at": schema.StringAttribute{
 				Description: "Timestamp when the organization was created.",
 				Computed:    true,
-			},
-			"updated_at": schema.StringAttribute{
-				Description: "Timestamp when the organization was last updated.",
-				Computed:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 		},
 	}
@@ -231,7 +224,7 @@ func (r *OrganizationResource) Update(ctx context.Context, req resource.UpdateRe
 	orgReq := r.buildOrganizationRequest(ctx, &data)
 	orgReq["organization_id"] = data.OrganizationID.ValueString()
 
-	if err := r.client.DoRequestWithResponse(ctx, "POST", "/organization/update", orgReq, nil); err != nil {
+	if err := r.client.DoRequestWithResponse(ctx, "PATCH", "/organization/update", orgReq, nil); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to update organization: %s", err))
 		return
 	}
@@ -359,48 +352,50 @@ func (r *OrganizationResource) readOrganization(ctx context.Context, data *Organ
 		return err
 	}
 
+	// The /organization/info endpoint may return data nested inside "organization_info"
+	orgInfo := result
+	if nested, ok := result["organization_info"].(map[string]interface{}); ok {
+		orgInfo = nested
+	}
+
 	// Update fields from response
-	if orgID, ok := result["organization_id"].(string); ok {
+	if orgID, ok := orgInfo["organization_id"].(string); ok {
 		data.OrganizationID = types.StringValue(orgID)
 		data.ID = types.StringValue(orgID)
 	}
-	if alias, ok := result["organization_alias"].(string); ok {
+	if alias, ok := orgInfo["organization_alias"].(string); ok {
 		data.OrganizationAlias = types.StringValue(alias)
 	}
-	if budgetID, ok := result["budget_id"].(string); ok {
+	if budgetID, ok := orgInfo["budget_id"].(string); ok && !data.BudgetID.IsNull() {
 		data.BudgetID = types.StringValue(budgetID)
 	}
-	if budgetDuration, ok := result["budget_duration"].(string); ok {
+	if budgetDuration, ok := orgInfo["budget_duration"].(string); ok {
 		data.BudgetDuration = types.StringValue(budgetDuration)
 	}
-	if createdAt, ok := result["created_at"].(string); ok {
+	if createdAt, ok := orgInfo["created_at"].(string); ok {
 		data.CreatedAt = types.StringValue(createdAt)
-	}
-	if updatedAt, ok := result["updated_at"].(string); ok {
-		data.UpdatedAt = types.StringValue(updatedAt)
 	}
 
 	// Numeric fields
-	if maxBudget, ok := result["max_budget"].(float64); ok {
+	if maxBudget, ok := orgInfo["max_budget"].(float64); ok {
 		data.MaxBudget = types.Float64Value(maxBudget)
 	}
-	if spend, ok := result["spend"].(float64); ok {
-		data.Spend = types.Float64Value(spend)
-	}
-	if tpmLimit, ok := result["tpm_limit"].(float64); ok {
+	if tpmLimit, ok := orgInfo["tpm_limit"].(float64); ok {
 		data.TPMLimit = types.Int64Value(int64(tpmLimit))
 	}
-	if rpmLimit, ok := result["rpm_limit"].(float64); ok {
+	if rpmLimit, ok := orgInfo["rpm_limit"].(float64); ok {
 		data.RPMLimit = types.Int64Value(int64(rpmLimit))
 	}
 
-	// Boolean fields
-	if blocked, ok := result["blocked"].(bool); ok {
+	// Boolean fields - resolve Unknown to Null when API returns nil
+	if blocked, ok := orgInfo["blocked"].(bool); ok {
 		data.Blocked = types.BoolValue(blocked)
+	} else if data.Blocked.IsUnknown() {
+		data.Blocked = types.BoolNull()
 	}
 
 	// Handle models list - preserve null when API returns empty and config didn't specify models
-	if models, ok := result["models"].([]interface{}); ok && len(models) > 0 {
+	if models, ok := orgInfo["models"].([]interface{}); ok && len(models) > 0 {
 		modelsList := make([]attr.Value, len(models))
 		for i, m := range models {
 			if str, ok := m.(string); ok {
@@ -408,12 +403,12 @@ func (r *OrganizationResource) readOrganization(ctx context.Context, data *Organ
 			}
 		}
 		data.Models, _ = types.ListValue(types.StringType, modelsList)
-	} else if !data.Models.IsNull() {
+	} else if data.Models.IsUnknown() {
 		data.Models, _ = types.ListValue(types.StringType, []attr.Value{})
 	}
 
 	// Handle tags list - preserve null when API returns empty and config didn't specify tags
-	if tags, ok := result["tags"].([]interface{}); ok && len(tags) > 0 {
+	if tags, ok := orgInfo["tags"].([]interface{}); ok && len(tags) > 0 {
 		tagsList := make([]attr.Value, len(tags))
 		for i, t := range tags {
 			if str, ok := t.(string); ok {
@@ -421,12 +416,12 @@ func (r *OrganizationResource) readOrganization(ctx context.Context, data *Organ
 			}
 		}
 		data.Tags, _ = types.ListValue(types.StringType, tagsList)
-	} else if !data.Tags.IsNull() {
+	} else if data.Tags.IsUnknown() {
 		data.Tags, _ = types.ListValue(types.StringType, []attr.Value{})
 	}
 
 	// Handle metadata map - preserve null when API returns empty and config didn't specify metadata
-	if metadata, ok := result["metadata"].(map[string]interface{}); ok && len(metadata) > 0 {
+	if metadata, ok := orgInfo["metadata"].(map[string]interface{}); ok && len(metadata) > 0 {
 		metaMap := make(map[string]attr.Value)
 		for k, v := range metadata {
 			if str, ok := v.(string); ok {
@@ -434,12 +429,12 @@ func (r *OrganizationResource) readOrganization(ctx context.Context, data *Organ
 			}
 		}
 		data.Metadata, _ = types.MapValue(types.StringType, metaMap)
-	} else if !data.Metadata.IsNull() {
+	} else if data.Metadata.IsUnknown() {
 		data.Metadata, _ = types.MapValue(types.StringType, map[string]attr.Value{})
 	}
 
 	// Handle model_rpm_limit map - preserve null when API returns empty and config didn't specify model_rpm_limit
-	if modelRPM, ok := result["model_rpm_limit"].(map[string]interface{}); ok && len(modelRPM) > 0 {
+	if modelRPM, ok := orgInfo["model_rpm_limit"].(map[string]interface{}); ok && len(modelRPM) > 0 {
 		rpmMap := make(map[string]attr.Value)
 		for k, v := range modelRPM {
 			if num, ok := v.(float64); ok {
@@ -447,12 +442,12 @@ func (r *OrganizationResource) readOrganization(ctx context.Context, data *Organ
 			}
 		}
 		data.ModelRPMLimit, _ = types.MapValue(types.Int64Type, rpmMap)
-	} else if !data.ModelRPMLimit.IsNull() {
+	} else if data.ModelRPMLimit.IsUnknown() {
 		data.ModelRPMLimit, _ = types.MapValue(types.Int64Type, map[string]attr.Value{})
 	}
 
 	// Handle model_tpm_limit map - preserve null when API returns empty and config didn't specify model_tpm_limit
-	if modelTPM, ok := result["model_tpm_limit"].(map[string]interface{}); ok && len(modelTPM) > 0 {
+	if modelTPM, ok := orgInfo["model_tpm_limit"].(map[string]interface{}); ok && len(modelTPM) > 0 {
 		tpmMap := make(map[string]attr.Value)
 		for k, v := range modelTPM {
 			if num, ok := v.(float64); ok {
@@ -460,7 +455,7 @@ func (r *OrganizationResource) readOrganization(ctx context.Context, data *Organ
 			}
 		}
 		data.ModelTPMLimit, _ = types.MapValue(types.Int64Type, tpmMap)
-	} else if !data.ModelTPMLimit.IsNull() {
+	} else if data.ModelTPMLimit.IsUnknown() {
 		data.ModelTPMLimit, _ = types.MapValue(types.Int64Type, map[string]attr.Value{})
 	}
 

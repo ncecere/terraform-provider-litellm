@@ -1,34 +1,42 @@
-# litellm_organization Resource
+# litellm_organization (Resource)
 
-Manages a LiteLLM organization. Organizations are top-level containers that can hold multiple teams and provide budget management at the organizational level.
+Manages organizations in LiteLLM. Organizations provide a way to group teams and users together under a shared budget and set of permissions.
 
 ## Example Usage
 
-### Minimal Example
+### Minimal Configuration
 
 ```hcl
-resource "litellm_organization" "my_org" {
+resource "litellm_organization" "minimal" {
   organization_alias = "my-organization"
 }
 ```
 
-### Full Example
+### Full Configuration
 
 ```hcl
-resource "litellm_organization" "enterprise" {
+resource "litellm_organization" "full" {
   organization_alias = "enterprise-org"
-  max_budget         = 10000.0
-  budget_duration    = "monthly"
-  models             = ["gpt-4", "claude-3-sonnet"]
-  tpm_limit          = 1000000
-  rpm_limit          = 10000
-  max_parallel_requests = 100
-  
-  metadata = jsonencode({
-    department  = "Engineering"
-    cost_center = "CC-12345"
-    contact     = "admin@enterprise.com"
-  })
+  max_budget         = 1000.0
+  tpm_limit          = 200000
+  rpm_limit          = 2000
+  budget_duration    = "30d"
+  blocked            = false
+
+  models = ["gpt-4o", "gpt-4o-mini"]
+  tags   = ["testing", "full"]
+
+  metadata = {
+    "environment" = "testing"
+  }
+
+  model_rpm_limit = {
+    "gpt-4o" = 1000
+  }
+
+  model_tpm_limit = {
+    "gpt-4o" = 100000
+  }
 }
 ```
 
@@ -57,41 +65,43 @@ resource "litellm_team" "prod_team" {
 
 The following arguments are supported:
 
-### Required Arguments
+### Required
 
-* `organization_alias` - (Required) A human-readable alias for the organization.
+- `organization_alias` - (String) A human-readable alias for the organization. Must be unique.
 
-### Optional Arguments
+### Optional
 
-* `max_budget` - (Optional) Maximum budget for the organization in dollars.
-* `budget_duration` - (Optional) Duration for budget reset. Valid values: `daily`, `weekly`, `monthly`.
-* `models` - (Optional) List of model names that this organization can access.
-* `tpm_limit` - (Optional) Tokens per minute limit for the organization.
-* `rpm_limit` - (Optional) Requests per minute limit for the organization.
-* `max_parallel_requests` - (Optional) Maximum number of parallel requests allowed.
-* `metadata` - (Optional) JSON string containing additional metadata for the organization.
+- `organization_id` - (String, ForceNew) The unique identifier for the organization. If not provided, one will be generated automatically. Changing this forces creation of a new resource.
+- `models` - (List of String) List of model names the organization is allowed to use.
+- `budget_id` - (String) The ID of an existing budget to associate with this organization.
+- `max_budget` - (Float64) Maximum budget allowed for the organization.
+- `tpm_limit` - (Int64) Tokens per minute limit for the organization.
+- `rpm_limit` - (Int64) Requests per minute limit for the organization.
+- `model_rpm_limit` - (Map of Int64) Per-model requests per minute limits.
+- `model_tpm_limit` - (Map of Int64) Per-model tokens per minute limits.
+- `budget_duration` - (String) Duration of the budget window (e.g., `"30d"`, `"1h"`, `"7d"`).
+- `metadata` - (Map of String) Key-value metadata associated with the organization.
+- `blocked` - (Bool) Whether the organization is blocked from making requests.
+- `tags` - (List of String) Tags associated with the organization.
 
 ## Attribute Reference
 
 In addition to all arguments above, the following attributes are exported:
 
-* `id` - The unique identifier for this organization.
-* `organization_id` - The organization ID (same as id).
-* `spend` - Current spend for the organization.
-* `created_at` - Timestamp when the organization was created.
-* `updated_at` - Timestamp when the organization was last updated.
+- `id` - The unique identifier for the organization (same as `organization_id`).
+- `created_at` - Timestamp of when the organization was created.
 
 ## Import
 
-Organizations can be imported using the organization ID:
+Organizations can be imported using their organization ID:
 
 ```shell
-terraform import litellm_organization.example org-xxxxxxxxxxxx
+terraform import litellm_organization.example <organization-id>
 ```
 
 ## Notes
 
-- Organizations are the top-level entity in LiteLLM's hierarchy
-- Teams belong to organizations
-- Budget limits at the organization level apply to all teams within it
-- Use metadata to store custom information like cost centers or department codes
+- Organizations are the top-level entity in LiteLLM's hierarchy.
+- Teams belong to organizations.
+- Budget limits at the organization level apply to all teams within it.
+- The `metadata` attribute is a map of strings, not a JSON-encoded string.

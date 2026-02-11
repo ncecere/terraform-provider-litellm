@@ -1,53 +1,35 @@
 # litellm_prompt Data Source
 
-Retrieves information about a specific LiteLLM prompt template.
+Retrieves information about a specific LiteLLM prompt configuration.
 
 ## Example Usage
 
-### Minimal Example
-
 ```hcl
 data "litellm_prompt" "existing" {
-  prompt_name = "customer-support"
-}
-```
-
-### Full Example
-
-```hcl
-data "litellm_prompt" "support_agent" {
-  prompt_name = "customer-support-agent"
+  prompt_id = "my-prompt"
 }
 
 output "prompt_info" {
   value = {
-    name        = data.litellm_prompt.support_agent.prompt_name
-    content     = data.litellm_prompt.support_agent.prompt
-    description = data.litellm_prompt.support_agent.description
+    integration = data.litellm_prompt.existing.prompt_integration
+    type        = data.litellm_prompt.existing.prompt_type
+    content     = data.litellm_prompt.existing.dotprompt_content
   }
-}
-
-# Use prompt in application
-locals {
-  system_prompt = data.litellm_prompt.support_agent.prompt
 }
 ```
 
 ## Argument Reference
 
-The following arguments are supported:
-
-* `prompt_name` - (Required) The name of the prompt to retrieve.
+* `prompt_id` - (Required) The prompt ID to look up.
 
 ## Attribute Reference
 
-The following attributes are exported:
-
 * `id` - The unique identifier of the prompt.
 * `prompt_id` - The prompt ID.
-* `prompt_name` - The prompt name.
-* `prompt` - The prompt text content.
-* `description` - Description of the prompt.
-* `metadata` - JSON string containing additional metadata.
-* `created_at` - Creation timestamp.
-* `updated_at` - Last update timestamp.
+* `prompt_integration` - The prompt integration provider (e.g., "langfuse").
+* `api_base` - Base URL for the prompt provider API.
+* `provider_specific_query_params` - JSON string of provider-specific query parameters.
+* `ignore_prompt_manager_model` - If true, ignore the model specified in the prompt manager.
+* `ignore_prompt_manager_optional_params` - If true, ignore optional params from the prompt manager.
+* `dotprompt_content` - Content for dotprompt integration.
+* `prompt_type` - Type of prompt: "config" or "db".

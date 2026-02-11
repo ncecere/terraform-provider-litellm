@@ -4,14 +4,6 @@ Retrieves a list of all LiteLLM tags.
 
 ## Example Usage
 
-### Minimal Example
-
-```hcl
-data "litellm_tags" "all" {}
-```
-
-### Full Example
-
 ```hcl
 data "litellm_tags" "all" {}
 
@@ -23,16 +15,16 @@ output "tag_names" {
   value = [for t in data.litellm_tags.all.tags : t.name]
 }
 
-# Find environment tags
+# Find tags with budget limits
 locals {
-  env_tags = [
+  budgeted_tags = [
     for t in data.litellm_tags.all.tags : t
-    if can(regex("^(dev|staging|prod)", t.name))
+    if t.max_budget != null && t.max_budget > 0
   ]
 }
 
-output "environment_tags" {
-  value = [for t in local.env_tags : t.name]
+output "budgeted_tag_names" {
+  value = [for t in local.budgeted_tags : t.name]
 }
 ```
 
@@ -42,11 +34,16 @@ This data source has no required arguments.
 
 ## Attribute Reference
 
-The following attributes are exported:
-
 * `id` - Placeholder identifier.
 * `tags` - List of tag objects, each containing:
   * `name` - The tag name.
   * `description` - Tag description.
-  * `created_at` - Creation timestamp.
-  * `updated_at` - Last update timestamp.
+  * `models` - List of models associated with this tag.
+  * `budget_id` - Budget ID associated with this tag.
+  * `max_budget` - Maximum budget in USD.
+  * `soft_budget` - Soft budget in USD.
+  * `max_parallel_requests` - Maximum concurrent requests allowed.
+  * `tpm_limit` - Maximum tokens per minute.
+  * `rpm_limit` - Maximum requests per minute.
+  * `budget_duration` - Duration for budget reset.
+  * `model_max_budget` - JSON string of per-model budget configuration.

@@ -153,52 +153,58 @@ func (d *KeyDataSource) Read(ctx context.Context, req datasource.ReadRequest, re
 		return
 	}
 
+	// The /key/info endpoint may return key data nested inside "info"
+	info := result
+	if nested, ok := result["info"].(map[string]interface{}); ok {
+		info = nested
+	}
+
 	// Set ID
 	data.ID = data.Key
 
 	// Update fields from response
-	if keyAlias, ok := result["key_alias"].(string); ok {
+	if keyAlias, ok := info["key_alias"].(string); ok {
 		data.KeyAlias = types.StringValue(keyAlias)
 	}
-	if userID, ok := result["user_id"].(string); ok {
+	if userID, ok := info["user_id"].(string); ok {
 		data.UserID = types.StringValue(userID)
 	}
-	if teamID, ok := result["team_id"].(string); ok {
+	if teamID, ok := info["team_id"].(string); ok {
 		data.TeamID = types.StringValue(teamID)
 	}
-	if budgetDuration, ok := result["budget_duration"].(string); ok {
+	if budgetDuration, ok := info["budget_duration"].(string); ok {
 		data.BudgetDuration = types.StringValue(budgetDuration)
 	}
 
 	// Numeric fields
-	if maxBudget, ok := result["max_budget"].(float64); ok {
+	if maxBudget, ok := info["max_budget"].(float64); ok {
 		data.MaxBudget = types.Float64Value(maxBudget)
 	}
-	if spend, ok := result["spend"].(float64); ok {
+	if spend, ok := info["spend"].(float64); ok {
 		data.Spend = types.Float64Value(spend)
 	}
-	if softBudget, ok := result["soft_budget"].(float64); ok {
+	if softBudget, ok := info["soft_budget"].(float64); ok {
 		data.SoftBudget = types.Float64Value(softBudget)
 	}
-	if maxParallel, ok := result["max_parallel_requests"].(float64); ok {
+	if maxParallel, ok := info["max_parallel_requests"].(float64); ok {
 		data.MaxParallelRequests = types.Int64Value(int64(maxParallel))
 	}
-	if tpmLimit, ok := result["tpm_limit"].(float64); ok {
+	if tpmLimit, ok := info["tpm_limit"].(float64); ok {
 		data.TPMLimit = types.Int64Value(int64(tpmLimit))
 	}
-	if rpmLimit, ok := result["rpm_limit"].(float64); ok {
+	if rpmLimit, ok := info["rpm_limit"].(float64); ok {
 		data.RPMLimit = types.Int64Value(int64(rpmLimit))
 	}
 
 	// Boolean fields
-	if blocked, ok := result["blocked"].(bool); ok {
+	if blocked, ok := info["blocked"].(bool); ok {
 		data.Blocked = types.BoolValue(blocked)
 	} else {
 		data.Blocked = types.BoolValue(false)
 	}
 
 	// Handle models list
-	if models, ok := result["models"].([]interface{}); ok {
+	if models, ok := info["models"].([]interface{}); ok {
 		modelsList := make([]attr.Value, len(models))
 		for i, m := range models {
 			if str, ok := m.(string); ok {
@@ -211,7 +217,7 @@ func (d *KeyDataSource) Read(ctx context.Context, req datasource.ReadRequest, re
 	}
 
 	// Handle tags list
-	if tags, ok := result["tags"].([]interface{}); ok {
+	if tags, ok := info["tags"].([]interface{}); ok {
 		tagsList := make([]attr.Value, len(tags))
 		for i, t := range tags {
 			if str, ok := t.(string); ok {
@@ -224,7 +230,7 @@ func (d *KeyDataSource) Read(ctx context.Context, req datasource.ReadRequest, re
 	}
 
 	// Handle metadata map
-	if metadata, ok := result["metadata"].(map[string]interface{}); ok {
+	if metadata, ok := info["metadata"].(map[string]interface{}); ok {
 		metaMap := make(map[string]attr.Value)
 		for k, v := range metadata {
 			if str, ok := v.(string); ok {

@@ -1,0 +1,61 @@
+# LiteLLM proxy for manual provider testing.
+# Usage:
+#   cd internal_testing
+#   docker compose up -d
+#   docker compose logs -f litellm   # wait for "LiteLLM Proxy is running"
+#
+# The proxy will be available at http://localhost:4000
+# Master key: sk-testing-key
+#
+# Tear down (keeps data):  docker compose down
+# Tear down (wipe data):   docker compose down -v
+
+services:
+  litellm:
+    image: docker.litellm.ai/berriai/litellm:main-stable
+    ports:
+      - "4000:4000"
+    environment:
+      DATABASE_URL: "postgresql://llmproxy:dbpassword9090@db:5432/litellm"
+      STORE_MODEL_IN_DB: "True"
+      LITELLM_MASTER_KEY: "sk-testing-key"
+      LITELLM_LOG: "DEBUG"
+    volumes:
+      - ./litellm-config.yaml:/app/config.yaml
+    command:
+      - "--config=/app/config.yaml"
+      - "--port=4000"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:4000/health/liveliness')"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  db:
+    image: postgres:16
+    container_name: litellm_test_db
+    environment:
+      POSTGRES_DB: litellm
+      POSTGRES_USER: llmproxy
+      POSTGRES_PASSWORD: dbpassword9090
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d litellm -U llmproxy"]
+      interval: 1s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    name: litellm_test_postgres_data

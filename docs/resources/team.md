@@ -1,83 +1,56 @@
 # litellm_team Resource
 
-Manages a team configuration in LiteLLM. Teams allow you to group users and manage their access to models and usage limits.
+Manages a team in LiteLLM. Teams allow you to group users and apply shared budgets, rate limits, and model access controls.
+
+Team members are managed separately via the `litellm_team_member` resource.
 
 ## Example Usage
 
-### Basic Team Configuration
+### Minimal
 
 ```hcl
-resource "litellm_team" "engineering" {
-  team_alias = "engineering-team"
-  models     = ["gpt-4-proxy", "claude-2"]
-  max_budget = 1000.0
+resource "litellm_team" "minimal" {
+  team_alias = "test-team-minimal"
 }
 ```
 
-### Team with Comprehensive Configuration
+### Full
 
 ```hcl
-resource "litellm_team" "advanced_team" {
+resource "litellm_team" "full" {
   team_alias      = "ai-research-team"
-  organization_id = "org_123456"
-  models          = ["gpt-4-proxy", "claude-2", "gpt-3.5-turbo"]
-
-  # Budget and rate limiting
-  max_budget      = 1000.0
-  budget_duration = "1mo"
-  tpm_limit       = 500000
-  rpm_limit       = 5000
+  max_budget      = 500.0
+  tpm_limit       = 100000
+  rpm_limit       = 1000
+  tpm_limit_type  = "guaranteed_throughput"
+  rpm_limit_type  = "guaranteed_throughput"
+  budget_duration = "30d"
   blocked         = false
 
-  # Team member permissions
-  team_member_permissions = [
-    "create_key",
-    "delete_key",
-    "view_spend",
-    "edit_team"
-  ]
+  models     = ["gpt-4o", "gpt-4o-mini"]
+  guardrails = []
+  prompts    = []
 
-  # Metadata for organization
+  team_member_permissions = []
+  team_member_budget      = 50.0
+  team_member_rpm_limit   = 100
+  team_member_tpm_limit   = 10000
+
   metadata = {
-    department = "Engineering"
-    project    = "AI Research"
-    cost_center = "R&D-001"
+    "environment" = "testing"
   }
-}
-```
 
-### Team with Model Dependencies
+  model_aliases = {
+    "fast" = "gpt-4o-mini"
+  }
 
-```hcl
-# First create models
-resource "litellm_model" "gpt4" {
-  model_name          = "gpt-4-proxy"
-  custom_llm_provider = "openai"
-  base_model          = "gpt-4"
-  model_api_key       = var.openai_api_key
-}
+  model_rpm_limit = {
+    "gpt-4o" = 500
+  }
 
-resource "litellm_model" "claude" {
-  model_name          = "claude-proxy"
-  custom_llm_provider = "anthropic"
-  base_model          = "claude-3-sonnet-20240229"
-  model_api_key       = var.anthropic_api_key
-}
-
-# Then create team with access to these models
-resource "litellm_team" "model_dependent_team" {
-  team_alias = "model-users"
-  models = [
-    litellm_model.gpt4.model_name,
-    litellm_model.claude.model_name
-  ]
-  
-  max_budget      = 500.0
-  budget_duration = "1mo"
-  
-  team_member_permissions = [
-    "view_spend"
-  ]
+  model_tpm_limit = {
+    "gpt-4o" = 50000
+  }
 }
 ```
 
@@ -85,46 +58,56 @@ resource "litellm_team" "model_dependent_team" {
 
 The following arguments are supported:
 
-* `team_alias` - (Required) A human-readable identifier for the team.
-
+* `team_alias` - (Required) A human-readable alias for the team.
 * `organization_id` - (Optional) The ID of the organization this team belongs to.
-
-* `models` - (Optional) List of model names that this team can access.
-
-* `metadata` - (Optional) A map of metadata associated with the team. Supports nested maps/lists (e.g., logging callbacks, guardrail configs).
-
-* `blocked` - (Optional) Whether the team is blocked from making requests. Default is `false`.
-
-* `tpm_limit` - (Optional) Team-wide tokens per minute limit.
-
-* `rpm_limit` - (Optional) Team-wide requests per minute limit.
-
 * `max_budget` - (Optional) Maximum budget allocated to the team.
-
-* `budget_duration` - (Optional) Duration for the budget cycle. Valid values are:
-  * `daily`
-  * `weekly`
-  * `monthly`
-  * `yearly`
-
-* `team_member_permissions` - (Optional) List of permissions granted to team members. This controls what actions team members can perform within the team context.
+* `budget_duration` - (Optional) Duration for the budget cycle (e.g., `"30d"`, `"7d"`, `"1h"`).
+* `tpm_limit` - (Optional) Tokens per minute limit for the team.
+* `rpm_limit` - (Optional) Requests per minute limit for the team.
+* `tpm_limit_type` - (Optional) Type of TPM limit (e.g., `"guaranteed_throughput"`).
+* `rpm_limit_type` - (Optional) Type of RPM limit (e.g., `"guaranteed_throughput"`).
+* `models` - (Optional) List of model names the team is allowed to use.
+* `blocked` - (Optional) Whether the team is blocked from making requests.
+* `guardrails` - (Optional) List of guardrail identifiers applied to the team.
+* `prompts` - (Optional) List of prompt identifiers associated with the team.
+* `team_member_permissions` - (Optional) List of permissions granted to team members.
+* `team_member_budget` - (Optional) Default budget for each team member.
+* `team_member_rpm_limit` - (Optional) Default requests per minute limit for each team member.
+* `team_member_tpm_limit` - (Optional) Default tokens per minute limit for each team member.
+* `metadata` - (Optional) A map of key-value metadata pairs for the team.
+* `model_aliases` - (Optional) A map of alias names to model names.
+* `model_rpm_limit` - (Optional) A map of model names to per-model RPM limits.
+* `model_tpm_limit` - (Optional) A map of model names to per-model TPM limits.
+* `tags` - (Optional) List of tags for the team. **Requires LiteLLM Enterprise license.**
 
 ## Attribute Reference
 
 In addition to the arguments above, the following attributes are exported:
 
-* `id` - The unique identifier for the team.
+* `id` - The unique identifier of the team.
+
+The following attributes are both Optional and Computed (they are read back from the API if not explicitly set):
+
+* `metadata`
+* `models`
+* `model_aliases`
+* `model_rpm_limit`
+* `model_tpm_limit`
+* `tags`
+* `guardrails`
+* `prompts`
+* `blocked`
+* `team_member_permissions`
 
 ## Import
 
 Teams can be imported using the team ID:
 
 ```shell
-terraform import litellm_team.engineering <team-id>
+terraform import litellm_team.example <team-id>
 ```
 
-Note: The team ID is generated when the team is created and is different from the `team_alias`.
+## Notes
 
-## Note on Team Members
-
-Team members are managed through the separate `litellm_team_member` resource. This allows for more granular control over team membership and permissions. See the `litellm_team_member` resource documentation for details on managing team members.
+- Team members are managed through the separate `litellm_team_member` resource. See the `litellm_team_member` resource documentation for details on managing team membership.
+- The `tags` attribute requires a LiteLLM Enterprise license.

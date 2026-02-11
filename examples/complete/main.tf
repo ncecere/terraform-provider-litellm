@@ -149,13 +149,13 @@ resource "litellm_team" "support" {
 resource "litellm_user" "admin" {
   user_email = "admin@enterprise.com"
   user_alias = "system-admin"
-  user_role  = "admin"
+  user_role  = "proxy_admin"
 }
 
 resource "litellm_user" "developer" {
   user_email = "developer@enterprise.com"
   user_alias = "lead-developer"
-  user_role  = "user"
+  user_role  = "internal_user"
   max_budget = 500.0
   models     = [litellm_model.gpt4.model_name, litellm_model.gpt35.model_name]
 }
@@ -203,20 +203,16 @@ resource "litellm_key" "support_api" {
 # =============================================================================
 
 resource "litellm_access_group" "premium" {
-  access_group_id   = "premium-models"
-  access_group_name = "Premium Model Access"
-  description       = "Access to premium AI models"
-  members = [
+  access_group = "premium-models"
+  model_names = [
     litellm_model.gpt4.model_name,
     litellm_model.claude.model_name
   ]
 }
 
 resource "litellm_access_group" "standard" {
-  access_group_id   = "standard-models"
-  access_group_name = "Standard Model Access"
-  description       = "Access to standard AI models"
-  members = [
+  access_group = "standard-models"
+  model_names = [
     litellm_model.gpt35.model_name
   ]
 }
@@ -226,13 +222,11 @@ resource "litellm_access_group" "standard" {
 # =============================================================================
 
 resource "litellm_tag" "production" {
-  name        = "production"
-  description = "Production environment resources"
+  name = "production"
 }
 
 resource "litellm_tag" "cost_center_rd" {
-  name        = "cost-center-rd"
-  description = "R&D Cost Center"
+  name = "cost-center-rd"
 }
 
 # =============================================================================
@@ -240,8 +234,10 @@ resource "litellm_tag" "cost_center_rd" {
 # =============================================================================
 
 resource "litellm_prompt" "support_agent" {
-  prompt_name = "customer-support-agent"
-  prompt      = <<-EOT
+  prompt_id   = "customer-support-agent"
+  prompt_type = "db"
+
+  dotprompt_content = <<-EOT
     You are a helpful customer support agent for Enterprise Corp.
     
     Guidelines:
@@ -252,12 +248,13 @@ resource "litellm_prompt" "support_agent" {
     
     Always aim to resolve the customer's issue in the first interaction.
   EOT
-  description = "System prompt for customer support chatbot"
 }
 
 resource "litellm_prompt" "code_assistant" {
-  prompt_name = "code-assistant"
-  prompt      = <<-EOT
+  prompt_id   = "code-assistant"
+  prompt_type = "db"
+
+  dotprompt_content = <<-EOT
     You are an expert software developer assistant.
     
     When answering questions:
@@ -267,7 +264,6 @@ resource "litellm_prompt" "code_assistant" {
     4. Follow best practices and coding standards
     5. Suggest improvements when appropriate
   EOT
-  description = "System prompt for coding assistance"
 }
 
 # =============================================================================
@@ -276,11 +272,10 @@ resource "litellm_prompt" "code_assistant" {
 
 resource "litellm_guardrail" "content_safety" {
   guardrail_name = "enterprise-content-safety"
+  guardrail      = "custom"
+  mode           = "post_call"
 
   litellm_params = jsonencode({
-    guardrail = "custom"
-    mode      = "post_call"
-
     check_pii        = true
     check_toxicity   = true
     redact_sensitive = true
@@ -291,8 +286,6 @@ resource "litellm_guardrail" "content_safety" {
       "medical_advice"
     ]
   })
-
-  description = "Enterprise content safety guardrail"
 }
 
 # =============================================================================

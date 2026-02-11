@@ -4,14 +4,6 @@ Retrieves a list of all LiteLLM organizations.
 
 ## Example Usage
 
-### Minimal Example
-
-```hcl
-data "litellm_organizations" "all" {}
-```
-
-### Full Example
-
 ```hcl
 data "litellm_organizations" "all" {}
 
@@ -22,24 +14,21 @@ output "org_count" {
 output "org_names" {
   value = [for o in data.litellm_organizations.all.organizations : o.organization_alias]
 }
+```
 
-# Calculate total spend across all organizations
-locals {
-  total_org_spend = sum([for o in data.litellm_organizations.all.organizations : o.spend])
-}
+### Filter by Alias
 
-output "total_spend" {
-  value = local.total_org_spend
+```hcl
+data "litellm_organizations" "matching" {
+  org_alias = "enterprise"
 }
 ```
 
 ## Argument Reference
 
-This data source has no required arguments.
+* `org_alias` - (Optional) Filter organizations by alias (partial match, case-insensitive).
 
 ## Attribute Reference
-
-The following attributes are exported:
 
 * `id` - Placeholder identifier.
 * `organizations` - List of organization objects, each containing:
@@ -47,5 +36,6 @@ The following attributes are exported:
   * `organization_alias` - The human-readable alias.
   * `max_budget` - Maximum budget.
   * `spend` - Current spend.
-  * `created_at` - Creation timestamp.
-  * `updated_at` - Last update timestamp.
+  * `tpm_limit` - Tokens per minute limit.
+  * `rpm_limit` - Requests per minute limit.
+  * `blocked` - Whether the organization is blocked.

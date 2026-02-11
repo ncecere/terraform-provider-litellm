@@ -1,0 +1,7 @@
+# Minimal LiteLLM config for provider testing.
+# Models are managed via the DB (STORE_MODEL_IN_DB=True), so we only need
+# general settings here. The Terraform provider will create models at runtime.
+
+general_settings:
+  store_model_in_db: true
+  master_key: sk-testing-key

@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -115,7 +116,11 @@ func (r *SearchToolResource) Create(ctx context.Context, req resource.CreateRequ
 		return
 	}
 
-	searchReq := r.buildSearchToolRequest(ctx, &data)
+	searchToolBody := r.buildSearchToolRequest(ctx, &data)
+	// API expects {"search_tool": {...}}
+	searchReq := map[string]interface{}{
+		"search_tool": searchToolBody,
+	}
 
 	var result map[string]interface{}
 	if err := r.client.DoRequestWithResponse(ctx, "POST", "/search_tools", searchReq, &result); err != nil {
@@ -123,8 +128,12 @@ func (r *SearchToolResource) Create(ctx context.Context, req resource.CreateRequ
 		return
 	}
 
-	// Extract search_tool_id from response
-	if searchToolID, ok := result["search_tool_id"].(string); ok {
+	// Extract search_tool_id from response (may be nested under "search_tool")
+	searchToolResult := result
+	if nested, ok := result["search_tool"].(map[string]interface{}); ok {
+		searchToolResult = nested
+	}
+	if searchToolID, ok := searchToolResult["search_tool_id"].(string); ok {
 		data.SearchToolID = types.StringValue(searchToolID)
 		data.ID = types.StringValue(searchToolID)
 	}
@@ -175,7 +184,12 @@ func (r *SearchToolResource) Update(ctx context.Context, req resource.UpdateRequ
 	data.ID = state.ID
 	data.SearchToolID = state.SearchToolID
 
-	searchReq := r.buildSearchToolRequest(ctx, &data)
+	searchToolBody := r.buildSearchToolRequest(ctx, &data)
+	searchToolBody["search_tool_id"] = data.SearchToolID.ValueString()
+	// API expects {"search_tool": {...}}
+	searchReq := map[string]interface{}{
+		"search_tool": searchToolBody,
+	}
 
 	endpoint := fmt.Sprintf("/search_tools/%s", data.SearchToolID.ValueString())
 	if err := r.client.DoRequestWithResponse(ctx, "PUT", endpoint, searchReq, nil); err != nil {
@@ -249,7 +263,12 @@ func (r *SearchToolResource) buildSearchToolRequest(ctx context.Context, data *S
 	searchReq["litellm_params"] = litellmParams
 
 	if !data.SearchToolInfo.IsNull() && !data.SearchToolInfo.IsUnknown() && data.SearchToolInfo.ValueString() != "" {
-		searchReq["search_tool_info"] = data.SearchToolInfo.ValueString()
+		var searchToolInfo map[string]interface{}
+		if err := json.Unmarshal([]byte(data.SearchToolInfo.ValueString()), &searchToolInfo); err == nil {
+			searchReq["search_tool_info"] = searchToolInfo
+		} else {
+			searchReq["search_tool_info"] = data.SearchToolInfo.ValueString()
+		}
 	}
 
 	return searchReq
@@ -297,6 +316,10 @@ func (r *SearchToolResource) readSearchTool(ctx context.Context, data *SearchToo
 
 	if searchToolInfo, ok := result["search_tool_info"].(string); ok {
 		data.SearchToolInfo = types.StringValue(searchToolInfo)
+	} else if searchToolInfoMap, ok := result["search_tool_info"].(map[string]interface{}); ok && len(searchToolInfoMap) > 0 {
+		if jsonBytes, err := json.Marshal(searchToolInfoMap); err == nil {
+			data.SearchToolInfo = types.StringValue(string(jsonBytes))
+		}
 	}
 
 	return nil

@@ -7,6 +7,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -57,6 +58,9 @@ func (r *KeyBlockResource) Schema(ctx context.Context, req resource.SchemaReques
 			"blocked": schema.BoolAttribute{
 				Description: "Whether the key is currently blocked. Always true when this resource exists.",
 				Computed:    true,
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.UseStateForUnknown(),
+				},
 			},
 		},
 	}
@@ -125,8 +129,14 @@ func (r *KeyBlockResource) Read(ctx context.Context, req resource.ReadRequest, r
 		return
 	}
 
+	// The /key/info endpoint may return key data nested inside "info"
+	info := result
+	if nested, ok := result["info"].(map[string]interface{}); ok {
+		info = nested
+	}
+
 	// Check blocked status
-	if blocked, ok := result["blocked"].(bool); ok {
+	if blocked, ok := info["blocked"].(bool); ok {
 		data.Blocked = types.BoolValue(blocked)
 		if !blocked {
 			// Key is no longer blocked, remove this resource

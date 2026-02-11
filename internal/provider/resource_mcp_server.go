@@ -64,13 +64,8 @@ type MCPServerResourceModel struct {
 	RegistrationURL  types.String `tfsdk:"registration_url"`
 	AllowAllKeys     types.Bool   `tfsdk:"allow_all_keys"`
 	// Computed fields
-	CreatedAt        types.String `tfsdk:"created_at"`
-	CreatedBy        types.String `tfsdk:"created_by"`
-	UpdatedAt        types.String `tfsdk:"updated_at"`
-	UpdatedBy        types.String `tfsdk:"updated_by"`
-	Status           types.String `tfsdk:"status"`
-	LastHealthCheck  types.String `tfsdk:"last_health_check"`
-	HealthCheckError types.String `tfsdk:"health_check_error"`
+	CreatedAt types.String `tfsdk:"created_at"`
+	CreatedBy types.String `tfsdk:"created_by"`
 }
 
 func (r *MCPServerResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -125,12 +120,12 @@ func (r *MCPServerResource) Schema(ctx context.Context, req resource.SchemaReque
 				Default:     stringdefault.StaticString("2024-11-05"),
 			},
 			"auth_type": schema.StringAttribute{
-				Description: "Authentication type (none, bearer, basic).",
+				Description: "Authentication type (none, bearer_token, bearer, basic, api_key, authorization, oauth2).",
 				Optional:    true,
 				Computed:    true,
 				Default:     stringdefault.StaticString("none"),
 				Validators: []validator.String{
-					stringvalidator.OneOf("none", "bearer", "basic"),
+					stringvalidator.OneOf("none", "bearer_token", "bearer", "basic", "api_key", "authorization", "oauth2"),
 				},
 			},
 			"mcp_access_groups": schema.ListAttribute{
@@ -199,30 +194,16 @@ func (r *MCPServerResource) Schema(ctx context.Context, req resource.SchemaReque
 			"created_at": schema.StringAttribute{
 				Description: "Timestamp when the server was created.",
 				Computed:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"created_by": schema.StringAttribute{
 				Description: "User who created the server.",
 				Computed:    true,
-			},
-			"updated_at": schema.StringAttribute{
-				Description: "Timestamp when the server was last updated.",
-				Computed:    true,
-			},
-			"updated_by": schema.StringAttribute{
-				Description: "User who last updated the server.",
-				Computed:    true,
-			},
-			"status": schema.StringAttribute{
-				Description: "Current status of the MCP server.",
-				Computed:    true,
-			},
-			"last_health_check": schema.StringAttribute{
-				Description: "Timestamp of the last health check.",
-				Computed:    true,
-			},
-			"health_check_error": schema.StringAttribute{
-				Description: "Error message from the last health check, if any.",
-				Computed:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 		},
 		Blocks: map[string]schema.Block{
@@ -546,10 +527,10 @@ func (r *MCPServerResource) readMCPServer(ctx context.Context, data *MCPServerRe
 	if serverName, ok := result["server_name"].(string); ok {
 		data.ServerName = types.StringValue(serverName)
 	}
-	if alias, ok := result["alias"].(string); ok {
+	if alias, ok := result["alias"].(string); ok && !data.Alias.IsNull() {
 		data.Alias = types.StringValue(alias)
 	}
-	if desc, ok := result["description"].(string); ok {
+	if desc, ok := result["description"].(string); ok && !data.Description.IsNull() {
 		data.Description = types.StringValue(desc)
 	}
 	if url, ok := result["url"].(string); ok {
@@ -564,7 +545,7 @@ func (r *MCPServerResource) readMCPServer(ctx context.Context, data *MCPServerRe
 	if authType, ok := result["auth_type"].(string); ok {
 		data.AuthType = types.StringValue(authType)
 	}
-	if command, ok := result["command"].(string); ok {
+	if command, ok := result["command"].(string); ok && !data.Command.IsNull() {
 		data.Command = types.StringValue(command)
 	}
 	if createdAt, ok := result["created_at"].(string); ok {
@@ -573,22 +554,6 @@ func (r *MCPServerResource) readMCPServer(ctx context.Context, data *MCPServerRe
 	if createdBy, ok := result["created_by"].(string); ok {
 		data.CreatedBy = types.StringValue(createdBy)
 	}
-	if updatedAt, ok := result["updated_at"].(string); ok {
-		data.UpdatedAt = types.StringValue(updatedAt)
-	}
-	if updatedBy, ok := result["updated_by"].(string); ok {
-		data.UpdatedBy = types.StringValue(updatedBy)
-	}
-	if status, ok := result["status"].(string); ok {
-		data.Status = types.StringValue(status)
-	}
-	if lastHealthCheck, ok := result["last_health_check"].(string); ok {
-		data.LastHealthCheck = types.StringValue(lastHealthCheck)
-	}
-	if healthCheckError, ok := result["health_check_error"].(string); ok {
-		data.HealthCheckError = types.StringValue(healthCheckError)
-	}
-
 	// Handle access groups - preserve null when API returns empty and config didn't specify
 	if accessGroups, ok := result["mcp_access_groups"].([]interface{}); ok && len(accessGroups) > 0 {
 		groups := make([]attr.Value, len(accessGroups))
@@ -598,7 +563,7 @@ func (r *MCPServerResource) readMCPServer(ctx context.Context, data *MCPServerRe
 			}
 		}
 		data.MCPAccessGroups, _ = types.ListValue(types.StringType, groups)
-	} else if !data.MCPAccessGroups.IsNull() {
+	} else if data.MCPAccessGroups.IsUnknown() {
 		data.MCPAccessGroups, _ = types.ListValue(types.StringType, []attr.Value{})
 	}
 
@@ -611,7 +576,7 @@ func (r *MCPServerResource) readMCPServer(ctx context.Context, data *MCPServerRe
 			}
 		}
 		data.Args, _ = types.ListValue(types.StringType, argsList)
-	} else if !data.Args.IsNull() {
+	} else if data.Args.IsUnknown() {
 		data.Args, _ = types.ListValue(types.StringType, []attr.Value{})
 	}
 
@@ -624,7 +589,7 @@ func (r *MCPServerResource) readMCPServer(ctx context.Context, data *MCPServerRe
 			}
 		}
 		data.Env, _ = types.MapValue(types.StringType, envMap)
-	} else if !data.Env.IsNull() {
+	} else if data.Env.IsUnknown() {
 		data.Env, _ = types.MapValue(types.StringType, map[string]attr.Value{})
 	}
 
@@ -637,7 +602,7 @@ func (r *MCPServerResource) readMCPServer(ctx context.Context, data *MCPServerRe
 			}
 		}
 		data.Credentials, _ = types.MapValue(types.StringType, credMap)
-	} else if !data.Credentials.IsNull() {
+	} else if data.Credentials.IsUnknown() {
 		data.Credentials, _ = types.MapValue(types.StringType, map[string]attr.Value{})
 	}
 
@@ -650,7 +615,7 @@ func (r *MCPServerResource) readMCPServer(ctx context.Context, data *MCPServerRe
 			}
 		}
 		data.AllowedTools, _ = types.ListValue(types.StringType, tools)
-	} else if !data.AllowedTools.IsNull() {
+	} else if data.AllowedTools.IsUnknown() {
 		data.AllowedTools, _ = types.ListValue(types.StringType, []attr.Value{})
 	}
 
@@ -663,7 +628,7 @@ func (r *MCPServerResource) readMCPServer(ctx context.Context, data *MCPServerRe
 			}
 		}
 		data.ExtraHeaders, _ = types.MapValue(types.StringType, headersMap)
-	} else if !data.ExtraHeaders.IsNull() {
+	} else if data.ExtraHeaders.IsUnknown() {
 		data.ExtraHeaders, _ = types.MapValue(types.StringType, map[string]attr.Value{})
 	}
 
@@ -676,31 +641,29 @@ func (r *MCPServerResource) readMCPServer(ctx context.Context, data *MCPServerRe
 			}
 		}
 		data.StaticHeaders, _ = types.MapValue(types.StringType, headersMap)
-	} else if !data.StaticHeaders.IsNull() {
+	} else if data.StaticHeaders.IsUnknown() {
 		data.StaticHeaders, _ = types.MapValue(types.StringType, map[string]attr.Value{})
 	}
 
-	if authURL, ok := result["authorization_url"].(string); ok {
+	if authURL, ok := result["authorization_url"].(string); ok && !data.AuthorizationURL.IsNull() {
 		data.AuthorizationURL = types.StringValue(authURL)
 	}
 
-	if tokenURL, ok := result["token_url"].(string); ok {
+	if tokenURL, ok := result["token_url"].(string); ok && !data.TokenURL.IsNull() {
 		data.TokenURL = types.StringValue(tokenURL)
 	}
 
-	if regURL, ok := result["registration_url"].(string); ok {
+	if regURL, ok := result["registration_url"].(string); ok && !data.RegistrationURL.IsNull() {
 		data.RegistrationURL = types.StringValue(regURL)
 	}
 
-	if allowAllKeys, ok := result["allow_all_keys"].(bool); ok {
+	if allowAllKeys, ok := result["allow_all_keys"].(bool); ok && !data.AllowAllKeys.IsNull() {
 		data.AllowAllKeys = types.BoolValue(allowAllKeys)
 	}
 
 	// Handle mcp_info block, including Optional+Computed nested tool_name_to_cost_per_query.
-	if mcpInfoRaw, ok := result["mcp_info"].(map[string]interface{}); ok {
-		if data.MCPInfo == nil {
-			data.MCPInfo = &MCPInfoModel{}
-		}
+	// Only populate mcp_info if user originally configured it (don't create from nil)
+	if mcpInfoRaw, ok := result["mcp_info"].(map[string]interface{}); ok && data.MCPInfo != nil {
 		if serverName, ok := mcpInfoRaw["server_name"].(string); ok {
 			data.MCPInfo.ServerName = types.StringValue(serverName)
 		}
@@ -727,13 +690,13 @@ func (r *MCPServerResource) readMCPServer(ctx context.Context, data *MCPServerRe
 					}
 				}
 				data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery, _ = types.MapValue(types.Float64Type, toolCosts)
-			} else if !data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery.IsNull() {
+			} else if data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery.IsUnknown() {
 				data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery, _ = types.MapValue(types.Float64Type, map[string]attr.Value{})
 			}
-		} else if data.MCPInfo.MCPServerCostInfo != nil && !data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery.IsNull() {
+		} else if data.MCPInfo.MCPServerCostInfo != nil && data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery.IsUnknown() {
 			data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery, _ = types.MapValue(types.Float64Type, map[string]attr.Value{})
 		}
-	} else if data.MCPInfo != nil && data.MCPInfo.MCPServerCostInfo != nil && !data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery.IsNull() {
+	} else if data.MCPInfo != nil && data.MCPInfo.MCPServerCostInfo != nil && data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery.IsUnknown() {
 		data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery, _ = types.MapValue(types.Float64Type, map[string]attr.Value{})
 	}
 

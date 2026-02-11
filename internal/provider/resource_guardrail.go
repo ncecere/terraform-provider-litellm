@@ -34,7 +34,6 @@ type GuardrailResourceModel struct {
 	LitellmParams types.String `tfsdk:"litellm_params"`
 	GuardrailInfo types.String `tfsdk:"guardrail_info"`
 	CreatedAt     types.String `tfsdk:"created_at"`
-	UpdatedAt     types.String `tfsdk:"updated_at"`
 }
 
 func (r *GuardrailResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -88,10 +87,9 @@ func (r *GuardrailResource) Schema(ctx context.Context, req resource.SchemaReque
 			"created_at": schema.StringAttribute{
 				Description: "Timestamp when the guardrail was created.",
 				Computed:    true,
-			},
-			"updated_at": schema.StringAttribute{
-				Description: "Timestamp when the guardrail was last updated.",
-				Computed:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 		},
 	}
@@ -304,17 +302,16 @@ func (r *GuardrailResource) readGuardrail(ctx context.Context, data *GuardrailRe
 	if createdAt, ok := result["created_at"].(string); ok {
 		data.CreatedAt = types.StringValue(createdAt)
 	}
-	if updatedAt, ok := result["updated_at"].(string); ok {
-		data.UpdatedAt = types.StringValue(updatedAt)
-	}
-
 	// Handle litellm_params
 	if litellmParams, ok := result["litellm_params"].(map[string]interface{}); ok {
 		if guardrail, ok := litellmParams["guardrail"].(string); ok {
 			data.Guardrail = types.StringValue(guardrail)
 		}
+		// Only set default_on if the user configured it or it was unknown
 		if defaultOn, ok := litellmParams["default_on"].(bool); ok {
-			data.DefaultOn = types.BoolValue(defaultOn)
+			if !data.DefaultOn.IsNull() || data.DefaultOn.IsUnknown() {
+				data.DefaultOn = types.BoolValue(defaultOn)
+			}
 		}
 
 		// Handle mode (can be string or array)
@@ -326,16 +323,28 @@ func (r *GuardrailResource) readGuardrail(ctx context.Context, data *GuardrailRe
 			}
 		}
 
-		// Store other litellm_params as JSON (excluding guardrail, mode, default_on)
-		otherParams := make(map[string]interface{})
-		for k, v := range litellmParams {
-			if k != "guardrail" && k != "mode" && k != "default_on" {
-				otherParams[k] = v
-			}
-		}
-		if len(otherParams) > 0 {
-			if jsonBytes, err := json.Marshal(otherParams); err == nil {
-				data.LitellmParams = types.StringValue(string(jsonBytes))
+		// Store other litellm_params as JSON (excluding guardrail, mode, default_on).
+		// Only update if the user originally configured litellm_params to avoid
+		// adopting the API's massive default parameter set.
+		// Additionally, only preserve the keys the user originally configured to
+		// prevent the API's expanded defaults from being stored in state.
+		if !data.LitellmParams.IsNull() && !data.LitellmParams.IsUnknown() {
+			// Parse the user's original litellm_params to get configured keys
+			var userParams map[string]interface{}
+			if err := json.Unmarshal([]byte(data.LitellmParams.ValueString()), &userParams); err == nil {
+				otherParams := make(map[string]interface{})
+				for k := range userParams {
+					if k != "guardrail" && k != "mode" && k != "default_on" {
+						if v, exists := litellmParams[k]; exists {
+							otherParams[k] = v
+						}
+					}
+				}
+				if len(otherParams) > 0 {
+					if jsonBytes, err := json.Marshal(otherParams); err == nil {
+						data.LitellmParams = types.StringValue(string(jsonBytes))
+					}
+				}
 			}
 		}
 	}

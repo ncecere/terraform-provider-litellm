@@ -41,7 +41,6 @@ type UserResourceModel struct {
 	RPMLimit       types.Int64   `tfsdk:"rpm_limit"`
 	AutoCreateKey  types.Bool    `tfsdk:"auto_create_key"`
 	Metadata       types.Map     `tfsdk:"metadata"`
-	Spend          types.Float64 `tfsdk:"spend"`
 	Key            types.String  `tfsdk:"key"`
 }
 
@@ -131,14 +130,13 @@ func (r *UserResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 				Computed:    true,
 				ElementType: types.StringType,
 			},
-			"spend": schema.Float64Attribute{
-				Description: "Amount spent by this user.",
-				Computed:    true,
-			},
 			"key": schema.StringAttribute{
 				Description: "The auto-generated API key for the user (if auto_create_key is true).",
 				Computed:    true,
 				Sensitive:   true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 		},
 	}
@@ -381,9 +379,6 @@ func (r *UserResource) readUser(ctx context.Context, data *UserResourceModel) er
 	// Numeric fields
 	if maxBudget, ok := userInfo["max_budget"].(float64); ok {
 		data.MaxBudget = types.Float64Value(maxBudget)
-	}
-	if spend, ok := userInfo["spend"].(float64); ok {
-		data.Spend = types.Float64Value(spend)
 	}
 	if tpmLimit, ok := userInfo["tpm_limit"].(float64); ok {
 		data.TPMLimit = types.Int64Value(int64(tpmLimit))

@@ -4,14 +4,6 @@ Retrieves a list of all LiteLLM access groups.
 
 ## Example Usage
 
-### Minimal Example
-
-```hcl
-data "litellm_access_groups" "all" {}
-```
-
-### Full Example
-
 ```hcl
 data "litellm_access_groups" "all" {}
 
@@ -20,19 +12,15 @@ output "access_group_count" {
 }
 
 output "access_group_names" {
-  value = [for g in data.litellm_access_groups.all.access_groups : g.access_group_name]
+  value = [for g in data.litellm_access_groups.all.access_groups : g.access_group]
 }
 
-# Find groups with GPT-4 access
+# Find groups containing a specific model
 locals {
   gpt4_groups = [
     for g in data.litellm_access_groups.all.access_groups : g
-    if contains(g.members, "gpt-4")
+    if contains(g.model_names, "gpt-4-proxy")
   ]
-}
-
-output "groups_with_gpt4" {
-  value = [for g in local.gpt4_groups : g.access_group_name]
 }
 ```
 
@@ -42,13 +30,7 @@ This data source has no required arguments.
 
 ## Attribute Reference
 
-The following attributes are exported:
-
 * `id` - Placeholder identifier.
 * `access_groups` - List of access group objects, each containing:
-  * `access_group_id` - The unique identifier.
-  * `access_group_name` - The human-readable name.
-  * `description` - Description.
-  * `members` - List of model names.
-  * `created_at` - Creation timestamp.
-  * `updated_at` - Last update timestamp.
+  * `access_group` - The access group name.
+  * `model_names` - List of model names in this access group.

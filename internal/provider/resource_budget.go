@@ -33,7 +33,6 @@ type BudgetResourceModel struct {
 	TPMLimit            types.Int64   `tfsdk:"tpm_limit"`
 	RPMLimit            types.Int64   `tfsdk:"rpm_limit"`
 	BudgetDuration      types.String  `tfsdk:"budget_duration"`
-	BudgetResetAt       types.String  `tfsdk:"budget_reset_at"`
 	ModelMaxBudget      types.String  `tfsdk:"model_max_budget"`
 }
 
@@ -84,10 +83,6 @@ func (r *BudgetResource) Schema(ctx context.Context, req resource.SchemaRequest,
 			"budget_duration": schema.StringAttribute{
 				Description: "Duration for budget reset (e.g., '1hr', '1d', '28d', '1mo').",
 				Optional:    true,
-			},
-			"budget_reset_at": schema.StringAttribute{
-				Description: "Datetime when the budget is reset (computed).",
-				Computed:    true,
 			},
 			"model_max_budget": schema.StringAttribute{
 				Description: "JSON string for per-model budget configuration (e.g., '{\"gpt-4o\": {\"max_budget\": 0.01, \"budget_duration\": \"1d\"}}').",
@@ -305,9 +300,6 @@ func (r *BudgetResource) readBudget(ctx context.Context, data *BudgetResourceMod
 	}
 	if budgetDuration, ok := result["budget_duration"].(string); ok {
 		data.BudgetDuration = types.StringValue(budgetDuration)
-	}
-	if budgetResetAt, ok := result["budget_reset_at"].(string); ok {
-		data.BudgetResetAt = types.StringValue(budgetResetAt)
 	}
 	if modelMaxBudget, ok := result["model_max_budget"].(map[string]interface{}); ok && len(modelMaxBudget) > 0 {
 		if jsonBytes, err := json.Marshal(modelMaxBudget); err == nil {

@@ -7,6 +7,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -56,6 +57,9 @@ func (r *TeamBlockResource) Schema(ctx context.Context, req resource.SchemaReque
 			"blocked": schema.BoolAttribute{
 				Description: "Whether the team is currently blocked. Always true when this resource exists.",
 				Computed:    true,
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.UseStateForUnknown(),
+				},
 			},
 		},
 	}
@@ -124,8 +128,14 @@ func (r *TeamBlockResource) Read(ctx context.Context, req resource.ReadRequest, 
 		return
 	}
 
+	// The /team/info endpoint may return team data nested inside "team_info"
+	teamInfo := result
+	if nested, ok := result["team_info"].(map[string]interface{}); ok {
+		teamInfo = nested
+	}
+
 	// Check blocked status
-	if blocked, ok := result["blocked"].(bool); ok {
+	if blocked, ok := teamInfo["blocked"].(bool); ok {
 		data.Blocked = types.BoolValue(blocked)
 		if !blocked {
 			// Team is no longer blocked, remove this resource

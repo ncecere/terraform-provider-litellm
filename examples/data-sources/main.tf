@@ -98,12 +98,12 @@ output "spend_analysis" {
 locals {
   admin_count = length([
     for u in data.litellm_users.all.users : u
-    if u.user_role == "admin"
+    if u.user_role == "proxy_admin"
   ])
 
   user_count = length([
     for u in data.litellm_users.all.users : u
-    if u.user_role == "user"
+    if u.user_role == "internal_user"
   ])
 }
 

@@ -147,49 +147,55 @@ func (d *OrganizationDataSource) Read(ctx context.Context, req datasource.ReadRe
 		return
 	}
 
+	// The /organization/info endpoint may return data nested inside "organization_info"
+	orgInfo := result
+	if nested, ok := result["organization_info"].(map[string]interface{}); ok {
+		orgInfo = nested
+	}
+
 	// Set ID
 	data.ID = data.OrganizationID
 
 	// Update fields from response
-	if alias, ok := result["organization_alias"].(string); ok {
+	if alias, ok := orgInfo["organization_alias"].(string); ok {
 		data.OrganizationAlias = types.StringValue(alias)
 	}
-	if budgetID, ok := result["budget_id"].(string); ok {
+	if budgetID, ok := orgInfo["budget_id"].(string); ok {
 		data.BudgetID = types.StringValue(budgetID)
 	}
-	if budgetDuration, ok := result["budget_duration"].(string); ok {
+	if budgetDuration, ok := orgInfo["budget_duration"].(string); ok {
 		data.BudgetDuration = types.StringValue(budgetDuration)
 	}
-	if createdAt, ok := result["created_at"].(string); ok {
+	if createdAt, ok := orgInfo["created_at"].(string); ok {
 		data.CreatedAt = types.StringValue(createdAt)
 	}
-	if updatedAt, ok := result["updated_at"].(string); ok {
+	if updatedAt, ok := orgInfo["updated_at"].(string); ok {
 		data.UpdatedAt = types.StringValue(updatedAt)
 	}
 
 	// Numeric fields
-	if maxBudget, ok := result["max_budget"].(float64); ok {
+	if maxBudget, ok := orgInfo["max_budget"].(float64); ok {
 		data.MaxBudget = types.Float64Value(maxBudget)
 	}
-	if spend, ok := result["spend"].(float64); ok {
+	if spend, ok := orgInfo["spend"].(float64); ok {
 		data.Spend = types.Float64Value(spend)
 	}
-	if tpmLimit, ok := result["tpm_limit"].(float64); ok {
+	if tpmLimit, ok := orgInfo["tpm_limit"].(float64); ok {
 		data.TPMLimit = types.Int64Value(int64(tpmLimit))
 	}
-	if rpmLimit, ok := result["rpm_limit"].(float64); ok {
+	if rpmLimit, ok := orgInfo["rpm_limit"].(float64); ok {
 		data.RPMLimit = types.Int64Value(int64(rpmLimit))
 	}
 
 	// Boolean fields
-	if blocked, ok := result["blocked"].(bool); ok {
+	if blocked, ok := orgInfo["blocked"].(bool); ok {
 		data.Blocked = types.BoolValue(blocked)
 	} else {
 		data.Blocked = types.BoolValue(false)
 	}
 
 	// Handle models list
-	if models, ok := result["models"].([]interface{}); ok {
+	if models, ok := orgInfo["models"].([]interface{}); ok {
 		modelsList := make([]attr.Value, len(models))
 		for i, m := range models {
 			if str, ok := m.(string); ok {
@@ -202,7 +208,7 @@ func (d *OrganizationDataSource) Read(ctx context.Context, req datasource.ReadRe
 	}
 
 	// Handle tags list
-	if tags, ok := result["tags"].([]interface{}); ok {
+	if tags, ok := orgInfo["tags"].([]interface{}); ok {
 		tagsList := make([]attr.Value, len(tags))
 		for i, t := range tags {
 			if str, ok := t.(string); ok {
@@ -215,7 +221,7 @@ func (d *OrganizationDataSource) Read(ctx context.Context, req datasource.ReadRe
 	}
 
 	// Handle metadata map
-	if metadata, ok := result["metadata"].(map[string]interface{}); ok {
+	if metadata, ok := orgInfo["metadata"].(map[string]interface{}); ok {
 		metaMap := make(map[string]attr.Value)
 		for k, v := range metadata {
 			if str, ok := v.(string); ok {

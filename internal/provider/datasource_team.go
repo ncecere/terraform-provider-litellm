@@ -137,43 +137,49 @@ func (d *TeamDataSource) Read(ctx context.Context, req datasource.ReadRequest, r
 		return
 	}
 
+	// The /team/info endpoint may return team data nested inside "team_info"
+	teamInfo := result
+	if nested, ok := result["team_info"].(map[string]interface{}); ok {
+		teamInfo = nested
+	}
+
 	// Set ID
 	data.ID = data.TeamID
 
 	// Update fields from response
-	if teamAlias, ok := result["team_alias"].(string); ok {
+	if teamAlias, ok := teamInfo["team_alias"].(string); ok {
 		data.TeamAlias = types.StringValue(teamAlias)
 	}
-	if orgID, ok := result["organization_id"].(string); ok {
+	if orgID, ok := teamInfo["organization_id"].(string); ok {
 		data.OrganizationID = types.StringValue(orgID)
 	}
-	if budgetDuration, ok := result["budget_duration"].(string); ok {
+	if budgetDuration, ok := teamInfo["budget_duration"].(string); ok {
 		data.BudgetDuration = types.StringValue(budgetDuration)
 	}
 
 	// Numeric fields
-	if maxBudget, ok := result["max_budget"].(float64); ok {
+	if maxBudget, ok := teamInfo["max_budget"].(float64); ok {
 		data.MaxBudget = types.Float64Value(maxBudget)
 	}
-	if spend, ok := result["spend"].(float64); ok {
+	if spend, ok := teamInfo["spend"].(float64); ok {
 		data.Spend = types.Float64Value(spend)
 	}
-	if tpmLimit, ok := result["tpm_limit"].(float64); ok {
+	if tpmLimit, ok := teamInfo["tpm_limit"].(float64); ok {
 		data.TPMLimit = types.Int64Value(int64(tpmLimit))
 	}
-	if rpmLimit, ok := result["rpm_limit"].(float64); ok {
+	if rpmLimit, ok := teamInfo["rpm_limit"].(float64); ok {
 		data.RPMLimit = types.Int64Value(int64(rpmLimit))
 	}
 
 	// Boolean fields
-	if blocked, ok := result["blocked"].(bool); ok {
+	if blocked, ok := teamInfo["blocked"].(bool); ok {
 		data.Blocked = types.BoolValue(blocked)
 	} else {
 		data.Blocked = types.BoolValue(false)
 	}
 
 	// Handle models list
-	if models, ok := result["models"].([]interface{}); ok {
+	if models, ok := teamInfo["models"].([]interface{}); ok {
 		modelsList := make([]attr.Value, len(models))
 		for i, m := range models {
 			if str, ok := m.(string); ok {
@@ -186,7 +192,7 @@ func (d *TeamDataSource) Read(ctx context.Context, req datasource.ReadRequest, r
 	}
 
 	// Handle metadata map
-	if metadata, ok := result["metadata"].(map[string]interface{}); ok {
+	if metadata, ok := teamInfo["metadata"].(map[string]interface{}); ok {
 		metaMap := make(map[string]attr.Value)
 		for k, v := range metadata {
 			if str, ok := v.(string); ok {

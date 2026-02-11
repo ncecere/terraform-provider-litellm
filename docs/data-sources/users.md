@@ -4,58 +4,39 @@ Retrieves a list of LiteLLM users.
 
 ## Example Usage
 
-### Minimal Example
-
-```hcl
-data "litellm_users" "all" {}
-```
-
-### Full Example
-
 ```hcl
 data "litellm_users" "all" {}
 
 output "user_count" {
   value = length(data.litellm_users.all.users)
 }
+```
 
-# Find admin users
-locals {
-  admin_users = [
-    for u in data.litellm_users.all.users : u
-    if u.user_role == "admin"
-  ]
+### Filter by Role
+
+```hcl
+data "litellm_users" "admins" {
+  user_role = "proxy_admin"
 }
 
 output "admin_emails" {
-  value = [for u in local.admin_users : u.user_email]
-}
-
-# Calculate total user spend
-locals {
-  total_user_spend = sum([for u in data.litellm_users.all.users : u.spend])
-}
-
-output "total_spend" {
-  value = local.total_user_spend
+  value = [for u in data.litellm_users.admins.users : u.user_email]
 }
 ```
 
 ## Argument Reference
 
-This data source has no required arguments.
+* `user_role` - (Optional) Filter users by role (proxy_admin, proxy_admin_viewer, internal_user, internal_user_viewer, team, customer).
 
 ## Attribute Reference
-
-The following attributes are exported:
 
 * `id` - Placeholder identifier.
 * `users` - List of user objects, each containing:
   * `user_id` - The unique identifier.
   * `user_email` - Email address.
   * `user_alias` - Human-readable alias.
-  * `user_role` - User role (admin, user).
+  * `user_role` - User role.
   * `max_budget` - Maximum budget.
   * `spend` - Current spend.
-  * `created_at` - Creation timestamp.
-  * `updated_at` - Last update timestamp.
+  * `tpm_limit` - Tokens per minute limit.
+  * `rpm_limit` - Requests per minute limit.

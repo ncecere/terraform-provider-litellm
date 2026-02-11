@@ -287,21 +287,32 @@ func (r *TagResource) readTag(ctx context.Context, data *TagResourceModel) error
 		tagName = data.ID.ValueString()
 	}
 
-	// /tag/info expects POST with names array
+	// /tag/info expects POST with names array.
+	// The API may return either:
+	//   - a map keyed by tag name: {"tag-name": {...tag data...}}
+	//   - an array of tag objects: [{...tag data...}]
 	infoReq := map[string]interface{}{
 		"names": []string{tagName},
 	}
 
-	var results []map[string]interface{}
-	if err := r.client.DoRequestWithResponse(ctx, "POST", "/tag/info", infoReq, &results); err != nil {
+	// The API returns a map keyed by tag name: {"tag-name": {...tag data...}}
+	var rawResult map[string]interface{}
+	if err := r.client.DoRequestWithResponse(ctx, "POST", "/tag/info", infoReq, &rawResult); err != nil {
 		return err
 	}
 
-	if len(results) == 0 {
-		return fmt.Errorf("tag not found: %s", tagName)
+	// Extract tag data from the map-keyed response
+	var result map[string]interface{}
+	if tagData, ok := rawResult[tagName].(map[string]interface{}); ok {
+		result = tagData
+	} else {
+		// Flat response - the rawResult might be the tag data directly
+		result = rawResult
 	}
 
-	result := results[0]
+	if result == nil || len(result) == 0 {
+		return fmt.Errorf("tag not found: %s", tagName)
+	}
 
 	// Update fields from response
 	if name, ok := result["name"].(string); ok {
@@ -333,7 +344,7 @@ func (r *TagResource) readTag(ctx context.Context, data *TagResourceModel) error
 		data.BudgetDuration = types.StringValue(budgetDuration)
 	}
 
-	// Handle models list - preserve null when API returns empty and config didn't specify models
+	// Handle models list - resolve Unknown to empty, preserve null
 	if models, ok := result["models"].([]interface{}); ok && len(models) > 0 {
 		modelsList := make([]attr.Value, len(models))
 		for i, m := range models {
@@ -342,7 +353,7 @@ func (r *TagResource) readTag(ctx context.Context, data *TagResourceModel) error
 			}
 		}
 		data.Models, _ = types.ListValue(types.StringType, modelsList)
-	} else if !data.Models.IsNull() {
+	} else if data.Models.IsUnknown() {
 		data.Models, _ = types.ListValue(types.StringType, []attr.Value{})
 	}
 

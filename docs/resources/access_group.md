@@ -1,99 +1,45 @@
-# litellm_access_group Resource
+# litellm_access_group (Resource)
 
-Manages a LiteLLM access group. Access groups define collections of models that can be assigned to teams or users, providing fine-grained access control to LLM resources.
+Manages an access group in LiteLLM. Access groups define collections of models that can be referenced together when assigning model access to keys or teams.
 
 ## Example Usage
 
-### Minimal Example
-
 ```hcl
-resource "litellm_access_group" "basic" {
-  access_group_id   = "basic-models"
-  access_group_name = "Basic Models"
-  members           = ["gpt-3.5-turbo"]
+resource "litellm_model" "gpt4" {
+  model_name          = "gpt-4o-mini"
+  custom_llm_provider = "openai"
+  base_model          = "gpt-4o-mini"
+}
+
+resource "litellm_access_group" "example" {
+  access_group = "basic-models"
+  model_names  = [litellm_model.gpt4.model_name]
 }
 ```
 
-### Full Example
+~> **Important:** `model_names` must reference models that actually exist in LiteLLM. If you reference non-existent models, the access group will be created but won't function correctly. Use resource references (as shown above) to ensure proper dependency ordering and that models are created before the access group.
+
+### Multiple Models
 
 ```hcl
-resource "litellm_access_group" "premium" {
-  access_group_id   = "premium-models"
-  access_group_name = "Premium Model Access"
-  description       = "Access to premium AI models for enterprise users"
-  
-  members = [
-    "gpt-4",
-    "gpt-4-turbo",
-    "claude-3-opus",
-    "claude-3-sonnet"
+resource "litellm_model" "gpt4" {
+  model_name          = "gpt-4o-mini"
+  custom_llm_provider = "openai"
+  base_model          = "gpt-4o-mini"
+}
+
+resource "litellm_model" "claude" {
+  model_name          = "claude-sonnet"
+  custom_llm_provider = "anthropic"
+  base_model          = "claude-sonnet-4-20250514"
+}
+
+resource "litellm_access_group" "all_models" {
+  access_group = "all-models"
+  model_names  = [
+    litellm_model.gpt4.model_name,
+    litellm_model.claude.model_name,
   ]
-  
-  metadata = jsonencode({
-    tier       = "enterprise"
-    cost_level = "high"
-  })
-}
-```
-
-### Tiered Access Groups
-
-```hcl
-# Free tier models
-resource "litellm_access_group" "free_tier" {
-  access_group_id   = "free-tier"
-  access_group_name = "Free Tier Models"
-  description       = "Models available to free users"
-  
-  members = [
-    "gpt-3.5-turbo",
-    "claude-instant"
-  ]
-}
-
-# Standard tier models
-resource "litellm_access_group" "standard_tier" {
-  access_group_id   = "standard-tier"
-  access_group_name = "Standard Tier Models"
-  description       = "Models available to standard users"
-  
-  members = [
-    "gpt-3.5-turbo",
-    "gpt-4",
-    "claude-instant",
-    "claude-3-sonnet"
-  ]
-}
-
-# Enterprise tier models
-resource "litellm_access_group" "enterprise_tier" {
-  access_group_id   = "enterprise-tier"
-  access_group_name = "Enterprise Tier Models"
-  description       = "All models available to enterprise users"
-  
-  members = [
-    "gpt-3.5-turbo",
-    "gpt-4",
-    "gpt-4-turbo",
-    "claude-instant",
-    "claude-3-sonnet",
-    "claude-3-opus"
-  ]
-}
-```
-
-### Access Group with Team Assignment
-
-```hcl
-resource "litellm_access_group" "dev_models" {
-  access_group_id   = "development-models"
-  access_group_name = "Development Models"
-  members           = ["gpt-3.5-turbo", "gpt-4"]
-}
-
-resource "litellm_team" "developers" {
-  team_alias    = "developers"
-  models        = litellm_access_group.dev_models.members
 }
 ```
 
@@ -101,36 +47,19 @@ resource "litellm_team" "developers" {
 
 The following arguments are supported:
 
-### Required Arguments
-
-* `access_group_id` - (Required) Unique identifier for the access group.
-* `access_group_name` - (Required) Human-readable name for the access group.
-* `members` - (Required) List of model names included in this access group.
-
-### Optional Arguments
-
-* `description` - (Optional) Description of the access group's purpose.
-* `metadata` - (Optional) JSON string containing additional metadata.
+- `access_group` - (Required, ForceNew) The name of the access group. Changing this value forces creation of a new resource.
+- `model_names` - (Required) A list of model names to include in the access group. Each model must exist in LiteLLM.
 
 ## Attribute Reference
 
-In addition to all arguments above, the following attributes are exported:
+In addition to the arguments above, the following attributes are exported:
 
-* `id` - The unique identifier for this access group (same as access_group_id).
-* `created_at` - Timestamp when the access group was created.
-* `updated_at` - Timestamp when the access group was last updated.
+- `id` - The internal resource identifier.
 
 ## Import
 
-Access groups can be imported using the access group ID:
+Access groups can be imported using the access group name:
 
 ```shell
-terraform import litellm_access_group.example premium-models
+terraform import litellm_access_group.example <access-group-name>
 ```
-
-## Notes
-
-- Access groups simplify model access management across teams
-- A model can belong to multiple access groups
-- Use access groups to implement tiered pricing or feature access
-- Changes to access group members immediately affect all associated teams

@@ -178,9 +178,8 @@ resource "litellm_model" "bedrock_titan" {
 # =============================================================================
 
 resource "litellm_access_group" "openai_models" {
-  access_group_id   = "openai-all"
-  access_group_name = "All OpenAI Models"
-  members = [
+  access_group = "openai-all"
+  model_names = [
     litellm_model.openai_gpt4.model_name,
     litellm_model.openai_gpt4_turbo.model_name,
     litellm_model.openai_embedding.model_name
@@ -188,9 +187,8 @@ resource "litellm_access_group" "openai_models" {
 }
 
 resource "litellm_access_group" "anthropic_models" {
-  access_group_id   = "anthropic-all"
-  access_group_name = "All Anthropic Models"
-  members = [
+  access_group = "anthropic-all"
+  model_names = [
     litellm_model.anthropic_claude3_opus.model_name,
     litellm_model.anthropic_claude3_sonnet.model_name,
     litellm_model.anthropic_claude3_haiku.model_name
@@ -198,9 +196,8 @@ resource "litellm_access_group" "anthropic_models" {
 }
 
 resource "litellm_access_group" "chat_models" {
-  access_group_id   = "all-chat"
-  access_group_name = "All Chat Models"
-  members = [
+  access_group = "all-chat"
+  model_names = [
     litellm_model.openai_gpt4.model_name,
     litellm_model.openai_gpt4_turbo.model_name,
     litellm_model.anthropic_claude3_opus.model_name,
@@ -212,9 +209,8 @@ resource "litellm_access_group" "chat_models" {
 }
 
 resource "litellm_access_group" "embedding_models" {
-  access_group_id   = "all-embedding"
-  access_group_name = "All Embedding Models"
-  members = [
+  access_group = "all-embedding"
+  model_names = [
     litellm_model.openai_embedding.model_name,
     litellm_model.bedrock_titan.model_name
   ]
@@ -227,8 +223,8 @@ resource "litellm_access_group" "embedding_models" {
 resource "litellm_team" "premium_access" {
   team_alias = "premium-users"
   models = concat(
-    litellm_access_group.openai_models.members,
-    litellm_access_group.anthropic_models.members,
+    litellm_access_group.openai_models.model_names,
+    litellm_access_group.anthropic_models.model_names,
     [litellm_model.azure_gpt4.model_name, litellm_model.bedrock_claude.model_name]
   )
   max_budget = 5000.0

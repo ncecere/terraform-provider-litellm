@@ -4,14 +4,6 @@ Retrieves a list of all LiteLLM model configurations.
 
 ## Example Usage
 
-### Minimal Example
-
-```hcl
-data "litellm_models" "all" {}
-```
-
-### Full Example
-
 ```hcl
 data "litellm_models" "all" {}
 
@@ -36,13 +28,19 @@ output "openai_model_names" {
 }
 ```
 
+### Filter by Team
+
+```hcl
+data "litellm_models" "team_models" {
+  team_id = "team-xxxxxxxxxxxx"
+}
+```
+
 ## Argument Reference
 
-This data source has no required arguments.
+* `team_id` - (Optional) Filter models by team ID.
 
 ## Attribute Reference
-
-The following attributes are exported:
 
 * `id` - Placeholder identifier.
 * `models` - List of model objects, each containing:
@@ -52,3 +50,4 @@ The following attributes are exported:
   * `base_model` - The actual model identifier.
   * `tier` - The usage tier (free, paid).
   * `mode` - The model mode.
+  * `team_id` - Team ID associated with this model.

@@ -4,48 +4,56 @@ Manages a LiteLLM API key.
 
 ## Example Usage
 
+### Minimal Key
+
 ```hcl
-resource "litellm_key" "example" {
-  models               = ["gpt-3.5-turbo", "gpt-4"]
-  allowed_routes       = ["/chat/completions", "/embeddings"]
-  max_budget           = 100.0
-  user_id              = "user123"
-  team_id              = "team456"
-  max_parallel_requests = 5
-  metadata             = {
-    "environment" = "production"
-  }
-  tpm_limit            = 1000
-  rpm_limit            = 60
-  budget_duration      = "monthly"
-  allowed_cache_controls = ["no-cache", "max-age=3600"]
-  soft_budget          = 80.0
-  key_alias            = "prod-key-1"
-  duration             = "30d"
-  aliases              = {
-    "gpt-3.5-turbo" = "chatgpt"
-  }
-  config               = {
-    "default_model" = "gpt-3.5-turbo"
-  }
-  permissions          = {
-    "can_create_keys" = "true"
-  }
-  model_max_budget     = {
-    "gpt-4" = 50.0
-  }
-  model_rpm_limit      = {
-    "gpt-3.5-turbo" = 30
-  }
-  model_tpm_limit      = {
-    "gpt-4" = 500
-  }
-  guardrails           = ["content_filter", "token_limit"]
-  blocked              = false
-  tags                 = ["production", "api"]
+resource "litellm_key" "minimal" {
 }
 
-# Service account key owned by a team
+output "key_value" {
+  value     = litellm_key.minimal.key
+  sensitive = true
+}
+```
+
+### Key with Budget and Rate Limits
+
+```hcl
+resource "litellm_key" "example" {
+  key_alias             = "prod-key-1"
+  models                = ["gpt-4o", "gpt-4o-mini"]
+  max_budget            = 100.0
+  tpm_limit             = 50000
+  rpm_limit             = 200
+  tpm_limit_type        = "best_effort_throughput"
+  rpm_limit_type        = "best_effort_throughput"
+  budget_duration       = "30d"
+  max_parallel_requests = 10
+  soft_budget           = 80.0
+  duration              = "90d"
+  blocked               = false
+
+  allowed_routes         = ["llm_api_routes"]
+  allowed_cache_controls = ["no-cache"]
+
+  metadata = {
+    "environment" = "production"
+    "owner"       = "terraform"
+  }
+
+  model_rpm_limit = {
+    "gpt-4o" = 100
+  }
+
+  model_tpm_limit = {
+    "gpt-4o" = 25000
+  }
+}
+```
+
+### Service Account Key
+
+```hcl
 resource "litellm_key" "service_account" {
   service_account_id = "github-ci"
   team_id            = "team456"
@@ -67,75 +75,80 @@ resource "litellm_key" "service_account" {
 
 The following arguments are supported:
 
-* `models` - (Optional) List of models that can be used with this key. This restricts the key to only use the specified models.
+* `key_alias` - (Optional) Human-readable alias for this key.
 
-* `max_budget` - (Optional) Maximum budget for this key. This sets an upper limit on the total spend allowed for this key.
+* `models` - (Optional) List of models that can be used with this key.
 
-* `user_id` - (Optional) User ID associated with this key. This links the key to a specific user in the LiteLLM system.
+* `max_budget` - (Optional) Maximum budget for this key.
 
-* `team_id` - (Optional) Team ID associated with this key. This links the key to a specific team in the LiteLLM system.
-  * If `team_id` is set and `models` is omitted, the provider automatically allows the key to use all models that belong to the team by sending `"all-team-models"` to the API.
+* `user_id` - (Optional) User ID associated with this key.
 
-* `service_account_id` - (Optional, ForceNew) Identifier for a team-owned service account. When set the provider calls the service-account API, defaults `key_alias` to this value, and persists the id in the metadata payload.
+* `team_id` - (Optional) Team ID associated with this key. If set and `models` is omitted, the provider automatically allows the key to use all models that belong to the team by sending `"all-team-models"` to the API.
+
+* `organization_id` - (Optional) Organization ID associated with this key.
+
+* `budget_id` - (Optional) Budget ID to associate with this key.
+
+* `service_account_id` - (Optional, ForceNew) Identifier for a team-owned service account. When set, the provider calls the service-account API and defaults `key_alias` to this value.
 
 * `allowed_routes` - (Optional) List of LiteLLM proxy routes this key is allowed to call.
 
-* `allowed_passthrough_routes` - (Optional) Pass-through endpoints the key is allowed to access when using custom routes.
+* `allowed_passthrough_routes` - (Optional) Pass-through endpoints the key is allowed to access.
 
-* `max_parallel_requests` - (Optional) Maximum number of parallel requests allowed for this key. This helps in controlling concurrent usage.
+* `max_parallel_requests` - (Optional) Maximum number of parallel requests allowed.
 
-* `metadata` - (Optional) Metadata associated with this key. This can be used to store additional, custom information about the key.
+* `metadata` - (Optional) Map of string metadata associated with this key.
 
-* `tpm_limit` - (Optional) Tokens per minute limit for this key. This sets a rate limit based on the number of tokens processed.
+* `tpm_limit` - (Optional) Tokens per minute limit.
 
-* `rpm_limit` - (Optional) Requests per minute limit for this key. This sets a rate limit based on the number of API calls.
+* `rpm_limit` - (Optional) Requests per minute limit.
 
-* `budget_duration` - (Optional) Duration for the budget (e.g., "monthly", "weekly"). This defines the time period for which the `max_budget` applies.
+* `tpm_limit_type` - (Optional) Type of TPM limit enforcement (e.g., `"best_effort_throughput"`, `"guaranteed_throughput"`).
 
-* `allowed_cache_controls` - (Optional) List of allowed cache control directives. This can be used to control caching behavior for requests made with this key.
+* `rpm_limit_type` - (Optional) Type of RPM limit enforcement (e.g., `"best_effort_throughput"`, `"guaranteed_throughput"`).
 
-* `soft_budget` - (Optional) Soft budget limit for this key. This can be used to set a warning threshold before reaching the `max_budget`.
+* `budget_duration` - (Optional) Duration for the budget (e.g., `"30d"`, `"7d"`).
 
-* `key_alias` - (Optional) Alias for this key. This provides a human-readable identifier for the key.
+* `allowed_cache_controls` - (Optional) List of allowed cache control directives.
 
-* `duration` - (Optional) Duration for which this key is valid. This sets an expiration time for the key.
+* `soft_budget` - (Optional) Soft budget warning threshold.
 
-* `aliases` - (Optional) Map of model aliases. This allows you to create custom names for models when using this key.
+* `duration` - (Optional) Duration for which this key is valid (e.g., `"30d"`, `"90d"`).
 
-* `config` - (Optional) Configuration options for this key. This can be used to set key-specific settings.
+* `aliases` - (Optional) Map of model aliases.
 
-* `permissions` - (Optional) Permissions associated with this key. This defines what actions are allowed with this key.
+* `config` - (Optional) Map of configuration options.
 
-* `model_max_budget` - (Optional) Maximum budget per model. This allows setting different budget limits for each model.
+* `permissions` - (Optional) Map of permissions.
 
-* `model_rpm_limit` - (Optional) Requests per minute limit per model. This allows setting different RPM limits for each model.
+* `model_max_budget` - (Optional) Map of maximum budget per model. **Note:** Requires LiteLLM Enterprise license.
 
-* `model_tpm_limit` - (Optional) Tokens per minute limit per model. This allows setting different TPM limits for each model.
+* `model_rpm_limit` - (Optional) Map of requests per minute limit per model.
 
-* `guardrails` - (Optional) List of guardrails applied to this key. This can be used to enforce certain safety or quality checks.
+* `model_tpm_limit` - (Optional) Map of tokens per minute limit per model.
 
-* `blocked` - (Optional) Whether this key is blocked. If set to true, the key will be unable to make any requests.
+* `guardrails` - (Optional) List of guardrails applied to this key.
 
-* `tags` - (Optional) List of tags associated with this key. This can be used for organization and filtering of keys.
+* `prompts` - (Optional) List of prompt IDs associated with this key.
+
+* `enforced_params` - (Optional) List of enforced parameters for this key.
+
+* `tags` - (Optional) List of tags. **Note:** Requires LiteLLM Enterprise license.
+
+* `blocked` - (Optional) Whether this key is blocked.
 
 ## Attribute Reference
 
 In addition to all arguments above, the following attributes are exported:
 
-* `key` - The generated API key. This is the actual key value that will be used for authentication.
+* `id` - The key token (same as `key`).
 
-* `spend` - The current spend for this key. This reflects the total amount spent using this key so far.
-
-## State Management
-
-Recent updates have improved how the Key resource manages its state. The provider now ensures that all non-zero and non-empty values are correctly persisted in the Terraform state file. This means that any value you set will be accurately reflected in your state, preventing unnecessary updates and ensuring consistency between your configuration and the actual resource state.
+* `key` - The generated API key token (sensitive).
 
 ## Import
 
-LiteLLM keys can be imported using the `id`, e.g.,
+LiteLLM keys can be imported using the key token:
 
+```shell
+$ terraform import litellm_key.example sk-xxxxxxxxxxxx
 ```
-$ terraform import litellm_key.example 12345
-```
-
-This allows you to import existing keys into your Terraform state, enabling management of keys that were created outside of Terraform.
