@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.5] - 2026-02-13
+
+### Fixed
+- **`litellm_model`**: Fixed `additional_litellm_params` being silently dropped on create and update — keys like `timeout`, `cooldown_time`, `max_retries` were never sent to the API ([#56](https://github.com/ncecere/terraform-provider-litellm/issues/56), [#57](https://github.com/ncecere/terraform-provider-litellm/pull/57))
+- **`litellm_model`**: Fixed `readModel()` not unwrapping the `{"data": [...]}` response envelope from `/model/info`, causing state to be empty after read (Pattern 1 from [#53](https://github.com/ncecere/terraform-provider-litellm/issues/53), missed for this resource)
+- **`litellm_model`**: Fixed `tpm` and `rpm` read-back from API-injected defaults causing perpetual drift when not configured
+- **`litellm_model`**: Removed `merge_reasoning_content_in_choices` from known params filter so it flows correctly through `additional_litellm_params`
+- **`litellm_model`**: Added handling for complex types (arrays, objects) in `additional_litellm_params` read-back via JSON serialization
+- **`litellm_model`**: Import now reads all non-known `litellm_params` from the API into `additional_litellm_params`
+
+### Added
+- New `convertStringValue()` helper for type-safe conversion of string params to native JSON types (int, float, bool, JSON objects/arrays)
+- Unit tests for create, patch, read, import, and type conversion scenarios
+- Documentation note about PATCH merge limitation (keys cannot be deleted via update)
+
+### Contributors
+- Constantine (`@runixer` / AlfaCapital-Tech) for [#57](https://github.com/ncecere/terraform-provider-litellm/pull/57)
+
 ## [1.0.4] - 2026-02-11
 
 ### Fixed
