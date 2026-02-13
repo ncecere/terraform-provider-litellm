@@ -236,6 +236,7 @@ The following arguments are supported:
   * Non-string map values (if supplied) are passed through unchanged.
   * The provider merges these keys into the `litellm_params` payload sent to the API.
   * Note: the remote API may not echo back all custom parameters; this provider preserves `additional_litellm_params` in state when present in configuration.
+  * **Limitation: keys cannot be deleted via update.** The LiteLLM PATCH API (`/model/update`) merges `litellm_params` using `dict.update()` with `exclude_none=True`. This means adding or changing keys works, but removing a key from `additional_litellm_params` in your configuration will **not** remove it from the remote model — it will simply stop being sent. To fully remove a key, recreate the resource using `terraform apply -replace` or `terraform taint`.
 
   **Special parameter: `additional_drop_params`**
   * When `additional_drop_params` is provided as a JSON array string, it specifies parameters to remove from the final `litellm_params` before sending to the API

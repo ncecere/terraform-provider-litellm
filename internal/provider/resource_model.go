@@ -2,8 +2,10 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -441,6 +443,17 @@ func (r *ModelResource) createOrUpdateModel(ctx context.Context, data *ModelReso
 		litellmParams["output_cost_per_second"] = data.OutputCostPerSecond.ValueFloat64()
 	}
 
+	// Add additional_litellm_params to the request.
+	// Values are strings in Terraform but converted to native types (int, float, bool, JSON)
+	// for the API. This allows users to pass any litellm_params not covered by top-level attributes.
+	if !data.AdditionalLiteLLMParams.IsNull() && !data.AdditionalLiteLLMParams.IsUnknown() {
+		elements := make(map[string]string)
+		data.AdditionalLiteLLMParams.ElementsAs(ctx, &elements, false)
+		for key, value := range elements {
+			litellmParams[key] = convertStringValue(value)
+		}
+	}
+
 	modelInfo := map[string]interface{}{
 		"id":         modelID,
 		"db_model":   true,
@@ -484,9 +497,17 @@ func (r *ModelResource) createOrUpdateModel(ctx context.Context, data *ModelReso
 func (r *ModelResource) readModel(ctx context.Context, data *ModelResourceModel) error {
 	endpoint := fmt.Sprintf("/model/info?litellm_model_id=%s", data.ID.ValueString())
 
-	var result map[string]interface{}
-	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
+	var rawResult map[string]interface{}
+	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &rawResult); err != nil {
 		return err
+	}
+
+	// The /model/info endpoint returns {"data": [{...}]}, extract the first element
+	result := rawResult
+	if dataArr, ok := rawResult["data"].([]interface{}); ok && len(dataArr) > 0 {
+		if firstItem, ok := dataArr[0].(map[string]interface{}); ok {
+			result = firstItem
+		}
 	}
 
 	// Update data from response while preserving sensitive values
@@ -495,6 +516,12 @@ func (r *ModelResource) readModel(ctx context.Context, data *ModelResourceModel)
 	}
 
 	if litellmParams, ok := result["litellm_params"].(map[string]interface{}); ok {
+		// Update top-level attributes from API response.
+		// For optional attributes (tpm, rpm, merge_reasoning_content_in_choices),
+		// only update if the attribute was set in the config (!IsNull).
+		// Otherwise, values that exist in API but not in config would cause
+		// an infinite plan diff: plan wants to remove → PATCH can't delete
+		// (LiteLLM merges litellm_params) → Read sees it again → repeat.
 		if provider, ok := litellmParams["custom_llm_provider"].(string); ok && provider != "" {
 			data.CustomLLMProvider = types.StringValue(provider)
 		}
@@ -504,16 +531,16 @@ func (r *ModelResource) readModel(ctx context.Context, data *ModelResourceModel)
 		if apiVersion, ok := litellmParams["api_version"].(string); ok && apiVersion != "" {
 			data.APIVersion = types.StringValue(apiVersion)
 		}
-		if tpm, ok := litellmParams["tpm"].(float64); ok {
+		if tpm, ok := litellmParams["tpm"].(float64); ok && !data.TPM.IsNull() {
 			data.TPM = types.Int64Value(int64(tpm))
 		}
-		if rpm, ok := litellmParams["rpm"].(float64); ok {
+		if rpm, ok := litellmParams["rpm"].(float64); ok && !data.RPM.IsNull() {
 			data.RPM = types.Int64Value(int64(rpm))
 		}
-		if tpm, ok := litellmParams["tpm"].(int64); ok {
+		if tpm, ok := litellmParams["tpm"].(int64); ok && !data.TPM.IsNull() {
 			data.TPM = types.Int64Value(tpm)
 		}
-		if rpm, ok := litellmParams["rpm"].(int64); ok {
+		if rpm, ok := litellmParams["rpm"].(int64); ok && !data.RPM.IsNull() {
 			data.RPM = types.Int64Value(rpm)
 		}
 		if awsRegion, ok := litellmParams["aws_region_name"].(string); ok && awsRegion != "" {
@@ -522,6 +549,10 @@ func (r *ModelResource) readModel(ctx context.Context, data *ModelResourceModel)
 		if credName, ok := litellmParams["litellm_credential_name"].(string); ok && credName != "" {
 			data.LiteLLMCredentialName = types.StringValue(credName)
 		}
+		// NOTE: merge_reasoning_content_in_choices is intentionally NOT read into the
+		// top-level attribute here. It can be passed both as a top-level attribute and
+		// via additional_litellm_params. Since templates commonly use additional_litellm_params,
+		// we let it flow through the additional params path to avoid drift-loop conflicts.
 
 		// Handle additional_litellm_params map - preserve state when API omits custom params.
 		knownLiteLLMParams := map[string]struct{}{
@@ -535,7 +566,6 @@ func (r *ModelResource) readModel(ctx context.Context, data *ModelResourceModel)
 			"api_base":                           {},
 			"api_version":                        {},
 			"reasoning_effort":                   {},
-			"merge_reasoning_content_in_choices": {},
 			"thinking":                           {},
 			"aws_access_key_id":                  {},
 			"aws_secret_access_key":              {},
@@ -552,10 +582,31 @@ func (r *ModelResource) readModel(ctx context.Context, data *ModelResourceModel)
 			"output_cost_per_second":             {},
 		}
 
+		// Build a set of keys the user configured in additional_litellm_params.
+		// During normal Read we only read back keys that exist in the prior state
+		// to avoid "new element appeared" errors when the API returns defaults
+		// (e.g. merge_reasoning_content_in_choices) that weren't in the config.
+		// During Import (state is null/unknown) we read ALL non-known params so that
+		// the imported resource captures the full API state.
+		filterByState := !data.AdditionalLiteLLMParams.IsNull() && !data.AdditionalLiteLLMParams.IsUnknown()
+		stateKeys := make(map[string]struct{})
+		if filterByState {
+			for k := range data.AdditionalLiteLLMParams.Elements() {
+				stateKeys[k] = struct{}{}
+			}
+		}
+
 		additionalParams := make(map[string]attr.Value)
 		for key, rawValue := range litellmParams {
 			if _, isKnown := knownLiteLLMParams[key]; isKnown {
 				continue
+			}
+			// Only filter by state keys during normal Read (not Import).
+			// This prevents API-added defaults from causing drift.
+			if filterByState {
+				if _, inState := stateKeys[key]; !inState {
+					continue
+				}
 			}
 
 			switch v := rawValue.(type) {
@@ -569,15 +620,18 @@ func (r *ModelResource) readModel(ctx context.Context, data *ModelResourceModel)
 				additionalParams[key] = types.StringValue(strconv.Itoa(v))
 			case int64:
 				additionalParams[key] = types.StringValue(strconv.FormatInt(v, 10))
+			default:
+				// Arrays, objects, and other complex types — serialize back to JSON string.
+				if jsonBytes, err := json.Marshal(v); err == nil {
+					additionalParams[key] = types.StringValue(string(jsonBytes))
+				}
 			}
 		}
 
-		if len(additionalParams) > 0 {
-			data.AdditionalLiteLLMParams, _ = types.MapValue(types.StringType, additionalParams)
-		} else if data.AdditionalLiteLLMParams.IsUnknown() {
-			data.AdditionalLiteLLMParams, _ = types.MapValue(types.StringType, map[string]attr.Value{})
-		}
-	} else if data.AdditionalLiteLLMParams.IsUnknown() {
+		// Set additional_litellm_params from API response to detect drift
+		// for keys that the user configured.
+		data.AdditionalLiteLLMParams, _ = types.MapValue(types.StringType, additionalParams)
+	} else {
 		data.AdditionalLiteLLMParams, _ = types.MapValue(types.StringType, map[string]attr.Value{})
 	}
 
@@ -658,7 +712,10 @@ func (r *ModelResource) patchModel(ctx context.Context, data *ModelResourceModel
 	baseModel := data.BaseModel.ValueString()
 	modelName := fmt.Sprintf("%s/%s", customLLMProvider, baseModel)
 
-	// Build litellm_params for the patch request
+	// Build litellm_params for the patch request.
+	// NOTE: LiteLLM PATCH API merges litellm_params (via dict.update), it does not replace them.
+	// Parameters removed from config will NOT be removed from the API.
+	// To fully remove a parameter, the model must be recreated (e.g. terraform apply -replace=...).
 	litellmParams := map[string]interface{}{
 		"custom_llm_provider": customLLMProvider,
 		"model":               modelName,
@@ -750,6 +807,18 @@ func (r *ModelResource) patchModel(ctx context.Context, data *ModelResourceModel
 		litellmParams["output_cost_per_second"] = data.OutputCostPerSecond.ValueFloat64()
 	}
 
+	// Add additional_litellm_params to the request.
+	// NOTE: LiteLLM PATCH API merges litellm_params (via dict.update), it does not replace them.
+	// Parameters removed from config will NOT be removed from the API.
+	// To fully remove a parameter, the model must be recreated (e.g. terraform apply -replace=...).
+	if !data.AdditionalLiteLLMParams.IsNull() && !data.AdditionalLiteLLMParams.IsUnknown() {
+		elements := make(map[string]string)
+		data.AdditionalLiteLLMParams.ElementsAs(ctx, &elements, false)
+		for key, value := range elements {
+			litellmParams[key] = convertStringValue(value)
+		}
+	}
+
 	// Build model_info for the PATCH request
 	modelInfo := map[string]interface{}{
 		"base_model": baseModel,
@@ -784,4 +853,31 @@ func (r *ModelResource) patchModel(ctx context.Context, data *ModelResourceModel
 
 	endpoint := fmt.Sprintf("/model/%s/update", modelID)
 	return r.client.DoRequestWithResponse(ctx, "PATCH", endpoint, patchReq, nil)
+}
+
+// convertStringValue converts a string to its most appropriate Go type.
+// This allows additional_litellm_params values (which are stored as strings in
+// Terraform state) to be sent as native JSON types in the API request.
+func convertStringValue(s string) interface{} {
+	// Try integer
+	if intVal, err := strconv.ParseInt(s, 10, 64); err == nil {
+		return intVal
+	}
+	// Try float
+	if floatVal, err := strconv.ParseFloat(s, 64); err == nil {
+		return floatVal
+	}
+	// Try boolean
+	if boolVal, err := strconv.ParseBool(s); err == nil {
+		return boolVal
+	}
+	// Try JSON (arrays and objects)
+	trimmed := strings.TrimSpace(s)
+	if strings.HasPrefix(trimmed, "[") || strings.HasPrefix(trimmed, "{") {
+		var parsed interface{}
+		if err := json.Unmarshal([]byte(s), &parsed); err == nil {
+			return parsed
+		}
+	}
+	return s
 }
