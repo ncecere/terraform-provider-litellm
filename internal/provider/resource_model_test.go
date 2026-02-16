@@ -448,6 +448,277 @@ func TestReadModelPassesMergeReasoningThroughAdditionalParams(t *testing.T) {
 	}
 }
 
+func TestNormalizeNumericString(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		// Scientific notation → decimal
+		{"1.75e-07", "0.000000175"},
+		{"2.5e-06", "0.0000025"},
+		{"1.25e-05", "0.0000125"},
+		{"5e-08", "0.00000005"},
+		{"4e-06", "0.000004"},
+		{"6e-06", "0.000006"},
+		{"1e-06", "0.000001"},
+		{"1.8e-05", "0.000018"},
+		{"2e-07", "0.0000002"},
+		{"4e-07", "0.0000004"},
+		// Already decimal — should stay the same
+		{"0.000000175", "0.000000175"},
+		{"0.0000025", "0.0000025"},
+		{"0.0016384", "0.0016384"},
+		{"3.14", "3.14"},
+		// Integers — should stay the same
+		{"0", "0"},
+		{"42", "42"},
+		{"500", "500"},
+		{"-1", "-1"},
+		// Non-numeric strings — unchanged
+		{"hello", "hello"},
+		{"true", "true"},
+		{`["a"]`, `["a"]`},
+	}
+
+	for _, tt := range tests {
+		got := normalizeNumericString(tt.input)
+		if got != tt.expected {
+			t.Errorf("normalizeNumericString(%q) = %q, want %q", tt.input, got, tt.expected)
+		}
+	}
+}
+
+func TestReadModelNormalizesScientificNotationStrings(t *testing.T) {
+	t.Parallel()
+
+	// The API may return numeric values as JSON strings in scientific notation.
+	// readModel must normalise them to decimal notation to match the user's config.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": []interface{}{
+				map[string]interface{}{
+					"model_name": "test-model",
+					"litellm_params": map[string]interface{}{
+						"custom_llm_provider":          "openai",
+						"model":                        "openai/test-model",
+						"cache_read_input_token_cost":  "1.75e-07",
+						"input_cost_per_token_batches": "2.5e-06",
+					},
+					"model_info": map[string]interface{}{
+						"base_model": "test-model",
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	r := &ModelResource{
+		client: &Client{
+			APIBase:    server.URL,
+			APIKey:     "test-key",
+			HTTPClient: server.Client(),
+		},
+	}
+
+	priorParams, _ := types.MapValue(types.StringType, map[string]attr.Value{
+		"cache_read_input_token_cost":  types.StringValue("0.000000175"),
+		"input_cost_per_token_batches": types.StringValue("0.0000025"),
+	})
+
+	data := ModelResourceModel{
+		ID:                      types.StringValue("test-id"),
+		AccessGroups:            types.ListUnknown(types.StringType),
+		AdditionalLiteLLMParams: priorParams,
+	}
+
+	if err := r.readModel(context.Background(), &data); err != nil {
+		t.Fatalf("readModel returned error: %v", err)
+	}
+
+	additional := map[string]string{}
+	if diags := data.AdditionalLiteLLMParams.ElementsAs(context.Background(), &additional, false); diags.HasError() {
+		t.Fatalf("failed to decode additional_litellm_params: %v", diags)
+	}
+
+	// Scientific notation strings should be normalised to decimal
+	if got := additional["cache_read_input_token_cost"]; got != "0.000000175" {
+		t.Fatalf("expected cache_read_input_token_cost='0.000000175', got %q", got)
+	}
+	if got := additional["input_cost_per_token_batches"]; got != "0.0000025" {
+		t.Fatalf("expected input_cost_per_token_batches='0.0000025', got %q", got)
+	}
+}
+
+func TestReadModelPreservesKnownParamsInAdditionalWhenUserConfigured(t *testing.T) {
+	t.Parallel()
+
+	// When a user explicitly puts input_cost_per_token in additional_litellm_params,
+	// readModel must NOT filter it out (the "element has vanished" bug).
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": []interface{}{
+				map[string]interface{}{
+					"model_name": "test-model",
+					"litellm_params": map[string]interface{}{
+						"custom_llm_provider":   "openai",
+						"model":                 "openai/test-model",
+						"input_cost_per_token":  0.000001,
+						"output_cost_per_token": 0.000002,
+						"cooldown_time":         0,
+					},
+					"model_info": map[string]interface{}{
+						"base_model": "test-model",
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	r := &ModelResource{
+		client: &Client{
+			APIBase:    server.URL,
+			APIKey:     "test-key",
+			HTTPClient: server.Client(),
+		},
+	}
+
+	// User configured these "known" params in additional_litellm_params
+	priorParams, _ := types.MapValue(types.StringType, map[string]attr.Value{
+		"input_cost_per_token":  types.StringValue("0.000001"),
+		"output_cost_per_token": types.StringValue("0.000002"),
+		"cooldown_time":         types.StringValue("0"),
+	})
+
+	data := ModelResourceModel{
+		ID:                      types.StringValue("test-id"),
+		AccessGroups:            types.ListUnknown(types.StringType),
+		AdditionalLiteLLMParams: priorParams,
+	}
+
+	if err := r.readModel(context.Background(), &data); err != nil {
+		t.Fatalf("readModel returned error: %v", err)
+	}
+
+	additional := map[string]string{}
+	if diags := data.AdditionalLiteLLMParams.ElementsAs(context.Background(), &additional, false); diags.HasError() {
+		t.Fatalf("failed to decode additional_litellm_params: %v", diags)
+	}
+
+	// The "known" params should NOT have vanished
+	if _, ok := additional["input_cost_per_token"]; !ok {
+		t.Fatal("input_cost_per_token should NOT be filtered when user configured it in additional_litellm_params")
+	}
+	if _, ok := additional["output_cost_per_token"]; !ok {
+		t.Fatal("output_cost_per_token should NOT be filtered when user configured it in additional_litellm_params")
+	}
+	if _, ok := additional["cooldown_time"]; !ok {
+		t.Fatal("cooldown_time missing from additional_litellm_params")
+	}
+}
+
+func TestReadModelDoesNotSetModeWhenNull(t *testing.T) {
+	t.Parallel()
+
+	// When the user didn't set mode (null), readModel must NOT populate it
+	// from the API response. This prevents "was null, but now 'video_generation'" errors.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": []interface{}{
+				map[string]interface{}{
+					"model_name": "sora-2",
+					"litellm_params": map[string]interface{}{
+						"custom_llm_provider": "azure",
+						"model":               "azure/sora-2",
+					},
+					"model_info": map[string]interface{}{
+						"base_model": "sora-2",
+						"mode":       "video_generation",
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	r := &ModelResource{
+		client: &Client{
+			APIBase:    server.URL,
+			APIKey:     "test-key",
+			HTTPClient: server.Client(),
+		},
+	}
+
+	data := ModelResourceModel{
+		ID:                      types.StringValue("test-id"),
+		Mode:                    types.StringNull(), // User did NOT set mode
+		AccessGroups:            types.ListUnknown(types.StringType),
+		AdditionalLiteLLMParams: types.MapNull(types.StringType),
+	}
+
+	if err := r.readModel(context.Background(), &data); err != nil {
+		t.Fatalf("readModel returned error: %v", err)
+	}
+
+	if !data.Mode.IsNull() {
+		t.Fatalf("expected mode to remain null, got %q", data.Mode.ValueString())
+	}
+}
+
+func TestReadModelSetsModeWhenAlreadySet(t *testing.T) {
+	t.Parallel()
+
+	// When the user set mode, readModel should update it from the API.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": []interface{}{
+				map[string]interface{}{
+					"model_name": "sora-2",
+					"litellm_params": map[string]interface{}{
+						"custom_llm_provider": "azure",
+						"model":               "azure/sora-2",
+					},
+					"model_info": map[string]interface{}{
+						"base_model": "sora-2",
+						"mode":       "video_generation",
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	r := &ModelResource{
+		client: &Client{
+			APIBase:    server.URL,
+			APIKey:     "test-key",
+			HTTPClient: server.Client(),
+		},
+	}
+
+	data := ModelResourceModel{
+		ID:                      types.StringValue("test-id"),
+		Mode:                    types.StringValue("chat"), // User set mode
+		AccessGroups:            types.ListUnknown(types.StringType),
+		AdditionalLiteLLMParams: types.MapNull(types.StringType),
+	}
+
+	if err := r.readModel(context.Background(), &data); err != nil {
+		t.Fatalf("readModel returned error: %v", err)
+	}
+
+	if data.Mode.ValueString() != "video_generation" {
+		t.Fatalf("expected mode='video_generation', got %q", data.Mode.ValueString())
+	}
+}
+
 func TestReadModelImportReadsAllAdditionalParams(t *testing.T) {
 	t.Parallel()
 

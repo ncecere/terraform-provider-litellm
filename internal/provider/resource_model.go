@@ -152,6 +152,10 @@ func (r *ModelResource) Schema(ctx context.Context, req resource.SchemaRequest, 
 			"mode": schema.StringAttribute{
 				Description: "Model mode. Supported values: chat, completion, embedding, audio_speech, audio_transcription, image_generation, video_generation, batch, rerank, realtime, responses, ocr, moderation.",
 				Optional:    true,
+				Computed:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"litellm_credential_name": schema.StringAttribute{
 				Description: "Name of the credential to use for this model. References a credential created via litellm_credential resource.",
@@ -260,6 +264,10 @@ func (r *ModelResource) Create(ctx context.Context, req resource.CreateRequest, 
 		return
 	}
 
+	// Normalise numeric strings in additional_litellm_params so that the
+	// planned value uses the same canonical form as the read-back value.
+	data.AdditionalLiteLLMParams = normalizeAdditionalParams(ctx, data.AdditionalLiteLLMParams)
+
 	modelID := uuid.New().String()
 
 	if err := r.createOrUpdateModel(ctx, &data, modelID, false); err != nil {
@@ -305,6 +313,10 @@ func (r *ModelResource) Update(ctx context.Context, req resource.UpdateRequest, 
 	if resp.Diagnostics.HasError() {
 		return
 	}
+
+	// Normalise numeric strings in additional_litellm_params so that the
+	// planned value uses the same canonical form as the read-back value.
+	data.AdditionalLiteLLMParams = normalizeAdditionalParams(ctx, data.AdditionalLiteLLMParams)
 
 	var state ModelResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
@@ -556,30 +568,30 @@ func (r *ModelResource) readModel(ctx context.Context, data *ModelResourceModel)
 
 		// Handle additional_litellm_params map - preserve state when API omits custom params.
 		knownLiteLLMParams := map[string]struct{}{
-			"custom_llm_provider":                {},
-			"model":                              {},
-			"input_cost_per_token":               {},
-			"output_cost_per_token":              {},
-			"tpm":                                {},
-			"rpm":                                {},
-			"api_key":                            {},
-			"api_base":                           {},
-			"api_version":                        {},
-			"reasoning_effort":                   {},
-			"thinking":                           {},
-			"aws_access_key_id":                  {},
-			"aws_secret_access_key":              {},
-			"aws_region_name":                    {},
-			"aws_session_name":                   {},
-			"aws_role_name":                      {},
-			"vertex_project":                     {},
-			"vertex_location":                    {},
-			"vertex_credentials":                 {},
-			"litellm_credential_name":            {},
-			"input_cost_per_pixel":               {},
-			"output_cost_per_pixel":              {},
-			"input_cost_per_second":              {},
-			"output_cost_per_second":             {},
+			"custom_llm_provider":     {},
+			"model":                   {},
+			"input_cost_per_token":    {},
+			"output_cost_per_token":   {},
+			"tpm":                     {},
+			"rpm":                     {},
+			"api_key":                 {},
+			"api_base":                {},
+			"api_version":             {},
+			"reasoning_effort":        {},
+			"thinking":                {},
+			"aws_access_key_id":       {},
+			"aws_secret_access_key":   {},
+			"aws_region_name":         {},
+			"aws_session_name":        {},
+			"aws_role_name":           {},
+			"vertex_project":          {},
+			"vertex_location":         {},
+			"vertex_credentials":      {},
+			"litellm_credential_name": {},
+			"input_cost_per_pixel":    {},
+			"output_cost_per_pixel":   {},
+			"input_cost_per_second":   {},
+			"output_cost_per_second":  {},
 		}
 
 		// Build a set of keys the user configured in additional_litellm_params.
@@ -598,8 +610,14 @@ func (r *ModelResource) readModel(ctx context.Context, data *ModelResourceModel)
 
 		additionalParams := make(map[string]attr.Value)
 		for key, rawValue := range litellmParams {
+			// Skip "known" params (handled by top-level attributes) UNLESS the
+			// user explicitly placed them in additional_litellm_params.  Without
+			// this exception, keys like input_cost_per_token would be silently
+			// dropped on read-back, causing "element has vanished" errors.
 			if _, isKnown := knownLiteLLMParams[key]; isKnown {
-				continue
+				if _, inState := stateKeys[key]; !inState {
+					continue
+				}
 			}
 			// Only filter by state keys during normal Read (not Import).
 			// This prevents API-added defaults from causing drift.
@@ -611,7 +629,13 @@ func (r *ModelResource) readModel(ctx context.Context, data *ModelResourceModel)
 
 			switch v := rawValue.(type) {
 			case string:
-				additionalParams[key] = types.StringValue(v)
+				// Normalize numeric strings to decimal notation so that
+				// "1.75e-07" (from API) matches "0.000000175" (from config).
+				if f, err := strconv.ParseFloat(v, 64); err == nil {
+					additionalParams[key] = types.StringValue(strconv.FormatFloat(f, 'f', -1, 64))
+				} else {
+					additionalParams[key] = types.StringValue(v)
+				}
 			case bool:
 				additionalParams[key] = types.StringValue(strconv.FormatBool(v))
 			case float64:
@@ -644,7 +668,14 @@ func (r *ModelResource) readModel(ctx context.Context, data *ModelResourceModel)
 			data.Tier = types.StringValue(tier)
 		}
 		if mode, ok := modelInfo["mode"].(string); ok && mode != "" {
-			data.Mode = types.StringValue(mode)
+			// Only update mode from the API when the user configured it or it
+			// was previously set (not null).  This prevents an API-inferred
+			// mode (e.g. "video_generation") from appearing when the user
+			// didn't set it, which would cause "was null, but now ..." errors.
+			// During Import, mode will be Unknown, so we always populate it.
+			if !data.Mode.IsNull() {
+				data.Mode = types.StringValue(mode)
+			}
 		}
 		if teamID, ok := modelInfo["team_id"].(string); ok && teamID != "" {
 			data.TeamID = types.StringValue(teamID)
@@ -853,6 +884,37 @@ func (r *ModelResource) patchModel(ctx context.Context, data *ModelResourceModel
 
 	endpoint := fmt.Sprintf("/model/%s/update", modelID)
 	return r.client.DoRequestWithResponse(ctx, "PATCH", endpoint, patchReq, nil)
+}
+
+// normalizeNumericString normalises a string that represents a number into a
+// canonical decimal form.  This ensures that "2.5e-06" and "0.0000025" both
+// become "0.0000025", preventing Terraform from seeing a diff between the
+// planned value and the value read back from the API.
+func normalizeNumericString(s string) string {
+	// Try integer first – "500" stays "500".
+	if _, err := strconv.ParseInt(s, 10, 64); err == nil {
+		return s // already canonical
+	}
+	if f, err := strconv.ParseFloat(s, 64); err == nil {
+		return strconv.FormatFloat(f, 'f', -1, 64)
+	}
+	return s
+}
+
+// normalizeAdditionalParams returns a new MapValue where every numeric string
+// has been normalised to decimal notation.
+func normalizeAdditionalParams(ctx context.Context, m types.Map) types.Map {
+	if m.IsNull() || m.IsUnknown() {
+		return m
+	}
+	elements := make(map[string]string)
+	m.ElementsAs(ctx, &elements, false)
+	normalised := make(map[string]attr.Value, len(elements))
+	for k, v := range elements {
+		normalised[k] = types.StringValue(normalizeNumericString(v))
+	}
+	result, _ := types.MapValue(types.StringType, normalised)
+	return result
 }
 
 // convertStringValue converts a string to its most appropriate Go type.

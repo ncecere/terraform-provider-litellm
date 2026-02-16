@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -109,8 +110,9 @@ func (r *CredentialResource) Create(ctx context.Context, req resource.CreateRequ
 	// Set the ID to credential name
 	data.ID = data.CredentialName
 
-	// Read back for full state (note: credential_values won't be returned for security)
-	if err := r.readCredential(ctx, &data); err != nil {
+	// Read back for full state with retry (note: credential_values won't be returned for security).
+	// The retry handles eventual-consistency delays after creating a credential.
+	if err := r.readCredentialWithRetry(ctx, &data, 5); err != nil {
 		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Credential created but failed to read back: %s", err))
 	}
 
@@ -270,4 +272,33 @@ func (r *CredentialResource) readCredential(ctx context.Context, data *Credentia
 	// The API might not return sensitive values, and we want to preserve what's in state
 
 	return nil
+}
+
+// readCredentialWithRetry retries the read operation with exponential backoff.
+// This handles eventual-consistency delays after creating a credential.
+func (r *CredentialResource) readCredentialWithRetry(ctx context.Context, data *CredentialResourceModel, maxRetries int) error {
+	var err error
+	delay := 1 * time.Second
+	maxDelay := 10 * time.Second
+
+	for i := 0; i < maxRetries; i++ {
+		err = r.readCredential(ctx, data)
+		if err == nil {
+			return nil
+		}
+
+		if !IsNotFoundError(err) {
+			return err
+		}
+
+		if i < maxRetries-1 {
+			time.Sleep(delay)
+			delay *= 2
+			if delay > maxDelay {
+				delay = maxDelay
+			}
+		}
+	}
+
+	return err
 }

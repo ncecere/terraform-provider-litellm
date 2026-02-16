@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.6] - 2026-02-16
+
+### Fixed
+- **`litellm_model`**: Fixed "Provider produced inconsistent result after apply" for `additional_litellm_params` values containing small decimals — the API returns numeric strings in scientific notation (e.g. `"1.75e-07"`) which didn't match the user's decimal notation (e.g. `"0.000000175"`). Both plan and read-back values are now normalized to canonical decimal form.
+- **`litellm_model`**: Fixed "element has vanished" error when `input_cost_per_token` or `output_cost_per_token` are set via `additional_litellm_params` — these keys were incorrectly filtered out on read-back because they appeared in the known-params exclusion list. The filter now respects user-configured keys.
+- **`litellm_model`**: Fixed "was null, but now `video_generation`" error for the `mode` attribute — when the user didn't set `mode`, the API-inferred value (e.g. `"video_generation"` for sora-2) was written into state, conflicting with the null plan. Mode is now only populated from the API when the user configured it or it was previously set.
+- **`litellm_credential`**: Fixed "Credential not found" warning on create — the read-back immediately after creation could fail with 404 due to eventual consistency. Added retry logic with exponential backoff (matching the existing model resource pattern).
+
+### Changed
+- **`litellm_model`**: The `mode` attribute is now `Optional + Computed` (was `Optional` only), allowing the API to populate it during import.
+
 ## [1.0.5] - 2026-02-13
 
 ### Fixed
