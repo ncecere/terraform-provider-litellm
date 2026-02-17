@@ -14,6 +14,15 @@ resource "litellm_team" "minimal" {
 }
 ```
 
+### With Explicit Team ID
+
+```hcl
+resource "litellm_team" "deterministic" {
+  team_alias = "my-team"
+  team_id    = "my-stable-team-id"
+}
+```
+
 ### Full
 
 ```hcl
@@ -58,6 +67,7 @@ resource "litellm_team" "full" {
 
 The following arguments are supported:
 
+* `team_id` - (Optional) The ID for the team. If not specified, one will be generated. Changing this value forces the resource to be destroyed and recreated.
 * `team_alias` - (Required) A human-readable alias for the team.
 * `organization_id` - (Optional) The ID of the organization this team belongs to.
 * `max_budget` - (Optional) Maximum budget allocated to the team.
@@ -84,10 +94,11 @@ The following arguments are supported:
 
 In addition to the arguments above, the following attributes are exported:
 
-* `id` - The unique identifier of the team.
+* `id` - The unique identifier of the team. Always equal to `team_id`.
 
 The following attributes are both Optional and Computed (they are read back from the API if not explicitly set):
 
+* `team_id`
 * `metadata`
 * `models`
 * `model_aliases`
@@ -101,7 +112,7 @@ The following attributes are both Optional and Computed (they are read back from
 
 ## Import
 
-Teams can be imported using the team ID:
+Teams can be imported using the team ID. After import, both `id` and `team_id` will reflect the imported team's ID:
 
 ```shell
 terraform import litellm_team.example <team-id>

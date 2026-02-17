@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/google/uuid"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -27,6 +26,7 @@ type TeamResource struct {
 
 type TeamResourceModel struct {
 	ID                    types.String  `tfsdk:"id"`
+	TeamID                types.String  `tfsdk:"team_id"`
 	TeamAlias             types.String  `tfsdk:"team_alias"`
 	OrganizationID        types.String  `tfsdk:"organization_id"`
 	Metadata              types.Map     `tfsdk:"metadata"`
@@ -63,6 +63,15 @@ func (r *TeamResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 				Computed:    true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"team_id": schema.StringAttribute{
+				Description: "The team ID. If not specified, one will be generated.",
+				Optional:    true,
+				Computed:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+					stringplanmodifier.RequiresReplace(),
 				},
 			},
 			"team_alias": schema.StringAttribute{
@@ -197,15 +206,19 @@ func (r *TeamResource) Create(ctx context.Context, req resource.CreateRequest, r
 		return
 	}
 
-	teamID := uuid.New().String()
-	teamReq := r.buildTeamRequest(ctx, &data, teamID)
+	teamReq := r.buildTeamRequest(ctx, &data)
 
-	if err := r.client.DoRequestWithResponse(ctx, "POST", "/team/new", teamReq, nil); err != nil {
+	var result map[string]interface{}
+	if err := r.client.DoRequestWithResponse(ctx, "POST", "/team/new", teamReq, &result); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to create team: %s", err))
 		return
 	}
 
-	data.ID = types.StringValue(teamID)
+	// Extract team_id from response
+	if teamID, ok := result["team_id"].(string); ok && teamID != "" {
+		data.TeamID = types.StringValue(teamID)
+		data.ID = types.StringValue(teamID)
+	}
 
 	// Read back
 	if err := r.readTeam(ctx, &data); err != nil {
@@ -250,7 +263,10 @@ func (r *TeamResource) Update(ctx context.Context, req resource.UpdateRequest, r
 	}
 
 	data.ID = state.ID
-	teamReq := r.buildTeamRequest(ctx, &data, data.ID.ValueString())
+	data.TeamID = state.TeamID
+
+	teamReq := r.buildTeamRequest(ctx, &data)
+	teamReq["team_id"] = data.TeamID.ValueString()
 
 	if err := r.client.DoRequestWithResponse(ctx, "POST", "/team/update", teamReq, nil); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to update team: %s", err))
@@ -298,16 +314,19 @@ func (r *TeamResource) Delete(ctx context.Context, req resource.DeleteRequest, r
 }
 
 func (r *TeamResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("team_id"), req.ID)...)
 }
 
-func (r *TeamResource) buildTeamRequest(ctx context.Context, data *TeamResourceModel, teamID string) map[string]interface{} {
+func (r *TeamResource) buildTeamRequest(ctx context.Context, data *TeamResourceModel) map[string]interface{} {
 	teamReq := map[string]interface{}{
-		"team_id":    teamID,
 		"team_alias": data.TeamAlias.ValueString(),
 	}
 
 	// String fields - check IsNull, IsUnknown, and empty string
+	if !data.TeamID.IsNull() && !data.TeamID.IsUnknown() && data.TeamID.ValueString() != "" {
+		teamReq["team_id"] = data.TeamID.ValueString()
+	}
 	if !data.OrganizationID.IsNull() && !data.OrganizationID.IsUnknown() && data.OrganizationID.ValueString() != "" {
 		teamReq["organization_id"] = data.OrganizationID.ValueString()
 	}
@@ -438,6 +457,11 @@ func (r *TeamResource) readTeam(ctx context.Context, data *TeamResourceModel) er
 	}
 
 	// Update fields from response
+	if teamID, ok := teamInfo["team_id"].(string); ok && teamID != "" {
+		data.TeamID = types.StringValue(teamID)
+		data.ID = types.StringValue(teamID)
+	}
+
 	if teamAlias, ok := teamInfo["team_alias"].(string); ok && teamAlias != "" {
 		data.TeamAlias = types.StringValue(teamAlias)
 	}
