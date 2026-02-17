@@ -28,6 +28,12 @@ func ResourceLiteLLMTeam() *schema.Resource {
 		Delete: resourceLiteLLMTeamDelete,
 
 		Schema: map[string]*schema.Schema{
+			"team_id": {
+				Type:     schema.TypeString,
+				Optional: true,
+				Computed: true,
+				ForceNew: true,
+			},
 			"team_alias": {
 				Type:     schema.TypeString,
 				Required: true,
@@ -75,8 +81,9 @@ func ResourceLiteLLMTeam() *schema.Resource {
 func resourceLiteLLMTeamCreate(d *schema.ResourceData, m interface{}) error {
 	client := m.(*Client)
 
-	teamID := uuid.New().String()
-	teamData := buildTeamData(d, teamID)
+	// Use user-provided team_id if set; otherwise let the API generate one
+	userTeamID, _ := d.GetOk("team_id")
+	teamData := buildTeamData(d, userTeamID.(string))
 
 	log.Printf("[DEBUG] Create team request payload: %+v", teamData)
 
@@ -90,8 +97,25 @@ func resourceLiteLLMTeamCreate(d *schema.ResourceData, m interface{}) error {
 		return err
 	}
 
-	d.SetId(teamID)
-	log.Printf("[INFO] Team created with ID: %s", teamID)
+	// Extract team_id from response
+	var result map[string]interface{}
+	if decodeErr := json.NewDecoder(resp.Body).Decode(&result); decodeErr == nil {
+		if teamID, ok := result["team_id"].(string); ok && teamID != "" {
+			d.SetId(teamID)
+			d.Set("team_id", teamID)
+			log.Printf("[INFO] Team created with ID from response: %s", teamID)
+			return resourceLiteLLMTeamRead(d, m)
+		}
+	}
+
+	// Fallback: if API did not return team_id, use what was sent
+	sentID := userTeamID.(string)
+	if sentID == "" {
+		sentID = uuid.New().String()
+	}
+	d.SetId(sentID)
+	d.Set("team_id", sentID)
+	log.Printf("[INFO] Team created with ID: %s", sentID)
 
 	return resourceLiteLLMTeamRead(d, m)
 }
@@ -119,6 +143,9 @@ func resourceLiteLLMTeamRead(d *schema.ResourceData, m interface{}) error {
 	}
 
 	// Update the state with values from the response or fall back to the data passed in during creation
+	if teamResp.TeamID != "" {
+		d.Set("team_id", teamResp.TeamID)
+	}
 	d.Set("team_alias", GetStringValue(teamResp.TeamAlias, d.Get("team_alias").(string)))
 	d.Set("organization_id", GetStringValue(teamResp.OrganizationID, d.Get("organization_id").(string)))
 
@@ -224,8 +251,11 @@ func resourceLiteLLMTeamDelete(d *schema.ResourceData, m interface{}) error {
 
 func buildTeamData(d *schema.ResourceData, teamID string) map[string]interface{} {
 	teamData := map[string]interface{}{
-		"team_id":    teamID,
 		"team_alias": d.Get("team_alias").(string),
+	}
+
+	if teamID != "" {
+		teamData["team_id"] = teamID
 	}
 
 	for _, key := range []string{"organization_id", "metadata", "tpm_limit", "rpm_limit", "max_budget", "budget_duration", "models", "team_member_permissions"} {
