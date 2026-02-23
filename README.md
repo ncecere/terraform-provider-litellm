@@ -204,10 +204,29 @@ The Makefile provides several useful commands for development:
 
 ### Testing
 
-To run the tests:
+**Unit tests**
+
 ```sh
 make test
 ```
+
+**Smoke tests** (manual run against a local LiteLLM proxy) exercise real plan/apply/destroy for selected resources and data sources. Results are written to `internal_testing/.smoke/smoke.log`.
+
+1. Start the proxy and DB: `make local` (runs `docker compose up -d` in `internal_testing/`).
+2. Optionally follow logs: `make logs`.
+3. Run smoke for one or more files (at least one of `resources=` or `datasources=` required, comma-separated):
+
+   ```sh
+   make smoke resources=model_minimal.tf
+   make smoke datasources=keys_list.tf
+   make smoke resources=model_minimal.tf,key_minimal.tf datasources=keys_list.tf,model.tf
+   ```
+
+   All listed files are applied in a single Terraform run (shared state). Requires `make build` and a valid `internal_testing/terraform.tfvars` (copy from `terraform.tfvars.example`).
+
+4. Inspect output: `internal_testing/.smoke/smoke.log` (no-color, section headers PLAN / APPLY / DESTROY / SUMMARY).
+
+See [internal_testing/README.md](internal_testing/README.md) for full details (Docker layout, directory structure, tfvars).
 
 ### Contributing
 

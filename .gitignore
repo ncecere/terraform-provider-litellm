@@ -2,6 +2,9 @@
 **/.terraform/*
 test_litellm/*
 
+# Smoke test workspace (generated; per-file state and copied .tf removed between files, directory kept)
+internal_testing/.smoke/
+
 # .tfstate files
 *.tfstate
 *.tfstate.*
