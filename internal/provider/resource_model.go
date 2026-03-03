@@ -481,6 +481,7 @@ func (r *ModelResource) createOrUpdateModel(ctx context.Context, data *ModelReso
 	}
 	if !data.TeamID.IsNull() && !data.TeamID.IsUnknown() && data.TeamID.ValueString() != "" {
 		modelInfo["team_id"] = data.TeamID.ValueString()
+		modelInfo["team_public_model_name"] = data.ModelName.ValueString()
 	}
 
 	// Add access_groups to model_info if specified
@@ -522,8 +523,20 @@ func (r *ModelResource) readModel(ctx context.Context, data *ModelResourceModel)
 		}
 	}
 
-	// Update data from response while preserving sensitive values
-	if modelName, ok := result["model_name"].(string); ok && modelName != "" {
+	// Update data from response while preserving sensitive values.
+	// For team-scoped models, LiteLLM rewrites top-level model_name to an internal
+	// value (model_name_${TEAM_ID}_${GUID}); the user-facing name is in model_info.team_public_model_name.
+	if modelInfo, hasModelInfo := result["model_info"].(map[string]interface{}); hasModelInfo {
+		if teamID, _ := modelInfo["team_id"].(string); teamID != "" {
+			if publicName, ok := modelInfo["team_public_model_name"].(string); ok && publicName != "" {
+				data.ModelName = types.StringValue(publicName)
+			} else if modelName, ok := result["model_name"].(string); ok && modelName != "" {
+				data.ModelName = types.StringValue(modelName)
+			}
+		} else if modelName, ok := result["model_name"].(string); ok && modelName != "" {
+			data.ModelName = types.StringValue(modelName)
+		}
+	} else if modelName, ok := result["model_name"].(string); ok && modelName != "" {
 		data.ModelName = types.StringValue(modelName)
 	}
 
@@ -864,6 +877,7 @@ func (r *ModelResource) patchModel(ctx context.Context, data *ModelResourceModel
 	}
 	if !data.TeamID.IsNull() && !data.TeamID.IsUnknown() && data.TeamID.ValueString() != "" {
 		modelInfo["team_id"] = data.TeamID.ValueString()
+		modelInfo["team_public_model_name"] = data.ModelName.ValueString()
 	}
 
 	// Add access_groups to model_info if specified
