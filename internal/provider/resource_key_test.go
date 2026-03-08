@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -401,5 +402,106 @@ func TestReadKeyWithNestedInfoResponse(t *testing.T) {
 	}
 	if data.ModelTPMLimit.IsUnknown() {
 		t.Fatal("model_tpm_limit should be known after read")
+	}
+}
+
+func TestReadKeyTagsFromMetadata(t *testing.T) {
+	t.Parallel()
+
+	// LiteLLM stores tags inside metadata["tags"] rather than as a top-level field
+	// in the /key/info response. This test verifies the provider reads them correctly.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"key": "sk-tags-test",
+			"info": map[string]interface{}{
+				"token": "sk-tags-test",
+				"metadata": map[string]interface{}{
+					"tags": []interface{}{"test", "production"},
+					"env":  "staging",
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	r := &KeyResource{
+		client: &Client{
+			APIBase:    server.URL,
+			APIKey:     "test-key",
+			HTTPClient: server.Client(),
+		},
+	}
+
+	// Simulate user configured tags = ["test"] — data.Tags is non-null
+	userTags, _ := types.ListValue(types.StringType, []attr.Value{types.StringValue("test")})
+	data := KeyResourceModel{
+		ID:   types.StringValue("old-id"),
+		Key:  types.StringValue("sk-tags-test"),
+		Tags: userTags,
+	}
+
+	if err := r.readKey(context.Background(), &data); err != nil {
+		t.Fatalf("readKey returned error: %v", err)
+	}
+
+	if data.Tags.IsNull() || data.Tags.IsUnknown() {
+		t.Fatal("tags should be known and non-null after read")
+	}
+
+	elems := data.Tags.Elements()
+	if len(elems) != 2 {
+		t.Fatalf("expected 2 tags, got %d", len(elems))
+	}
+	if elems[0].(types.String).ValueString() != "test" {
+		t.Errorf("expected first tag 'test', got '%s'", elems[0].(types.String).ValueString())
+	}
+	if elems[1].(types.String).ValueString() != "production" {
+		t.Errorf("expected second tag 'production', got '%s'", elems[1].(types.String).ValueString())
+	}
+}
+
+func TestReadKeyTagsNoTagsAnywhere(t *testing.T) {
+	t.Parallel()
+
+	// When the API returns neither top-level tags nor metadata tags,
+	// and user configured tags, the list should be emptied (not left stale).
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"key": "sk-no-tags",
+			"info": map[string]interface{}{
+				"token":    "sk-no-tags",
+				"metadata": map[string]interface{}{},
+			},
+		})
+	}))
+	defer server.Close()
+
+	r := &KeyResource{
+		client: &Client{
+			APIBase:    server.URL,
+			APIKey:     "test-key",
+			HTTPClient: server.Client(),
+		},
+	}
+
+	userTags, _ := types.ListValue(types.StringType, []attr.Value{types.StringValue("old-tag")})
+	data := KeyResourceModel{
+		ID:   types.StringValue("old-id"),
+		Key:  types.StringValue("sk-no-tags"),
+		Tags: userTags,
+	}
+
+	if err := r.readKey(context.Background(), &data); err != nil {
+		t.Fatalf("readKey returned error: %v", err)
+	}
+
+	// Tags should be empty list (not null) since user had configured tags
+	if data.Tags.IsNull() {
+		t.Fatal("tags should not be null when user originally configured them")
+	}
+	if len(data.Tags.Elements()) != 0 {
+		t.Fatalf("expected 0 tags, got %d", len(data.Tags.Elements()))
 	}
 }
