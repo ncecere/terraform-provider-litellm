@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] - 2026-03-08
+
+### Fixed
+- **`litellm_key`**: Fixed "element 0 has vanished" error when using `tags` — the LiteLLM API stores tags inside `metadata["tags"]` rather than as a top-level field in `/key/info`. The provider now checks both locations ([#67](https://github.com/ncecere/terraform-provider-litellm/issues/67))
+- **`litellm_key` data source**: Fixed tags always returning empty — same root cause as above; the datasource now also reads tags from `metadata["tags"]`
+
+### Contributors
+- simonjcv (`@simonjcv`) for reporting [#67](https://github.com/ncecere/terraform-provider-litellm/issues/67)
+
 ## [1.2.0] - 2026-03-08
 
 ### Security

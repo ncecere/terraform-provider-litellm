@@ -798,10 +798,20 @@ func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error
 		data.EnforcedParams, _ = types.ListValue(types.StringType, []attr.Value{})
 	}
 
-	// Handle tags list - preserve null when API returns empty and config didn't specify tags
-	if tags, ok := info["tags"].([]interface{}); ok && len(tags) > 0 {
-		tagsList := make([]attr.Value, 0, len(tags))
-		for _, t := range tags {
+	// Handle tags list - preserve null when API returns empty and config didn't specify tags.
+	// LiteLLM stores tags inside metadata["tags"] rather than as a top-level field in /key/info,
+	// so we check both locations.
+	var rawTags []interface{}
+	if tags, ok := info["tags"].([]interface{}); ok {
+		rawTags = tags
+	} else if metadata, ok := info["metadata"].(map[string]interface{}); ok {
+		if tags, ok := metadata["tags"].([]interface{}); ok {
+			rawTags = tags
+		}
+	}
+	if len(rawTags) > 0 {
+		tagsList := make([]attr.Value, 0, len(rawTags))
+		for _, t := range rawTags {
 			if str, ok := t.(string); ok {
 				tagsList = append(tagsList, types.StringValue(str))
 			}
