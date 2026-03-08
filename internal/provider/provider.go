@@ -161,6 +161,7 @@ func (p *LiteLLMProvider) Resources(ctx context.Context) []func() resource.Resou
 		NewPromptResource,
 		NewGuardrailResource,
 		NewSearchToolResource,
+		NewFallbackResource,
 	}
 }
 
@@ -181,6 +182,7 @@ func (p *LiteLLMProvider) DataSources(ctx context.Context) []func() datasource.D
 		NewGuardrailDataSource,
 		NewMCPServerDataSource,
 		NewSearchToolDataSource,
+		NewFallbackDataSource,
 		// List data sources
 		NewModelsListDataSource,
 		NewKeysListDataSource,
