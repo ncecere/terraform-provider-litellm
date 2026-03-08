@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-03-08
+
+### Added
+- **New Resource**: `litellm_fallback` — Manage model fallback configurations for general errors, context-window exceeded, and content-policy violations ([#62](https://github.com/ncecere/terraform-provider-litellm/issues/62), [#64](https://github.com/ncecere/terraform-provider-litellm/pull/64))
+  - Supports three fallback types: `general`, `context_window`, `content_policy`
+  - Composite ID (`model:fallback_type`) with import support
+  - `model` and `fallback_type` force replacement; `fallback_models` can be updated in-place
+- **New Data Source**: `litellm_fallback` — Retrieve existing fallback configuration by model name and fallback type
+- **Smoke Test Infrastructure**: Added `make local`, `make logs`, and `make smoke` targets with `internal_testing/smoke.sh` for running plan/apply/destroy against a local LiteLLM proxy
+- Unit tests for fallback resource (build request, read-back state, empty fallback models, create body)
+
+### Contributors
+- edeas123 (`@edeas123`) for [#64](https://github.com/ncecere/terraform-provider-litellm/pull/64)
+
 ## [1.0.6] - 2026-02-16
 
 ### Fixed
