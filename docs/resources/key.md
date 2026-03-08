@@ -4,7 +4,7 @@ Manages a LiteLLM API key.
 
 ## Example Usage
 
-### Minimal Key
+### Minimal Key (auto-generated)
 
 ```hcl
 resource "litellm_key" "minimal" {
@@ -13,6 +13,18 @@ resource "litellm_key" "minimal" {
 output "key_value" {
   value     = litellm_key.minimal.key
   sensitive = true
+}
+```
+
+### Predefined Key Value
+
+You can supply your own key value instead of letting LiteLLM generate one:
+
+```hcl
+resource "litellm_key" "predefined" {
+  key       = "sk-my-custom-key-value"
+  key_alias = "my-custom-key"
+  models    = ["gpt-4o"]
 }
 ```
 
@@ -74,6 +86,8 @@ resource "litellm_key" "service_account" {
 ## Argument Reference
 
 The following arguments are supported:
+
+* `key` - (Optional) User-defined key value. If not set, LiteLLM generates a 16-digit unique `sk-` key automatically. The key is stored as a sensitive value in state.
 
 * `key_alias` - (Optional) Human-readable alias for this key.
 
@@ -141,14 +155,24 @@ The following arguments are supported:
 
 In addition to all arguments above, the following attributes are exported:
 
-* `id` - The key token (same as `key`).
+* `id` - Non-sensitive unique identifier for this key (SHA256 hash of the key value). This is safe to appear in logs and CI/CD output.
 
-* `key` - The generated API key token (sensitive).
+* `key` - The API key token (sensitive). This is the actual secret used for authentication.
 
 ## Import
 
-LiteLLM keys can be imported using the key token:
+LiteLLM keys can be imported using the raw key token:
 
 ```shell
 $ terraform import litellm_key.example sk-xxxxxxxxxxxx
 ```
+
+The provider will automatically hash the key for the resource ID and store the raw value in the sensitive `key` attribute.
+
+## Upgrade Notes
+
+### v1.1.0 → v1.2.0: Hashed Resource ID
+
+Prior to v1.2.0, the resource `id` was set to the raw API key value, which meant the secret was exposed in plaintext in Terraform CLI output and CI/CD logs.
+
+Starting in v1.2.0, the `id` is a SHA256 hash of the key (`sha256:...`). **This migration is automatic** — Terraform will silently upgrade your state on the next `plan` or `apply`. No manual action is required.

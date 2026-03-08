@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-03-08
+
+### Security
+- **`litellm_key`**: Resource ID no longer exposes the raw API key in plaintext during plan/apply. The `id` is now a SHA256 hash (`sha256:...`), preventing key leakage in CLI output and CI/CD logs ([#66](https://github.com/ncecere/terraform-provider-litellm/issues/66))
+  - Automatic state migration from schema v0 → v1 — no manual action required for existing users
+  - Import still accepts the raw key and hashes it automatically
+
+### Added
+- **`litellm_key`**: Support for user-defined key values via the optional `key` argument. If not set, LiteLLM generates a key automatically ([#60](https://github.com/ncecere/terraform-provider-litellm/issues/60))
+- Unit tests for hashed ID (determinism, create flow, predefined key, state migration, read-back)
+- Documentation for predefined key usage and upgrade notes
+
+### Contributors
+- borowis (`@borowis`) for reporting [#66](https://github.com/ncecere/terraform-provider-litellm/issues/66)
+- wityamin (`@wityamin`) for [#60](https://github.com/ncecere/terraform-provider-litellm/issues/60)
+
 ## [1.1.0] - 2026-03-08
 
 ### Added
