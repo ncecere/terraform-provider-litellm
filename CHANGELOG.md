@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.3] - 2026-03-09
+
+### Fixed
+- **`litellm_key`**: Fixed provider crash (nil pointer dereference) during state upgrade from schema v0 → v1. The `UpgradeState` handler was calling `req.State.GetAttribute()` which requires `PriorSchema` to be set; since `PriorSchema` was nil, `req.State` was nil and the call panicked. The upgrader now uses `req.RawState.JSON` to read the prior state and `resp.DynamicValue` to write the upgraded state, which work without a prior schema.
+
+### Added
+- Unit tests for the v0 → v1 state upgrader covering the happy path (ID is hashed, other attributes preserved), nil `RawState`, empty ID, and invalid JSON inputs.
+
 ## [1.2.2] - 2026-03-09
 
 ### Fixed

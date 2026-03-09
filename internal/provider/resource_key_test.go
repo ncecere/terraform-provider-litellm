@@ -9,7 +9,9 @@ import (
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
 )
 
 func TestHashKeyForID(t *testing.T) {
@@ -165,6 +167,154 @@ func TestStateMigrationV0ToV1(t *testing.T) {
 	}
 	if strings.Contains(expectedID, rawKey) {
 		t.Fatal("hashed ID should not contain raw key")
+	}
+}
+
+func TestUpgradeStateV0ToV1(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	r := &KeyResource{}
+	upgraders := r.UpgradeState(ctx)
+
+	upgrader, ok := upgraders[0]
+	if !ok {
+		t.Fatal("expected state upgrader for version 0")
+	}
+
+	rawKey := "sk-old-state-key-123"
+	expectedID := hashKeyForID(rawKey)
+
+	// Build a v0 state JSON where "id" is the raw API key.
+	v0State := map[string]interface{}{
+		"id":         rawKey,
+		"key":        rawKey,
+		"key_alias":  "my-alias",
+		"max_budget": 100.0,
+		"models":     []interface{}{"gpt-4"},
+		"tags":       []interface{}{"prod"},
+		"blocked":    false,
+	}
+	v0JSON, err := json.Marshal(v0State)
+	if err != nil {
+		t.Fatalf("failed to marshal v0 state: %v", err)
+	}
+
+	req := resource.UpgradeStateRequest{
+		RawState: &tfprotov6.RawState{
+			JSON: v0JSON,
+		},
+	}
+	resp := resource.UpgradeStateResponse{}
+
+	upgrader.StateUpgrader(ctx, req, &resp)
+
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("unexpected errors: %v", resp.Diagnostics.Errors())
+	}
+
+	if resp.DynamicValue == nil {
+		t.Fatal("expected DynamicValue to be set")
+	}
+
+	// Unmarshal the upgraded state and verify the ID was hashed.
+	var upgraded map[string]interface{}
+	if err := json.Unmarshal(resp.DynamicValue.JSON, &upgraded); err != nil {
+		t.Fatalf("failed to unmarshal upgraded state: %v", err)
+	}
+
+	gotID, ok := upgraded["id"].(string)
+	if !ok {
+		t.Fatalf("expected 'id' to be a string, got %T", upgraded["id"])
+	}
+	if gotID != expectedID {
+		t.Errorf("expected id %q, got %q", expectedID, gotID)
+	}
+	if gotID == rawKey {
+		t.Error("id should have been hashed, but still contains raw key")
+	}
+
+	// Verify other attributes are preserved.
+	if upgraded["key"] != rawKey {
+		t.Errorf("expected key %q preserved, got %q", rawKey, upgraded["key"])
+	}
+	if upgraded["key_alias"] != "my-alias" {
+		t.Errorf("expected key_alias 'my-alias' preserved, got %v", upgraded["key_alias"])
+	}
+	if upgraded["max_budget"] != 100.0 {
+		t.Errorf("expected max_budget 100.0 preserved, got %v", upgraded["max_budget"])
+	}
+}
+
+func TestUpgradeStateV0ToV1_NilRawState(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	r := &KeyResource{}
+	upgraders := r.UpgradeState(ctx)
+
+	upgrader := upgraders[0]
+
+	req := resource.UpgradeStateRequest{
+		RawState: nil,
+	}
+	resp := resource.UpgradeStateResponse{}
+
+	upgrader.StateUpgrader(ctx, req, &resp)
+
+	if !resp.Diagnostics.HasError() {
+		t.Fatal("expected error when RawState is nil")
+	}
+}
+
+func TestUpgradeStateV0ToV1_EmptyID(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	r := &KeyResource{}
+	upgraders := r.UpgradeState(ctx)
+
+	upgrader := upgraders[0]
+
+	v0JSON, _ := json.Marshal(map[string]interface{}{
+		"id":  "",
+		"key": "sk-some-key",
+	})
+
+	req := resource.UpgradeStateRequest{
+		RawState: &tfprotov6.RawState{
+			JSON: v0JSON,
+		},
+	}
+	resp := resource.UpgradeStateResponse{}
+
+	upgrader.StateUpgrader(ctx, req, &resp)
+
+	if !resp.Diagnostics.HasError() {
+		t.Fatal("expected error when id is empty")
+	}
+}
+
+func TestUpgradeStateV0ToV1_InvalidJSON(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	r := &KeyResource{}
+	upgraders := r.UpgradeState(ctx)
+
+	upgrader := upgraders[0]
+
+	req := resource.UpgradeStateRequest{
+		RawState: &tfprotov6.RawState{
+			JSON: []byte(`{invalid`),
+		},
+	}
+	resp := resource.UpgradeStateResponse{}
+
+	upgrader.StateUpgrader(ctx, req, &resp)
+
+	if !resp.Diagnostics.HasError() {
+		t.Fatal("expected error for invalid JSON")
 	}
 }
 
