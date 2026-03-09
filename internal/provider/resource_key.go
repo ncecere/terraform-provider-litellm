@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -15,6 +16,14 @@ import (
 
 var _ resource.Resource = &KeyResource{}
 var _ resource.ResourceWithImportState = &KeyResource{}
+var _ resource.ResourceWithUpgradeState = &KeyResource{}
+
+// hashKeyForID produces a non-sensitive identifier from a raw API key.
+// Format: "sha256:<hex digest>" so it is self-documenting and non-reversible.
+func hashKeyForID(rawKey string) string {
+	h := sha256.Sum256([]byte(rawKey))
+	return fmt.Sprintf("sha256:%x", h)
+}
 
 func NewKeyResource() resource.Resource {
 	return &KeyResource{}
@@ -67,9 +76,10 @@ func (r *KeyResource) Metadata(ctx context.Context, req resource.MetadataRequest
 func (r *KeyResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		Description: "Manages a LiteLLM API key.",
+		Version:     1,
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
-				Description: "The unique identifier for this key (same as key value).",
+				Description: "Non-sensitive unique identifier for this key (SHA256 hash of the key value).",
 				Computed:    true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
@@ -288,7 +298,7 @@ func (r *KeyResource) Create(ctx context.Context, req resource.CreateRequest, re
 
 	if keyVal, ok := result["key"].(string); ok {
 		data.Key = types.StringValue(keyVal)
-		data.ID = types.StringValue(keyVal)
+		data.ID = types.StringValue(hashKeyForID(keyVal))
 	}
 
 	// Read back for full state
@@ -372,8 +382,33 @@ func (r *KeyResource) Delete(ctx context.Context, req resource.DeleteRequest, re
 }
 
 func (r *KeyResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
-	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("key"), req.ID)...)
+	// The import ID is the raw API key value. Store it in "key" (sensitive)
+	// and use a SHA256 hash as the non-sensitive resource ID.
+	rawKey := req.ID
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), hashKeyForID(rawKey))...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("key"), rawKey)...)
+}
+
+// UpgradeState handles state migrations from older schema versions.
+// Version 0 → 1: The resource ID changes from the raw API key to a SHA256 hash.
+func (r *KeyResource) UpgradeState(ctx context.Context) map[int64]resource.StateUpgrader {
+	return map[int64]resource.StateUpgrader{
+		0: {
+			PriorSchema: nil, // nil tells the framework to skip schema validation on the prior state
+			StateUpgrader: func(ctx context.Context, req resource.UpgradeStateRequest, resp *resource.UpgradeStateResponse) {
+				// In v0, "id" contained the raw API key (same value as "key").
+				var rawID string
+				resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("id"), &rawID)...)
+				if resp.Diagnostics.HasError() {
+					return
+				}
+
+				// Write the hashed ID back. The "key" attribute already holds
+				// the raw key value, so it doesn't need updating.
+				resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), hashKeyForID(rawID))...)
+			},
+		},
+	}
 }
 
 func (r *KeyResource) buildKeyRequest(ctx context.Context, data *KeyResourceModel) map[string]interface{} {
@@ -579,12 +614,12 @@ func (r *KeyResource) buildKeyRequest(ctx context.Context, data *KeyResourceMode
 }
 
 func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error {
-	keyID := data.ID.ValueString()
-	if keyID == "" {
-		keyID = data.Key.ValueString()
+	keyVal := data.Key.ValueString()
+	if keyVal == "" {
+		return fmt.Errorf("key value is empty, cannot read key info")
 	}
 
-	endpoint := fmt.Sprintf("/key/info?key=%s", keyID)
+	endpoint := fmt.Sprintf("/key/info?key=%s", keyVal)
 
 	var result map[string]interface{}
 	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
@@ -662,13 +697,14 @@ func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error
 	if userID, ok := info["user_id"].(string); ok && userID != "" {
 		data.UserID = types.StringValue(userID)
 	}
-	// "key" may be at top level or inside "info" (as "token" or "key")
+	// "key" may be at top level or inside "info" (as "token" or "key").
+	// Update the key attribute but use a hash for ID (never store raw key in ID).
 	if keyValue, ok := result["key"].(string); ok && keyValue != "" {
 		data.Key = types.StringValue(keyValue)
-		data.ID = types.StringValue(keyValue)
+		data.ID = types.StringValue(hashKeyForID(keyValue))
 	} else if keyValue, ok := info["token"].(string); ok && keyValue != "" {
 		data.Key = types.StringValue(keyValue)
-		data.ID = types.StringValue(keyValue)
+		data.ID = types.StringValue(hashKeyForID(keyValue))
 	}
 
 	// Handle models list - preserve null when API returns empty and config didn't specify models
@@ -762,10 +798,20 @@ func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error
 		data.EnforcedParams, _ = types.ListValue(types.StringType, []attr.Value{})
 	}
 
-	// Handle tags list - preserve null when API returns empty and config didn't specify tags
-	if tags, ok := info["tags"].([]interface{}); ok && len(tags) > 0 {
-		tagsList := make([]attr.Value, 0, len(tags))
-		for _, t := range tags {
+	// Handle tags list - preserve null when API returns empty and config didn't specify tags.
+	// LiteLLM stores tags inside metadata["tags"] rather than as a top-level field in /key/info,
+	// so we check both locations.
+	var rawTags []interface{}
+	if tags, ok := info["tags"].([]interface{}); ok {
+		rawTags = tags
+	} else if metadata, ok := info["metadata"].(map[string]interface{}); ok {
+		if tags, ok := metadata["tags"].([]interface{}); ok {
+			rawTags = tags
+		}
+	}
+	if len(rawTags) > 0 {
+		tagsList := make([]attr.Value, 0, len(rawTags))
+		for _, t := range rawTags {
 			if str, ok := t.(string); ok {
 				tagsList = append(tagsList, types.StringValue(str))
 			}

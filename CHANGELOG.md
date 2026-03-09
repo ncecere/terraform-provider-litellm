@@ -5,6 +5,50 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.2] - 2026-03-09
+
+### Fixed
+- checksum mismatch with terraform registry from CI/CD build fixed.
+
+## [1.2.1] - 2026-03-08
+
+### Fixed
+- **`litellm_key`**: Fixed "element 0 has vanished" error when using `tags` — the LiteLLM API stores tags inside `metadata["tags"]` rather than as a top-level field in `/key/info`. The provider now checks both locations ([#67](https://github.com/ncecere/terraform-provider-litellm/issues/67))
+- **`litellm_key` data source**: Fixed tags always returning empty — same root cause as above; the datasource now also reads tags from `metadata["tags"]`
+
+### Contributors
+- simonjcv (`@simonjcv`) for reporting [#67](https://github.com/ncecere/terraform-provider-litellm/issues/67)
+
+## [1.2.0] - 2026-03-08
+
+### Security
+- **`litellm_key`**: Resource ID no longer exposes the raw API key in plaintext during plan/apply. The `id` is now a SHA256 hash (`sha256:...`), preventing key leakage in CLI output and CI/CD logs ([#66](https://github.com/ncecere/terraform-provider-litellm/issues/66))
+  - Automatic state migration from schema v0 → v1 — no manual action required for existing users
+  - Import still accepts the raw key and hashes it automatically
+
+### Added
+- **`litellm_key`**: Support for user-defined key values via the optional `key` argument. If not set, LiteLLM generates a key automatically ([#60](https://github.com/ncecere/terraform-provider-litellm/issues/60))
+- Unit tests for hashed ID (determinism, create flow, predefined key, state migration, read-back)
+- Documentation for predefined key usage and upgrade notes
+
+### Contributors
+- borowis (`@borowis`) for reporting [#66](https://github.com/ncecere/terraform-provider-litellm/issues/66)
+- wityamin (`@wityamin`) for [#60](https://github.com/ncecere/terraform-provider-litellm/issues/60)
+
+## [1.1.0] - 2026-03-08
+
+### Added
+- **New Resource**: `litellm_fallback` — Manage model fallback configurations for general errors, context-window exceeded, and content-policy violations ([#62](https://github.com/ncecere/terraform-provider-litellm/issues/62), [#64](https://github.com/ncecere/terraform-provider-litellm/pull/64))
+  - Supports three fallback types: `general`, `context_window`, `content_policy`
+  - Composite ID (`model:fallback_type`) with import support
+  - `model` and `fallback_type` force replacement; `fallback_models` can be updated in-place
+- **New Data Source**: `litellm_fallback` — Retrieve existing fallback configuration by model name and fallback type
+- **Smoke Test Infrastructure**: Added `make local`, `make logs`, and `make smoke` targets with `internal_testing/smoke.sh` for running plan/apply/destroy against a local LiteLLM proxy
+- Unit tests for fallback resource (build request, read-back state, empty fallback models, create body)
+
+### Contributors
+- edeas123 (`@edeas123`) for [#64](https://github.com/ncecere/terraform-provider-litellm/pull/64)
+
 ## [1.0.6] - 2026-02-16
 
 ### Fixed

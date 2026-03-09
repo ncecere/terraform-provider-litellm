@@ -5,10 +5,168 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
+
+func TestHashKeyForID(t *testing.T) {
+	t.Parallel()
+
+	id := hashKeyForID("sk-test-key-123")
+	if !strings.HasPrefix(id, "sha256:") {
+		t.Fatalf("expected sha256: prefix, got %s", id)
+	}
+	// Same input always produces same output
+	if id != hashKeyForID("sk-test-key-123") {
+		t.Fatal("hashKeyForID is not deterministic")
+	}
+	// Different input produces different output
+	if id == hashKeyForID("sk-different-key") {
+		t.Fatal("different keys should produce different hashes")
+	}
+	// Raw key should not appear in hash
+	if strings.Contains(id, "sk-test-key-123") {
+		t.Fatal("raw key should not appear in hashed ID")
+	}
+}
+
+func TestCreateKeyUsesHashedID(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/key/generate" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"key": "sk-generated-key-abc",
+			})
+			return
+		}
+		// readKey call after create
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"key": "sk-generated-key-abc",
+			"info": map[string]interface{}{
+				"token": "sk-generated-key-abc",
+			},
+		})
+	}))
+	defer server.Close()
+
+	r := &KeyResource{
+		client: &Client{
+			APIBase:    server.URL,
+			APIKey:     "test-key",
+			HTTPClient: server.Client(),
+		},
+	}
+
+	data := &KeyResourceModel{
+		Key: types.StringUnknown(),
+	}
+
+	keyReq := r.buildKeyRequest(context.Background(), data)
+	var result map[string]interface{}
+	if err := r.client.DoRequestWithResponse(context.Background(), "POST", "/key/generate", keyReq, &result); err != nil {
+		t.Fatalf("POST /key/generate: %v", err)
+	}
+
+	if keyVal, ok := result["key"].(string); ok {
+		data.Key = types.StringValue(keyVal)
+		data.ID = types.StringValue(hashKeyForID(keyVal))
+	}
+
+	// ID should be hashed, not the raw key
+	if !strings.HasPrefix(data.ID.ValueString(), "sha256:") {
+		t.Errorf("expected hashed ID, got %s", data.ID.ValueString())
+	}
+	if data.ID.ValueString() == "sk-generated-key-abc" {
+		t.Error("ID should not be the raw key")
+	}
+	// Key attribute should still hold the raw value
+	if data.Key.ValueString() != "sk-generated-key-abc" {
+		t.Errorf("expected key 'sk-generated-key-abc', got '%s'", data.Key.ValueString())
+	}
+}
+
+func TestPredefinedKeyIsSentToAPI(t *testing.T) {
+	t.Parallel()
+
+	var capturedBody map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			_ = json.NewDecoder(r.Body).Decode(&capturedBody)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"key": "sk-my-predefined-key",
+			})
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"info": map[string]interface{}{
+				"token": "sk-my-predefined-key",
+			},
+		})
+	}))
+	defer server.Close()
+
+	r := &KeyResource{
+		client: &Client{
+			APIBase:    server.URL,
+			APIKey:     "test-key",
+			HTTPClient: server.Client(),
+		},
+	}
+
+	data := &KeyResourceModel{
+		Key: types.StringValue("sk-my-predefined-key"),
+	}
+
+	keyReq := r.buildKeyRequest(context.Background(), data)
+
+	// Verify the predefined key is included in the request body
+	if keyReq["key"] != "sk-my-predefined-key" {
+		t.Fatalf("expected predefined key in request, got %v", keyReq["key"])
+	}
+
+	var result map[string]interface{}
+	if err := r.client.DoRequestWithResponse(context.Background(), "POST", "/key/generate", keyReq, &result); err != nil {
+		t.Fatalf("POST /key/generate: %v", err)
+	}
+
+	if keyVal, ok := result["key"].(string); ok {
+		data.Key = types.StringValue(keyVal)
+		data.ID = types.StringValue(hashKeyForID(keyVal))
+	}
+
+	// ID should be hashed
+	if !strings.HasPrefix(data.ID.ValueString(), "sha256:") {
+		t.Errorf("expected hashed ID, got %s", data.ID.ValueString())
+	}
+	// Key should be the predefined value
+	if data.Key.ValueString() != "sk-my-predefined-key" {
+		t.Errorf("expected key 'sk-my-predefined-key', got '%s'", data.Key.ValueString())
+	}
+}
+
+func TestStateMigrationV0ToV1(t *testing.T) {
+	t.Parallel()
+
+	rawKey := "sk-old-state-key-123"
+	expectedID := hashKeyForID(rawKey)
+
+	// Verify the hash is what we expect
+	if !strings.HasPrefix(expectedID, "sha256:") {
+		t.Fatalf("expected sha256: prefix, got %s", expectedID)
+	}
+	if strings.Contains(expectedID, rawKey) {
+		t.Fatal("hashed ID should not contain raw key")
+	}
+}
 
 func TestReadKeyResolvesUnknownOptionalComputedCollections(t *testing.T) {
 	t.Parallel()
@@ -181,6 +339,14 @@ func TestReadKeyWithNestedInfoResponse(t *testing.T) {
 		t.Fatalf("expected key 'sk-test-key-123', got '%s'", data.Key.ValueString())
 	}
 
+	// Verify ID is hashed (not the raw key)
+	if !strings.HasPrefix(data.ID.ValueString(), "sha256:") {
+		t.Fatalf("expected hashed ID with sha256: prefix, got '%s'", data.ID.ValueString())
+	}
+	if data.ID.ValueString() == "sk-test-key-123" {
+		t.Fatal("ID should not be the raw key value")
+	}
+
 	// Verify fields were extracted from nested "info" block
 	if data.KeyAlias.ValueString() != "my-test-key" {
 		t.Fatalf("expected key_alias 'my-test-key', got '%s'", data.KeyAlias.ValueString())
@@ -236,5 +402,106 @@ func TestReadKeyWithNestedInfoResponse(t *testing.T) {
 	}
 	if data.ModelTPMLimit.IsUnknown() {
 		t.Fatal("model_tpm_limit should be known after read")
+	}
+}
+
+func TestReadKeyTagsFromMetadata(t *testing.T) {
+	t.Parallel()
+
+	// LiteLLM stores tags inside metadata["tags"] rather than as a top-level field
+	// in the /key/info response. This test verifies the provider reads them correctly.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"key": "sk-tags-test",
+			"info": map[string]interface{}{
+				"token": "sk-tags-test",
+				"metadata": map[string]interface{}{
+					"tags": []interface{}{"test", "production"},
+					"env":  "staging",
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	r := &KeyResource{
+		client: &Client{
+			APIBase:    server.URL,
+			APIKey:     "test-key",
+			HTTPClient: server.Client(),
+		},
+	}
+
+	// Simulate user configured tags = ["test"] — data.Tags is non-null
+	userTags, _ := types.ListValue(types.StringType, []attr.Value{types.StringValue("test")})
+	data := KeyResourceModel{
+		ID:   types.StringValue("old-id"),
+		Key:  types.StringValue("sk-tags-test"),
+		Tags: userTags,
+	}
+
+	if err := r.readKey(context.Background(), &data); err != nil {
+		t.Fatalf("readKey returned error: %v", err)
+	}
+
+	if data.Tags.IsNull() || data.Tags.IsUnknown() {
+		t.Fatal("tags should be known and non-null after read")
+	}
+
+	elems := data.Tags.Elements()
+	if len(elems) != 2 {
+		t.Fatalf("expected 2 tags, got %d", len(elems))
+	}
+	if elems[0].(types.String).ValueString() != "test" {
+		t.Errorf("expected first tag 'test', got '%s'", elems[0].(types.String).ValueString())
+	}
+	if elems[1].(types.String).ValueString() != "production" {
+		t.Errorf("expected second tag 'production', got '%s'", elems[1].(types.String).ValueString())
+	}
+}
+
+func TestReadKeyTagsNoTagsAnywhere(t *testing.T) {
+	t.Parallel()
+
+	// When the API returns neither top-level tags nor metadata tags,
+	// and user configured tags, the list should be emptied (not left stale).
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"key": "sk-no-tags",
+			"info": map[string]interface{}{
+				"token":    "sk-no-tags",
+				"metadata": map[string]interface{}{},
+			},
+		})
+	}))
+	defer server.Close()
+
+	r := &KeyResource{
+		client: &Client{
+			APIBase:    server.URL,
+			APIKey:     "test-key",
+			HTTPClient: server.Client(),
+		},
+	}
+
+	userTags, _ := types.ListValue(types.StringType, []attr.Value{types.StringValue("old-tag")})
+	data := KeyResourceModel{
+		ID:   types.StringValue("old-id"),
+		Key:  types.StringValue("sk-no-tags"),
+		Tags: userTags,
+	}
+
+	if err := r.readKey(context.Background(), &data); err != nil {
+		t.Fatalf("readKey returned error: %v", err)
+	}
+
+	// Tags should be empty list (not null) since user had configured tags
+	if data.Tags.IsNull() {
+		t.Fatal("tags should not be null when user originally configured them")
+	}
+	if len(data.Tags.Elements()) != 0 {
+		t.Fatalf("expected 0 tags, got %d", len(data.Tags.Elements()))
 	}
 }

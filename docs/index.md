@@ -115,6 +115,7 @@ The LiteLLM provider supports the following resources:
 
 * [`litellm_prompt`](./resources/prompt.md) - Manage prompt templates
 * [`litellm_guardrail`](./resources/guardrail.md) - Manage content guardrails
+* [`litellm_fallback`](./resources/fallback.md) - Manage model fallback configurations
 
 ### Integrations
 
@@ -137,6 +138,7 @@ The LiteLLM provider supports the following resources:
 * [`litellm_access_group`](./data-sources/access_group.md) - Retrieve access group information
 * [`litellm_prompt`](./data-sources/prompt.md) - Retrieve prompt information
 * [`litellm_guardrail`](./data-sources/guardrail.md) - Retrieve guardrail information
+* [`litellm_fallback`](./data-sources/fallback.md) - Retrieve fallback configuration for a model
 * [`litellm_mcp_server`](./data-sources/mcp_server.md) - Retrieve MCP server information
 * [`litellm_search_tool`](./data-sources/search_tool.md) - Retrieve search tool information
 * [`litellm_vector_store`](./data-sources/vector_store.md) - Retrieve vector store information

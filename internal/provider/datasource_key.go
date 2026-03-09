@@ -216,12 +216,22 @@ func (d *KeyDataSource) Read(ctx context.Context, req datasource.ReadRequest, re
 		data.Models, _ = types.ListValue(types.StringType, []attr.Value{})
 	}
 
-	// Handle tags list
+	// Handle tags list.
+	// LiteLLM stores tags inside metadata["tags"] rather than as a top-level field in /key/info,
+	// so we check both locations.
+	var rawTags []interface{}
 	if tags, ok := info["tags"].([]interface{}); ok {
-		tagsList := make([]attr.Value, len(tags))
-		for i, t := range tags {
+		rawTags = tags
+	} else if metadata, ok := info["metadata"].(map[string]interface{}); ok {
+		if tags, ok := metadata["tags"].([]interface{}); ok {
+			rawTags = tags
+		}
+	}
+	if len(rawTags) > 0 {
+		tagsList := make([]attr.Value, 0, len(rawTags))
+		for _, t := range rawTags {
 			if str, ok := t.(string); ok {
-				tagsList[i] = types.StringValue(str)
+				tagsList = append(tagsList, types.StringValue(str))
 			}
 		}
 		data.Tags, _ = types.ListValue(types.StringType, tagsList)
