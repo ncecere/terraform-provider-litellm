@@ -12,6 +12,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 )
 
 var _ resource.Resource = &TeamResource{}
@@ -48,6 +49,27 @@ type TeamResourceModel struct {
 	TeamMemberBudget      types.Float64 `tfsdk:"team_member_budget"`
 	TeamMemberRPMLimit    types.Int64   `tfsdk:"team_member_rpm_limit"`
 	TeamMemberTPMLimit    types.Int64   `tfsdk:"team_member_tpm_limit"`
+	RouterSettings        types.Object  `tfsdk:"router_settings"`
+}
+
+type RouterSettingsModel struct {
+	Fallbacks              types.List `tfsdk:"fallbacks"`
+	ContextWindowFallbacks types.List `tfsdk:"context_window_fallbacks"`
+}
+
+type FallbackEntryModel struct {
+	Model          types.String `tfsdk:"model"`
+	FallbackModels types.List   `tfsdk:"fallback_models"`
+}
+
+var fallbackEntryAttrTypes = map[string]attr.Type{
+	"model":           types.StringType,
+	"fallback_models": types.ListType{ElemType: types.StringType},
+}
+
+var routerSettingsAttrTypes = map[string]attr.Type{
+	"fallbacks":                types.ListType{ElemType: types.ObjectType{AttrTypes: fallbackEntryAttrTypes}},
+	"context_window_fallbacks": types.ListType{ElemType: types.ObjectType{AttrTypes: fallbackEntryAttrTypes}},
 }
 
 func (r *TeamResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -167,6 +189,48 @@ func (r *TeamResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 			"team_member_tpm_limit": schema.Int64Attribute{
 				Description: "Default TPM limit for team members.",
 				Optional:    true,
+			},
+			"router_settings": schema.SingleNestedAttribute{
+				Description: "Router settings for the team, including fallback configurations. " +
+					"These override global fallback settings for requests made with this team's keys. " +
+					"Resolution order: Key > Team > Global.",
+				Optional: true,
+				Attributes: map[string]schema.Attribute{
+					"fallbacks": schema.ListNestedAttribute{
+						Description: "Fallback model chains triggered when a model call fails after retries.",
+						Optional:    true,
+						NestedObject: schema.NestedAttributeObject{
+							Attributes: map[string]schema.Attribute{
+								"model": schema.StringAttribute{
+									Description: "The primary model name to configure fallbacks for.",
+									Required:    true,
+								},
+								"fallback_models": schema.ListAttribute{
+									Description: "Ordered list of fallback model names.",
+									Required:    true,
+									ElementType: types.StringType,
+								},
+							},
+						},
+					},
+					"context_window_fallbacks": schema.ListNestedAttribute{
+						Description: "Fallback model chains triggered when a context window exceeded error occurs.",
+						Optional:    true,
+						NestedObject: schema.NestedAttributeObject{
+							Attributes: map[string]schema.Attribute{
+								"model": schema.StringAttribute{
+									Description: "The primary model name to configure fallbacks for.",
+									Required:    true,
+								},
+								"fallback_models": schema.ListAttribute{
+									Description: "Ordered list of fallback model names.",
+									Required:    true,
+									ElementType: types.StringType,
+								},
+							},
+						},
+					},
+				},
 			},
 		},
 	}
@@ -420,7 +484,47 @@ func (r *TeamResource) buildTeamRequest(ctx context.Context, data *TeamResourceM
 		}
 	}
 
+	if !data.RouterSettings.IsNull() && !data.RouterSettings.IsUnknown() {
+		teamReq["router_settings"] = buildRouterSettingsPayload(ctx, data.RouterSettings)
+	}
+
 	return teamReq
+}
+
+// buildRouterSettingsPayload converts the Terraform router_settings object into
+// the LiteLLM API wire format where each fallback entry is a single-key dict:
+// [{"primary_model": ["fallback1", "fallback2"]}]
+func buildRouterSettingsPayload(ctx context.Context, obj types.Object) map[string]interface{} {
+	var rs RouterSettingsModel
+	obj.As(ctx, &rs, basetypes.ObjectAsOptions{})
+
+	payload := map[string]interface{}{}
+
+	if !rs.Fallbacks.IsNull() && !rs.Fallbacks.IsUnknown() {
+		payload["fallbacks"] = fallbackEntriesToAPIFormat(ctx, rs.Fallbacks)
+	}
+	if !rs.ContextWindowFallbacks.IsNull() && !rs.ContextWindowFallbacks.IsUnknown() {
+		payload["context_window_fallbacks"] = fallbackEntriesToAPIFormat(ctx, rs.ContextWindowFallbacks)
+	}
+
+	return payload
+}
+
+// fallbackEntriesToAPIFormat transforms a Terraform list of FallbackEntryModel
+// objects into the LiteLLM wire format: [{"model_name": ["fb1", "fb2"]}, ...]
+func fallbackEntriesToAPIFormat(ctx context.Context, list types.List) []map[string][]string {
+	var entries []FallbackEntryModel
+	list.ElementsAs(ctx, &entries, false)
+
+	result := make([]map[string][]string, 0, len(entries))
+	for _, e := range entries {
+		var fbModels []string
+		e.FallbackModels.ElementsAs(ctx, &fbModels, false)
+		result = append(result, map[string][]string{
+			e.Model.ValueString(): fbModels,
+		})
+	}
+	return result
 }
 
 func (r *TeamResource) readTeam(ctx context.Context, data *TeamResourceModel) error {
@@ -599,6 +703,15 @@ func (r *TeamResource) readTeam(ctx context.Context, data *TeamResourceModel) er
 		data.ModelTPMLimit, _ = types.MapValue(types.Int64Type, map[string]attr.Value{})
 	}
 
+	// Handle router_settings - only populate if user configured it (preserve null)
+	if rs, ok := teamInfo["router_settings"].(map[string]interface{}); ok && len(rs) > 0 && !data.RouterSettings.IsNull() {
+		data.RouterSettings = parseRouterSettingsFromAPI(rs)
+	} else if data.RouterSettings.IsNull() {
+		// keep null
+	} else {
+		data.RouterSettings = types.ObjectNull(routerSettingsAttrTypes)
+	}
+
 	// Fetch permissions separately - preserve null when API returns empty and config didn't specify permissions
 	permEndpoint := fmt.Sprintf("/team/permissions_list?team_id=%s", data.ID.ValueString())
 	var permResult map[string]interface{}
@@ -619,4 +732,57 @@ func (r *TeamResource) readTeam(ctx context.Context, data *TeamResourceModel) er
 	}
 
 	return nil
+}
+
+// parseRouterSettingsFromAPI converts the LiteLLM API router_settings response
+// back into a Terraform types.Object matching the schema.
+func parseRouterSettingsFromAPI(rs map[string]interface{}) types.Object {
+	rsAttrs := map[string]attr.Value{}
+
+	if fb, ok := rs["fallbacks"].([]interface{}); ok {
+		rsAttrs["fallbacks"] = apiFormatToFallbackEntries(fb)
+	} else {
+		rsAttrs["fallbacks"] = types.ListNull(types.ObjectType{AttrTypes: fallbackEntryAttrTypes})
+	}
+
+	if cwf, ok := rs["context_window_fallbacks"].([]interface{}); ok {
+		rsAttrs["context_window_fallbacks"] = apiFormatToFallbackEntries(cwf)
+	} else {
+		rsAttrs["context_window_fallbacks"] = types.ListNull(types.ObjectType{AttrTypes: fallbackEntryAttrTypes})
+	}
+
+	obj, _ := types.ObjectValue(routerSettingsAttrTypes, rsAttrs)
+	return obj
+}
+
+// apiFormatToFallbackEntries transforms the LiteLLM wire format
+// [{"model_name": ["fb1", "fb2"]}, ...] into a Terraform list of fallback entry objects.
+func apiFormatToFallbackEntries(items []interface{}) basetypes.ListValue {
+	entries := make([]attr.Value, 0, len(items))
+	for _, item := range items {
+		dict, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		for model, fbRaw := range dict {
+			fbSlice, ok := fbRaw.([]interface{})
+			if !ok {
+				continue
+			}
+			fbModels := make([]attr.Value, 0, len(fbSlice))
+			for _, m := range fbSlice {
+				if s, ok := m.(string); ok {
+					fbModels = append(fbModels, types.StringValue(s))
+				}
+			}
+			fbList, _ := types.ListValue(types.StringType, fbModels)
+			entryObj, _ := types.ObjectValue(fallbackEntryAttrTypes, map[string]attr.Value{
+				"model":           types.StringValue(model),
+				"fallback_models": fbList,
+			})
+			entries = append(entries, entryObj)
+		}
+	}
+	list, _ := types.ListValue(types.ObjectType{AttrTypes: fallbackEntryAttrTypes}, entries)
+	return list
 }

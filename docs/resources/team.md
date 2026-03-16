@@ -54,6 +54,36 @@ resource "litellm_team" "full" {
 }
 ```
 
+### With Router Settings (Fallbacks)
+
+Configure team-level fallback chains that override global fallback settings. When a request uses a key belonging to this team, these fallbacks take precedence over the global configuration. The resolution order is **Key > Team > Global**.
+
+```hcl
+resource "litellm_team" "with_fallbacks" {
+  team_alias = "resilient-team"
+  models     = ["gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo", "claude-3-haiku"]
+
+  router_settings = {
+    fallbacks = [
+      {
+        model           = "gpt-4o"
+        fallback_models = ["gpt-4o-mini", "claude-3-haiku"]
+      },
+      {
+        model           = "gpt-3.5-turbo"
+        fallback_models = ["gpt-4o-mini"]
+      }
+    ]
+    context_window_fallbacks = [
+      {
+        model           = "gpt-3.5-turbo"
+        fallback_models = ["gpt-4o"]
+      }
+    ]
+  }
+}
+```
+
 ## Argument Reference
 
 The following arguments are supported:
@@ -79,6 +109,11 @@ The following arguments are supported:
 * `model_rpm_limit` - (Optional) A map of model names to per-model RPM limits.
 * `model_tpm_limit` - (Optional) A map of model names to per-model TPM limits.
 * `tags` - (Optional) List of tags for the team. **Requires LiteLLM Enterprise license.**
+* `router_settings` - (Optional) Router settings for the team, including fallback configurations. These override global fallback settings for requests made with this team's keys. Resolution order: Key > Team > Global. Contains the following nested attributes:
+  * `fallbacks` - (Optional) List of fallback model chains triggered when a model call fails after retries. Each entry contains:
+    * `model` - (Required) The primary model name to configure fallbacks for.
+    * `fallback_models` - (Required) Ordered list of fallback model names.
+  * `context_window_fallbacks` - (Optional) List of fallback model chains triggered when a context window exceeded error occurs. Each entry has the same structure as `fallbacks`.
 
 ## Attribute Reference
 
