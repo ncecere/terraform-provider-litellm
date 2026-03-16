@@ -486,6 +486,8 @@ func (r *TeamResource) buildTeamRequest(ctx context.Context, data *TeamResourceM
 
 	if !data.RouterSettings.IsNull() && !data.RouterSettings.IsUnknown() {
 		teamReq["router_settings"] = buildRouterSettingsPayload(ctx, data.RouterSettings)
+	} else if data.RouterSettings.IsNull() {
+		teamReq["router_settings"] = map[string]interface{}{}
 	}
 
 	return teamReq
@@ -703,11 +705,10 @@ func (r *TeamResource) readTeam(ctx context.Context, data *TeamResourceModel) er
 		data.ModelTPMLimit, _ = types.MapValue(types.Int64Type, map[string]attr.Value{})
 	}
 
-	// Handle router_settings - only populate if user configured it (preserve null)
-	if rs, ok := teamInfo["router_settings"].(map[string]interface{}); ok && len(rs) > 0 && !data.RouterSettings.IsNull() {
+	// Handle router_settings - always reflect the API's actual state so Terraform
+	// can detect drift and clear stale fallbacks when the block is removed from config.
+	if rs, ok := teamInfo["router_settings"].(map[string]interface{}); ok && len(rs) > 0 {
 		data.RouterSettings = parseRouterSettingsFromAPI(rs)
-	} else if data.RouterSettings.IsNull() {
-		// keep null
 	} else {
 		data.RouterSettings = types.ObjectNull(routerSettingsAttrTypes)
 	}

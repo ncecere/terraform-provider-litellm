@@ -271,7 +271,7 @@ func TestBuildTeamRequest_RouterSettingsWithFallbacks(t *testing.T) {
 	}
 }
 
-func TestBuildTeamRequest_NullRouterSettings(t *testing.T) {
+func TestBuildTeamRequest_NullRouterSettings_SendsEmptyToAPI(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
@@ -283,8 +283,16 @@ func TestBuildTeamRequest_NullRouterSettings(t *testing.T) {
 
 	req := r.buildTeamRequest(ctx, data, "team-123")
 
-	if _, exists := req["router_settings"]; exists {
-		t.Error("router_settings should not be present when null")
+	rs, exists := req["router_settings"]
+	if !exists {
+		t.Fatal("router_settings should be present (as empty object) to clear server-side fallbacks")
+	}
+	rsMap, ok := rs.(map[string]interface{})
+	if !ok {
+		t.Fatalf("router_settings should be map[string]interface{}, got %T", rs)
+	}
+	if len(rsMap) != 0 {
+		t.Errorf("router_settings should be empty to clear fallbacks, got %v", rsMap)
 	}
 }
 
@@ -395,7 +403,7 @@ func TestReadTeam_RouterSettingsFromAPI(t *testing.T) {
 	}
 }
 
-func TestReadTeam_NullRouterSettingsPreserved(t *testing.T) {
+func TestReadTeam_NullRouterSettingsWhenAPIHasNone(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -436,6 +444,62 @@ func TestReadTeam_NullRouterSettingsPreserved(t *testing.T) {
 	}
 
 	if !data.RouterSettings.IsNull() {
-		t.Fatal("router_settings should remain null when user didn't configure it and API returns nothing")
+		t.Fatal("router_settings should be null when API has no router_settings")
+	}
+}
+
+func TestReadTeam_DetectsDriftWhenAPIStillHasFallbacks(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		switch r.URL.Path {
+		case "/team/info":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"team_alias": "stale-fallback-team",
+				"blocked":    false,
+				"router_settings": map[string]interface{}{
+					"fallbacks": []interface{}{
+						map[string]interface{}{
+							"gpt-3.5-turbo": []interface{}{"gpt-4"},
+						},
+					},
+				},
+			})
+		case "/team/permissions_list":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"team_member_permissions": []string{},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	r := &TeamResource{
+		client: &Client{
+			APIBase:    server.URL,
+			APIKey:     "test-key",
+			HTTPClient: server.Client(),
+		},
+	}
+
+	// Simulate: user removed router_settings from config (state is null),
+	// but the API still has fallbacks from a previous apply.
+	data := TeamResourceModel{
+		ID:             types.StringValue("team-drift"),
+		TeamAlias:      types.StringValue("stale-fallback-team"),
+		RouterSettings: types.ObjectNull(routerSettingsAttrTypes),
+	}
+
+	if err := r.readTeam(context.Background(), &data); err != nil {
+		t.Fatalf("readTeam returned error: %v", err)
+	}
+
+	// readTeam should now report the API's actual state (non-null),
+	// so Terraform detects the drift and plans to clear it.
+	if data.RouterSettings.IsNull() {
+		t.Fatal("router_settings should NOT be null -- API still has fallbacks, Terraform must detect drift")
 	}
 }
