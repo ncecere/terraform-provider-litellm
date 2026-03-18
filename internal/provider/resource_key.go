@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"net/url"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -673,7 +674,10 @@ func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error
 		return fmt.Errorf("key value is empty, cannot read key info")
 	}
 
-	endpoint := fmt.Sprintf("/key/info?key=%s", keyVal)
+	// url.QueryEscape ensures special characters in the key (e.g. '#') are
+	// percent-encoded and not interpreted as a URL fragment, which would
+	// silently truncate the key value before it reaches the server.
+	endpoint := fmt.Sprintf("/key/info?key=%s", url.QueryEscape(keyVal))
 
 	var result map[string]interface{}
 	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
