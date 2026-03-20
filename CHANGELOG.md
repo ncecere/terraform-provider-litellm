@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.4] - 2026-03-20
+
+### Fixed
+- **`litellm_model`**: Fixed "provider still indicated an unknown value for litellm_model.*.mode" error when using wildcard routing (e.g. `openai/*`). Wildcard routes may not have a `mode` set in the API response, leaving the `Computed` attribute Unknown after apply. The provider now resolves Unknown `mode` to null in `readModel`. ([#70](https://github.com/ncecere/terraform-provider-litellm/issues/70), [#74](https://github.com/ncecere/terraform-provider-litellm/pull/74))
+- **`litellm_key`**: Fixed 404 "Key not found in database" error on read-back when the key value contains URL-special characters (e.g. `#`). The `#` character was interpreted as a URL fragment delimiter, silently truncating the key before it reached the server. The key value is now percent-encoded with `url.QueryEscape()`. ([#73](https://github.com/ncecere/terraform-provider-litellm/issues/73), [#75](https://github.com/ncecere/terraform-provider-litellm/pull/75))
+- **`litellm_key`**: Fixed "Provider produced inconsistent result after apply: .key_alias was null, but now cty.StringVal(...)" error when using `service_account_id` without explicitly setting `key_alias`. The `key_alias` attribute is now `Optional + Computed` so the provider can accept the API-defaulted value. ([#76](https://github.com/ncecere/terraform-provider-litellm/issues/76), [#78](https://github.com/ncecere/terraform-provider-litellm/pull/78))
+
+### Added
+- Unit test for wildcard routing mode resolution (Unknown → null when API returns no mode)
+- Unit test for URL-encoding of special characters in key values during `/key/info` requests
+- Unit tests for `key_alias` with `service_account_id` (default aliasing, explicit override, Unknown resolution)
+- Smoke test configs: `model_wildcard.tf`, `key_service_account.tf`
+
+### Contributors
+- ramundomario (`@ramundomario`) for [#74](https://github.com/ncecere/terraform-provider-litellm/pull/74), [#75](https://github.com/ncecere/terraform-provider-litellm/pull/75), [#78](https://github.com/ncecere/terraform-provider-litellm/pull/78)
+- FalconerTC (`@FalconerTC`) for confirming [#70](https://github.com/ncecere/terraform-provider-litellm/issues/70)
+
 ## [1.2.3] - 2026-03-09
 
 ### Fixed
