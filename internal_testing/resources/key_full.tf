@@ -1,7 +1,11 @@
 # litellm_key - Full
-# All attributes populated
+# All attributes populated, including a key value with URL-special characters
+# ('#', '!') to guard against the regression where '#' was interpreted as a
+# URL fragment delimiter in /key/info?key=..., silently truncating the value
+# and causing a 404 on read-back after creation.
 
 resource "litellm_key" "full" {
+  key                   = "sk-smoke-test#special!chars"
   key_alias             = "test-key-full"
   models                = ["gpt-4o", "gpt-4o-mini"]
   max_budget            = 100.0
@@ -51,9 +55,4 @@ resource "litellm_key" "full" {
 
 output "key_full_id" {
   value = litellm_key.full.id
-}
-
-output "key_full_key" {
-  value     = litellm_key.full.key
-  sensitive = true
 }

@@ -655,3 +655,72 @@ func TestReadKeyTagsNoTagsAnywhere(t *testing.T) {
 		t.Fatalf("expected 0 tags, got %d", len(data.Tags.Elements()))
 	}
 }
+
+// TestReadKeyURLEncodesSpecialChars verifies that special characters in a key
+// value (e.g. '#') are percent-encoded when the key is placed in the
+// /key/info query string.  Without url.QueryEscape the '#' character is
+// interpreted as a URL fragment delimiter and silently truncates the key,
+// causing the server to return 404 "Key not found in database".
+func TestReadKeyURLEncodesSpecialChars(t *testing.T) {
+	t.Parallel()
+
+	// Key that contains URL-special characters: '!' and '#'.
+	// '#' is the critical one: without encoding it acts as a fragment
+	// delimiter and everything from '#' onward is stripped before the
+	// HTTP request is sent.
+	const keyWithSpecialChars = "sk-unit-test#special!chars"
+
+	var receivedKeyParam string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Capture the raw, server-decoded value of the "key" query parameter.
+		receivedKeyParam = r.URL.Query().Get("key")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"key": keyWithSpecialChars,
+			"info": map[string]interface{}{
+				"token": keyWithSpecialChars,
+			},
+		})
+	}))
+	defer server.Close()
+
+	r := &KeyResource{
+		client: &Client{
+			APIBase:    server.URL,
+			APIKey:     "test-key",
+			HTTPClient: server.Client(),
+		},
+	}
+
+	data := &KeyResourceModel{
+		Key:                      types.StringValue(keyWithSpecialChars),
+		Models:                   types.ListNull(types.StringType),
+		AllowedRoutes:            types.ListNull(types.StringType),
+		AllowedPassthroughRoutes: types.ListNull(types.StringType),
+		AllowedCacheControls:     types.ListNull(types.StringType),
+		Guardrails:               types.ListNull(types.StringType),
+		Prompts:                  types.ListNull(types.StringType),
+		EnforcedParams:           types.ListNull(types.StringType),
+		Tags:                     types.ListNull(types.StringType),
+		Metadata:                 types.MapNull(types.StringType),
+		Aliases:                  types.MapNull(types.StringType),
+		Config:                   types.MapNull(types.StringType),
+		Permissions:              types.MapNull(types.StringType),
+		ModelMaxBudget:           types.MapNull(types.Float64Type),
+		ModelRPMLimit:            types.MapNull(types.Int64Type),
+		ModelTPMLimit:            types.MapNull(types.Int64Type),
+	}
+
+	if err := r.readKey(context.Background(), data); err != nil {
+		t.Fatalf("readKey failed: %v", err)
+	}
+
+	// The server must receive the complete key, including the '#special!chars' suffix.
+	// Without url.QueryEscape the Go HTTP client strips everything from '#'
+	// onward (URL fragment), so the server would receive "sk-unit-test#special!chars".
+	if receivedKeyParam != keyWithSpecialChars {
+		t.Fatalf("server received key param %q, want %q\n"+
+			"hint: '#' was likely not percent-encoded, causing URL fragment truncation",
+			receivedKeyParam, keyWithSpecialChars)
+	}
+}
