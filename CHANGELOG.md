@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.2.5] - 2026-03-20
 
 ### Fixed
 - **`litellm_key`**: Fixed "inconsistent values for sensitive attribute" error when supplying a custom key value. The `readKey` function was unconditionally overwriting `data.Key` with the hashed token returned by `/key/info`, which differs from the raw key the user provided. User-provided keys are now preserved during read-back. ([#79](https://github.com/ncecere/terraform-provider-litellm/issues/79))
