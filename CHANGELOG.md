@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **New Resource**: `litellm_agent` — Manage LiteLLM Agents (A2A) with full CRUD support ([#59](https://github.com/ncecere/terraform-provider-litellm/issues/59))
+  - A2A agent card with capabilities, skills, provider metadata
+  - Object permissions for MCP servers, models, and other agents
+  - Rate limiting (TPM/RPM per-agent and per-session)
+  - Static/extra headers configuration
+  - Import support via agent ID
+- **New Data Source**: `litellm_agent` — Retrieve information about a single agent by ID
+- **New Data Source**: `litellm_agents` — List all agents
+- Unit tests for agent resource (build request minimal/full, read-back state, Unknown→null resolution)
+- Documentation for agent resource and data sources
+
 ## [1.2.5] - 2026-03-20
 
 ### Fixed
