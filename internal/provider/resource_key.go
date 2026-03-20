@@ -603,7 +603,10 @@ func (r *KeyResource) buildKeyRequest(ctx context.Context, data *KeyResourceMode
 		var metadata map[string]string
 		data.Metadata.ElementsAs(ctx, &metadata, false)
 		if len(metadata) > 0 {
-			keyReq["metadata"] = metadata
+			// Convert string values that contain JSON objects/arrays to native
+			// types so the API receives them as structured data rather than
+			// escaped strings (e.g. logging configuration).
+			keyReq["metadata"] = convertMetadataToNative(metadata)
 		}
 	}
 
@@ -907,12 +910,11 @@ func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error
 
 		metaMap := make(map[string]attr.Value)
 		for k, v := range metadata {
-			if str, ok := v.(string); ok {
-				// If user had specific keys, only keep those. Otherwise keep all.
-				if len(configuredKeys) == 0 || configuredKeys[k] {
-					metaMap[k] = types.StringValue(str)
-				}
+			// If user had specific keys, only keep those. Otherwise keep all.
+			if len(configuredKeys) > 0 && !configuredKeys[k] {
+				continue
 			}
+			metaMap[k] = types.StringValue(metadataValueToString(v))
 		}
 		if len(metaMap) > 0 {
 			data.Metadata, _ = types.MapValue(types.StringType, metaMap)

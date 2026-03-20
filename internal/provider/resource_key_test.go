@@ -557,6 +557,148 @@ func TestReadKeyWithNestedInfoResponse(t *testing.T) {
 	}
 }
 
+// TestReadKeyMetadataWithComplexValues verifies that metadata values containing
+// JSON objects and arrays are read back correctly from the API and stored as
+// JSON-encoded strings in state. This is the read-side of issue #71.
+func TestReadKeyMetadataWithComplexValues(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"key": "sk-meta-test",
+			"info": map[string]interface{}{
+				"token": "sk-meta-test",
+				"metadata": map[string]interface{}{
+					"env": "production",
+					"logging": []interface{}{
+						map[string]interface{}{
+							"callback_name": "langsmith",
+							"callback_type": "success",
+							"callback_vars": map[string]interface{}{
+								"langsmith_project": "my-project",
+							},
+						},
+					},
+					"config": map[string]interface{}{
+						"retries": float64(3),
+						"timeout": float64(30),
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	r := &KeyResource{
+		client: &Client{
+			APIBase:    server.URL,
+			APIKey:     "test-key",
+			HTTPClient: server.Client(),
+		},
+	}
+
+	// Simulate user config with these metadata keys
+	data := KeyResourceModel{
+		ID:  types.StringValue(hashKeyForID("sk-meta-test")),
+		Key: types.StringValue("sk-meta-test"),
+		Metadata: stringMapValue(map[string]string{
+			"env":     "production",
+			"logging": `[{"callback_name":"langsmith"}]`,
+			"config":  `{"retries":3}`,
+		}),
+		// Initialize other fields to avoid nil panics
+		Models:                   types.ListNull(types.StringType),
+		AllowedRoutes:            types.ListNull(types.StringType),
+		AllowedPassthroughRoutes: types.ListNull(types.StringType),
+		AllowedCacheControls:     types.ListNull(types.StringType),
+		Guardrails:               types.ListNull(types.StringType),
+		Prompts:                  types.ListNull(types.StringType),
+		EnforcedParams:           types.ListNull(types.StringType),
+		Tags:                     types.ListNull(types.StringType),
+		Aliases:                  types.MapNull(types.StringType),
+		Config:                   types.MapNull(types.StringType),
+		Permissions:              types.MapNull(types.StringType),
+		ModelMaxBudget:           types.MapNull(types.Float64Type),
+		ModelRPMLimit:            types.MapNull(types.Int64Type),
+		ModelTPMLimit:            types.MapNull(types.Int64Type),
+	}
+
+	if err := r.readKey(context.Background(), &data); err != nil {
+		t.Fatalf("readKey returned error: %v", err)
+	}
+
+	if data.Metadata.IsNull() || data.Metadata.IsUnknown() {
+		t.Fatal("metadata should be known and non-null after read")
+	}
+
+	elems := data.Metadata.Elements()
+
+	// Simple string value preserved
+	if env, ok := elems["env"].(types.String); !ok || env.ValueString() != "production" {
+		t.Errorf("expected env 'production', got %v", elems["env"])
+	}
+
+	// Array value should be JSON-encoded string
+	if logging, ok := elems["logging"].(types.String); ok {
+		var parsed []interface{}
+		if err := json.Unmarshal([]byte(logging.ValueString()), &parsed); err != nil {
+			t.Errorf("logging should be valid JSON array, got error: %v, value: %q", err, logging.ValueString())
+		} else if len(parsed) != 1 {
+			t.Errorf("expected 1 logging entry, got %d", len(parsed))
+		}
+	} else {
+		t.Errorf("expected logging to be types.String, got %T", elems["logging"])
+	}
+
+	// Object value should be JSON-encoded string
+	if config, ok := elems["config"].(types.String); ok {
+		var parsed map[string]interface{}
+		if err := json.Unmarshal([]byte(config.ValueString()), &parsed); err != nil {
+			t.Errorf("config should be valid JSON object, got error: %v, value: %q", err, config.ValueString())
+		} else if parsed["retries"] != float64(3) {
+			t.Errorf("expected retries 3, got %v", parsed["retries"])
+		}
+	} else {
+		t.Errorf("expected config to be types.String, got %T", elems["config"])
+	}
+}
+
+// TestBuildKeyRequestMetadataWithJSON verifies that metadata values containing
+// JSON strings are decoded to native types in the API request body (issue #71).
+func TestBuildKeyRequestMetadataWithJSON(t *testing.T) {
+	t.Parallel()
+
+	r := &KeyResource{}
+	data := &KeyResourceModel{
+		Metadata: stringMapValue(map[string]string{
+			"env":     "prod",
+			"logging": `[{"callback_name":"langsmith"}]`,
+		}),
+	}
+
+	req := r.buildKeyRequest(context.Background(), data)
+
+	meta, ok := req["metadata"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected metadata to be map[string]interface{}, got %T", req["metadata"])
+	}
+
+	// Simple string stays as string
+	if meta["env"] != "prod" {
+		t.Errorf("expected env 'prod', got %v", meta["env"])
+	}
+
+	// JSON array should be native, not a string
+	arr, ok := meta["logging"].([]interface{})
+	if !ok {
+		t.Fatalf("expected logging to be []interface{} (native array), got %T: %v", meta["logging"], meta["logging"])
+	}
+	if len(arr) != 1 {
+		t.Errorf("expected 1 element, got %d", len(arr))
+	}
+}
+
 func TestReadKeyTagsFromMetadata(t *testing.T) {
 	t.Parallel()
 

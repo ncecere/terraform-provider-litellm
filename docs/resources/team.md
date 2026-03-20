@@ -74,7 +74,7 @@ The following arguments are supported:
 * `team_member_budget` - (Optional) Default budget for each team member.
 * `team_member_rpm_limit` - (Optional) Default requests per minute limit for each team member.
 * `team_member_tpm_limit` - (Optional) Default tokens per minute limit for each team member.
-* `metadata` - (Optional) A map of key-value metadata pairs for the team.
+* `metadata` - (Optional) A map of metadata pairs for the team. Values are strings; use `jsonencode()` for complex values (objects, arrays) — they will be sent as native JSON to the API.
 * `model_aliases` - (Optional) A map of alias names to model names.
 * `model_rpm_limit` - (Optional) A map of model names to per-model RPM limits.
 * `model_tpm_limit` - (Optional) A map of model names to per-model TPM limits.

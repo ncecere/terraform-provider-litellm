@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Unit tests for agent resource (build request minimal/full, read-back state, Unknown→null resolution)
 - Documentation for agent resource and data sources
 
+### Changed
+- **`litellm_key`**, **`litellm_team`**, **`litellm_organization`**: `metadata` values that contain JSON objects or arrays (e.g. logging configuration) are now sent as native structured data to the API instead of escaped strings. Values are automatically JSON-decoded on write and JSON-encoded on read-back. The schema remains `map(string)` — use `jsonencode()` for complex values. ([#71](https://github.com/ncecere/terraform-provider-litellm/issues/71))
+
 ## [1.2.5] - 2026-03-20
 
 ### Fixed
