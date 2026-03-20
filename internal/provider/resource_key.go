@@ -762,13 +762,19 @@ func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error
 		data.UserID = types.StringValue(userID)
 	}
 	// "key" may be at top level or inside "info" (as "token" or "key").
-	// Update the key attribute but use a hash for ID (never store raw key in ID).
-	if keyValue, ok := result["key"].(string); ok && keyValue != "" {
-		data.Key = types.StringValue(keyValue)
-		data.ID = types.StringValue(hashKeyForID(keyValue))
-	} else if keyValue, ok := info["token"].(string); ok && keyValue != "" {
-		data.Key = types.StringValue(keyValue)
-		data.ID = types.StringValue(hashKeyForID(keyValue))
+	// Only update data.Key when it is currently unknown or null (i.e. the key
+	// was auto-generated and we need to capture it).  When the user supplied a
+	// custom key value it is already known and must NOT be overwritten — the
+	// /key/info endpoint returns a hashed token, not the raw key, so
+	// overwriting would cause "inconsistent values for sensitive attribute".
+	if data.Key.IsUnknown() || data.Key.IsNull() {
+		if keyValue, ok := result["key"].(string); ok && keyValue != "" {
+			data.Key = types.StringValue(keyValue)
+			data.ID = types.StringValue(hashKeyForID(keyValue))
+		} else if keyValue, ok := info["token"].(string); ok && keyValue != "" {
+			data.Key = types.StringValue(keyValue)
+			data.ID = types.StringValue(hashKeyForID(keyValue))
+		}
 	}
 
 	// Handle models list - preserve null when API returns empty and config didn't specify models
