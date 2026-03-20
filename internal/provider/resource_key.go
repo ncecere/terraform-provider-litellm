@@ -186,8 +186,12 @@ func (r *KeyResource) Schema(ctx context.Context, req resource.SchemaRequest, re
 				Computed:    true,
 			},
 			"key_alias": schema.StringAttribute{
-				Description: "User-friendly alias for the key.",
+				Description: "User-friendly alias for the key. When service_account_id is set and key_alias is omitted, the provider defaults key_alias to the service_account_id value.",
 				Optional:    true,
+				Computed:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"duration": schema.StringAttribute{
 				Description: "Key validity duration.",
@@ -736,6 +740,8 @@ func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error
 	}
 	if keyAlias, ok := info["key_alias"].(string); ok && keyAlias != "" {
 		data.KeyAlias = types.StringValue(keyAlias)
+	} else if data.KeyAlias.IsUnknown() {
+		data.KeyAlias = types.StringNull()
 	}
 	if duration, ok := info["duration"].(string); ok && duration != "" {
 		data.Duration = types.StringValue(duration)

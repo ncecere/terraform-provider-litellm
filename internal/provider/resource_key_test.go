@@ -611,6 +611,221 @@ func TestReadKeyTagsFromMetadata(t *testing.T) {
 	}
 }
 
+// TestServiceAccountIDDefaultsKeyAlias verifies that when service_account_id is
+// set but key_alias is omitted, buildKeyRequest populates key_alias with the
+// service_account_id value — matching the documented behaviour.
+// TestMinimalKeyNoKeyAliasNoServiceAccountID verifies the plain minimal case:
+// neither key_alias nor service_account_id is configured.
+//
+//  resource "litellm_key" "minimal" {}
+//
+// Expected behaviour:
+//  - buildKeyRequest must NOT include "key_alias" in the payload.
+//  - readKey with an Unknown key_alias (Computed, unresolved) and an API
+//    response that contains no key_alias must resolve the field to null —
+//    i.e. no "inconsistent result after apply" error and no perpetual
+//    "(known after apply)" on subsequent plans.
+func TestMinimalKeyNoKeyAliasNoServiceAccountID(t *testing.T) {
+	t.Parallel()
+
+	r := &KeyResource{}
+
+	// Simulate the plan-time model: everything is null/unknown.
+	data := &KeyResourceModel{
+		// key_alias is Unknown because it is Computed and the user did not set it.
+		KeyAlias: types.StringUnknown(),
+		// service_account_id is null because the user did not set it.
+		ServiceAccountID: types.StringNull(),
+	}
+
+	// 1. buildKeyRequest must NOT include key_alias when neither field is set.
+	keyReq := r.buildKeyRequest(context.Background(), data)
+	if _, exists := keyReq["key_alias"]; exists {
+		t.Errorf("key_alias must not appear in request when neither key_alias nor service_account_id is configured, got %v", keyReq["key_alias"])
+	}
+
+	// 2. readKey with an API that returns no key_alias must resolve Unknown → null.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"key": "sk-minimal-key-xyz",
+			"info": map[string]interface{}{
+				"token": "sk-minimal-key-xyz",
+				// key_alias deliberately absent — API never set one
+			},
+		})
+	}))
+	defer server.Close()
+
+	rc := &KeyResource{
+		client: &Client{
+			APIBase:    server.URL,
+			APIKey:     "test-key",
+			HTTPClient: server.Client(),
+		},
+	}
+
+	readData := KeyResourceModel{
+		ID:       types.StringValue(hashKeyForID("sk-minimal-key-xyz")),
+		Key:      types.StringValue("sk-minimal-key-xyz"),
+		KeyAlias: types.StringUnknown(), // Unknown = Computed, not yet resolved
+	}
+
+	if err := rc.readKey(context.Background(), &readData); err != nil {
+		t.Fatalf("readKey returned error: %v", err)
+	}
+
+	// Must not be Unknown (would cause "inconsistent result after apply").
+	if readData.KeyAlias.IsUnknown() {
+		t.Fatal("key_alias must not remain Unknown after readKey — this would cause 'inconsistent result after apply'")
+	}
+	// Must be null (not some unexpected string).
+	if !readData.KeyAlias.IsNull() {
+		t.Errorf("key_alias should be null when API returns no alias, got %q", readData.KeyAlias.ValueString())
+	}
+}
+
+func TestServiceAccountIDDefaultsKeyAlias(t *testing.T) {
+	t.Parallel()
+
+	r := &KeyResource{}
+	data := &KeyResourceModel{
+		ServiceAccountID: types.StringValue("github-ci"),
+		TeamID:           types.StringValue("team456"),
+		// key_alias deliberately omitted / null
+		KeyAlias: types.StringNull(),
+	}
+
+	keyReq := r.buildKeyRequest(context.Background(), data)
+
+	if keyReq["key_alias"] != "github-ci" {
+		t.Errorf("expected key_alias 'github-ci', got %v", keyReq["key_alias"])
+	}
+	if keyReq["team_id"] != "team456" {
+		t.Errorf("expected team_id 'team456', got %v", keyReq["team_id"])
+	}
+	// service_account_id should be stored in metadata, not as a top-level field
+	meta, ok := keyReq["metadata"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected metadata map in request")
+	}
+	if meta["service_account_id"] != "github-ci" {
+		t.Errorf("expected metadata.service_account_id 'github-ci', got %v", meta["service_account_id"])
+	}
+}
+
+// TestServiceAccountIDKeyAliasExplicitOverride verifies that an explicit
+// key_alias takes precedence over the service_account_id default.
+func TestServiceAccountIDKeyAliasExplicitOverride(t *testing.T) {
+	t.Parallel()
+
+	r := &KeyResource{}
+	data := &KeyResourceModel{
+		ServiceAccountID: types.StringValue("github-ci"),
+		KeyAlias:         types.StringValue("my-custom-alias"),
+	}
+
+	keyReq := r.buildKeyRequest(context.Background(), data)
+
+	if keyReq["key_alias"] != "my-custom-alias" {
+		t.Errorf("expected explicit key_alias 'my-custom-alias', got %v", keyReq["key_alias"])
+	}
+}
+
+// TestReadKeyKeyAliasFromServiceAccount verifies that when service_account_id
+// is set without key_alias, the provider successfully reads back the key_alias
+// that the API sets (previously caused "inconsistent result after apply" because
+// key_alias was Optional-only, not Optional+Computed).
+func TestReadKeyKeyAliasFromServiceAccount(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"key": "sk-svc-key-abc",
+			"info": map[string]interface{}{
+				"token":     "sk-svc-key-abc",
+				"key_alias": "github-ci",
+				"team_id":   "team456",
+			},
+		})
+	}))
+	defer server.Close()
+
+	r := &KeyResource{
+		client: &Client{
+			APIBase:    server.URL,
+			APIKey:     "test-key",
+			HTTPClient: server.Client(),
+		},
+	}
+
+	// Simulate the state after Create: key is known, key_alias is Unknown
+	// (Computed field not yet resolved).
+	data := KeyResourceModel{
+		ID:               types.StringValue(hashKeyForID("sk-svc-key-abc")),
+		Key:              types.StringValue("sk-svc-key-abc"),
+		ServiceAccountID: types.StringValue("github-ci"),
+		KeyAlias:         types.StringUnknown(), // Unknown = Computed, not yet set
+	}
+
+	if err := r.readKey(context.Background(), &data); err != nil {
+		t.Fatalf("readKey returned error: %v", err)
+	}
+
+	// After readKey the Unknown must be resolved — this is what was failing before the fix.
+	if data.KeyAlias.IsUnknown() {
+		t.Fatal("key_alias must not be Unknown after readKey")
+	}
+	if data.KeyAlias.ValueString() != "github-ci" {
+		t.Errorf("expected key_alias 'github-ci', got '%s'", data.KeyAlias.ValueString())
+	}
+}
+
+// TestReadKeyKeyAliasUnknownResolvesToNullWhenMissing verifies that an Unknown
+// key_alias is resolved to null (not left Unknown) when the API response does
+// not include a key_alias value.
+func TestReadKeyKeyAliasUnknownResolvesToNullWhenMissing(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"key": "sk-no-alias-key",
+			"info": map[string]interface{}{
+				"token": "sk-no-alias-key",
+				// key_alias intentionally absent
+			},
+		})
+	}))
+	defer server.Close()
+
+	r := &KeyResource{
+		client: &Client{
+			APIBase:    server.URL,
+			APIKey:     "test-key",
+			HTTPClient: server.Client(),
+		},
+	}
+
+	data := KeyResourceModel{
+		ID:       types.StringValue(hashKeyForID("sk-no-alias-key")),
+		Key:      types.StringValue("sk-no-alias-key"),
+		KeyAlias: types.StringUnknown(),
+	}
+
+	if err := r.readKey(context.Background(), &data); err != nil {
+		t.Fatalf("readKey returned error: %v", err)
+	}
+
+	if data.KeyAlias.IsUnknown() {
+		t.Fatal("key_alias must not remain Unknown after readKey when API returns no alias")
+	}
+	if !data.KeyAlias.IsNull() {
+		t.Errorf("expected key_alias to be null when API returns nothing, got '%s'", data.KeyAlias.ValueString())
+	}
+}
+
 func TestReadKeyTagsNoTagsAnywhere(t *testing.T) {
 	t.Parallel()
 
