@@ -172,6 +172,8 @@ The following arguments are supported:
 
 * `blocked` - (Optional) Whether this key is blocked.
 
+* `send_invite_email` - (Optional) Whether to send an invite email when the key is created. Only affects creation; ignored on subsequent reads and updates.
+
 ## Attribute Reference
 
 In addition to all arguments above, the following attributes are exported:

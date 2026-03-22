@@ -51,6 +51,7 @@ The following arguments are supported:
 * `teams` - (Optional) List of team IDs the user belongs to.
 * `models` - (Optional) List of model names the user is allowed to use.
 * `metadata` - (Optional) A map of key-value metadata pairs for the user.
+* `send_invite_email` - (Optional) Whether to send an invite email when the user is created. Only affects creation; ignored on subsequent reads and updates.
 
 ## Attribute Reference
 

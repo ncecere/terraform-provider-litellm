@@ -28,20 +28,21 @@ type UserResource struct {
 }
 
 type UserResourceModel struct {
-	ID             types.String  `tfsdk:"id"`
-	UserID         types.String  `tfsdk:"user_id"`
-	UserAlias      types.String  `tfsdk:"user_alias"`
-	UserEmail      types.String  `tfsdk:"user_email"`
-	UserRole       types.String  `tfsdk:"user_role"`
-	Teams          types.List    `tfsdk:"teams"`
-	Models         types.List    `tfsdk:"models"`
-	MaxBudget      types.Float64 `tfsdk:"max_budget"`
-	BudgetDuration types.String  `tfsdk:"budget_duration"`
-	TPMLimit       types.Int64   `tfsdk:"tpm_limit"`
-	RPMLimit       types.Int64   `tfsdk:"rpm_limit"`
-	AutoCreateKey  types.Bool    `tfsdk:"auto_create_key"`
-	Metadata       types.Map     `tfsdk:"metadata"`
-	Key            types.String  `tfsdk:"key"`
+	ID              types.String  `tfsdk:"id"`
+	UserID          types.String  `tfsdk:"user_id"`
+	UserAlias       types.String  `tfsdk:"user_alias"`
+	UserEmail       types.String  `tfsdk:"user_email"`
+	UserRole        types.String  `tfsdk:"user_role"`
+	Teams           types.List    `tfsdk:"teams"`
+	Models          types.List    `tfsdk:"models"`
+	MaxBudget       types.Float64 `tfsdk:"max_budget"`
+	BudgetDuration  types.String  `tfsdk:"budget_duration"`
+	TPMLimit        types.Int64   `tfsdk:"tpm_limit"`
+	RPMLimit        types.Int64   `tfsdk:"rpm_limit"`
+	AutoCreateKey   types.Bool    `tfsdk:"auto_create_key"`
+	Metadata        types.Map     `tfsdk:"metadata"`
+	Key             types.String  `tfsdk:"key"`
+	SendInviteEmail types.Bool    `tfsdk:"send_invite_email"`
 }
 
 func (r *UserResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -137,6 +138,10 @@ func (r *UserResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
 				},
+			},
+			"send_invite_email": schema.BoolAttribute{
+				Description: "Whether to send an invite email when the user is created. Only affects creation; ignored on read.",
+				Optional:    true,
 			},
 		},
 	}
@@ -308,6 +313,9 @@ func (r *UserResource) buildUserRequest(ctx context.Context, data *UserResourceM
 	// Boolean fields - check IsNull and IsUnknown (auto_create_key has default)
 	if !data.AutoCreateKey.IsNull() && !data.AutoCreateKey.IsUnknown() {
 		userReq["auto_create_key"] = data.AutoCreateKey.ValueBool()
+	}
+	if !data.SendInviteEmail.IsNull() && !data.SendInviteEmail.IsUnknown() {
+		userReq["send_invite_email"] = data.SendInviteEmail.ValueBool()
 	}
 
 	// List fields - check IsNull, IsUnknown, and len > 0

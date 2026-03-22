@@ -71,6 +71,7 @@ type KeyResourceModel struct {
 	EnforcedParams           types.List    `tfsdk:"enforced_params"`
 	Tags                     types.List    `tfsdk:"tags"`
 	Blocked                  types.Bool    `tfsdk:"blocked"`
+	SendInviteEmail          types.Bool    `tfsdk:"send_invite_email"`
 }
 
 func (r *KeyResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -261,6 +262,10 @@ func (r *KeyResource) Schema(ctx context.Context, req resource.SchemaRequest, re
 				Description: "Whether the key is blocked.",
 				Optional:    true,
 				Computed:    true,
+			},
+			"send_invite_email": schema.BoolAttribute{
+				Description: "Whether to send an invite email when the key is created. Only affects creation; ignored on read.",
+				Optional:    true,
 			},
 		},
 	}
@@ -525,6 +530,9 @@ func (r *KeyResource) buildKeyRequest(ctx context.Context, data *KeyResourceMode
 	// Boolean fields - check IsNull and IsUnknown
 	if !data.Blocked.IsNull() && !data.Blocked.IsUnknown() {
 		keyReq["blocked"] = data.Blocked.ValueBool()
+	}
+	if !data.SendInviteEmail.IsNull() && !data.SendInviteEmail.IsUnknown() {
+		keyReq["send_invite_email"] = data.SendInviteEmail.ValueBool()
 	}
 
 	// Models list - special handling for team models

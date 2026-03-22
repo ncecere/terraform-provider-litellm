@@ -761,14 +761,14 @@ func TestReadKeyTagsFromMetadata(t *testing.T) {
 // TestMinimalKeyNoKeyAliasNoServiceAccountID verifies the plain minimal case:
 // neither key_alias nor service_account_id is configured.
 //
-//  resource "litellm_key" "minimal" {}
+//	resource "litellm_key" "minimal" {}
 //
 // Expected behaviour:
-//  - buildKeyRequest must NOT include "key_alias" in the payload.
-//  - readKey with an Unknown key_alias (Computed, unresolved) and an API
-//    response that contains no key_alias must resolve the field to null —
-//    i.e. no "inconsistent result after apply" error and no perpetual
-//    "(known after apply)" on subsequent plans.
+//   - buildKeyRequest must NOT include "key_alias" in the payload.
+//   - readKey with an Unknown key_alias (Computed, unresolved) and an API
+//     response that contains no key_alias must resolve the field to null —
+//     i.e. no "inconsistent result after apply" error and no perpetual
+//     "(known after apply)" on subsequent plans.
 func TestMinimalKeyNoKeyAliasNoServiceAccountID(t *testing.T) {
 	t.Parallel()
 
@@ -1108,8 +1108,8 @@ func TestReadKeyPreservesUserProvidedKey(t *testing.T) {
 			// be hashed; simulate that here.
 			"key": hashedToken,
 			"info": map[string]interface{}{
-				"token":     hashedToken,
-				"key_alias": "my-alias",
+				"token":      hashedToken,
+				"key_alias":  "my-alias",
 				"max_budget": 50.0,
 			},
 		})
@@ -1234,4 +1234,37 @@ func TestReadKeyPopulatesUnknownKey(t *testing.T) {
 	if data.Key.ValueString() != apiReturnedKey {
 		t.Errorf("key should remain %q, got %q", apiReturnedKey, data.Key.ValueString())
 	}
+}
+
+// TestSendInviteEmailInBuildKeyRequest verifies that send_invite_email is
+// included in the API request when explicitly set (true or false), and omitted
+// when null — ensuring it is not sent on update calls when unconfigured.
+func TestSendInviteEmailInBuildKeyRequest(t *testing.T) {
+	t.Parallel()
+
+	r := &KeyResource{}
+
+	t.Run("included when true", func(t *testing.T) {
+		data := &KeyResourceModel{SendInviteEmail: types.BoolValue(true)}
+		req := r.buildKeyRequest(context.Background(), data)
+		if v, ok := req["send_invite_email"]; !ok || v != true {
+			t.Errorf("expected send_invite_email=true in request, got %v (ok=%v)", v, ok)
+		}
+	})
+
+	t.Run("included when false", func(t *testing.T) {
+		data := &KeyResourceModel{SendInviteEmail: types.BoolValue(false)}
+		req := r.buildKeyRequest(context.Background(), data)
+		if v, ok := req["send_invite_email"]; !ok || v != false {
+			t.Errorf("expected send_invite_email=false in request, got %v (ok=%v)", v, ok)
+		}
+	})
+
+	t.Run("omitted when null", func(t *testing.T) {
+		data := &KeyResourceModel{SendInviteEmail: types.BoolNull()}
+		req := r.buildKeyRequest(context.Background(), data)
+		if _, ok := req["send_invite_email"]; ok {
+			t.Error("send_invite_email must not appear in request when null")
+		}
+	})
 }

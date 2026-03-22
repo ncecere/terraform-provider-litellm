@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"context"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -214,5 +215,38 @@ func TestOldBehaviorWouldFail(t *testing.T) {
 			t.Errorf("old behavior created list with %d elements, expected 0", len(oldBehaviorResult.Elements()))
 		}
 		// This empty list != null, which is what Terraform would detect as inconsistent
+	})
+}
+
+// TestSendInviteEmailInBuildUserRequest verifies that send_invite_email is
+// included in the API request when explicitly set (true or false), and omitted
+// when null — ensuring it is not sent on update calls when unconfigured.
+func TestSendInviteEmailInBuildUserRequest(t *testing.T) {
+	t.Parallel()
+
+	r := &UserResource{}
+
+	t.Run("included when true", func(t *testing.T) {
+		data := &UserResourceModel{SendInviteEmail: types.BoolValue(true)}
+		req := r.buildUserRequest(context.Background(), data)
+		if v, ok := req["send_invite_email"]; !ok || v != true {
+			t.Errorf("expected send_invite_email=true in request, got %v (ok=%v)", v, ok)
+		}
+	})
+
+	t.Run("included when false", func(t *testing.T) {
+		data := &UserResourceModel{SendInviteEmail: types.BoolValue(false)}
+		req := r.buildUserRequest(context.Background(), data)
+		if v, ok := req["send_invite_email"]; !ok || v != false {
+			t.Errorf("expected send_invite_email=false in request, got %v (ok=%v)", v, ok)
+		}
+	})
+
+	t.Run("omitted when null", func(t *testing.T) {
+		data := &UserResourceModel{SendInviteEmail: types.BoolNull()}
+		req := r.buildUserRequest(context.Background(), data)
+		if _, ok := req["send_invite_email"]; ok {
+			t.Error("send_invite_email must not appear in request when null")
+		}
 	})
 }
