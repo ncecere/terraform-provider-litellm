@@ -77,8 +77,10 @@ internal_testing/
   resources/                   # one file per resource, minimal + full variants
     model_minimal.tf
     model_full.tf
+    model_wildcard.tf
     key_minimal.tf
     key_full.tf
+    key_service_account.tf
     key_block_minimal.tf       # blocks the minimal key (destructive)
     team_minimal.tf
     team_full.tf

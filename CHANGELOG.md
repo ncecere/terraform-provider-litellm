@@ -5,6 +5,69 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-03-20
+
+### Added
+- **New Resource**: `litellm_agent` — Manage LiteLLM Agents (A2A) with full CRUD support ([#59](https://github.com/ncecere/terraform-provider-litellm/issues/59))
+  - A2A agent card with capabilities, skills, provider metadata
+  - Object permissions for MCP servers, models, and other agents
+  - Rate limiting (TPM/RPM per-agent and per-session)
+  - Static/extra headers configuration
+  - Import support via agent ID
+- **New Data Source**: `litellm_agent` — Retrieve information about a single agent by ID
+- **New Data Source**: `litellm_agents` — List all agents
+- Unit tests for agent resource (build request minimal/full, read-back state, Unknown→null resolution)
+- Documentation for agent resource and data sources
+- **New Resource**: `litellm_project` — Manage LiteLLM Projects with full CRUD support ([#80](https://github.com/ncecere/terraform-provider-litellm/issues/80))
+  - Projects sit between teams and keys in the hierarchy
+  - Budget controls (max, soft, duration, per-model)
+  - Rate limiting (TPM/RPM global and per-model)
+  - Model access, metadata, tags
+  - Import support via project ID
+- **New Data Source**: `litellm_project` — Retrieve information about a single project by ID
+- **New Data Source**: `litellm_projects` — List all projects
+- Unit tests for project resource (build request minimal/full, read-back state, Unknown→null resolution)
+- Documentation for project resource and data sources
+
+### Changed
+- **`litellm_key`**, **`litellm_team`**, **`litellm_organization`**: `metadata` values that contain JSON objects or arrays (e.g. logging configuration) are now sent as native structured data to the API instead of escaped strings. Values are automatically JSON-decoded on write and JSON-encoded on read-back. The schema remains `map(string)` — use `jsonencode()` for complex values. ([#71](https://github.com/ncecere/terraform-provider-litellm/issues/71))
+
+## [1.2.5] - 2026-03-20
+
+### Fixed
+- **`litellm_key`**: Fixed "inconsistent values for sensitive attribute" error when supplying a custom key value. The `readKey` function was unconditionally overwriting `data.Key` with the hashed token returned by `/key/info`, which differs from the raw key the user provided. User-provided keys are now preserved during read-back. ([#79](https://github.com/ncecere/terraform-provider-litellm/issues/79))
+
+### Added
+- Unit tests for custom key preservation during read-back (user-provided key not overwritten by hashed token)
+
+### Contributors
+- FalconerTC (`@FalconerTC`) for reporting [#79](https://github.com/ncecere/terraform-provider-litellm/issues/79)
+
+## [1.2.4] - 2026-03-20
+
+### Fixed
+- **`litellm_model`**: Fixed "provider still indicated an unknown value for litellm_model.*.mode" error when using wildcard routing (e.g. `openai/*`). Wildcard routes may not have a `mode` set in the API response, leaving the `Computed` attribute Unknown after apply. The provider now resolves Unknown `mode` to null in `readModel`. ([#70](https://github.com/ncecere/terraform-provider-litellm/issues/70), [#74](https://github.com/ncecere/terraform-provider-litellm/pull/74))
+- **`litellm_key`**: Fixed 404 "Key not found in database" error on read-back when the key value contains URL-special characters (e.g. `#`). The `#` character was interpreted as a URL fragment delimiter, silently truncating the key before it reached the server. The key value is now percent-encoded with `url.QueryEscape()`. ([#73](https://github.com/ncecere/terraform-provider-litellm/issues/73), [#75](https://github.com/ncecere/terraform-provider-litellm/pull/75))
+- **`litellm_key`**: Fixed "Provider produced inconsistent result after apply: .key_alias was null, but now cty.StringVal(...)" error when using `service_account_id` without explicitly setting `key_alias`. The `key_alias` attribute is now `Optional + Computed` so the provider can accept the API-defaulted value. ([#76](https://github.com/ncecere/terraform-provider-litellm/issues/76), [#78](https://github.com/ncecere/terraform-provider-litellm/pull/78))
+
+### Added
+- Unit test for wildcard routing mode resolution (Unknown → null when API returns no mode)
+- Unit test for URL-encoding of special characters in key values during `/key/info` requests
+- Unit tests for `key_alias` with `service_account_id` (default aliasing, explicit override, Unknown resolution)
+- Smoke test configs: `model_wildcard.tf`, `key_service_account.tf`
+
+### Contributors
+- ramundomario (`@ramundomario`) for [#74](https://github.com/ncecere/terraform-provider-litellm/pull/74), [#75](https://github.com/ncecere/terraform-provider-litellm/pull/75), [#78](https://github.com/ncecere/terraform-provider-litellm/pull/78)
+- FalconerTC (`@FalconerTC`) for confirming [#70](https://github.com/ncecere/terraform-provider-litellm/issues/70)
+
+## [1.2.3] - 2026-03-09
+
+### Fixed
+- **`litellm_key`**: Fixed provider crash (nil pointer dereference) during state upgrade from schema v0 → v1. The `UpgradeState` handler was calling `req.State.GetAttribute()` which requires `PriorSchema` to be set; since `PriorSchema` was nil, `req.State` was nil and the call panicked. The upgrader now uses `req.RawState.JSON` to read the prior state and `resp.DynamicValue` to write the upgraded state, which work without a prior schema.
+
+### Added
+- Unit tests for the v0 → v1 state upgrader covering the happy path (ID is hashed, other attributes preserved), nil `RawState`, empty ID, and invalid JSON inputs.
+
 ## [1.2.2] - 2026-03-09
 
 ### Fixed

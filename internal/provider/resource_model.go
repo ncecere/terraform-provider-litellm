@@ -719,6 +719,15 @@ func (r *ModelResource) readModel(ctx context.Context, data *ModelResourceModel)
 		data.AccessGroups, _ = types.ListValue(types.StringType, []attr.Value{})
 	}
 
+	// Ensure mode is never Unknown after a Read. Terraform requires all
+	// Computed attributes to resolve to a known (or null) value after apply.
+	// Wildcard routes (e.g. openai/*) may not have a mode set in the API
+	// response, which would leave the attribute Unknown and cause:
+	//   "provider still indicated an unknown value for litellm_model.*.mode"
+	if data.Mode.IsUnknown() {
+		data.Mode = types.StringNull()
+	}
+
 	return nil
 }
 

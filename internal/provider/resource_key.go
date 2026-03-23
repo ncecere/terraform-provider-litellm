@@ -3,7 +3,9 @@ package provider
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
+	"net/url"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -12,6 +14,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
 )
 
 var _ resource.Resource = &KeyResource{}
@@ -182,8 +186,12 @@ func (r *KeyResource) Schema(ctx context.Context, req resource.SchemaRequest, re
 				Computed:    true,
 			},
 			"key_alias": schema.StringAttribute{
-				Description: "User-friendly alias for the key.",
+				Description: "User-friendly alias for the key. When service_account_id is set and key_alias is omitted, the provider defaults key_alias to the service_account_id value.",
 				Optional:    true,
+				Computed:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"duration": schema.StringAttribute{
 				Description: "Key validity duration.",
@@ -394,18 +402,69 @@ func (r *KeyResource) ImportState(ctx context.Context, req resource.ImportStateR
 func (r *KeyResource) UpgradeState(ctx context.Context) map[int64]resource.StateUpgrader {
 	return map[int64]resource.StateUpgrader{
 		0: {
-			PriorSchema: nil, // nil tells the framework to skip schema validation on the prior state
+			PriorSchema: nil,
 			StateUpgrader: func(ctx context.Context, req resource.UpgradeStateRequest, resp *resource.UpgradeStateResponse) {
-				// In v0, "id" contained the raw API key (same value as "key").
-				var rawID string
-				resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("id"), &rawID)...)
-				if resp.Diagnostics.HasError() {
+				// PriorSchema is nil, so req.State is unavailable.
+				// Use RawState JSON to read the prior state.
+				if req.RawState == nil {
+					resp.Diagnostics.AddError(
+						"Unable to Upgrade State",
+						"RawState is nil. This is a bug in the provider.",
+					)
 					return
 				}
 
-				// Write the hashed ID back. The "key" attribute already holds
-				// the raw key value, so it doesn't need updating.
-				resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), hashKeyForID(rawID))...)
+				var priorState map[string]json.RawMessage
+				if err := json.Unmarshal(req.RawState.JSON, &priorState); err != nil {
+					resp.Diagnostics.AddError(
+						"Unable to Upgrade State",
+						fmt.Sprintf("Failed to unmarshal prior state JSON: %s", err),
+					)
+					return
+				}
+
+				// In v0, "id" contained the raw API key.
+				var rawID string
+				if idJSON, ok := priorState["id"]; ok {
+					if err := json.Unmarshal(idJSON, &rawID); err != nil {
+						resp.Diagnostics.AddError(
+							"Unable to Upgrade State",
+							fmt.Sprintf("Failed to unmarshal 'id' from prior state: %s", err),
+						)
+						return
+					}
+				}
+
+				if rawID == "" {
+					resp.Diagnostics.AddError(
+						"Unable to Upgrade State",
+						"Prior state 'id' is empty.",
+					)
+					return
+				}
+
+				tflog.Info(ctx, "Upgrading litellm_key state from v0 to v1: hashing raw key ID")
+
+				// Replace "id" with the hashed value in the raw state, then
+				// write the full JSON back via DynamicValue so all other
+				// attributes are preserved.
+				priorState["id"], _ = json.Marshal(hashKeyForID(rawID))
+
+				upgradedJSON, err := json.Marshal(priorState)
+				if err != nil {
+					resp.Diagnostics.AddError(
+						"Unable to Upgrade State",
+						fmt.Sprintf("Failed to marshal upgraded state: %s", err),
+					)
+					return
+				}
+
+				// Use DynamicValue to pass the upgraded JSON directly to the
+				// framework. This avoids needing a typed State object and
+				// preserves all existing attributes as-is.
+				resp.DynamicValue = &tfprotov6.DynamicValue{
+					JSON: upgradedJSON,
+				}
 			},
 		},
 	}
@@ -544,7 +603,10 @@ func (r *KeyResource) buildKeyRequest(ctx context.Context, data *KeyResourceMode
 		var metadata map[string]string
 		data.Metadata.ElementsAs(ctx, &metadata, false)
 		if len(metadata) > 0 {
-			keyReq["metadata"] = metadata
+			// Convert string values that contain JSON objects/arrays to native
+			// types so the API receives them as structured data rather than
+			// escaped strings (e.g. logging configuration).
+			keyReq["metadata"] = convertMetadataToNative(metadata)
 		}
 	}
 
@@ -619,7 +681,10 @@ func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error
 		return fmt.Errorf("key value is empty, cannot read key info")
 	}
 
-	endpoint := fmt.Sprintf("/key/info?key=%s", keyVal)
+	// url.QueryEscape ensures special characters in the key (e.g. '#') are
+	// percent-encoded and not interpreted as a URL fragment, which would
+	// silently truncate the key value before it reaches the server.
+	endpoint := fmt.Sprintf("/key/info?key=%s", url.QueryEscape(keyVal))
 
 	var result map[string]interface{}
 	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
@@ -678,6 +743,8 @@ func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error
 	}
 	if keyAlias, ok := info["key_alias"].(string); ok && keyAlias != "" {
 		data.KeyAlias = types.StringValue(keyAlias)
+	} else if data.KeyAlias.IsUnknown() {
+		data.KeyAlias = types.StringNull()
 	}
 	if duration, ok := info["duration"].(string); ok && duration != "" {
 		data.Duration = types.StringValue(duration)
@@ -698,13 +765,19 @@ func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error
 		data.UserID = types.StringValue(userID)
 	}
 	// "key" may be at top level or inside "info" (as "token" or "key").
-	// Update the key attribute but use a hash for ID (never store raw key in ID).
-	if keyValue, ok := result["key"].(string); ok && keyValue != "" {
-		data.Key = types.StringValue(keyValue)
-		data.ID = types.StringValue(hashKeyForID(keyValue))
-	} else if keyValue, ok := info["token"].(string); ok && keyValue != "" {
-		data.Key = types.StringValue(keyValue)
-		data.ID = types.StringValue(hashKeyForID(keyValue))
+	// Only update data.Key when it is currently unknown or null (i.e. the key
+	// was auto-generated and we need to capture it).  When the user supplied a
+	// custom key value it is already known and must NOT be overwritten — the
+	// /key/info endpoint returns a hashed token, not the raw key, so
+	// overwriting would cause "inconsistent values for sensitive attribute".
+	if data.Key.IsUnknown() || data.Key.IsNull() {
+		if keyValue, ok := result["key"].(string); ok && keyValue != "" {
+			data.Key = types.StringValue(keyValue)
+			data.ID = types.StringValue(hashKeyForID(keyValue))
+		} else if keyValue, ok := info["token"].(string); ok && keyValue != "" {
+			data.Key = types.StringValue(keyValue)
+			data.ID = types.StringValue(hashKeyForID(keyValue))
+		}
 	}
 
 	// Handle models list - preserve null when API returns empty and config didn't specify models
@@ -837,12 +910,11 @@ func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error
 
 		metaMap := make(map[string]attr.Value)
 		for k, v := range metadata {
-			if str, ok := v.(string); ok {
-				// If user had specific keys, only keep those. Otherwise keep all.
-				if len(configuredKeys) == 0 || configuredKeys[k] {
-					metaMap[k] = types.StringValue(str)
-				}
+			// If user had specific keys, only keep those. Otherwise keep all.
+			if len(configuredKeys) > 0 && !configuredKeys[k] {
+				continue
 			}
+			metaMap[k] = types.StringValue(metadataValueToString(v))
 		}
 		if len(metaMap) > 0 {
 			data.Metadata, _ = types.MapValue(types.StringType, metaMap)

@@ -416,7 +416,7 @@ func (r *TeamResource) buildTeamRequest(ctx context.Context, data *TeamResourceM
 		var metadata map[string]string
 		data.Metadata.ElementsAs(ctx, &metadata, false)
 		if len(metadata) > 0 {
-			teamReq["metadata"] = metadata
+			teamReq["metadata"] = convertMetadataToNative(metadata)
 		}
 	}
 
@@ -542,11 +542,10 @@ func (r *TeamResource) readTeam(ctx context.Context, data *TeamResourceModel) er
 
 		metaMap := make(map[string]attr.Value)
 		for k, v := range metadata {
-			if str, ok := v.(string); ok {
-				if len(configuredKeys) == 0 || configuredKeys[k] {
-					metaMap[k] = types.StringValue(str)
-				}
+			if len(configuredKeys) > 0 && !configuredKeys[k] {
+				continue
 			}
+			metaMap[k] = types.StringValue(metadataValueToString(v))
 		}
 		if len(metaMap) > 0 {
 			data.Metadata, _ = types.MapValue(types.StringType, metaMap)

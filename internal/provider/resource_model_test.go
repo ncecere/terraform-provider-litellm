@@ -96,8 +96,8 @@ func TestReadModelTeamScopedPrefersTeamPublicModelName(t *testing.T) {
 	}
 
 	data := ModelResourceModel{
-		ID:               types.StringValue("model-123"),
-		AccessGroups:     types.ListUnknown(types.StringType),
+		ID:                      types.StringValue("model-123"),
+		AccessGroups:            types.ListUnknown(types.StringType),
 		AdditionalLiteLLMParams: types.MapUnknown(types.StringType),
 	}
 
@@ -110,6 +110,69 @@ func TestReadModelTeamScopedPrefersTeamPublicModelName(t *testing.T) {
 	}
 	if got := data.TeamID.ValueString(); got != teamID {
 		t.Fatalf("expected team_id=%q, got %q", teamID, got)
+	}
+}
+
+// TestReadModelResolvesUnknownModeForWildcardRouting verifies that when the
+// LiteLLM API does not return a "mode" value (e.g. for wildcard routes like
+// openai/*), readModel resolves the Unknown mode to Null rather than leaving
+// it Unknown. Terraform requires all Computed attributes to be known (or null)
+// after apply, so leaving it Unknown causes:
+//
+//	"provider still indicated an unknown value for litellm_model.*.mode"
+func TestReadModelResolvesUnknownModeForWildcardRouting(t *testing.T) {
+	t.Parallel()
+
+	// Simulate LiteLLM returning a model with no "mode" in model_info,
+	// which happens for wildcard routes (e.g. openai/*).
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": []interface{}{
+				map[string]interface{}{
+					"model_name": "openai/*",
+					"litellm_params": map[string]interface{}{
+						"custom_llm_provider": "openai",
+						"model":               "openai/openai/*",
+					},
+					"model_info": map[string]interface{}{
+						"base_model": "openai/*",
+						// "mode" is intentionally absent – wildcard routes have no mode
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	r := &ModelResource{
+		client: &Client{
+			APIBase:    server.URL,
+			APIKey:     "test-key",
+			HTTPClient: server.Client(),
+		},
+	}
+
+	// Simulate the state that Terraform builds from the plan when mode is not
+	// specified in config: Computed+Optional means mode is Unknown pre-apply.
+	data := ModelResourceModel{
+		ID:                      types.StringValue("wildcard-model-123"),
+		Mode:                    types.StringUnknown(),
+		AccessGroups:            types.ListUnknown(types.StringType),
+		AdditionalLiteLLMParams: types.MapUnknown(types.StringType),
+	}
+
+	if err := r.readModel(context.Background(), &data); err != nil {
+		t.Fatalf("readModel returned error: %v", err)
+	}
+
+	if data.Mode.IsUnknown() {
+		t.Fatal("mode must not be Unknown after read (would cause 'provider returned unknown value after apply' error)")
+	}
+	// When no mode is returned by the API, the attribute should be null
+	// (not an empty string – that would be a non-null known value).
+	if !data.Mode.IsNull() {
+		t.Fatalf("mode should be null when API returns no mode, got %q", data.Mode.ValueString())
 	}
 }
 

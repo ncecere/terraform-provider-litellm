@@ -83,6 +83,27 @@ resource "litellm_key" "service_account" {
 }
 ```
 
+### Key with Complex Metadata (Logging Configuration)
+
+```hcl
+resource "litellm_key" "with_logging" {
+  key_alias = "logged-key"
+
+  metadata = {
+    environment = "production"
+    logging = jsonencode([
+      {
+        callback_name = "langsmith"
+        callback_type = "success"
+        callback_vars = {
+          langsmith_project = "my-project"
+        }
+      }
+    ])
+  }
+}
+```
+
 ## Argument Reference
 
 The following arguments are supported:
@@ -111,7 +132,7 @@ The following arguments are supported:
 
 * `max_parallel_requests` - (Optional) Maximum number of parallel requests allowed.
 
-* `metadata` - (Optional) Map of string metadata associated with this key.
+* `metadata` - (Optional) Map of metadata associated with this key. Values are strings; use `jsonencode()` for complex values (objects, arrays) such as logging configuration — they will be sent as native JSON to the API.
 
 * `tpm_limit` - (Optional) Tokens per minute limit.
 

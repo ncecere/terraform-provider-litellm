@@ -80,7 +80,7 @@ The following arguments are supported:
 - `model_rpm_limit` - (Map of Int64) Per-model requests per minute limits.
 - `model_tpm_limit` - (Map of Int64) Per-model tokens per minute limits.
 - `budget_duration` - (String) Duration of the budget window (e.g., `"30d"`, `"1h"`, `"7d"`).
-- `metadata` - (Map of String) Key-value metadata associated with the organization.
+- `metadata` - (Map of String) Metadata associated with the organization. Values are strings; use `jsonencode()` for complex values (objects, arrays) — they will be sent as native JSON to the API.
 - `blocked` - (Bool) Whether the organization is blocked from making requests.
 - `tags` - (List of String) Tags associated with the organization.
 
@@ -104,4 +104,4 @@ terraform import litellm_organization.example <organization-id>
 - Organizations are the top-level entity in LiteLLM's hierarchy.
 - Teams belong to organizations.
 - Budget limits at the organization level apply to all teams within it.
-- The `metadata` attribute is a map of strings, not a JSON-encoded string.
+- The `metadata` attribute is a map of strings. Use `jsonencode()` for complex values (objects, arrays) — they will be sent as native JSON to the API.
