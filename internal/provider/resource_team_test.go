@@ -7,7 +7,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 )
 
 func TestReadTeamResolvesUnknownOptionalComputedCollections(t *testing.T) {
@@ -211,5 +213,293 @@ func TestReadTeamWithNestedTeamInfoResponse(t *testing.T) {
 	// Verify all Unknown fields are resolved (no more "known after apply")
 	if data.Prompts.IsUnknown() {
 		t.Fatal("prompts should be known after read")
+	}
+}
+
+func TestBuildTeamRequest_RouterSettingsWithFallbacks(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	fbModels, _ := types.ListValue(types.StringType, []attr.Value{
+		types.StringValue("gpt-4"),
+		types.StringValue("claude-3-haiku"),
+	})
+
+	entry, _ := types.ObjectValue(fallbackEntryAttrTypes, map[string]attr.Value{
+		"model":           types.StringValue("gpt-3.5-turbo"),
+		"fallback_models": fbModels,
+	})
+
+	fallbacksList, _ := types.ListValue(types.ObjectType{AttrTypes: fallbackEntryAttrTypes}, []attr.Value{entry})
+
+	rs, _ := types.ObjectValue(routerSettingsAttrTypes, map[string]attr.Value{
+		"fallbacks":                fallbacksList,
+		"context_window_fallbacks": types.ListNull(types.ObjectType{AttrTypes: fallbackEntryAttrTypes}),
+	})
+
+	r := &TeamResource{}
+	data := &TeamResourceModel{
+		TeamAlias:      types.StringValue("test-team"),
+		RouterSettings: rs,
+	}
+
+	req := r.buildTeamRequest(ctx, data, "team-123")
+
+	rsPayload, ok := req["router_settings"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("router_settings missing or wrong type: %T", req["router_settings"])
+	}
+
+	fbs, ok := rsPayload["fallbacks"].([]map[string][]string)
+	if !ok {
+		t.Fatalf("fallbacks wrong type: %T", rsPayload["fallbacks"])
+	}
+	if len(fbs) != 1 {
+		t.Fatalf("expected 1 fallback entry, got %d", len(fbs))
+	}
+
+	models, ok := fbs[0]["gpt-3.5-turbo"]
+	if !ok {
+		t.Fatal("expected fallback entry for gpt-3.5-turbo")
+	}
+	if len(models) != 2 || models[0] != "gpt-4" || models[1] != "claude-3-haiku" {
+		t.Errorf("fallback_models = %v, want [gpt-4, claude-3-haiku]", models)
+	}
+
+	if _, exists := rsPayload["context_window_fallbacks"]; exists {
+		t.Error("context_window_fallbacks should not be present when null")
+	}
+}
+
+func TestBuildTeamRequest_NullRouterSettings_SendsEmptyToAPI(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	r := &TeamResource{}
+	data := &TeamResourceModel{
+		TeamAlias:      types.StringValue("test-team"),
+		RouterSettings: types.ObjectNull(routerSettingsAttrTypes),
+	}
+
+	req := r.buildTeamRequest(ctx, data, "team-123")
+
+	rs, exists := req["router_settings"]
+	if !exists {
+		t.Fatal("router_settings should be present (as empty object) to clear server-side fallbacks")
+	}
+	rsMap, ok := rs.(map[string]interface{})
+	if !ok {
+		t.Fatalf("router_settings should be map[string]interface{}, got %T", rs)
+	}
+	if len(rsMap) != 0 {
+		t.Errorf("router_settings should be empty to clear fallbacks, got %v", rsMap)
+	}
+}
+
+func TestReadTeam_RouterSettingsFromAPI(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		switch r.URL.Path {
+		case "/team/info":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"team_alias": "fallback-team",
+				"blocked":    false,
+				"router_settings": map[string]interface{}{
+					"fallbacks": []interface{}{
+						map[string]interface{}{
+							"gpt-3.5-turbo": []interface{}{"gpt-4", "claude-3-haiku"},
+						},
+					},
+					"context_window_fallbacks": []interface{}{
+						map[string]interface{}{
+							"gpt-3.5-turbo": []interface{}{"gpt-4-32k"},
+						},
+					},
+				},
+			})
+		case "/team/permissions_list":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"team_member_permissions": []string{},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	r := &TeamResource{
+		client: &Client{
+			APIBase:    server.URL,
+			APIKey:     "test-key",
+			HTTPClient: server.Client(),
+		},
+	}
+
+	// RouterSettings must be non-null so readTeam populates it
+	emptyRS, _ := types.ObjectValue(routerSettingsAttrTypes, map[string]attr.Value{
+		"fallbacks":                types.ListNull(types.ObjectType{AttrTypes: fallbackEntryAttrTypes}),
+		"context_window_fallbacks": types.ListNull(types.ObjectType{AttrTypes: fallbackEntryAttrTypes}),
+	})
+
+	data := TeamResourceModel{
+		ID:             types.StringValue("team-456"),
+		TeamAlias:      types.StringValue("fallback-team"),
+		RouterSettings: emptyRS,
+	}
+
+	if err := r.readTeam(context.Background(), &data); err != nil {
+		t.Fatalf("readTeam returned error: %v", err)
+	}
+
+	if data.RouterSettings.IsNull() {
+		t.Fatal("router_settings should not be null after read")
+	}
+
+	var rs RouterSettingsModel
+	data.RouterSettings.As(context.Background(), &rs, basetypes.ObjectAsOptions{})
+
+	if rs.Fallbacks.IsNull() {
+		t.Fatal("fallbacks should not be null")
+	}
+
+	var entries []FallbackEntryModel
+	rs.Fallbacks.ElementsAs(context.Background(), &entries, false)
+
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 fallback entry, got %d", len(entries))
+	}
+	if entries[0].Model.ValueString() != "gpt-3.5-turbo" {
+		t.Errorf("model = %s, want gpt-3.5-turbo", entries[0].Model.ValueString())
+	}
+
+	var fbModels []string
+	entries[0].FallbackModels.ElementsAs(context.Background(), &fbModels, false)
+	if len(fbModels) != 2 || fbModels[0] != "gpt-4" || fbModels[1] != "claude-3-haiku" {
+		t.Errorf("fallback_models = %v, want [gpt-4 claude-3-haiku]", fbModels)
+	}
+
+	// Verify context_window_fallbacks
+	if rs.ContextWindowFallbacks.IsNull() {
+		t.Fatal("context_window_fallbacks should not be null")
+	}
+
+	var cwEntries []FallbackEntryModel
+	rs.ContextWindowFallbacks.ElementsAs(context.Background(), &cwEntries, false)
+
+	if len(cwEntries) != 1 {
+		t.Fatalf("expected 1 context_window_fallback entry, got %d", len(cwEntries))
+	}
+	if cwEntries[0].Model.ValueString() != "gpt-3.5-turbo" {
+		t.Errorf("model = %s, want gpt-3.5-turbo", cwEntries[0].Model.ValueString())
+	}
+
+	var cwModels []string
+	cwEntries[0].FallbackModels.ElementsAs(context.Background(), &cwModels, false)
+	if len(cwModels) != 1 || cwModels[0] != "gpt-4-32k" {
+		t.Errorf("context_window fallback_models = %v, want [gpt-4-32k]", cwModels)
+	}
+}
+
+func TestReadTeam_NullRouterSettingsWhenAPIHasNone(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		switch r.URL.Path {
+		case "/team/info":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"team_alias": "no-fallback-team",
+				"blocked":    false,
+			})
+		case "/team/permissions_list":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"team_member_permissions": []string{},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	r := &TeamResource{
+		client: &Client{
+			APIBase:    server.URL,
+			APIKey:     "test-key",
+			HTTPClient: server.Client(),
+		},
+	}
+
+	data := TeamResourceModel{
+		ID:             types.StringValue("team-789"),
+		TeamAlias:      types.StringValue("no-fallback-team"),
+		RouterSettings: types.ObjectNull(routerSettingsAttrTypes),
+	}
+
+	if err := r.readTeam(context.Background(), &data); err != nil {
+		t.Fatalf("readTeam returned error: %v", err)
+	}
+
+	if !data.RouterSettings.IsNull() {
+		t.Fatal("router_settings should be null when API has no router_settings")
+	}
+}
+
+func TestReadTeam_DetectsDriftWhenAPIStillHasFallbacks(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		switch r.URL.Path {
+		case "/team/info":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"team_alias": "stale-fallback-team",
+				"blocked":    false,
+				"router_settings": map[string]interface{}{
+					"fallbacks": []interface{}{
+						map[string]interface{}{
+							"gpt-3.5-turbo": []interface{}{"gpt-4"},
+						},
+					},
+				},
+			})
+		case "/team/permissions_list":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"team_member_permissions": []string{},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	r := &TeamResource{
+		client: &Client{
+			APIBase:    server.URL,
+			APIKey:     "test-key",
+			HTTPClient: server.Client(),
+		},
+	}
+
+	// Simulate: user removed router_settings from config (state is null),
+	// but the API still has fallbacks from a previous apply.
+	data := TeamResourceModel{
+		ID:             types.StringValue("team-drift"),
+		TeamAlias:      types.StringValue("stale-fallback-team"),
+		RouterSettings: types.ObjectNull(routerSettingsAttrTypes),
+	}
+
+	if err := r.readTeam(context.Background(), &data); err != nil {
+		t.Fatalf("readTeam returned error: %v", err)
+	}
+
+	// readTeam should now report the API's actual state (non-null),
+	// so Terraform detects the drift and plans to clear it.
+	if data.RouterSettings.IsNull() {
+		t.Fatal("router_settings should NOT be null -- API still has fallbacks, Terraform must detect drift")
 	}
 }
