@@ -164,11 +164,19 @@ func (d *ModelsListDataSource) Read(ctx context.Context, req datasource.ReadRequ
 			if teamID, ok := modelInfo["team_id"].(string); ok {
 				item.TeamID = types.StringValue(teamID)
 			}
+			// Prefer team_public_model_name for team-scoped models
+			if teamID, _ := modelInfo["team_id"].(string); teamID != "" {
+				if publicName, ok := modelInfo["team_public_model_name"].(string); ok && publicName != "" {
+					item.ModelName = types.StringValue(publicName)
+				}
+			}
 		}
 
-		// Get model name
-		if modelName, ok := modelMap["model_name"].(string); ok {
-			item.ModelName = types.StringValue(modelName)
+		// Get model name (use top-level if not set from team_public_model_name)
+		if item.ModelName.ValueString() == "" {
+			if modelName, ok := modelMap["model_name"].(string); ok {
+				item.ModelName = types.StringValue(modelName)
+			}
 		}
 
 		// Get litellm_params

@@ -136,9 +136,19 @@ func (d *ModelDataSource) Read(ctx context.Context, req datasource.ReadRequest, 
 	// Set ID
 	data.ID = data.ModelID
 
-	// Update fields from response
-	if modelName, ok := result["model_name"].(string); ok {
-		data.ModelName = types.StringValue(modelName)
+	// Update fields from response (prefer team_public_model_name for team-scoped models)
+	data.ModelName = types.StringValue("")
+	if modelInfo, ok := result["model_info"].(map[string]interface{}); ok {
+		if teamID, _ := modelInfo["team_id"].(string); teamID != "" {
+			if publicName, ok := modelInfo["team_public_model_name"].(string); ok && publicName != "" {
+				data.ModelName = types.StringValue(publicName)
+			}
+		}
+	}
+	if data.ModelName.ValueString() == "" {
+		if modelName, ok := result["model_name"].(string); ok {
+			data.ModelName = types.StringValue(modelName)
+		}
 	}
 
 	// Parse litellm_params
