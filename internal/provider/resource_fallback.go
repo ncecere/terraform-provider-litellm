@@ -115,7 +115,9 @@ func (r *FallbackResource) Read(ctx context.Context, req resource.ReadRequest, r
 		return
 	}
 
-	if err := r.readFallback(ctx, &data); err != nil {
+	if err := RetryOnNotFound(ctx, func() error {
+		return r.readFallback(ctx, &data)
+	}, 3); err != nil {
 		if IsNotFoundError(err) {
 			resp.State.RemoveResource(ctx)
 			return

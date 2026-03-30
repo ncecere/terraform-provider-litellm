@@ -160,7 +160,9 @@ func (r *TagResource) Read(ctx context.Context, req resource.ReadRequest, resp *
 		return
 	}
 
-	if err := r.readTag(ctx, &data); err != nil {
+	if err := RetryOnNotFound(ctx, func() error {
+		return r.readTag(ctx, &data)
+	}, 3); err != nil {
 		if IsNotFoundError(err) {
 			resp.State.RemoveResource(ctx)
 			return

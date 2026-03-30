@@ -191,7 +191,9 @@ func (r *OrganizationResource) Read(ctx context.Context, req resource.ReadReques
 		return
 	}
 
-	if err := r.readOrganization(ctx, &data); err != nil {
+	if err := RetryOnNotFound(ctx, func() error {
+		return r.readOrganization(ctx, &data)
+	}, 3); err != nil {
 		if IsNotFoundError(err) {
 			resp.State.RemoveResource(ctx)
 			return

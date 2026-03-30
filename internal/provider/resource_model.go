@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -278,7 +277,9 @@ func (r *ModelResource) Create(ctx context.Context, req resource.CreateRequest, 
 	data.ID = types.StringValue(modelID)
 
 	// Read back to ensure consistency
-	if err := r.readModelWithRetry(ctx, &data, 5); err != nil {
+	if err := RetryOnNotFound(ctx, func() error {
+		return r.readModel(ctx, &data)
+	}, 5); err != nil {
 		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Model created but failed to read back: %s", err))
 	}
 
@@ -293,7 +294,9 @@ func (r *ModelResource) Read(ctx context.Context, req resource.ReadRequest, resp
 		return
 	}
 
-	err := r.readModel(ctx, &data)
+	err := RetryOnNotFound(ctx, func() error {
+		return r.readModel(ctx, &data)
+	}, 3)
 	if err != nil {
 		if IsNotFoundError(err) {
 			resp.State.RemoveResource(ctx)
@@ -716,33 +719,6 @@ func (r *ModelResource) readModel(ctx context.Context, data *ModelResourceModel)
 	}
 
 	return nil
-}
-
-func (r *ModelResource) readModelWithRetry(ctx context.Context, data *ModelResourceModel, maxRetries int) error {
-	var err error
-	delay := 1 * time.Second
-	maxDelay := 10 * time.Second
-
-	for i := 0; i < maxRetries; i++ {
-		err = r.readModel(ctx, data)
-		if err == nil {
-			return nil
-		}
-
-		if !IsNotFoundError(err) {
-			return err
-		}
-
-		if i < maxRetries-1 {
-			time.Sleep(delay)
-			delay *= 2
-			if delay > maxDelay {
-				delay = maxDelay
-			}
-		}
-	}
-
-	return err
 }
 
 // patchModel uses the PATCH /model/{model_id}/update endpoint for partial updates

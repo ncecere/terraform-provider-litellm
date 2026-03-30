@@ -118,7 +118,9 @@ func (r *AccessGroupResource) Read(ctx context.Context, req resource.ReadRequest
 		return
 	}
 
-	if err := r.readAccessGroup(ctx, &data); err != nil {
+	if err := RetryOnNotFound(ctx, func() error {
+		return r.readAccessGroup(ctx, &data)
+	}, 3); err != nil {
 		if IsNotFoundError(err) {
 			resp.State.RemoveResource(ctx)
 			return

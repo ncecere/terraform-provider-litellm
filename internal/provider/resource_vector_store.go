@@ -153,7 +153,9 @@ func (r *VectorStoreResource) Read(ctx context.Context, req resource.ReadRequest
 		return
 	}
 
-	if err := r.readVectorStore(ctx, &data); err != nil {
+	if err := RetryOnNotFound(ctx, func() error {
+		return r.readVectorStore(ctx, &data)
+	}, 3); err != nil {
 		if IsNotFoundError(err) {
 			resp.State.RemoveResource(ctx)
 			return

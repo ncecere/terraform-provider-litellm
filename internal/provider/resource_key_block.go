@@ -119,7 +119,9 @@ func (r *KeyBlockResource) Read(ctx context.Context, req resource.ReadRequest, r
 	endpoint := fmt.Sprintf("/key/info?key=%s", data.Key.ValueString())
 
 	var result map[string]interface{}
-	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
+	if err := RetryOnNotFound(ctx, func() error {
+		return r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result)
+	}, 3); err != nil {
 		if IsNotFoundError(err) {
 			// Key no longer exists, remove the block resource
 			resp.State.RemoveResource(ctx)

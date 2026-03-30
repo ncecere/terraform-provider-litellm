@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 )
 
 // APIError represents a structured API error with HTTP status code.
@@ -26,6 +27,35 @@ func IsNotFoundError(err error) bool {
 	}
 	apiErr, ok := err.(*APIError)
 	return ok && apiErr.StatusCode == http.StatusNotFound
+}
+
+// RetryOnNotFound retries a function up to maxRetries times if it returns a 404,
+// with exponential backoff. This handles eventual consistency after resource creation.
+func RetryOnNotFound(ctx context.Context, fn func() error, maxRetries int) error {
+	var err error
+	delay := 1 * time.Second
+	maxDelay := 10 * time.Second
+
+	for i := 0; i < maxRetries; i++ {
+		err = fn()
+		if err == nil || !IsNotFoundError(err) {
+			return err
+		}
+
+		if i < maxRetries-1 {
+			select {
+			case <-time.After(delay):
+				delay *= 2
+				if delay > maxDelay {
+					delay = maxDelay
+				}
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+	}
+
+	return err
 }
 
 // DoRequest performs an HTTP request with context and standard headers.

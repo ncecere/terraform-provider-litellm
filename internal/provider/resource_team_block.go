@@ -118,7 +118,9 @@ func (r *TeamBlockResource) Read(ctx context.Context, req resource.ReadRequest, 
 	endpoint := fmt.Sprintf("/team/info?team_id=%s", data.TeamID.ValueString())
 
 	var result map[string]interface{}
-	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
+	if err := RetryOnNotFound(ctx, func() error {
+		return r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result)
+	}, 3); err != nil {
 		if IsNotFoundError(err) {
 			// Team no longer exists, remove the block resource
 			resp.State.RemoveResource(ctx)

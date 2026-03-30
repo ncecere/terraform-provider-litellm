@@ -154,7 +154,9 @@ func (r *SearchToolResource) Read(ctx context.Context, req resource.ReadRequest,
 		return
 	}
 
-	if err := r.readSearchTool(ctx, &data); err != nil {
+	if err := RetryOnNotFound(ctx, func() error {
+		return r.readSearchTool(ctx, &data)
+	}, 3); err != nil {
 		if IsNotFoundError(err) {
 			resp.State.RemoveResource(ctx)
 			return

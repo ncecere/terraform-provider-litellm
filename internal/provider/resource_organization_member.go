@@ -185,7 +185,9 @@ func (r *OrganizationMemberResource) Read(ctx context.Context, req resource.Read
 	endpoint := fmt.Sprintf("/organization/info?organization_id=%s", orgID)
 
 	var result map[string]interface{}
-	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
+	if err := RetryOnNotFound(ctx, func() error {
+		return r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result)
+	}, 3); err != nil {
 		if IsNotFoundError(err) {
 			resp.State.RemoveResource(ctx)
 			return

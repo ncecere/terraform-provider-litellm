@@ -147,7 +147,9 @@ func (r *PromptResource) Read(ctx context.Context, req resource.ReadRequest, res
 		return
 	}
 
-	if err := r.readPrompt(ctx, &data); err != nil {
+	if err := RetryOnNotFound(ctx, func() error {
+		return r.readPrompt(ctx, &data)
+	}, 3); err != nil {
 		if IsNotFoundError(err) {
 			resp.State.RemoveResource(ctx)
 			return

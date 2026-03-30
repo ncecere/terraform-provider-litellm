@@ -147,7 +147,9 @@ func (r *BudgetResource) Read(ctx context.Context, req resource.ReadRequest, res
 		return
 	}
 
-	if err := r.readBudget(ctx, &data); err != nil {
+	if err := RetryOnNotFound(ctx, func() error {
+		return r.readBudget(ctx, &data)
+	}, 3); err != nil {
 		if IsNotFoundError(err) {
 			resp.State.RemoveResource(ctx)
 			return

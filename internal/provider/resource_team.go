@@ -223,7 +223,9 @@ func (r *TeamResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 		return
 	}
 
-	if err := r.readTeam(ctx, &data); err != nil {
+	if err := RetryOnNotFound(ctx, func() error {
+		return r.readTeam(ctx, &data)
+	}, 3); err != nil {
 		if IsNotFoundError(err) {
 			resp.State.RemoveResource(ctx)
 			return
