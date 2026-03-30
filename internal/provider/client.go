@@ -9,6 +9,25 @@ import (
 	"net/http"
 )
 
+// APIError represents a structured API error with HTTP status code.
+type APIError struct {
+	StatusCode int
+	Message    string
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("API request failed with status %d: %s", e.StatusCode, e.Message)
+}
+
+// IsNotFoundError checks if an error is specifically a 404 Not Found.
+func IsNotFoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+	apiErr, ok := err.(*APIError)
+	return ok && apiErr.StatusCode == http.StatusNotFound
+}
+
 // DoRequest performs an HTTP request with context and standard headers.
 func (c *Client) DoRequest(ctx context.Context, method, path string, body interface{}) (*http.Response, error) {
 	url := c.APIBase + path
@@ -58,7 +77,10 @@ func (c *Client) DoRequestWithResponse(ctx context.Context, method, path string,
 
 	// Handle non-2xx status codes
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(bodyBytes))
+		return &APIError{
+			StatusCode: resp.StatusCode,
+			Message:    string(bodyBytes),
+		}
 	}
 
 	// If no result expected, return early
@@ -78,26 +100,4 @@ func (c *Client) DoRequestWithResponse(ctx context.Context, method, path string,
 	return nil
 }
 
-// IsNotFoundError checks if the error message indicates a not found condition.
-func IsNotFoundError(err error) bool {
-	if err == nil {
-		return false
-	}
-	errStr := err.Error()
-	return contains(errStr, "not found") ||
-		contains(errStr, "404") ||
-		contains(errStr, "does not exist")
-}
 
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsImpl(s, substr))
-}
-
-func containsImpl(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
-}
