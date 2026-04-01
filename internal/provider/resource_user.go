@@ -39,8 +39,9 @@ type UserResourceModel struct {
 	BudgetDuration types.String  `tfsdk:"budget_duration"`
 	TPMLimit       types.Int64   `tfsdk:"tpm_limit"`
 	RPMLimit       types.Int64   `tfsdk:"rpm_limit"`
-	AutoCreateKey  types.Bool    `tfsdk:"auto_create_key"`
-	Metadata       types.Map     `tfsdk:"metadata"`
+	AutoCreateKey   types.Bool    `tfsdk:"auto_create_key"`
+	SendInviteEmail types.Bool    `tfsdk:"send_invite_email"`
+	Metadata        types.Map     `tfsdk:"metadata"`
 	Key            types.String  `tfsdk:"key"`
 }
 
@@ -123,6 +124,10 @@ func (r *UserResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 				Optional:    true,
 				Computed:    true,
 				Default:     booldefault.StaticBool(true),
+			},
+			"send_invite_email": schema.BoolAttribute{
+				Description: "Whether to send an invite email when creating or updating this user. This is an action parameter that triggers an email but is not stored as persistent state.",
+				Optional:    true,
 			},
 			"metadata": schema.MapAttribute{
 				Description: "Metadata for the user.",
@@ -308,6 +313,9 @@ func (r *UserResource) buildUserRequest(ctx context.Context, data *UserResourceM
 	// Boolean fields - check IsNull and IsUnknown (auto_create_key has default)
 	if !data.AutoCreateKey.IsNull() && !data.AutoCreateKey.IsUnknown() {
 		userReq["auto_create_key"] = data.AutoCreateKey.ValueBool()
+	}
+	if !data.SendInviteEmail.IsNull() && !data.SendInviteEmail.IsUnknown() {
+		userReq["send_invite_email"] = data.SendInviteEmail.ValueBool()
 	}
 
 	// List fields - check IsNull, IsUnknown, and len > 0

@@ -48,6 +48,7 @@ The following arguments are supported:
 * `tpm_limit` - (Optional) Tokens per minute limit for the user.
 * `rpm_limit` - (Optional) Requests per minute limit for the user.
 * `auto_create_key` - (Optional) Whether to automatically create an API key when the user is created. Defaults to `true`.
+* `send_invite_email` - (Optional) Whether to send an invite email when creating or updating this user. This is an action parameter — it triggers an email side-effect but is not stored as persistent state by LiteLLM. If not specified, no invite email is sent.
 * `teams` - (Optional) List of team IDs the user belongs to.
 * `models` - (Optional) List of model names the user is allowed to use.
 * `metadata` - (Optional) A map of key-value metadata pairs for the user.
