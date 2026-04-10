@@ -115,6 +115,8 @@ The LiteLLM provider supports the following resources:
 
 * [`litellm_prompt`](./resources/prompt.md) - Manage prompt templates
 * [`litellm_guardrail`](./resources/guardrail.md) - Manage content guardrails
+* [`litellm_policy`](./resources/policy.md) - Manage policies
+* [`litellm_policy_attachment`](./resources/policy_attachment.md) - Manage policy attachments
 * [`litellm_fallback`](./resources/fallback.md) - Manage model fallback configurations
 
 ### Integrations
@@ -138,6 +140,8 @@ The LiteLLM provider supports the following resources:
 * [`litellm_access_group`](./data-sources/access_group.md) - Retrieve access group information
 * [`litellm_prompt`](./data-sources/prompt.md) - Retrieve prompt information
 * [`litellm_guardrail`](./data-sources/guardrail.md) - Retrieve guardrail information
+* [`litellm_policy`](./data-sources/policy.md) - Retrieve policy information
+* [`litellm_policy_attachment`](./data-sources/policy_attachment.md) - Retrieve policy attachment information
 * [`litellm_fallback`](./data-sources/fallback.md) - Retrieve fallback configuration for a model
 * [`litellm_mcp_server`](./data-sources/mcp_server.md) - Retrieve MCP server information
 * [`litellm_search_tool`](./data-sources/search_tool.md) - Retrieve search tool information
@@ -155,6 +159,8 @@ The LiteLLM provider supports the following resources:
 * [`litellm_access_groups`](./data-sources/access_groups.md) - List all access groups
 * [`litellm_prompts`](./data-sources/prompts.md) - List all prompts
 * [`litellm_guardrails`](./data-sources/guardrails.md) - List all guardrails
+* [`litellm_policies`](./data-sources/policies.md) - List all policies
+* [`litellm_policy_attachments`](./data-sources/policy_attachments.md) - List all policy attachments
 * [`litellm_mcp_servers`](./data-sources/mcp_servers.md) - List all MCP servers
 * [`litellm_search_tools`](./data-sources/search_tools.md) - List all search tools
 
