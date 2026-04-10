@@ -1,6 +1,7 @@
 package litellm
 
 import (
+	"encoding/hex"
 	"fmt"
 	"log"
 
@@ -177,4 +178,13 @@ func mapToKey(data map[string]interface{}) *Key {
 
 func buildKeyForCreation(data map[string]interface{}) *Key {
 	return mapToKey(data)
+}
+
+// isSHA256Hash checks if a string is a valid SHA256 hash (64 hex characters)
+func isSHA256Hash(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	_, err := hex.DecodeString(s)
+	return err == nil
 }

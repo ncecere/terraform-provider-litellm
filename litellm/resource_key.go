@@ -2,6 +2,8 @@ package litellm
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
@@ -162,14 +164,31 @@ func resourceKeyCreate(ctx context.Context, d *schema.ResourceData, m interface{
 		return diag.FromErr(fmt.Errorf("error creating key: %s", err))
 	}
 
-	d.SetId(createdKey.Key)
+	hash := sha256.Sum256([]byte(createdKey.Key))
+	hashID := hex.EncodeToString(hash[:])
+	d.SetId(hashID)
+	d.Set("key", createdKey.Key)
 	return resourceKeyRead(ctx, d, m)
 }
 
 func resourceKeyRead(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	c := m.(*Client)
 
-	key, err := c.GetKey(d.Id())
+	// Silent migration: if ID is not SHA256 hash format, migrate it
+	currentID := d.Id()
+	if !isSHA256Hash(currentID) {
+		hash := sha256.Sum256([]byte(currentID))
+		newID := hex.EncodeToString(hash[:])
+		d.SetId(newID)
+		d.Set("key", currentID)
+	}
+
+	keyValue := d.Get("key").(string)
+	if keyValue == "" {
+		return diag.FromErr(fmt.Errorf("key value is empty in state for key resource %s; state may be corrupted", d.Id()))
+	}
+
+	key, err := c.GetKey(keyValue)
 	if err != nil {
 		return diag.FromErr(fmt.Errorf("error reading key: %s", err))
 	}
@@ -186,7 +205,8 @@ func resourceKeyRead(ctx context.Context, d *schema.ResourceData, m interface{})
 func resourceKeyUpdate(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	c := m.(*Client)
 
-	key := &Key{Key: d.Id()}
+	keyValue := d.Get("key").(string)
+	key := &Key{Key: keyValue}
 	mapResourceDataToKey(d, key)
 
 	_, err := c.UpdateKey(key)
@@ -200,7 +220,8 @@ func resourceKeyUpdate(ctx context.Context, d *schema.ResourceData, m interface{
 func resourceKeyDelete(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
 	c := m.(*Client)
 
-	err := c.DeleteKey(d.Id())
+	keyValue := d.Get("key").(string)
+	err := c.DeleteKey(keyValue)
 	if err != nil {
 		return diag.FromErr(fmt.Errorf("error deleting key: %s", err))
 	}
