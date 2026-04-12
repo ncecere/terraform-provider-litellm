@@ -70,6 +70,7 @@ type KeyResourceModel struct {
 	Prompts                  types.List    `tfsdk:"prompts"`
 	EnforcedParams           types.List    `tfsdk:"enforced_params"`
 	Tags                     types.List    `tfsdk:"tags"`
+	RouterSettings           types.Map     `tfsdk:"router_settings"`
 	Blocked                  types.Bool    `tfsdk:"blocked"`
 }
 
@@ -253,6 +254,12 @@ func (r *KeyResource) Schema(ctx context.Context, req resource.SchemaRequest, re
 			},
 			"tags": schema.ListAttribute{
 				Description: "Tags for the key.",
+				Optional:    true,
+				Computed:    true,
+				ElementType: types.StringType,
+			},
+			"router_settings": schema.MapAttribute{
+				Description: "Router settings for the key.",
 				Optional:    true,
 				Computed:    true,
 				ElementType: types.StringType,
@@ -599,6 +606,14 @@ func (r *KeyResource) buildKeyRequest(ctx context.Context, data *KeyResourceMode
 	}
 
 	// Map fields - check IsNull, IsUnknown, and len > 0
+	if !data.RouterSettings.IsNull() && !data.RouterSettings.IsUnknown() {
+		var routerSettings map[string]string
+		data.RouterSettings.ElementsAs(ctx, &routerSettings, false)
+		if len(routerSettings) > 0 {
+			keyReq["router_settings"] = routerSettings
+		}
+	}
+
 	if !data.Metadata.IsNull() && !data.Metadata.IsUnknown() {
 		var metadata map[string]string
 		data.Metadata.ElementsAs(ctx, &metadata, false)
@@ -892,6 +907,19 @@ func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error
 		data.Tags, _ = types.ListValue(types.StringType, tagsList)
 	} else if !data.Tags.IsNull() {
 		data.Tags, _ = types.ListValue(types.StringType, []attr.Value{})
+	}
+
+	// Handle router_settings map - preserve null when API returns empty and config didn't specify router_settings
+	if routerSettings, ok := info["router_settings"].(map[string]interface{}); ok && len(routerSettings) > 0 {
+		settingsMap := make(map[string]attr.Value)
+		for k, v := range routerSettings {
+			if str, ok := v.(string); ok {
+				settingsMap[k] = types.StringValue(str)
+			}
+		}
+		data.RouterSettings, _ = types.MapValue(types.StringType, settingsMap)
+	} else if !data.RouterSettings.IsNull() {
+		data.RouterSettings, _ = types.MapValue(types.StringType, map[string]attr.Value{})
 	}
 
 	// Handle metadata map - preserve null when API returns empty and config didn't specify metadata.
