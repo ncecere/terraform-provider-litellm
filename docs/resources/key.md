@@ -104,6 +104,24 @@ resource "litellm_key" "with_logging" {
 }
 ```
 
+### Key with Router Settings
+
+```hcl
+resource "litellm_key" "with_router_settings" {
+  key_alias = "router-configured-key"
+  models    = ["gpt-4o"]
+
+  router_settings = {
+    "fallback_routes" = "gpt-4o-mini"
+    "priority"        = "high"
+  }
+
+  metadata = {
+    environment = "production"
+  }
+}
+```
+
 ## Argument Reference
 
 The following arguments are supported:
@@ -169,6 +187,8 @@ The following arguments are supported:
 * `enforced_params` - (Optional) List of enforced parameters for this key.
 
 * `tags` - (Optional) List of tags. **Note:** Requires LiteLLM Enterprise license.
+
+* `router_settings` - (Optional) Map of router settings for this key. Router settings control LiteLLM's routing behavior such as fallback routes and priority levels.
 
 * `blocked` - (Optional) Whether this key is blocked.
 

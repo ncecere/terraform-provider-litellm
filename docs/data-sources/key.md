@@ -11,10 +11,11 @@ data "litellm_key" "existing" {
 
 output "key_info" {
   value = {
-    alias      = data.litellm_key.existing.key_alias
-    team_id    = data.litellm_key.existing.team_id
-    max_budget = data.litellm_key.existing.max_budget
-    blocked    = data.litellm_key.existing.blocked
+    alias             = data.litellm_key.existing.key_alias
+    team_id           = data.litellm_key.existing.team_id
+    max_budget        = data.litellm_key.existing.max_budget
+    router_settings   = data.litellm_key.existing.router_settings
+    blocked           = data.litellm_key.existing.blocked
   }
 }
 ```
@@ -39,6 +40,7 @@ output "key_info" {
 * `soft_budget` - Soft budget limit for warnings.
 * `metadata` - Map of metadata for the key.
 * `tags` - List of tags for the key.
+* `router_settings` - Map of router settings for the key.
 * `blocked` - Whether the key is blocked.
 
 ## Notes
