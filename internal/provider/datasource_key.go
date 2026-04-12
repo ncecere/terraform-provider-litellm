@@ -36,6 +36,7 @@ type KeyDataSourceModel struct {
 	SoftBudget          types.Float64 `tfsdk:"soft_budget"`
 	Metadata            types.Map     `tfsdk:"metadata"`
 	Tags                types.List    `tfsdk:"tags"`
+	RouterSettings      types.Map     `tfsdk:"router_settings"`
 	Blocked             types.Bool    `tfsdk:"blocked"`
 }
 
@@ -108,6 +109,11 @@ func (d *KeyDataSource) Schema(ctx context.Context, req datasource.SchemaRequest
 			},
 			"tags": schema.ListAttribute{
 				Description: "Tags for the key.",
+				Computed:    true,
+				ElementType: types.StringType,
+			},
+			"router_settings": schema.MapAttribute{
+				Description: "Router settings for the key.",
 				Computed:    true,
 				ElementType: types.StringType,
 			},
@@ -237,6 +243,19 @@ func (d *KeyDataSource) Read(ctx context.Context, req datasource.ReadRequest, re
 		data.Tags, _ = types.ListValue(types.StringType, tagsList)
 	} else {
 		data.Tags, _ = types.ListValue(types.StringType, []attr.Value{})
+	}
+
+	// Handle router_settings map
+	if routerSettings, ok := info["router_settings"].(map[string]interface{}); ok && len(routerSettings) > 0 {
+		settingsMap := make(map[string]attr.Value)
+		for k, v := range routerSettings {
+			if str, ok := v.(string); ok {
+				settingsMap[k] = types.StringValue(str)
+			}
+		}
+		data.RouterSettings, _ = types.MapValue(types.StringType, settingsMap)
+	} else {
+		data.RouterSettings, _ = types.MapValue(types.StringType, map[string]attr.Value{})
 	}
 
 	// Handle metadata map
