@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-04-13
+
+### Added
+- **`litellm_team`**: Add `router_settings` support with `fallbacks` and `context_window_fallbacks` for team-level model fallback configuration. Resolution order: Key > Team > Global. ([#82](https://github.com/ncecere/terraform-provider-litellm/issues/82)) — thanks @tushar8408
+
+### Fixed
+- **`litellm_model`**: Fix inconsistent Terraform state for team-scoped models caused by LiteLLM rewriting `model_name` to an internal value. The provider now prefers `model_info.team_public_model_name` over the top-level `model_name` when reading team-scoped models. ([#84](https://github.com/ncecere/terraform-provider-litellm/issues/84)) — thanks @antisilent
+
 ## [1.3.0] - 2026-03-20
 
 ### Added
