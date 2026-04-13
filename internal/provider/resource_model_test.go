@@ -59,6 +59,60 @@ func TestReadModelResolvesUnknownOptionalComputedCollections(t *testing.T) {
 	}
 }
 
+func TestReadModelTeamScopedPrefersTeamPublicModelName(t *testing.T) {
+	t.Parallel()
+
+	const publicName = "gpt-4o-2024-11-20-prod-filter"
+	const internalName = "model_name_GRP-DCAI-LLM-GATEWAY_a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+	const teamID = "GRP-DCAI-LLM-GATEWAY"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": []interface{}{
+				map[string]interface{}{
+					"model_name": internalName,
+					"litellm_params": map[string]interface{}{
+						"custom_llm_provider": "openai",
+						"model":               "openai/gpt-4o",
+					},
+					"model_info": map[string]interface{}{
+						"base_model":             "gpt-4o",
+						"team_id":                teamID,
+						"team_public_model_name": publicName,
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	r := &ModelResource{
+		client: &Client{
+			APIBase:    server.URL,
+			APIKey:     "test-key",
+			HTTPClient: server.Client(),
+		},
+	}
+
+	data := ModelResourceModel{
+		ID:                      types.StringValue("model-123"),
+		AccessGroups:            types.ListUnknown(types.StringType),
+		AdditionalLiteLLMParams: types.MapUnknown(types.StringType),
+	}
+
+	if err := r.readModel(context.Background(), &data); err != nil {
+		t.Fatalf("readModel returned error: %v", err)
+	}
+
+	if got := data.ModelName.ValueString(); got != publicName {
+		t.Fatalf("expected model_name=%q (team_public_model_name), got %q", publicName, got)
+	}
+	if got := data.TeamID.ValueString(); got != teamID {
+		t.Fatalf("expected team_id=%q, got %q", teamID, got)
+	}
+}
+
 // TestReadModelResolvesUnknownModeForWildcardRouting verifies that when the
 // LiteLLM API does not return a "mode" value (e.g. for wildcard routes like
 // openai/*), readModel resolves the Unknown mode to Null rather than leaving
@@ -226,6 +280,61 @@ func TestCreateModelSendsAdditionalLiteLLMParams(t *testing.T) {
 	}
 }
 
+func TestCreateModelSendsTeamPublicModelNameWhenTeamIDSet(t *testing.T) {
+	t.Parallel()
+
+	var capturedBody map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" {
+			_ = json.NewDecoder(r.Body).Decode(&capturedBody)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok"})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	r := &ModelResource{
+		client: &Client{
+			APIBase:    server.URL,
+			APIKey:     "test-key",
+			HTTPClient: server.Client(),
+		},
+	}
+
+	const wantName = "gpt-4o-2024-11-20-prod-filter"
+	const wantTeamID = "GRP-DCAI-LLM-GATEWAY"
+
+	data := &ModelResourceModel{
+		ModelName:         types.StringValue(wantName),
+		CustomLLMProvider: types.StringValue("openai"),
+		BaseModel:         types.StringValue("gpt-4o"),
+		TeamID:            types.StringValue(wantTeamID),
+		Tier:              types.StringNull(),
+		Mode:              types.StringNull(),
+		AccessGroups:      types.ListNull(types.StringType),
+	}
+
+	err := r.createOrUpdateModel(context.Background(), data, "test-id", false)
+	if err != nil {
+		t.Fatalf("createOrUpdateModel returned error: %v", err)
+	}
+
+	modelInfo, ok := capturedBody["model_info"].(map[string]interface{})
+	if !ok {
+		t.Fatal("model_info not found in request body")
+	}
+	if got := modelInfo["team_public_model_name"]; got != wantName {
+		t.Fatalf("expected model_info.team_public_model_name=%q, got %v", wantName, got)
+	}
+	if got := modelInfo["team_id"]; got != wantTeamID {
+		t.Fatalf("expected model_info.team_id=%q, got %v", wantTeamID, got)
+	}
+}
+
 func TestPatchModelSendsAdditionalLiteLLMParams(t *testing.T) {
 	t.Parallel()
 
@@ -282,6 +391,62 @@ func TestPatchModelSendsAdditionalLiteLLMParams(t *testing.T) {
 	}
 	if v := litellmParams["max_retries"]; v != float64(3) {
 		t.Fatalf("expected max_retries=3, got %v (%T)", v, v)
+	}
+}
+
+func TestPatchModelSendsTeamPublicModelNameWhenTeamIDSet(t *testing.T) {
+	t.Parallel()
+
+	var capturedBody map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "PATCH" {
+			_ = json.NewDecoder(r.Body).Decode(&capturedBody)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok"})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	r := &ModelResource{
+		client: &Client{
+			APIBase:    server.URL,
+			APIKey:     "test-key",
+			HTTPClient: server.Client(),
+		},
+	}
+
+	const wantName = "gpt-4o-prod-filter"
+	const wantTeamID = "GRP-TEAM-1"
+
+	data := &ModelResourceModel{
+		ID:                types.StringValue("model-789"),
+		ModelName:         types.StringValue(wantName),
+		CustomLLMProvider: types.StringValue("openai"),
+		BaseModel:         types.StringValue("gpt-4o"),
+		TeamID:            types.StringValue(wantTeamID),
+		Tier:              types.StringNull(),
+		Mode:              types.StringNull(),
+		AccessGroups:     types.ListNull(types.StringType),
+	}
+
+	err := r.patchModel(context.Background(), data)
+	if err != nil {
+		t.Fatalf("patchModel returned error: %v", err)
+	}
+
+	modelInfo, ok := capturedBody["model_info"].(map[string]interface{})
+	if !ok {
+		t.Fatal("model_info not found in request body")
+	}
+	if got := modelInfo["team_public_model_name"]; got != wantName {
+		t.Fatalf("expected model_info.team_public_model_name=%q, got %v", wantName, got)
+	}
+	if got := modelInfo["team_id"]; got != wantTeamID {
+		t.Fatalf("expected model_info.team_id=%q, got %v", wantTeamID, got)
 	}
 }
 
