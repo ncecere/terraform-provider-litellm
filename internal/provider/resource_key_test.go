@@ -755,20 +755,174 @@ func TestReadKeyTagsFromMetadata(t *testing.T) {
 	}
 }
 
+// TestReadKeyRouterSettingsWithComplexValues verifies that router_settings values
+// containing nested structures (arrays, objects) are properly handled:
+// - Arrays/objects from API response are JSON-encoded back to strings in state
+// - When building requests, JSON strings are decoded back to native types
+func TestReadKeyRouterSettingsWithComplexValues(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"key": "sk-router-test",
+			"info": map[string]interface{}{
+				"token": "sk-router-test",
+				"router_settings": map[string]interface{}{
+					"num_retries":   float64(1),
+					"timeout":       float64(4),
+					"max_retries":   float64(1),
+					"retry_after":   float64(0),
+					"allowed_fails": float64(1),
+					"fallbacks": []interface{}{
+						map[string]interface{}{
+							"provider-a-model-1": []interface{}{
+								"provider-a-model-2",
+								"provider-a-model-3",
+							},
+						},
+						map[string]interface{}{
+							"provider-b-model-1": []interface{}{
+								"provider-b-model-2",
+								"provider-c-model-1",
+							},
+						},
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	r := &KeyResource{
+		client: &Client{
+			APIBase:    server.URL,
+			APIKey:     "test-key",
+			HTTPClient: server.Client(),
+		},
+	}
+
+	// Simulate user config with these router_settings keys
+	data := KeyResourceModel{
+		ID:  types.StringValue(hashKeyForID("sk-router-test")),
+		Key: types.StringValue("sk-router-test"),
+		RouterSettings: stringMapValue(map[string]string{
+			"num_retries": "1",
+			"timeout":     "4",
+			"fallbacks":   `[{"provider-a-model-1":["provider-a-model-2"]}]`,
+		}),
+		// Initialize other fields to avoid nil panics
+		Models:                   types.ListNull(types.StringType),
+		AllowedRoutes:            types.ListNull(types.StringType),
+		AllowedPassthroughRoutes: types.ListNull(types.StringType),
+		AllowedCacheControls:     types.ListNull(types.StringType),
+		Guardrails:               types.ListNull(types.StringType),
+		Prompts:                  types.ListNull(types.StringType),
+		EnforcedParams:           types.ListNull(types.StringType),
+		Tags:                     types.ListNull(types.StringType),
+		Aliases:                  types.MapNull(types.StringType),
+		Config:                   types.MapNull(types.StringType),
+		Permissions:              types.MapNull(types.StringType),
+		Metadata:                 types.MapNull(types.StringType),
+		ModelMaxBudget:           types.MapNull(types.Float64Type),
+		ModelRPMLimit:            types.MapNull(types.Int64Type),
+		ModelTPMLimit:            types.MapNull(types.Int64Type),
+	}
+
+	if err := r.readKey(context.Background(), &data); err != nil {
+		t.Fatalf("readKey returned error: %v", err)
+	}
+
+	if data.RouterSettings.IsNull() || data.RouterSettings.IsUnknown() {
+		t.Fatal("router_settings should be known and non-null after read")
+	}
+
+	elems := data.RouterSettings.Elements()
+
+	// Numeric values should be JSON-encoded strings
+	if numRetries, ok := elems["num_retries"].(types.String); ok {
+		if numRetries.ValueString() != "1" {
+			t.Errorf("expected num_retries '1', got %q", numRetries.ValueString())
+		}
+	} else {
+		t.Errorf("expected num_retries to be types.String, got %T", elems["num_retries"])
+	}
+
+	// Array value should be JSON-encoded string
+	if fallbacks, ok := elems["fallbacks"].(types.String); ok {
+		var parsed []interface{}
+		if err := json.Unmarshal([]byte(fallbacks.ValueString()), &parsed); err != nil {
+			t.Errorf("fallbacks should be valid JSON array, got error: %v, value: %q", err, fallbacks.ValueString())
+		} else if len(parsed) != 2 {
+			t.Errorf("expected 2 fallback entries, got %d", len(parsed))
+		}
+	} else {
+		t.Errorf("expected fallbacks to be types.String, got %T", elems["fallbacks"])
+	}
+}
+
+// TestBuildKeyRequestRouterSettingsWithJSON verifies that router_settings values
+// containing JSON strings are decoded to native types in the API request body.
+func TestBuildKeyRequestRouterSettingsWithJSON(t *testing.T) {
+	t.Parallel()
+
+	r := &KeyResource{}
+	data := &KeyResourceModel{
+		RouterSettings: stringMapValue(map[string]string{
+			"num_retries": "1",
+			"timeout":     "4",
+			"fallbacks": `[
+				{"provider-a-model-1":["provider-a-model-2","provider-a-model-3"]},
+				{"provider-b-model-1":["provider-b-model-2","provider-c-model-1"]}
+			]`,
+		}),
+	}
+
+	req := r.buildKeyRequest(context.Background(), data)
+
+	routerSettings, ok := req["router_settings"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected router_settings to be map[string]interface{}, got %T", req["router_settings"])
+	}
+
+	// Simple numeric string stays as string
+	if routerSettings["num_retries"] != "1" {
+		t.Errorf("expected num_retries '1', got %v", routerSettings["num_retries"])
+	}
+
+	// JSON array should be native, not a string
+	arr, ok := routerSettings["fallbacks"].([]interface{})
+	if !ok {
+		t.Fatalf("expected fallbacks to be []interface{} (native array), got %T: %v", routerSettings["fallbacks"], routerSettings["fallbacks"])
+	}
+	if len(arr) != 2 {
+		t.Errorf("expected 2 fallback entries, got %d", len(arr))
+	}
+
+	// Verify first fallback entry is a map
+	firstFallback, ok := arr[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected first fallback entry to be map[string]interface{}, got %T", arr[0])
+	}
+	if _, ok := firstFallback["provider-a-model-1"]; !ok {
+		t.Error("expected 'provider-a-model-1' key in first fallback entry")
+	}
+}
+
 // TestServiceAccountIDDefaultsKeyAlias verifies that when service_account_id is
 // set but key_alias is omitted, buildKeyRequest populates key_alias with the
 // service_account_id value — matching the documented behaviour.
 // TestMinimalKeyNoKeyAliasNoServiceAccountID verifies the plain minimal case:
 // neither key_alias nor service_account_id is configured.
 //
-//  resource "litellm_key" "minimal" {}
+//	resource "litellm_key" "minimal" {}
 //
 // Expected behaviour:
-//  - buildKeyRequest must NOT include "key_alias" in the payload.
-//  - readKey with an Unknown key_alias (Computed, unresolved) and an API
-//    response that contains no key_alias must resolve the field to null —
-//    i.e. no "inconsistent result after apply" error and no perpetual
-//    "(known after apply)" on subsequent plans.
+//   - buildKeyRequest must NOT include "key_alias" in the payload.
+//   - readKey with an Unknown key_alias (Computed, unresolved) and an API
+//     response that contains no key_alias must resolve the field to null —
+//     i.e. no "inconsistent result after apply" error and no perpetual
+//     "(known after apply)" on subsequent plans.
 func TestMinimalKeyNoKeyAliasNoServiceAccountID(t *testing.T) {
 	t.Parallel()
 
@@ -1108,8 +1262,8 @@ func TestReadKeyPreservesUserProvidedKey(t *testing.T) {
 			// be hashed; simulate that here.
 			"key": hashedToken,
 			"info": map[string]interface{}{
-				"token":     hashedToken,
-				"key_alias": "my-alias",
+				"token":      hashedToken,
+				"key_alias":  "my-alias",
 				"max_budget": 50.0,
 			},
 		})
