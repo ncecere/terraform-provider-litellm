@@ -249,7 +249,7 @@ func (d *KeyDataSource) Read(ctx context.Context, req datasource.ReadRequest, re
 	if routerSettings, ok := info["router_settings"].(map[string]interface{}); ok && len(routerSettings) > 0 {
 		settingsMap := make(map[string]attr.Value)
 		for k, v := range routerSettings {
-			settingsMap[k] = types.StringValue(metadataValueToString(v))
+			settingsMap[k] = types.StringValue(valueToJSONString(v))
 		}
 		data.RouterSettings, _ = types.MapValue(types.StringType, settingsMap)
 	} else {

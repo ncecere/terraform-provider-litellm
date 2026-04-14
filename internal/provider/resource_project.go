@@ -341,7 +341,7 @@ func (r *ProjectResource) buildProjectRequest(ctx context.Context, data *Project
 		var metadata map[string]string
 		data.Metadata.ElementsAs(ctx, &metadata, false)
 		if len(metadata) > 0 {
-			req["metadata"] = convertMetadataToNative(metadata)
+			req["metadata"] = convertJSONStringsToNative(metadata)
 		}
 	}
 	if !data.ModelMaxBudget.IsNull() && !data.ModelMaxBudget.IsUnknown() {
@@ -466,7 +466,7 @@ func (r *ProjectResource) readProject(ctx context.Context, data *ProjectResource
 	if metadata, ok := result["metadata"].(map[string]interface{}); ok && len(metadata) > 0 {
 		metaMap := make(map[string]attr.Value)
 		for k, v := range metadata {
-			metaMap[k] = types.StringValue(metadataValueToString(v))
+			metaMap[k] = types.StringValue(valueToJSONString(v))
 		}
 		data.Metadata, _ = types.MapValue(types.StringType, metaMap)
 	} else if data.Metadata.IsUnknown() {

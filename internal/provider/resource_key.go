@@ -613,7 +613,7 @@ func (r *KeyResource) buildKeyRequest(ctx context.Context, data *KeyResourceMode
 			// Convert string values that contain JSON objects/arrays to native
 			// types so the API receives them as structured data rather than
 			// escaped strings (e.g. fallbacks configuration).
-			keyReq["router_settings"] = convertMetadataToNative(routerSettings)
+			keyReq["router_settings"] = convertJSONStringsToNative(routerSettings)
 		}
 	}
 
@@ -624,7 +624,7 @@ func (r *KeyResource) buildKeyRequest(ctx context.Context, data *KeyResourceMode
 			// Convert string values that contain JSON objects/arrays to native
 			// types so the API receives them as structured data rather than
 			// escaped strings (e.g. logging configuration).
-			keyReq["metadata"] = convertMetadataToNative(metadata)
+			keyReq["metadata"] = convertJSONStringsToNative(metadata)
 		}
 	}
 
@@ -916,7 +916,7 @@ func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error
 	if routerSettings, ok := info["router_settings"].(map[string]interface{}); ok && len(routerSettings) > 0 {
 		settingsMap := make(map[string]attr.Value)
 		for k, v := range routerSettings {
-			settingsMap[k] = types.StringValue(metadataValueToString(v))
+			settingsMap[k] = types.StringValue(valueToJSONString(v))
 		}
 		data.RouterSettings, _ = types.MapValue(types.StringType, settingsMap)
 	} else if !data.RouterSettings.IsNull() {
@@ -943,7 +943,7 @@ func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error
 			if len(configuredKeys) > 0 && !configuredKeys[k] {
 				continue
 			}
-			metaMap[k] = types.StringValue(metadataValueToString(v))
+			metaMap[k] = types.StringValue(valueToJSONString(v))
 		}
 		if len(metaMap) > 0 {
 			data.Metadata, _ = types.MapValue(types.StringType, metaMap)
