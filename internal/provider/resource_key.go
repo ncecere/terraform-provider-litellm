@@ -261,7 +261,6 @@ func (r *KeyResource) Schema(ctx context.Context, req resource.SchemaRequest, re
 			"router_settings": schema.MapAttribute{
 				Description: "Router settings for the key.",
 				Optional:    true,
-				Computed:    true,
 				ElementType: types.StringType,
 			},
 			"blocked": schema.BoolAttribute{
