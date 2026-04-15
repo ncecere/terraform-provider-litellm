@@ -172,6 +172,8 @@ The following arguments are supported:
 
 * `blocked` - (Optional) Whether this key is blocked.
 
+* `send_invite_email` - (Optional) Whether to send an invite email when creating or updating this key. This is an action parameter — it triggers an email side-effect but is not stored as persistent state by LiteLLM. If not specified, no invite email is sent.
+
 ## Attribute Reference
 
 In addition to all arguments above, the following attributes are exported:

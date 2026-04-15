@@ -1235,3 +1235,41 @@ func TestReadKeyPopulatesUnknownKey(t *testing.T) {
 		t.Errorf("key should remain %q, got %q", apiReturnedKey, data.Key.ValueString())
 	}
 }
+
+// TestBuildKeyRequestSendInviteEmail verifies that send_invite_email is included
+// in the API request when set and omitted when null.
+func TestBuildKeyRequestSendInviteEmail(t *testing.T) {
+	t.Parallel()
+
+	r := &KeyResource{}
+
+	t.Run("included when true", func(t *testing.T) {
+		data := &KeyResourceModel{
+			SendInviteEmail: types.BoolValue(true),
+		}
+		req := r.buildKeyRequest(context.Background(), data)
+		if req["send_invite_email"] != true {
+			t.Errorf("expected send_invite_email true, got %v", req["send_invite_email"])
+		}
+	})
+
+	t.Run("included when false", func(t *testing.T) {
+		data := &KeyResourceModel{
+			SendInviteEmail: types.BoolValue(false),
+		}
+		req := r.buildKeyRequest(context.Background(), data)
+		if req["send_invite_email"] != false {
+			t.Errorf("expected send_invite_email false, got %v", req["send_invite_email"])
+		}
+	})
+
+	t.Run("omitted when null", func(t *testing.T) {
+		data := &KeyResourceModel{
+			SendInviteEmail: types.BoolNull(),
+		}
+		req := r.buildKeyRequest(context.Background(), data)
+		if _, exists := req["send_invite_email"]; exists {
+			t.Errorf("send_invite_email should not be in request when null")
+		}
+	})
+}
