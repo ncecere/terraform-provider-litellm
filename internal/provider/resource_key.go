@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -362,6 +363,37 @@ func (r *KeyResource) Update(ctx context.Context, req resource.UpdateRequest, re
 
 	updateReq := r.buildKeyRequest(ctx, &data)
 	updateReq["key"] = data.Key.ValueString()
+
+	// router_settings: Pydantic validates the whole object, so we must send safe values.
+	// Null plan → send {} (API rejects null). Removed keys → inject [] or {} zero-values
+	// to avoid 422. Scalars can be omitted.
+	switch {
+	case data.RouterSettings.IsNull():
+		updateReq["router_settings"] = map[string]interface{}{}
+	case !data.RouterSettings.IsUnknown():
+		// inject zero values for removed list/object keys so Pydantic
+		// receives a valid type rather than null.
+		if routerMap, ok := updateReq["router_settings"].(map[string]interface{}); ok {
+			if !state.RouterSettings.IsNull() && !state.RouterSettings.IsUnknown() {
+				var stateRouter map[string]string
+				state.RouterSettings.ElementsAs(ctx, &stateRouter, false)
+				for k, v := range stateRouter {
+					if _, inPlan := routerMap[k]; !inPlan {
+						trimmed := strings.TrimSpace(v)
+						if strings.HasPrefix(trimmed, "[") {
+							routerMap[k] = []interface{}{}
+						} else if strings.HasPrefix(trimmed, "{") {
+							routerMap[k] = map[string]interface{}{}
+						}
+						// Scalars omitted: the API replaces router_settings wholesale.
+					}
+				}
+			}
+		} else {
+			// Non-null but empty plan map (router_settings = {}) — clear entirely.
+			updateReq["router_settings"] = map[string]interface{}{}
+		}
+	}
 
 	if err := r.client.DoRequestWithResponse(ctx, "POST", "/key/update", updateReq, nil); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to update key: %s", err))
@@ -911,14 +943,37 @@ func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error
 		data.Tags, _ = types.ListValue(types.StringType, []attr.Value{})
 	}
 
-	// Handle router_settings map - preserve null when API returns empty and config didn't specify router_settings
-	if routerSettings, ok := info["router_settings"].(map[string]interface{}); ok && len(routerSettings) > 0 {
+	// Handle router_settings map - preserve null when API returns empty and config didn't specify router_settings.
+	// The API may inject internal keys (e.g. fallbacks, timeout) into router_settings.
+	// Only include keys that were in the user's original config to avoid drift.
+	if data.RouterSettings.IsNull() {
+		// Preserve null - do not repopulate from API
+	} else if routerSettings, ok := info["router_settings"].(map[string]interface{}); ok && len(routerSettings) > 0 {
+		// Build the set of keys the user has in their current config.
+		configuredKeys := make(map[string]bool)
+		if !data.RouterSettings.IsUnknown() {
+			var currentRouter map[string]string
+			data.RouterSettings.ElementsAs(ctx, &currentRouter, false)
+			for k := range currentRouter {
+				configuredKeys[k] = true
+			}
+		}
+
 		settingsMap := make(map[string]attr.Value)
 		for k, v := range routerSettings {
+			// Skip keys not in the user's config (e.g. zero-value sentinels
+			// injected by Update to satisfy API validation).
+			if len(configuredKeys) > 0 && !configuredKeys[k] {
+				continue
+			}
 			settingsMap[k] = types.StringValue(valueToJSONString(v))
 		}
-		data.RouterSettings, _ = types.MapValue(types.StringType, settingsMap)
-	} else if !data.RouterSettings.IsNull() {
+		if len(settingsMap) > 0 {
+			data.RouterSettings, _ = types.MapValue(types.StringType, settingsMap)
+		} else {
+			data.RouterSettings, _ = types.MapValue(types.StringType, map[string]attr.Value{})
+		}
+	} else {
 		data.RouterSettings, _ = types.MapValue(types.StringType, map[string]attr.Value{})
 	}
 

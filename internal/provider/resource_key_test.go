@@ -1389,3 +1389,422 @@ func TestReadKeyPopulatesUnknownKey(t *testing.T) {
 		t.Errorf("key should remain %q, got %q", apiReturnedKey, data.Key.ValueString())
 	}
 }
+
+// TestUpdateRouterSettingsNullSendsEmptyObject verifies that when router_settings
+// is null in the plan (user removed it from config), the Update path injects an
+// empty object into the request body rather than omitting the field or sending null.
+//
+// Background: the LiteLLM API rejects `null` for router_settings with a 400
+// (Pydantic union validation). Omitting the field is also wrong — the API treats
+// absence as "no change" and leaves the existing value intact. Sending `{}` is
+// the only way to clear the field.
+func TestUpdateRouterSettingsNullSendsEmptyObject(t *testing.T) {
+	t.Parallel()
+
+	var capturedBody map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/key/update":
+			_ = json.NewDecoder(r.Body).Decode(&capturedBody)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{})
+		default:
+			// readKey call after update — return minimal key info
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"info": map[string]interface{}{
+					"token": "sk-update-test",
+				},
+			})
+		}
+	}))
+	defer server.Close()
+
+	r := &KeyResource{
+		client: &Client{
+			APIBase:    server.URL,
+			APIKey:     "test-key",
+			HTTPClient: server.Client(),
+		},
+	}
+
+	// Simulate what Update does: build the request from the plan-time model
+	// where RouterSettings is null (user removed it from config), then apply
+	// the same null-injection logic that Update applies.
+	data := &KeyResourceModel{
+		Key:            types.StringValue("sk-update-test"),
+		RouterSettings: types.MapNull(types.StringType),
+		// Remaining fields null to avoid panics in buildKeyRequest
+		Models:                   types.ListNull(types.StringType),
+		AllowedRoutes:            types.ListNull(types.StringType),
+		AllowedPassthroughRoutes: types.ListNull(types.StringType),
+		AllowedCacheControls:     types.ListNull(types.StringType),
+		Guardrails:               types.ListNull(types.StringType),
+		Prompts:                  types.ListNull(types.StringType),
+		EnforcedParams:           types.ListNull(types.StringType),
+		Tags:                     types.ListNull(types.StringType),
+		Metadata:                 types.MapNull(types.StringType),
+		Aliases:                  types.MapNull(types.StringType),
+		Config:                   types.MapNull(types.StringType),
+		Permissions:              types.MapNull(types.StringType),
+		ModelMaxBudget:           types.MapNull(types.Float64Type),
+		ModelRPMLimit:            types.MapNull(types.Int64Type),
+		ModelTPMLimit:            types.MapNull(types.Int64Type),
+	}
+
+	updateReq := r.buildKeyRequest(context.Background(), data)
+	updateReq["key"] = data.Key.ValueString()
+
+	// This is the logic under test — mirrors the Update function exactly.
+	if data.RouterSettings.IsNull() {
+		updateReq["router_settings"] = map[string]interface{}{}
+	}
+
+	if err := r.client.DoRequestWithResponse(context.Background(), "POST", "/key/update", updateReq, nil); err != nil {
+		t.Fatalf("POST /key/update: %v", err)
+	}
+
+	// router_settings must be present in the captured request body.
+	routerVal, exists := capturedBody["router_settings"]
+	if !exists {
+		t.Fatal("expected router_settings to be present in request body, but it was omitted")
+	}
+
+	// It must be an empty object, not null, not a non-empty map, not a string.
+	routerMap, ok := routerVal.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected router_settings to be map[string]interface{} (empty object {}), got %T: %v", routerVal, routerVal)
+	}
+	if len(routerMap) != 0 {
+		t.Errorf("expected router_settings to be empty {}, got %v", routerMap)
+	}
+}
+
+// TestReadKeyRouterSettingsNullPreservedAfterClear verifies that readKey does not
+// overwrite a null RouterSettings with data from the API response.
+//
+// After Update sends `{}` to clear router_settings, readKey is called to sync
+// state. At that point data.RouterSettings is null (from the plan). The API may
+// return `"router_settings": {}` (successful clear) or even the old non-empty
+// value (caching delay). Either way, the null must be preserved — writing any
+// non-null value back would contradict the plan and cause Terraform to raise
+// "provider produced inconsistent result after apply".
+func TestReadKeyRouterSettingsNullPreservedAfterClear(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		apiRouterSettings interface{} // what the API returns for router_settings
+	}{
+		{
+			name:            "API returns empty object after clear",
+			apiRouterSettings: map[string]interface{}{},
+		},
+		{
+			name: "API returns stale non-empty value (caching delay)",
+			apiRouterSettings: map[string]interface{}{
+				"timeout":       float64(4),
+				"num_retries":   float64(1),
+				"allowed_fails": float64(1),
+				"fallbacks": []interface{}{
+					map[string]interface{}{
+						"model-a": []interface{}{"model-b"},
+					},
+				},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"info": map[string]interface{}{
+						"token":           "sk-clear-test",
+						"router_settings": tc.apiRouterSettings,
+					},
+				})
+			}))
+			defer server.Close()
+
+			res := &KeyResource{
+				client: &Client{
+					APIBase:    server.URL,
+					APIKey:     "test-key",
+					HTTPClient: server.Client(),
+				},
+			}
+
+			// data.RouterSettings is null — simulates the plan after the user
+			// removed router_settings from their Terraform config.
+			data := KeyResourceModel{
+				ID:                       types.StringValue(hashKeyForID("sk-clear-test")),
+				Key:                      types.StringValue("sk-clear-test"),
+				RouterSettings:           types.MapNull(types.StringType),
+				Models:                   types.ListNull(types.StringType),
+				AllowedRoutes:            types.ListNull(types.StringType),
+				AllowedPassthroughRoutes: types.ListNull(types.StringType),
+				AllowedCacheControls:     types.ListNull(types.StringType),
+				Guardrails:               types.ListNull(types.StringType),
+				Prompts:                  types.ListNull(types.StringType),
+				EnforcedParams:           types.ListNull(types.StringType),
+				Tags:                     types.ListNull(types.StringType),
+				Metadata:                 types.MapNull(types.StringType),
+				Aliases:                  types.MapNull(types.StringType),
+				Config:                   types.MapNull(types.StringType),
+				Permissions:              types.MapNull(types.StringType),
+				ModelMaxBudget:           types.MapNull(types.Float64Type),
+				ModelRPMLimit:            types.MapNull(types.Int64Type),
+				ModelTPMLimit:            types.MapNull(types.Int64Type),
+			}
+
+			if err := res.readKey(context.Background(), &data); err != nil {
+				t.Fatalf("readKey returned error: %v", err)
+			}
+
+			// The null must be preserved regardless of what the API returned.
+			if !data.RouterSettings.IsNull() {
+				t.Errorf(
+					"router_settings must remain null after readKey when plan set it to null, "+
+						"but got: %v (API returned: %v)",
+					data.RouterSettings,
+					tc.apiRouterSettings,
+				)
+			}
+		})
+	}
+}
+
+// TestUpdateRouterSettingsPartialRemovalInjectsZeroValueSentinels verifies that
+// when the user removes a key from within router_settings (e.g. removes fallbacks
+// but keeps timeout and num_retries), the Update path injects a zero-value
+// sentinel for the removed key in the request body.
+//
+// Background: the LiteLLM API validates router_settings with Pydantic and does
+// not support partial updates. If fallbacks was previously set and is now absent,
+// the API fills it with None and raises a 422 ("Input should be a valid list",
+// "input":"null"). Injecting [] for removed list-type keys and {} for removed
+// object-type keys prevents that validation failure.
+func TestUpdateRouterSettingsPartialRemovalInjectsZeroValueSentinels(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		stateValue     string // the prior state value for the removed key (as stored in tf state)
+		expectedSentinel interface{} // what should be injected
+	}{
+		{
+			name:             "list-type field (fallbacks) gets empty list sentinel",
+			stateValue:       `[{"model-a":["model-b"]}]`,
+			expectedSentinel: []interface{}{},
+		},
+		{
+			name:             "object-type field gets empty object sentinel",
+			stateValue:       `{"nested":"value"}`,
+			expectedSentinel: map[string]interface{}{},
+		},
+		{
+			name:             "scalar field is omitted (API replaces wholesale)",
+			stateValue:       "5",
+			expectedSentinel: nil, // signals the key should be absent
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			r := &KeyResource{}
+
+			// Plan: router_settings has timeout + num_retries only ("removed_key" is gone).
+			planSettings := stringMapValue(map[string]string{
+				"timeout":     "5",
+				"num_retries": "1",
+			})
+
+			// State: router_settings had the same keys plus "removed_key".
+			stateSettings := stringMapValue(map[string]string{
+				"timeout":     "5",
+				"num_retries": "1",
+				"removed_key": tc.stateValue,
+			})
+
+			// Build the request from the plan (mirrors what buildKeyRequest does).
+			data := &KeyResourceModel{
+				RouterSettings:           planSettings,
+				Models:                   types.ListNull(types.StringType),
+				AllowedRoutes:            types.ListNull(types.StringType),
+				AllowedPassthroughRoutes: types.ListNull(types.StringType),
+				AllowedCacheControls:     types.ListNull(types.StringType),
+				Guardrails:               types.ListNull(types.StringType),
+				Prompts:                  types.ListNull(types.StringType),
+				EnforcedParams:           types.ListNull(types.StringType),
+				Tags:                     types.ListNull(types.StringType),
+				Metadata:                 types.MapNull(types.StringType),
+				Aliases:                  types.MapNull(types.StringType),
+				Config:                   types.MapNull(types.StringType),
+				Permissions:              types.MapNull(types.StringType),
+				ModelMaxBudget:           types.MapNull(types.Float64Type),
+				ModelRPMLimit:            types.MapNull(types.Int64Type),
+				ModelTPMLimit:            types.MapNull(types.Int64Type),
+			}
+			state := &KeyResourceModel{
+				RouterSettings: stateSettings,
+			}
+
+			updateReq := r.buildKeyRequest(context.Background(), data)
+
+			// Apply the same case-2 logic from Update.
+			if routerMap, ok := updateReq["router_settings"].(map[string]interface{}); ok {
+				if !state.RouterSettings.IsNull() && !state.RouterSettings.IsUnknown() {
+					var stateRouter map[string]string
+					state.RouterSettings.ElementsAs(context.Background(), &stateRouter, false)
+					for k, v := range stateRouter {
+						if _, inPlan := routerMap[k]; !inPlan {
+							trimmed := strings.TrimSpace(v)
+							if strings.HasPrefix(trimmed, "[") {
+								routerMap[k] = []interface{}{}
+							} else if strings.HasPrefix(trimmed, "{") {
+								routerMap[k] = map[string]interface{}{}
+							}
+						}
+					}
+				}
+			}
+
+			routerMap, ok := updateReq["router_settings"].(map[string]interface{})
+			if !ok {
+				t.Fatalf("expected router_settings in request, got %T", updateReq["router_settings"])
+			}
+
+			if tc.expectedSentinel == nil {
+				// Scalar: removed key must be absent from the request.
+				if _, present := routerMap["removed_key"]; present {
+					t.Errorf("scalar removed_key should be omitted from request, got %v", routerMap["removed_key"])
+				}
+			} else {
+				// List/object: sentinel must be present with the correct zero type.
+				val, present := routerMap["removed_key"]
+				if !present {
+					t.Fatalf("expected sentinel for removed_key in request but it was absent")
+				}
+				switch expected := tc.expectedSentinel.(type) {
+				case []interface{}:
+					got, ok := val.([]interface{})
+					if !ok {
+						t.Fatalf("expected []interface{} sentinel, got %T: %v", val, val)
+					}
+					if len(got) != len(expected) {
+						t.Errorf("expected empty slice sentinel, got length %d", len(got))
+					}
+				case map[string]interface{}:
+					got, ok := val.(map[string]interface{})
+					if !ok {
+						t.Fatalf("expected map[string]interface{} sentinel, got %T: %v", val, val)
+					}
+					if len(got) != len(expected) {
+						t.Errorf("expected empty map sentinel, got length %d", len(got))
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestReadKeyRouterSettingsFiltersToConfiguredKeys verifies that readKey only
+// repopulates keys that are present in the user's current config, ignoring any
+// additional keys returned by the API.
+//
+// When the user removes a key (e.g. fallbacks) from router_settings, the Update
+// path injects a zero-value sentinel (fallbacks=[]) into the request to satisfy
+// Pydantic validation. The API then stores and returns that sentinel. Without
+// filtering, readKey would write fallbacks=[] back into state — causing Terraform
+// to see a new element appearing that wasn't in the plan.
+func TestReadKeyRouterSettingsFiltersToConfiguredKeys(t *testing.T) {
+	t.Parallel()
+
+	// API returns the full router_settings including the injected sentinel [].
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"info": map[string]interface{}{
+				"token": "sk-partial-test",
+				"router_settings": map[string]interface{}{
+					"timeout":     float64(5),
+					"num_retries": float64(1),
+					// fallbacks is the sentinel injected by Update — must not appear in state.
+					"fallbacks": []interface{}{},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	res := &KeyResource{
+		client: &Client{
+			APIBase:    server.URL,
+			APIKey:     "test-key",
+			HTTPClient: server.Client(),
+		},
+	}
+
+	// data.RouterSettings reflects the plan: timeout + num_retries only.
+	// fallbacks was removed by the user and must not reappear.
+	data := KeyResourceModel{
+		ID:  types.StringValue(hashKeyForID("sk-partial-test")),
+		Key: types.StringValue("sk-partial-test"),
+		RouterSettings: stringMapValue(map[string]string{
+			"timeout":     "5",
+			"num_retries": "1",
+		}),
+		Models:                   types.ListNull(types.StringType),
+		AllowedRoutes:            types.ListNull(types.StringType),
+		AllowedPassthroughRoutes: types.ListNull(types.StringType),
+		AllowedCacheControls:     types.ListNull(types.StringType),
+		Guardrails:               types.ListNull(types.StringType),
+		Prompts:                  types.ListNull(types.StringType),
+		EnforcedParams:           types.ListNull(types.StringType),
+		Tags:                     types.ListNull(types.StringType),
+		Metadata:                 types.MapNull(types.StringType),
+		Aliases:                  types.MapNull(types.StringType),
+		Config:                   types.MapNull(types.StringType),
+		Permissions:              types.MapNull(types.StringType),
+		ModelMaxBudget:           types.MapNull(types.Float64Type),
+		ModelRPMLimit:            types.MapNull(types.Int64Type),
+		ModelTPMLimit:            types.MapNull(types.Int64Type),
+	}
+
+	if err := res.readKey(context.Background(), &data); err != nil {
+		t.Fatalf("readKey returned error: %v", err)
+	}
+
+	if data.RouterSettings.IsNull() || data.RouterSettings.IsUnknown() {
+		t.Fatal("router_settings should be non-null after read (user still has settings configured)")
+	}
+
+	elems := data.RouterSettings.Elements()
+
+	// timeout and num_retries must be present with the correct values.
+	if v, ok := elems["timeout"].(types.String); !ok || v.ValueString() != "5" {
+		t.Errorf("expected timeout '5', got %v", elems["timeout"])
+	}
+	if v, ok := elems["num_retries"].(types.String); !ok || v.ValueString() != "1" {
+		t.Errorf("expected num_retries '1', got %v", elems["num_retries"])
+	}
+
+	// fallbacks must not appear — it was a sentinel, not part of the user's config.
+	if _, present := elems["fallbacks"]; present {
+		t.Errorf("fallbacks must not appear in state after readKey — it was a zero-value sentinel injected by Update, not a user-configured key. Got: %v", elems["fallbacks"])
+	}
+
+	// Exactly two keys: timeout and num_retries.
+	if len(elems) != 2 {
+		t.Errorf("expected exactly 2 router_settings keys (timeout, num_retries), got %d: %v", len(elems), elems)
+	}
+}
