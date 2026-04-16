@@ -36,6 +36,7 @@ type KeyDataSourceModel struct {
 	SoftBudget          types.Float64 `tfsdk:"soft_budget"`
 	Metadata            types.Map     `tfsdk:"metadata"`
 	Tags                types.List    `tfsdk:"tags"`
+	RouterSettings      types.Object  `tfsdk:"router_settings"`
 	Blocked             types.Bool    `tfsdk:"blocked"`
 }
 
@@ -110,6 +111,67 @@ func (d *KeyDataSource) Schema(ctx context.Context, req datasource.SchemaRequest
 				Description: "Tags for the key.",
 				Computed:    true,
 				ElementType: types.StringType,
+			},
+			"router_settings": schema.SingleNestedAttribute{
+				Description: "Router settings for the key.",
+				Computed:    true,
+				Attributes: map[string]schema.Attribute{
+					"routing_strategy":      schema.StringAttribute{Computed: true},
+					"routing_strategy_args": schema.MapAttribute{Computed: true, ElementType: types.StringType},
+					"num_retries":           schema.Int64Attribute{Computed: true},
+					"timeout":               schema.Float64Attribute{Computed: true},
+					"stream_timeout":        schema.Float64Attribute{Computed: true},
+					"max_fallbacks":         schema.Int64Attribute{Computed: true},
+					"fallbacks": schema.ListNestedAttribute{
+						Computed: true,
+						NestedObject: schema.NestedAttributeObject{
+							Attributes: map[string]schema.Attribute{
+								"model":           schema.StringAttribute{Computed: true},
+								"fallback_models": schema.ListAttribute{Computed: true, ElementType: types.StringType},
+							},
+						},
+					},
+					"context_window_fallbacks": schema.ListNestedAttribute{
+						Computed: true,
+						NestedObject: schema.NestedAttributeObject{
+							Attributes: map[string]schema.Attribute{
+								"model":           schema.StringAttribute{Computed: true},
+								"fallback_models": schema.ListAttribute{Computed: true, ElementType: types.StringType},
+							},
+						},
+					},
+					"content_policy_fallbacks": schema.ListNestedAttribute{
+						Computed: true,
+						NestedObject: schema.NestedAttributeObject{
+							Attributes: map[string]schema.Attribute{
+								"model":           schema.StringAttribute{Computed: true},
+								"fallback_models": schema.ListAttribute{Computed: true, ElementType: types.StringType},
+							},
+						},
+					},
+					"allowed_fails": schema.Int64Attribute{Computed: true},
+					"cooldown_time": schema.Float64Attribute{Computed: true},
+					"retry_after":   schema.Int64Attribute{Computed: true},
+					"retry_policy": schema.SingleNestedAttribute{
+						Computed: true,
+						Attributes: map[string]schema.Attribute{
+							"bad_request_error_retries":              schema.Int64Attribute{Computed: true},
+							"authentication_error_retries":           schema.Int64Attribute{Computed: true},
+							"timeout_error_retries":                  schema.Int64Attribute{Computed: true},
+							"rate_limit_error_retries":               schema.Int64Attribute{Computed: true},
+							"content_policy_violation_error_retries": schema.Int64Attribute{Computed: true},
+							"internal_server_error_retries":          schema.Int64Attribute{Computed: true},
+						},
+					},
+					"model_group_alias":             schema.MapAttribute{Computed: true, ElementType: types.StringType},
+					"enable_pre_call_checks":        schema.BoolAttribute{Computed: true},
+					"default_litellm_params":        schema.MapAttribute{Computed: true, ElementType: types.StringType},
+					"set_verbose":                   schema.BoolAttribute{Computed: true},
+					"default_max_parallel_requests": schema.Int64Attribute{Computed: true},
+					"enable_tag_filtering":          schema.BoolAttribute{Computed: true},
+					"tag_filtering_match_any":       schema.BoolAttribute{Computed: true},
+					"disable_cooldowns":             schema.BoolAttribute{Computed: true},
+				},
 			},
 			"blocked": schema.BoolAttribute{
 				Description: "Whether the key is blocked.",
@@ -237,6 +299,13 @@ func (d *KeyDataSource) Read(ctx context.Context, req datasource.ReadRequest, re
 		data.Tags, _ = types.ListValue(types.StringType, tagsList)
 	} else {
 		data.Tags, _ = types.ListValue(types.StringType, []attr.Value{})
+	}
+
+	// Handle router_settings
+	if routerSettings, ok := info["router_settings"].(map[string]interface{}); ok && len(routerSettings) > 0 {
+		data.RouterSettings = parseKeyRouterSettingsFromAPI(routerSettings)
+	} else {
+		data.RouterSettings = types.ObjectNull(keyRouterSettingsAttrTypes)
 	}
 
 	// Handle metadata map

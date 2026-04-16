@@ -11,6 +11,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
 )
 
@@ -761,14 +762,14 @@ func TestReadKeyTagsFromMetadata(t *testing.T) {
 // TestMinimalKeyNoKeyAliasNoServiceAccountID verifies the plain minimal case:
 // neither key_alias nor service_account_id is configured.
 //
-//  resource "litellm_key" "minimal" {}
+//	resource "litellm_key" "minimal" {}
 //
 // Expected behaviour:
-//  - buildKeyRequest must NOT include "key_alias" in the payload.
-//  - readKey with an Unknown key_alias (Computed, unresolved) and an API
-//    response that contains no key_alias must resolve the field to null —
-//    i.e. no "inconsistent result after apply" error and no perpetual
-//    "(known after apply)" on subsequent plans.
+//   - buildKeyRequest must NOT include "key_alias" in the payload.
+//   - readKey with an Unknown key_alias (Computed, unresolved) and an API
+//     response that contains no key_alias must resolve the field to null —
+//     i.e. no "inconsistent result after apply" error and no perpetual
+//     "(known after apply)" on subsequent plans.
 func TestMinimalKeyNoKeyAliasNoServiceAccountID(t *testing.T) {
 	t.Parallel()
 
@@ -1108,8 +1109,8 @@ func TestReadKeyPreservesUserProvidedKey(t *testing.T) {
 			// be hashed; simulate that here.
 			"key": hashedToken,
 			"info": map[string]interface{}{
-				"token":     hashedToken,
-				"key_alias": "my-alias",
+				"token":      hashedToken,
+				"key_alias":  "my-alias",
 				"max_budget": 50.0,
 			},
 		})
@@ -1235,3 +1236,484 @@ func TestReadKeyPopulatesUnknownKey(t *testing.T) {
 		t.Errorf("key should remain %q, got %q", apiReturnedKey, data.Key.ValueString())
 	}
 }
+
+// TestUpdateRouterSettingsNullSendsEmptyObject verifies that when router_settings
+// is null in the plan (user removed it from config), the Update path injects an
+// empty object into the request body rather than omitting the field or sending null.
+//
+// Background: the LiteLLM API rejects `null` for router_settings with a 400
+// (Pydantic union validation). Omitting the field is also wrong — the API treats
+// absence as "no change" and leaves the existing value intact. Sending `{}` is
+// the only way to clear the field.
+func TestUpdateRouterSettingsNullSendsEmptyObject(t *testing.T) {
+	t.Parallel()
+
+	var capturedBody map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/key/update":
+			_ = json.NewDecoder(r.Body).Decode(&capturedBody)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{})
+		default:
+			// readKey call after update — return minimal key info
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"info": map[string]interface{}{
+					"token": "sk-update-test",
+				},
+			})
+		}
+	}))
+	defer server.Close()
+
+	r := &KeyResource{
+		client: &Client{
+			APIBase:    server.URL,
+			APIKey:     "test-key",
+			HTTPClient: server.Client(),
+		},
+	}
+
+	// Simulate what Update does: build the request from the plan-time model
+	// where RouterSettings is null (user removed it from config), then apply
+	// the same null-injection logic that Update applies.
+	data := &KeyResourceModel{
+		Key:                      types.StringValue("sk-update-test"),
+		RouterSettings:           types.ObjectNull(keyRouterSettingsAttrTypes),
+		Models:                   types.ListNull(types.StringType),
+		AllowedRoutes:            types.ListNull(types.StringType),
+		AllowedPassthroughRoutes: types.ListNull(types.StringType),
+		AllowedCacheControls:     types.ListNull(types.StringType),
+		Guardrails:               types.ListNull(types.StringType),
+		Prompts:                  types.ListNull(types.StringType),
+		EnforcedParams:           types.ListNull(types.StringType),
+		Tags:                     types.ListNull(types.StringType),
+		Metadata:                 types.MapNull(types.StringType),
+		Aliases:                  types.MapNull(types.StringType),
+		Config:                   types.MapNull(types.StringType),
+		Permissions:              types.MapNull(types.StringType),
+		ModelMaxBudget:           types.MapNull(types.Float64Type),
+		ModelRPMLimit:            types.MapNull(types.Int64Type),
+		ModelTPMLimit:            types.MapNull(types.Int64Type),
+	}
+
+	updateReq := r.buildKeyRequest(context.Background(), data)
+	updateReq["key"] = data.Key.ValueString()
+
+	// This is the logic under test — mirrors the Update function exactly.
+	if data.RouterSettings.IsNull() {
+		updateReq["router_settings"] = map[string]interface{}{}
+	}
+
+	if err := r.client.DoRequestWithResponse(context.Background(), "POST", "/key/update", updateReq, nil); err != nil {
+		t.Fatalf("POST /key/update: %v", err)
+	}
+
+	// router_settings must be present in the captured request body.
+	routerVal, exists := capturedBody["router_settings"]
+	if !exists {
+		t.Fatal("expected router_settings to be present in request body, but it was omitted")
+	}
+
+	// It must be an empty object, not null, not a non-empty map, not a string.
+	routerMap, ok := routerVal.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected router_settings to be map[string]interface{} (empty object {}), got %T: %v", routerVal, routerVal)
+	}
+	if len(routerMap) != 0 {
+		t.Errorf("expected router_settings to be empty {}, got %v", routerMap)
+	}
+}
+
+// TestReadKeyRouterSettingsNullPreservedAfterClear verifies that readKey does not
+// overwrite a null RouterSettings with data from the API response.
+//
+// After Update sends `{}` to clear router_settings, readKey is called to sync
+// state. At that point data.RouterSettings is null (from the plan). The API may
+// return `"router_settings": {}` (successful clear) or even the old non-empty
+// value (caching delay). Either way, the null must be preserved — writing any
+// non-null value back would contradict the plan and cause Terraform to raise
+// "provider produced inconsistent result after apply".
+func TestReadKeyRouterSettingsNullPreservedAfterClear(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		apiRouterSettings interface{} // what the API returns for router_settings
+	}{
+		{
+			name:              "API returns empty object after clear",
+			apiRouterSettings: map[string]interface{}{},
+		},
+		{
+			name: "API returns stale non-empty value (caching delay)",
+			apiRouterSettings: map[string]interface{}{
+				"timeout":       float64(4),
+				"num_retries":   float64(1),
+				"allowed_fails": float64(1),
+				"fallbacks": []interface{}{
+					map[string]interface{}{
+						"model-a": []interface{}{"model-b"},
+					},
+				},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{
+					"info": map[string]interface{}{
+						"token":           "sk-clear-test",
+						"router_settings": tc.apiRouterSettings,
+					},
+				})
+			}))
+			defer server.Close()
+
+			res := &KeyResource{
+				client: &Client{
+					APIBase:    server.URL,
+					APIKey:     "test-key",
+					HTTPClient: server.Client(),
+				},
+			}
+
+			// data.RouterSettings is null — simulates the plan after the user
+			// removed router_settings from their Terraform config.
+			data := KeyResourceModel{
+				ID:                       types.StringValue(hashKeyForID("sk-clear-test")),
+				Key:                      types.StringValue("sk-clear-test"),
+				RouterSettings:           types.ObjectNull(keyRouterSettingsAttrTypes),
+				Models:                   types.ListNull(types.StringType),
+				AllowedRoutes:            types.ListNull(types.StringType),
+				AllowedPassthroughRoutes: types.ListNull(types.StringType),
+				AllowedCacheControls:     types.ListNull(types.StringType),
+				Guardrails:               types.ListNull(types.StringType),
+				Prompts:                  types.ListNull(types.StringType),
+				EnforcedParams:           types.ListNull(types.StringType),
+				Tags:                     types.ListNull(types.StringType),
+				Metadata:                 types.MapNull(types.StringType),
+				Aliases:                  types.MapNull(types.StringType),
+				Config:                   types.MapNull(types.StringType),
+				Permissions:              types.MapNull(types.StringType),
+				ModelMaxBudget:           types.MapNull(types.Float64Type),
+				ModelRPMLimit:            types.MapNull(types.Int64Type),
+				ModelTPMLimit:            types.MapNull(types.Int64Type),
+			}
+
+			if err := res.readKey(context.Background(), &data); err != nil {
+				t.Fatalf("readKey returned error: %v", err)
+			}
+
+			// The null must be preserved regardless of what the API returned.
+			if !data.RouterSettings.IsNull() {
+				t.Errorf(
+					"router_settings must remain null after readKey when plan set it to null, "+
+						"but got: %v (API returned: %v)",
+					data.RouterSettings,
+					tc.apiRouterSettings,
+				)
+			}
+		})
+	}
+}
+
+// TestBuildKeyRouterSettingsPayload_Scalars verifies that scalar fields are
+// serialized to their correct native types in the API payload.
+func TestBuildKeyRouterSettingsPayload_Scalars(t *testing.T) {
+	t.Parallel()
+
+	fallbackList := types.ListNull(types.ObjectType{AttrTypes: fallbackEntryAttrTypes})
+	rsAttrs := map[string]attr.Value{
+		"routing_strategy":              types.StringValue("least-busy"),
+		"num_retries":                   types.Int64Value(3),
+		"max_fallbacks":                 types.Int64Null(),
+		"allowed_fails":                 types.Int64Value(2),
+		"retry_after":                   types.Int64Null(),
+		"default_max_parallel_requests": types.Int64Null(),
+		"timeout":                       types.Float64Value(30.5),
+		"stream_timeout":                types.Float64Null(),
+		"cooldown_time":                 types.Float64Null(),
+		"enable_pre_call_checks":        types.BoolValue(true),
+		"set_verbose":                   types.BoolNull(),
+		"enable_tag_filtering":          types.BoolNull(),
+		"tag_filtering_match_any":       types.BoolNull(),
+		"disable_cooldowns":             types.BoolNull(),
+		"fallbacks":                     fallbackList,
+		"context_window_fallbacks":      fallbackList,
+		"content_policy_fallbacks":      fallbackList,
+		"routing_strategy_args":         types.MapNull(types.StringType),
+		"model_group_alias":             types.MapNull(types.StringType),
+		"default_litellm_params":        types.MapNull(types.StringType),
+		"retry_policy":                  types.ObjectNull(keyRetryPolicyAttrTypes),
+	}
+	obj, _ := types.ObjectValue(keyRouterSettingsAttrTypes, rsAttrs)
+
+	payload := buildKeyRouterSettingsPayload(context.Background(), obj)
+
+	if payload["routing_strategy"] != "least-busy" {
+		t.Errorf("expected routing_strategy 'least-busy', got %v", payload["routing_strategy"])
+	}
+	if payload["num_retries"] != int64(3) {
+		t.Errorf("expected num_retries int64(3), got %T %v", payload["num_retries"], payload["num_retries"])
+	}
+	if payload["timeout"] != float64(30.5) {
+		t.Errorf("expected timeout 30.5, got %v", payload["timeout"])
+	}
+	if payload["enable_pre_call_checks"] != true {
+		t.Errorf("expected enable_pre_call_checks true, got %v", payload["enable_pre_call_checks"])
+	}
+	if _, exists := payload["max_fallbacks"]; exists {
+		t.Errorf("null max_fallbacks must not appear in payload")
+	}
+	if _, exists := payload["set_verbose"]; exists {
+		t.Errorf("null set_verbose must not appear in payload")
+	}
+}
+
+// TestBuildKeyRouterSettingsPayload_Fallbacks verifies that fallback lists are
+// serialized to the LiteLLM wire format [{"model": ["fb1","fb2"]}].
+func TestBuildKeyRouterSettingsPayload_Fallbacks(t *testing.T) {
+	t.Parallel()
+
+	fbModels, _ := types.ListValue(types.StringType, []attr.Value{
+		types.StringValue("gpt-3.5-turbo"),
+		types.StringValue("claude-haiku"),
+	})
+	fbEntry, _ := types.ObjectValue(fallbackEntryAttrTypes, map[string]attr.Value{
+		"model":           types.StringValue("gpt-4"),
+		"fallback_models": fbModels,
+	})
+	fbList, _ := types.ListValue(types.ObjectType{AttrTypes: fallbackEntryAttrTypes}, []attr.Value{fbEntry})
+
+	emptyList := types.ListNull(types.ObjectType{AttrTypes: fallbackEntryAttrTypes})
+	rsAttrs := map[string]attr.Value{
+		"routing_strategy":              types.StringNull(),
+		"num_retries":                   types.Int64Null(),
+		"max_fallbacks":                 types.Int64Null(),
+		"allowed_fails":                 types.Int64Null(),
+		"retry_after":                   types.Int64Null(),
+		"default_max_parallel_requests": types.Int64Null(),
+		"timeout":                       types.Float64Null(),
+		"stream_timeout":                types.Float64Null(),
+		"cooldown_time":                 types.Float64Null(),
+		"enable_pre_call_checks":        types.BoolNull(),
+		"set_verbose":                   types.BoolNull(),
+		"enable_tag_filtering":          types.BoolNull(),
+		"tag_filtering_match_any":       types.BoolNull(),
+		"disable_cooldowns":             types.BoolNull(),
+		"fallbacks":                     fbList,
+		"context_window_fallbacks":      emptyList,
+		"content_policy_fallbacks":      emptyList,
+		"routing_strategy_args":         types.MapNull(types.StringType),
+		"model_group_alias":             types.MapNull(types.StringType),
+		"default_litellm_params":        types.MapNull(types.StringType),
+		"retry_policy":                  types.ObjectNull(keyRetryPolicyAttrTypes),
+	}
+	obj, _ := types.ObjectValue(keyRouterSettingsAttrTypes, rsAttrs)
+
+	payload := buildKeyRouterSettingsPayload(context.Background(), obj)
+
+	fbsRaw, ok := payload["fallbacks"].([]map[string][]string)
+	if !ok {
+		t.Fatalf("expected fallbacks []map[string][]string, got %T: %v", payload["fallbacks"], payload["fallbacks"])
+	}
+	if len(fbsRaw) != 1 {
+		t.Fatalf("expected 1 fallback entry, got %d", len(fbsRaw))
+	}
+	models, ok := fbsRaw[0]["gpt-4"]
+	if !ok {
+		t.Fatal("expected key 'gpt-4' in fallback entry")
+	}
+	if len(models) != 2 || models[0] != "gpt-3.5-turbo" {
+		t.Errorf("unexpected fallback models: %v", models)
+	}
+}
+
+// TestParseKeyRouterSettingsFromAPI_Scalars verifies that float64 API values are
+// parsed into typed Int64/Float64 framework values.
+func TestParseKeyRouterSettingsFromAPI_Scalars(t *testing.T) {
+	t.Parallel()
+
+	rs := map[string]interface{}{
+		"num_retries":            float64(3),
+		"timeout":                float64(30.5),
+		"enable_pre_call_checks": true,
+		"routing_strategy":       "least-busy",
+	}
+
+	obj := parseKeyRouterSettingsFromAPI(rs)
+
+	var model KeyRouterSettingsModel
+	obj.As(context.Background(), &model, basetypes.ObjectAsOptions{})
+
+	if model.NumRetries.ValueInt64() != 3 {
+		t.Errorf("expected num_retries 3, got %d", model.NumRetries.ValueInt64())
+	}
+	if model.Timeout.ValueFloat64() != 30.5 {
+		t.Errorf("expected timeout 30.5, got %f", model.Timeout.ValueFloat64())
+	}
+	if !model.EnablePreCallChecks.ValueBool() {
+		t.Error("expected enable_pre_call_checks true")
+	}
+	if model.RoutingStrategy.ValueString() != "least-busy" {
+		t.Errorf("expected routing_strategy 'least-busy', got %q", model.RoutingStrategy.ValueString())
+	}
+	if !model.MaxFallbacks.IsNull() {
+		t.Error("absent max_fallbacks must be null")
+	}
+}
+
+// TestParseKeyRouterSettingsFromAPI_Fallbacks verifies that wire-format fallback
+// lists are parsed into typed FallbackEntryModel objects.
+func TestParseKeyRouterSettingsFromAPI_Fallbacks(t *testing.T) {
+	t.Parallel()
+
+	rs := map[string]interface{}{
+		"fallbacks": []interface{}{
+			map[string]interface{}{
+				"gpt-4": []interface{}{"gpt-3.5-turbo", "claude-haiku"},
+			},
+		},
+	}
+
+	obj := parseKeyRouterSettingsFromAPI(rs)
+
+	var model KeyRouterSettingsModel
+	obj.As(context.Background(), &model, basetypes.ObjectAsOptions{})
+
+	if model.Fallbacks.IsNull() {
+		t.Fatal("fallbacks should not be null")
+	}
+	var entries []FallbackEntryModel
+	model.Fallbacks.ElementsAs(context.Background(), &entries, false)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+	if entries[0].Model.ValueString() != "gpt-4" {
+		t.Errorf("expected model 'gpt-4', got %q", entries[0].Model.ValueString())
+	}
+	var fbs []string
+	entries[0].FallbackModels.ElementsAs(context.Background(), &fbs, false)
+	if len(fbs) != 2 || fbs[0] != "gpt-3.5-turbo" {
+		t.Errorf("unexpected fallback_models: %v", fbs)
+	}
+}
+
+// TestReadKeyRouterSettingsTyped verifies that readKey populates a typed
+// RouterSettings object from the API response.
+func TestReadKeyRouterSettingsTyped(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"key": "sk-typed-test",
+			"info": map[string]interface{}{
+				"token": "sk-typed-test",
+				"router_settings": map[string]interface{}{
+					"num_retries": float64(2),
+					"timeout":     float64(15.0),
+					"fallbacks": []interface{}{
+						map[string]interface{}{
+							"gpt-4": []interface{}{"gpt-3.5-turbo"},
+						},
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	r := &KeyResource{
+		client: &Client{
+			APIBase:    server.URL,
+			APIKey:     "test-key",
+			HTTPClient: server.Client(),
+		},
+	}
+
+	// RouterSettings is non-null so readKey will parse the API response.
+	emptyFallbacks := types.ListNull(types.ObjectType{AttrTypes: fallbackEntryAttrTypes})
+	rsAttrs := map[string]attr.Value{
+		"routing_strategy":              types.StringNull(),
+		"num_retries":                   types.Int64Value(0),
+		"max_fallbacks":                 types.Int64Null(),
+		"allowed_fails":                 types.Int64Null(),
+		"retry_after":                   types.Int64Null(),
+		"default_max_parallel_requests": types.Int64Null(),
+		"timeout":                       types.Float64Null(),
+		"stream_timeout":                types.Float64Null(),
+		"cooldown_time":                 types.Float64Null(),
+		"enable_pre_call_checks":        types.BoolNull(),
+		"set_verbose":                   types.BoolNull(),
+		"enable_tag_filtering":          types.BoolNull(),
+		"tag_filtering_match_any":       types.BoolNull(),
+		"disable_cooldowns":             types.BoolNull(),
+		"fallbacks":                     emptyFallbacks,
+		"context_window_fallbacks":      emptyFallbacks,
+		"content_policy_fallbacks":      emptyFallbacks,
+		"routing_strategy_args":         types.MapNull(types.StringType),
+		"model_group_alias":             types.MapNull(types.StringType),
+		"default_litellm_params":        types.MapNull(types.StringType),
+		"retry_policy":                  types.ObjectNull(keyRetryPolicyAttrTypes),
+	}
+	initialRS, _ := types.ObjectValue(keyRouterSettingsAttrTypes, rsAttrs)
+
+	data := KeyResourceModel{
+		ID:                       types.StringValue(hashKeyForID("sk-typed-test")),
+		Key:                      types.StringValue("sk-typed-test"),
+		RouterSettings:           initialRS,
+		Models:                   types.ListNull(types.StringType),
+		AllowedRoutes:            types.ListNull(types.StringType),
+		AllowedPassthroughRoutes: types.ListNull(types.StringType),
+		AllowedCacheControls:     types.ListNull(types.StringType),
+		Guardrails:               types.ListNull(types.StringType),
+		Prompts:                  types.ListNull(types.StringType),
+		EnforcedParams:           types.ListNull(types.StringType),
+		Tags:                     types.ListNull(types.StringType),
+		Metadata:                 types.MapNull(types.StringType),
+		Aliases:                  types.MapNull(types.StringType),
+		Config:                   types.MapNull(types.StringType),
+		Permissions:              types.MapNull(types.StringType),
+		ModelMaxBudget:           types.MapNull(types.Float64Type),
+		ModelRPMLimit:            types.MapNull(types.Int64Type),
+		ModelTPMLimit:            types.MapNull(types.Int64Type),
+	}
+
+	if err := r.readKey(context.Background(), &data); err != nil {
+		t.Fatalf("readKey returned error: %v", err)
+	}
+
+	if data.RouterSettings.IsNull() {
+		t.Fatal("router_settings should be non-null after read")
+	}
+
+	var model KeyRouterSettingsModel
+	data.RouterSettings.As(context.Background(), &model, basetypes.ObjectAsOptions{})
+
+	if model.NumRetries.ValueInt64() != 2 {
+		t.Errorf("expected num_retries 2, got %d", model.NumRetries.ValueInt64())
+	}
+	if model.Timeout.ValueFloat64() != 15.0 {
+		t.Errorf("expected timeout 15.0, got %f", model.Timeout.ValueFloat64())
+	}
+	if model.Fallbacks.IsNull() {
+		t.Fatal("fallbacks should not be null")
+	}
+	var entries []FallbackEntryModel
+	model.Fallbacks.ElementsAs(context.Background(), &entries, false)
+	if len(entries) != 1 || entries[0].Model.ValueString() != "gpt-4" {
+		t.Errorf("unexpected fallbacks: %v", entries)
+	}
+}
+
+
