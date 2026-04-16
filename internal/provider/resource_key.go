@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
-	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -15,6 +14,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 )
@@ -71,8 +71,76 @@ type KeyResourceModel struct {
 	Prompts                  types.List    `tfsdk:"prompts"`
 	EnforcedParams           types.List    `tfsdk:"enforced_params"`
 	Tags                     types.List    `tfsdk:"tags"`
-	RouterSettings           types.Map     `tfsdk:"router_settings"`
+	RouterSettings           types.Object  `tfsdk:"router_settings"`
 	Blocked                  types.Bool    `tfsdk:"blocked"`
+}
+
+// KeyRouterSettingsModel represents all 21 fields from LiteLLM's ROUTER_SETTINGS_FIELDS.
+type KeyRouterSettingsModel struct {
+	RoutingStrategy            types.String  `tfsdk:"routing_strategy"`
+	RoutingStrategyArgs        types.Map     `tfsdk:"routing_strategy_args"`
+	NumRetries                 types.Int64   `tfsdk:"num_retries"`
+	Timeout                    types.Float64 `tfsdk:"timeout"`
+	StreamTimeout              types.Float64 `tfsdk:"stream_timeout"`
+	MaxFallbacks               types.Int64   `tfsdk:"max_fallbacks"`
+	Fallbacks                  types.List    `tfsdk:"fallbacks"`
+	ContextWindowFallbacks     types.List    `tfsdk:"context_window_fallbacks"`
+	ContentPolicyFallbacks     types.List    `tfsdk:"content_policy_fallbacks"`
+	AllowedFails               types.Int64   `tfsdk:"allowed_fails"`
+	CooldownTime               types.Float64 `tfsdk:"cooldown_time"`
+	RetryAfter                 types.Int64   `tfsdk:"retry_after"`
+	RetryPolicy                types.Object  `tfsdk:"retry_policy"`
+	ModelGroupAlias            types.Map     `tfsdk:"model_group_alias"`
+	EnablePreCallChecks        types.Bool    `tfsdk:"enable_pre_call_checks"`
+	DefaultLitellmParams       types.Map     `tfsdk:"default_litellm_params"`
+	SetVerbose                 types.Bool    `tfsdk:"set_verbose"`
+	DefaultMaxParallelRequests types.Int64   `tfsdk:"default_max_parallel_requests"`
+	EnableTagFiltering         types.Bool    `tfsdk:"enable_tag_filtering"`
+	TagFilteringMatchAny       types.Bool    `tfsdk:"tag_filtering_match_any"`
+	DisableCooldowns           types.Bool    `tfsdk:"disable_cooldowns"`
+}
+
+// KeyRetryPolicyModel maps to LiteLLM's RetryPolicy Pydantic model.
+type KeyRetryPolicyModel struct {
+	BadRequestErrorRetries             types.Int64 `tfsdk:"bad_request_error_retries"`
+	AuthenticationErrorRetries         types.Int64 `tfsdk:"authentication_error_retries"`
+	TimeoutErrorRetries                types.Int64 `tfsdk:"timeout_error_retries"`
+	RateLimitErrorRetries              types.Int64 `tfsdk:"rate_limit_error_retries"`
+	ContentPolicyViolationErrorRetries types.Int64 `tfsdk:"content_policy_violation_error_retries"`
+	InternalServerErrorRetries         types.Int64 `tfsdk:"internal_server_error_retries"`
+}
+
+var keyRetryPolicyAttrTypes = map[string]attr.Type{
+	"bad_request_error_retries":              types.Int64Type,
+	"authentication_error_retries":           types.Int64Type,
+	"timeout_error_retries":                  types.Int64Type,
+	"rate_limit_error_retries":               types.Int64Type,
+	"content_policy_violation_error_retries": types.Int64Type,
+	"internal_server_error_retries":          types.Int64Type,
+}
+
+var keyRouterSettingsAttrTypes = map[string]attr.Type{
+	"routing_strategy":              types.StringType,
+	"routing_strategy_args":         types.MapType{ElemType: types.StringType},
+	"num_retries":                   types.Int64Type,
+	"timeout":                       types.Float64Type,
+	"stream_timeout":                types.Float64Type,
+	"max_fallbacks":                 types.Int64Type,
+	"fallbacks":                     types.ListType{ElemType: types.ObjectType{AttrTypes: fallbackEntryAttrTypes}},
+	"context_window_fallbacks":      types.ListType{ElemType: types.ObjectType{AttrTypes: fallbackEntryAttrTypes}},
+	"content_policy_fallbacks":      types.ListType{ElemType: types.ObjectType{AttrTypes: fallbackEntryAttrTypes}},
+	"allowed_fails":                 types.Int64Type,
+	"cooldown_time":                 types.Float64Type,
+	"retry_after":                   types.Int64Type,
+	"retry_policy":                  types.ObjectType{AttrTypes: keyRetryPolicyAttrTypes},
+	"model_group_alias":             types.MapType{ElemType: types.StringType},
+	"enable_pre_call_checks":        types.BoolType,
+	"default_litellm_params":        types.MapType{ElemType: types.StringType},
+	"set_verbose":                   types.BoolType,
+	"default_max_parallel_requests": types.Int64Type,
+	"enable_tag_filtering":          types.BoolType,
+	"tag_filtering_match_any":       types.BoolType,
+	"disable_cooldowns":             types.BoolType,
 }
 
 func (r *KeyResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -259,10 +327,164 @@ func (r *KeyResource) Schema(ctx context.Context, req resource.SchemaRequest, re
 				Computed:    true,
 				ElementType: types.StringType,
 			},
-			"router_settings": schema.MapAttribute{
-				Description: "Router settings for the key.",
-				Optional:    true,
-				ElementType: types.StringType,
+			"router_settings": schema.SingleNestedAttribute{
+				Description: "Router settings for the key. These override global and team-level routing " +
+					"settings for requests made with this key. Resolution order: Key > Team > Global.",
+				Optional: true,
+				Attributes: map[string]schema.Attribute{
+					"routing_strategy": schema.StringAttribute{
+						Description: "Strategy for routing requests across model deployments (e.g. 'simple-shuffle', 'least-busy', 'latency-based-routing', 'cost-based-routing', 'usage-based-routing').",
+						Optional:    true,
+					},
+					"routing_strategy_args": schema.MapAttribute{
+						Description: "Additional arguments for the routing strategy.",
+						Optional:    true,
+						ElementType: types.StringType,
+					},
+					"num_retries": schema.Int64Attribute{
+						Description: "Number of retries on failure.",
+						Optional:    true,
+					},
+					"timeout": schema.Float64Attribute{
+						Description: "Request timeout in seconds.",
+						Optional:    true,
+					},
+					"stream_timeout": schema.Float64Attribute{
+						Description: "Timeout in seconds for streaming requests.",
+						Optional:    true,
+					},
+					"max_fallbacks": schema.Int64Attribute{
+						Description: "Maximum number of fallbacks to attempt.",
+						Optional:    true,
+					},
+					"fallbacks": schema.ListNestedAttribute{
+						Description: "Fallback model chains triggered when a model call fails after retries.",
+						Optional:    true,
+						NestedObject: schema.NestedAttributeObject{
+							Attributes: map[string]schema.Attribute{
+								"model": schema.StringAttribute{
+									Description: "The primary model name to configure fallbacks for.",
+									Required:    true,
+								},
+								"fallback_models": schema.ListAttribute{
+									Description: "Ordered list of fallback model names.",
+									Required:    true,
+									ElementType: types.StringType,
+								},
+							},
+						},
+					},
+					"context_window_fallbacks": schema.ListNestedAttribute{
+						Description: "Fallback model chains triggered when a context window exceeded error occurs.",
+						Optional:    true,
+						NestedObject: schema.NestedAttributeObject{
+							Attributes: map[string]schema.Attribute{
+								"model": schema.StringAttribute{
+									Description: "The primary model name to configure fallbacks for.",
+									Required:    true,
+								},
+								"fallback_models": schema.ListAttribute{
+									Description: "Ordered list of fallback model names.",
+									Required:    true,
+									ElementType: types.StringType,
+								},
+							},
+						},
+					},
+					"content_policy_fallbacks": schema.ListNestedAttribute{
+						Description: "Fallback model chains triggered when a content policy violation error occurs.",
+						Optional:    true,
+						NestedObject: schema.NestedAttributeObject{
+							Attributes: map[string]schema.Attribute{
+								"model": schema.StringAttribute{
+									Description: "The primary model name to configure fallbacks for.",
+									Required:    true,
+								},
+								"fallback_models": schema.ListAttribute{
+									Description: "Ordered list of fallback model names.",
+									Required:    true,
+									ElementType: types.StringType,
+								},
+							},
+						},
+					},
+					"allowed_fails": schema.Int64Attribute{
+						Description: "Number of failures allowed before a model is put into cooldown.",
+						Optional:    true,
+					},
+					"cooldown_time": schema.Float64Attribute{
+						Description: "Duration in seconds a model stays in cooldown after exceeding allowed_fails.",
+						Optional:    true,
+					},
+					"retry_after": schema.Int64Attribute{
+						Description: "Minimum seconds to wait before retrying a rate-limited request.",
+						Optional:    true,
+					},
+					"retry_policy": schema.SingleNestedAttribute{
+						Description: "Per-error-type retry counts that override num_retries.",
+						Optional:    true,
+						Attributes: map[string]schema.Attribute{
+							"bad_request_error_retries": schema.Int64Attribute{
+								Description: "Retries for BadRequestError (HTTP 400).",
+								Optional:    true,
+							},
+							"authentication_error_retries": schema.Int64Attribute{
+								Description: "Retries for AuthenticationError (HTTP 401).",
+								Optional:    true,
+							},
+							"timeout_error_retries": schema.Int64Attribute{
+								Description: "Retries for TimeoutError.",
+								Optional:    true,
+							},
+							"rate_limit_error_retries": schema.Int64Attribute{
+								Description: "Retries for RateLimitError (HTTP 429).",
+								Optional:    true,
+							},
+							"content_policy_violation_error_retries": schema.Int64Attribute{
+								Description: "Retries for ContentPolicyViolationError.",
+								Optional:    true,
+							},
+							"internal_server_error_retries": schema.Int64Attribute{
+								Description: "Retries for InternalServerError (HTTP 500).",
+								Optional:    true,
+							},
+						},
+					},
+					"model_group_alias": schema.MapAttribute{
+						Description: "Alias mappings from one model group name to another.",
+						Optional:    true,
+						ElementType: types.StringType,
+					},
+					"enable_pre_call_checks": schema.BoolAttribute{
+						Description: "Enable pre-call checks (e.g. context window validation) before routing.",
+						Optional:    true,
+					},
+					"default_litellm_params": schema.MapAttribute{
+						Description: "Default parameters to merge into every LiteLLM request for this key.",
+						Optional:    true,
+						ElementType: types.StringType,
+					},
+					"set_verbose": schema.BoolAttribute{
+						Description: "Enable verbose logging for requests made with this key.",
+						Optional:    true,
+					},
+					"default_max_parallel_requests": schema.Int64Attribute{
+						Description: "Default maximum parallel requests allowed per deployment.",
+						Optional:    true,
+					},
+					"enable_tag_filtering": schema.BoolAttribute{
+						Description: "Enable tag-based routing so only deployments matching request tags are considered.",
+						Optional:    true,
+					},
+					"tag_filtering_match_any": schema.BoolAttribute{
+						Description: "When tag filtering is enabled, match deployments that have any of the request tags (true) vs all tags (false).",
+						Optional:    true,
+					},
+					"disable_cooldowns": schema.BoolAttribute{
+						Description: "Disable the cooldown mechanism so failed deployments are always retried.",
+						Optional:    true,
+					},
+				},
 			},
 			"blocked": schema.BoolAttribute{
 				Description: "Whether the key is blocked.",
@@ -363,37 +585,6 @@ func (r *KeyResource) Update(ctx context.Context, req resource.UpdateRequest, re
 
 	updateReq := r.buildKeyRequest(ctx, &data)
 	updateReq["key"] = data.Key.ValueString()
-
-	// router_settings: Pydantic validates the whole object, so we must send safe values.
-	// Null plan → send {} (API rejects null). Removed keys → inject [] or {} zero-values
-	// to avoid 422. Scalars can be omitted.
-	switch {
-	case data.RouterSettings.IsNull():
-		updateReq["router_settings"] = map[string]interface{}{}
-	case !data.RouterSettings.IsUnknown():
-		// inject zero values for removed list/object keys so Pydantic
-		// receives a valid type rather than null.
-		if routerMap, ok := updateReq["router_settings"].(map[string]interface{}); ok {
-			if !state.RouterSettings.IsNull() && !state.RouterSettings.IsUnknown() {
-				var stateRouter map[string]string
-				state.RouterSettings.ElementsAs(ctx, &stateRouter, false)
-				for k, v := range stateRouter {
-					if _, inPlan := routerMap[k]; !inPlan {
-						trimmed := strings.TrimSpace(v)
-						if strings.HasPrefix(trimmed, "[") {
-							routerMap[k] = []interface{}{}
-						} else if strings.HasPrefix(trimmed, "{") {
-							routerMap[k] = map[string]interface{}{}
-						}
-						// Scalars omitted: the API replaces router_settings wholesale.
-					}
-				}
-			}
-		} else {
-			// Non-null but empty plan map (router_settings = {}) — clear entirely.
-			updateReq["router_settings"] = map[string]interface{}{}
-		}
-	}
 
 	if err := r.client.DoRequestWithResponse(ctx, "POST", "/key/update", updateReq, nil); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to update key: %s", err))
@@ -638,14 +829,9 @@ func (r *KeyResource) buildKeyRequest(ctx context.Context, data *KeyResourceMode
 
 	// Map fields - check IsNull, IsUnknown, and len > 0
 	if !data.RouterSettings.IsNull() && !data.RouterSettings.IsUnknown() {
-		var routerSettings map[string]string
-		data.RouterSettings.ElementsAs(ctx, &routerSettings, false)
-		if len(routerSettings) > 0 {
-			// Convert string values that contain JSON objects/arrays to native
-			// types so the API receives them as structured data rather than
-			// escaped strings (e.g. fallbacks configuration).
-			keyReq["router_settings"] = convertJSONStringsToNative(routerSettings)
-		}
+		keyReq["router_settings"] = buildKeyRouterSettingsPayload(ctx, data.RouterSettings)
+	} else {
+		keyReq["router_settings"] = map[string]interface{}{}
 	}
 
 	if !data.Metadata.IsNull() && !data.Metadata.IsUnknown() {
@@ -722,6 +908,214 @@ func (r *KeyResource) buildKeyRequest(ctx context.Context, data *KeyResourceMode
 	}
 
 	return keyReq
+}
+
+// buildKeyRouterSettingsPayload converts the Terraform router_settings object
+// into the LiteLLM API wire format.
+func buildKeyRouterSettingsPayload(ctx context.Context, obj types.Object) map[string]interface{} {
+	var rs KeyRouterSettingsModel
+	obj.As(ctx, &rs, basetypes.ObjectAsOptions{})
+
+	payload := map[string]interface{}{}
+
+	if !rs.RoutingStrategy.IsNull() && !rs.RoutingStrategy.IsUnknown() {
+		payload["routing_strategy"] = rs.RoutingStrategy.ValueString()
+	}
+	if !rs.NumRetries.IsNull() && !rs.NumRetries.IsUnknown() {
+		payload["num_retries"] = rs.NumRetries.ValueInt64()
+	}
+	if !rs.MaxFallbacks.IsNull() && !rs.MaxFallbacks.IsUnknown() {
+		payload["max_fallbacks"] = rs.MaxFallbacks.ValueInt64()
+	}
+	if !rs.AllowedFails.IsNull() && !rs.AllowedFails.IsUnknown() {
+		payload["allowed_fails"] = rs.AllowedFails.ValueInt64()
+	}
+	if !rs.RetryAfter.IsNull() && !rs.RetryAfter.IsUnknown() {
+		payload["retry_after"] = rs.RetryAfter.ValueInt64()
+	}
+	if !rs.DefaultMaxParallelRequests.IsNull() && !rs.DefaultMaxParallelRequests.IsUnknown() {
+		payload["default_max_parallel_requests"] = rs.DefaultMaxParallelRequests.ValueInt64()
+	}
+	if !rs.Timeout.IsNull() && !rs.Timeout.IsUnknown() {
+		payload["timeout"] = rs.Timeout.ValueFloat64()
+	}
+	if !rs.StreamTimeout.IsNull() && !rs.StreamTimeout.IsUnknown() {
+		payload["stream_timeout"] = rs.StreamTimeout.ValueFloat64()
+	}
+	if !rs.CooldownTime.IsNull() && !rs.CooldownTime.IsUnknown() {
+		payload["cooldown_time"] = rs.CooldownTime.ValueFloat64()
+	}
+	if !rs.EnablePreCallChecks.IsNull() && !rs.EnablePreCallChecks.IsUnknown() {
+		payload["enable_pre_call_checks"] = rs.EnablePreCallChecks.ValueBool()
+	}
+	if !rs.SetVerbose.IsNull() && !rs.SetVerbose.IsUnknown() {
+		payload["set_verbose"] = rs.SetVerbose.ValueBool()
+	}
+	if !rs.EnableTagFiltering.IsNull() && !rs.EnableTagFiltering.IsUnknown() {
+		payload["enable_tag_filtering"] = rs.EnableTagFiltering.ValueBool()
+	}
+	if !rs.TagFilteringMatchAny.IsNull() && !rs.TagFilteringMatchAny.IsUnknown() {
+		payload["tag_filtering_match_any"] = rs.TagFilteringMatchAny.ValueBool()
+	}
+	if !rs.DisableCooldowns.IsNull() && !rs.DisableCooldowns.IsUnknown() {
+		payload["disable_cooldowns"] = rs.DisableCooldowns.ValueBool()
+	}
+	if !rs.Fallbacks.IsNull() && !rs.Fallbacks.IsUnknown() {
+		payload["fallbacks"] = fallbackEntriesToAPIFormat(ctx, rs.Fallbacks)
+	}
+	if !rs.ContextWindowFallbacks.IsNull() && !rs.ContextWindowFallbacks.IsUnknown() {
+		payload["context_window_fallbacks"] = fallbackEntriesToAPIFormat(ctx, rs.ContextWindowFallbacks)
+	}
+	if !rs.ContentPolicyFallbacks.IsNull() && !rs.ContentPolicyFallbacks.IsUnknown() {
+		payload["content_policy_fallbacks"] = fallbackEntriesToAPIFormat(ctx, rs.ContentPolicyFallbacks)
+	}
+	if !rs.RoutingStrategyArgs.IsNull() && !rs.RoutingStrategyArgs.IsUnknown() {
+		var m map[string]string
+		rs.RoutingStrategyArgs.ElementsAs(ctx, &m, false)
+		payload["routing_strategy_args"] = m
+	}
+	if !rs.ModelGroupAlias.IsNull() && !rs.ModelGroupAlias.IsUnknown() {
+		var m map[string]string
+		rs.ModelGroupAlias.ElementsAs(ctx, &m, false)
+		payload["model_group_alias"] = m
+	}
+	if !rs.DefaultLitellmParams.IsNull() && !rs.DefaultLitellmParams.IsUnknown() {
+		var m map[string]string
+		rs.DefaultLitellmParams.ElementsAs(ctx, &m, false)
+		payload["default_litellm_params"] = m
+	}
+	if !rs.RetryPolicy.IsNull() && !rs.RetryPolicy.IsUnknown() {
+		var rp KeyRetryPolicyModel
+		rs.RetryPolicy.As(ctx, &rp, basetypes.ObjectAsOptions{})
+		rpMap := map[string]interface{}{}
+		if !rp.BadRequestErrorRetries.IsNull() {
+			rpMap["BadRequestErrorRetries"] = rp.BadRequestErrorRetries.ValueInt64()
+		}
+		if !rp.AuthenticationErrorRetries.IsNull() {
+			rpMap["AuthenticationErrorRetries"] = rp.AuthenticationErrorRetries.ValueInt64()
+		}
+		if !rp.TimeoutErrorRetries.IsNull() {
+			rpMap["TimeoutErrorRetries"] = rp.TimeoutErrorRetries.ValueInt64()
+		}
+		if !rp.RateLimitErrorRetries.IsNull() {
+			rpMap["RateLimitErrorRetries"] = rp.RateLimitErrorRetries.ValueInt64()
+		}
+		if !rp.ContentPolicyViolationErrorRetries.IsNull() {
+			rpMap["ContentPolicyViolationErrorRetries"] = rp.ContentPolicyViolationErrorRetries.ValueInt64()
+		}
+		if !rp.InternalServerErrorRetries.IsNull() {
+			rpMap["InternalServerErrorRetries"] = rp.InternalServerErrorRetries.ValueInt64()
+		}
+		payload["retry_policy"] = rpMap
+	}
+
+	return payload
+}
+
+// parseKeyRouterSettingsFromAPI converts the LiteLLM API router_settings response
+// back into a Terraform types.Object matching the KeyRouterSettingsModel schema.
+func parseKeyRouterSettingsFromAPI(rs map[string]interface{}) types.Object {
+	rsAttrs := map[string]attr.Value{
+		"routing_strategy":              stringFromAPIVal(rs["routing_strategy"]),
+		"num_retries":                   int64FromAPIVal(rs["num_retries"]),
+		"max_fallbacks":                 int64FromAPIVal(rs["max_fallbacks"]),
+		"allowed_fails":                 int64FromAPIVal(rs["allowed_fails"]),
+		"retry_after":                   int64FromAPIVal(rs["retry_after"]),
+		"default_max_parallel_requests": int64FromAPIVal(rs["default_max_parallel_requests"]),
+		"timeout":                       float64FromAPIVal(rs["timeout"]),
+		"stream_timeout":                float64FromAPIVal(rs["stream_timeout"]),
+		"cooldown_time":                 float64FromAPIVal(rs["cooldown_time"]),
+		"enable_pre_call_checks":        boolFromAPIVal(rs["enable_pre_call_checks"]),
+		"set_verbose":                   boolFromAPIVal(rs["set_verbose"]),
+		"enable_tag_filtering":          boolFromAPIVal(rs["enable_tag_filtering"]),
+		"tag_filtering_match_any":       boolFromAPIVal(rs["tag_filtering_match_any"]),
+		"disable_cooldowns":             boolFromAPIVal(rs["disable_cooldowns"]),
+		"routing_strategy_args":         stringMapFromAPIVal(rs["routing_strategy_args"]),
+		"model_group_alias":             stringMapFromAPIVal(rs["model_group_alias"]),
+		"default_litellm_params":        stringMapFromAPIVal(rs["default_litellm_params"]),
+		"retry_policy":                  parseKeyRetryPolicyFromAPIVal(rs["retry_policy"]),
+	}
+
+	if fb, ok := rs["fallbacks"].([]interface{}); ok {
+		rsAttrs["fallbacks"] = apiFormatToFallbackEntries(fb)
+	} else {
+		rsAttrs["fallbacks"] = types.ListNull(types.ObjectType{AttrTypes: fallbackEntryAttrTypes})
+	}
+	if cwf, ok := rs["context_window_fallbacks"].([]interface{}); ok {
+		rsAttrs["context_window_fallbacks"] = apiFormatToFallbackEntries(cwf)
+	} else {
+		rsAttrs["context_window_fallbacks"] = types.ListNull(types.ObjectType{AttrTypes: fallbackEntryAttrTypes})
+	}
+	if cpf, ok := rs["content_policy_fallbacks"].([]interface{}); ok {
+		rsAttrs["content_policy_fallbacks"] = apiFormatToFallbackEntries(cpf)
+	} else {
+		rsAttrs["content_policy_fallbacks"] = types.ListNull(types.ObjectType{AttrTypes: fallbackEntryAttrTypes})
+	}
+
+	obj, _ := types.ObjectValue(keyRouterSettingsAttrTypes, rsAttrs)
+	return obj
+}
+
+func stringFromAPIVal(v interface{}) types.String {
+	if s, ok := v.(string); ok {
+		return types.StringValue(s)
+	}
+	return types.StringNull()
+}
+
+func int64FromAPIVal(v interface{}) types.Int64 {
+	if f, ok := v.(float64); ok {
+		return types.Int64Value(int64(f))
+	}
+	return types.Int64Null()
+}
+
+func float64FromAPIVal(v interface{}) types.Float64 {
+	if f, ok := v.(float64); ok {
+		return types.Float64Value(f)
+	}
+	return types.Float64Null()
+}
+
+func boolFromAPIVal(v interface{}) types.Bool {
+	if b, ok := v.(bool); ok {
+		return types.BoolValue(b)
+	}
+	return types.BoolNull()
+}
+
+func stringMapFromAPIVal(v interface{}) types.Map {
+	m, ok := v.(map[string]interface{})
+	if !ok || len(m) == 0 {
+		return types.MapNull(types.StringType)
+	}
+	elems := make(map[string]attr.Value, len(m))
+	for k, val := range m {
+		if s, ok := val.(string); ok {
+			elems[k] = types.StringValue(s)
+		} else {
+			elems[k] = types.StringValue(valueToJSONString(val))
+		}
+	}
+	result, _ := types.MapValue(types.StringType, elems)
+	return result
+}
+
+func parseKeyRetryPolicyFromAPIVal(v interface{}) types.Object {
+	m, ok := v.(map[string]interface{})
+	if !ok {
+		return types.ObjectNull(keyRetryPolicyAttrTypes)
+	}
+	attrs := map[string]attr.Value{
+		"bad_request_error_retries":              int64FromAPIVal(m["BadRequestErrorRetries"]),
+		"authentication_error_retries":           int64FromAPIVal(m["AuthenticationErrorRetries"]),
+		"timeout_error_retries":                  int64FromAPIVal(m["TimeoutErrorRetries"]),
+		"rate_limit_error_retries":               int64FromAPIVal(m["RateLimitErrorRetries"]),
+		"content_policy_violation_error_retries": int64FromAPIVal(m["ContentPolicyViolationErrorRetries"]),
+		"internal_server_error_retries":          int64FromAPIVal(m["InternalServerErrorRetries"]),
+	}
+	obj, _ := types.ObjectValue(keyRetryPolicyAttrTypes, attrs)
+	return obj
 }
 
 func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error {
@@ -943,38 +1337,13 @@ func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error
 		data.Tags, _ = types.ListValue(types.StringType, []attr.Value{})
 	}
 
-	// Handle router_settings map - preserve null when API returns empty and config didn't specify router_settings.
-	// The API may inject internal keys (e.g. fallbacks, timeout) into router_settings.
-	// Only include keys that were in the user's original config to avoid drift.
+	// Handle router_settings - preserve null when user didn't configure it.
 	if data.RouterSettings.IsNull() {
 		// Preserve null - do not repopulate from API
 	} else if routerSettings, ok := info["router_settings"].(map[string]interface{}); ok && len(routerSettings) > 0 {
-		// Build the set of keys the user has in their current config.
-		configuredKeys := make(map[string]bool)
-		if !data.RouterSettings.IsUnknown() {
-			var currentRouter map[string]string
-			data.RouterSettings.ElementsAs(ctx, &currentRouter, false)
-			for k := range currentRouter {
-				configuredKeys[k] = true
-			}
-		}
-
-		settingsMap := make(map[string]attr.Value)
-		for k, v := range routerSettings {
-			// Skip keys not in the user's config (e.g. zero-value sentinels
-			// injected by Update to satisfy API validation).
-			if len(configuredKeys) > 0 && !configuredKeys[k] {
-				continue
-			}
-			settingsMap[k] = types.StringValue(valueToJSONString(v))
-		}
-		if len(settingsMap) > 0 {
-			data.RouterSettings, _ = types.MapValue(types.StringType, settingsMap)
-		} else {
-			data.RouterSettings, _ = types.MapValue(types.StringType, map[string]attr.Value{})
-		}
+		data.RouterSettings = parseKeyRouterSettingsFromAPI(routerSettings)
 	} else {
-		data.RouterSettings, _ = types.MapValue(types.StringType, map[string]attr.Value{})
+		data.RouterSettings = types.ObjectNull(keyRouterSettingsAttrTypes)
 	}
 
 	// Handle metadata map - preserve null when API returns empty and config didn't specify metadata.
