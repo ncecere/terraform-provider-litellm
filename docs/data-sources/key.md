@@ -11,11 +11,12 @@ data "litellm_key" "existing" {
 
 output "key_info" {
   value = {
-    alias             = data.litellm_key.existing.key_alias
-    team_id           = data.litellm_key.existing.team_id
-    max_budget        = data.litellm_key.existing.max_budget
-    router_settings   = data.litellm_key.existing.router_settings
-    blocked           = data.litellm_key.existing.blocked
+    alias           = data.litellm_key.existing.key_alias
+    team_id         = data.litellm_key.existing.team_id
+    max_budget      = data.litellm_key.existing.max_budget
+    num_retries     = data.litellm_key.existing.router_settings.num_retries
+    timeout         = data.litellm_key.existing.router_settings.timeout
+    blocked         = data.litellm_key.existing.blocked
   }
 }
 ```
@@ -40,7 +41,7 @@ output "key_info" {
 * `soft_budget` - Soft budget limit for warnings.
 * `metadata` - Map of metadata for the key.
 * `tags` - List of tags for the key.
-* `router_settings` - Map of router settings for the key.
+* `router_settings` - Router configuration for the key. Contains all 21 fields matching the resource block: `routing_strategy`, `num_retries`, `timeout`, `stream_timeout`, `max_fallbacks`, `allowed_fails`, `cooldown_time`, `retry_after`, `default_max_parallel_requests`, `enable_pre_call_checks`, `set_verbose`, `enable_tag_filtering`, `tag_filtering_match_any`, `disable_cooldowns`, `routing_strategy_args`, `model_group_alias`, `default_litellm_params`, `fallbacks`, `context_window_fallbacks`, `content_policy_fallbacks`, and `retry_policy`.
 * `blocked` - Whether the key is blocked.
 
 ## Notes
