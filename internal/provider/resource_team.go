@@ -35,8 +35,10 @@ type TeamResourceModel struct {
 	RPMLimit              types.Int64   `tfsdk:"rpm_limit"`
 	TPMLimitType          types.String  `tfsdk:"tpm_limit_type"`
 	RPMLimitType          types.String  `tfsdk:"rpm_limit_type"`
-	MaxBudget             types.Float64 `tfsdk:"max_budget"`
-	BudgetDuration        types.String  `tfsdk:"budget_duration"`
+	MaxBudget                types.Float64 `tfsdk:"max_budget"`
+	SoftBudget               types.Float64 `tfsdk:"soft_budget"`
+	BudgetDuration           types.String  `tfsdk:"budget_duration"`
+	TeamMemberBudgetDuration types.String  `tfsdk:"team_member_budget_duration"`
 	Models                types.List    `tfsdk:"models"`
 	ModelAliases          types.Map     `tfsdk:"model_aliases"`
 	ModelRPMLimit         types.Map     `tfsdk:"model_rpm_limit"`
@@ -47,9 +49,10 @@ type TeamResourceModel struct {
 	Blocked               types.Bool    `tfsdk:"blocked"`
 	TeamMemberPermissions types.List    `tfsdk:"team_member_permissions"`
 	TeamMemberBudget      types.Float64 `tfsdk:"team_member_budget"`
-	TeamMemberRPMLimit    types.Int64   `tfsdk:"team_member_rpm_limit"`
-	TeamMemberTPMLimit    types.Int64   `tfsdk:"team_member_tpm_limit"`
-	RouterSettings        types.Object  `tfsdk:"router_settings"`
+	TeamMemberRPMLimit       types.Int64   `tfsdk:"team_member_rpm_limit"`
+	TeamMemberTPMLimit       types.Int64   `tfsdk:"team_member_tpm_limit"`
+	SoftBudgetAlertingEmails types.List    `tfsdk:"soft_budget_alerting_emails"`
+	RouterSettings           types.Object  `tfsdk:"router_settings"`
 }
 
 type RouterSettingsModel struct {
@@ -121,8 +124,16 @@ func (r *TeamResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 				Description: "Maximum budget for the team.",
 				Optional:    true,
 			},
+			"soft_budget": schema.Float64Attribute{
+				Description: "Soft budget in USD. Requests will not fail if exceeded, but will fire alerting.",
+				Optional:    true,
+			},
 			"budget_duration": schema.StringAttribute{
 				Description: "Budget reset duration.",
+				Optional:    true,
+			},
+			"team_member_budget_duration": schema.StringAttribute{
+				Description: "Budget reset duration for team members (e.g. '30d', '1mo').",
 				Optional:    true,
 			},
 			"models": schema.ListAttribute{
@@ -189,6 +200,12 @@ func (r *TeamResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 			"team_member_tpm_limit": schema.Int64Attribute{
 				Description: "Default TPM limit for team members.",
 				Optional:    true,
+			},
+			"soft_budget_alerting_emails": schema.ListAttribute{
+				Description: "Email addresses to alert when soft budget is exceeded.",
+				Optional:    true,
+				Computed:    true,
+				ElementType: types.StringType,
 			},
 			"router_settings": schema.SingleNestedAttribute{
 				Description: "Router settings for the team, including fallback configurations. " +
@@ -384,6 +401,9 @@ func (r *TeamResource) buildTeamRequest(ctx context.Context, data *TeamResourceM
 	if !data.BudgetDuration.IsNull() && !data.BudgetDuration.IsUnknown() && data.BudgetDuration.ValueString() != "" {
 		teamReq["budget_duration"] = data.BudgetDuration.ValueString()
 	}
+	if !data.TeamMemberBudgetDuration.IsNull() && !data.TeamMemberBudgetDuration.IsUnknown() && data.TeamMemberBudgetDuration.ValueString() != "" {
+		teamReq["team_member_budget_duration"] = data.TeamMemberBudgetDuration.ValueString()
+	}
 
 	// Numeric fields - check IsNull and IsUnknown
 	if !data.TPMLimit.IsNull() && !data.TPMLimit.IsUnknown() {
@@ -394,6 +414,9 @@ func (r *TeamResource) buildTeamRequest(ctx context.Context, data *TeamResourceM
 	}
 	if !data.MaxBudget.IsNull() && !data.MaxBudget.IsUnknown() {
 		teamReq["max_budget"] = data.MaxBudget.ValueFloat64()
+	}
+	if !data.SoftBudget.IsNull() && !data.SoftBudget.IsUnknown() {
+		teamReq["soft_budget"] = data.SoftBudget.ValueFloat64()
 	}
 	if !data.TeamMemberBudget.IsNull() && !data.TeamMemberBudget.IsUnknown() {
 		teamReq["team_member_budget"] = data.TeamMemberBudget.ValueFloat64()
@@ -484,6 +507,20 @@ func (r *TeamResource) buildTeamRequest(ctx context.Context, data *TeamResourceM
 		}
 	}
 
+	// Inject soft_budget_alerting_emails into metadata (API stores it there)
+	if !data.SoftBudgetAlertingEmails.IsNull() && !data.SoftBudgetAlertingEmails.IsUnknown() {
+		var emails []string
+		data.SoftBudgetAlertingEmails.ElementsAs(ctx, &emails, false)
+		if len(emails) > 0 {
+			md, _ := teamReq["metadata"].(map[string]interface{})
+			if md == nil {
+				md = make(map[string]interface{})
+			}
+			md["soft_budget_alerting_emails"] = emails
+			teamReq["metadata"] = md
+		}
+	}
+
 	if !data.RouterSettings.IsNull() && !data.RouterSettings.IsUnknown() {
 		teamReq["router_settings"] = buildRouterSettingsPayload(ctx, data.RouterSettings)
 	} else if data.RouterSettings.IsNull() {
@@ -559,8 +596,14 @@ func (r *TeamResource) readTeam(ctx context.Context, data *TeamResourceModel) er
 	if maxBudget, ok := teamInfo["max_budget"].(float64); ok {
 		data.MaxBudget = types.Float64Value(maxBudget)
 	}
+	if softBudget, ok := teamInfo["soft_budget"].(float64); ok {
+		data.SoftBudget = types.Float64Value(softBudget)
+	}
 	if budgetDuration, ok := teamInfo["budget_duration"].(string); ok && budgetDuration != "" {
 		data.BudgetDuration = types.StringValue(budgetDuration)
+	}
+	if teamMemberBudgetDuration, ok := teamInfo["team_member_budget_duration"].(string); ok && teamMemberBudgetDuration != "" {
+		data.TeamMemberBudgetDuration = types.StringValue(teamMemberBudgetDuration)
 	}
 	if blocked, ok := teamInfo["blocked"].(bool); ok {
 		data.Blocked = types.BoolValue(blocked)
@@ -631,6 +674,27 @@ func (r *TeamResource) readTeam(ctx context.Context, data *TeamResourceModel) er
 		data.Prompts, _ = types.ListValue(types.StringType, promptsList)
 	} else if !data.Prompts.IsNull() {
 		data.Prompts, _ = types.ListValue(types.StringType, []attr.Value{})
+	}
+
+	// Extract soft_budget_alerting_emails from metadata BEFORE metadata filtering.
+	// The API stores this in metadata.soft_budget_alerting_emails but we expose
+	// it as a top-level Terraform attribute for usability.
+	if metadata, ok := teamInfo["metadata"].(map[string]interface{}); ok {
+		if alertEmails, ok := metadata["soft_budget_alerting_emails"].([]interface{}); ok && len(alertEmails) > 0 {
+			emailsList := make([]attr.Value, 0, len(alertEmails))
+			for _, e := range alertEmails {
+				if str, ok := e.(string); ok {
+					emailsList = append(emailsList, types.StringValue(str))
+				}
+			}
+			data.SoftBudgetAlertingEmails, _ = types.ListValue(types.StringType, emailsList)
+		} else if !data.SoftBudgetAlertingEmails.IsNull() {
+			data.SoftBudgetAlertingEmails, _ = types.ListValue(types.StringType, []attr.Value{})
+		}
+		// Remove from metadata so it doesn't appear in the user-facing metadata map
+		delete(metadata, "soft_budget_alerting_emails")
+	} else if data.SoftBudgetAlertingEmails.IsUnknown() {
+		data.SoftBudgetAlertingEmails, _ = types.ListValue(types.StringType, []attr.Value{})
 	}
 
 	// Handle metadata map - preserve null when API returns empty and config didn't specify metadata.

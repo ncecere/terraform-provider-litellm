@@ -4,12 +4,15 @@
 resource "litellm_team" "full" {
   team_alias      = "test-team-full"
   max_budget      = 500.0
+  soft_budget     = 400.0
   tpm_limit       = 100000
   rpm_limit       = 1000
   tpm_limit_type  = "guaranteed_throughput"
   rpm_limit_type  = "guaranteed_throughput"
   budget_duration = "30d"
   blocked         = false
+
+  soft_budget_alerting_emails = ["admin@example.com"]
 
   models = ["gpt-4o", "gpt-4o-mini"]
   # tags requires LiteLLM Enterprise license
@@ -18,9 +21,10 @@ resource "litellm_team" "full" {
   prompts    = []
 
   team_member_permissions = []
-  team_member_budget      = 50.0
-  team_member_rpm_limit   = 100
-  team_member_tpm_limit   = 10000
+  team_member_budget           = 50.0
+  team_member_budget_duration  = "30d"
+  team_member_rpm_limit        = 100
+  team_member_tpm_limit        = 10000
 
   metadata = {
     "environment" = "testing"

@@ -40,11 +40,13 @@ type TeamResponse struct {
 	Metadata              map[string]interface{} `json:"metadata,omitempty"`
 	TPMLimit              int                    `json:"tpm_limit,omitempty"`
 	RPMLimit              int                    `json:"rpm_limit,omitempty"`
-	MaxBudget             float64                `json:"max_budget,omitempty"`
-	BudgetDuration        string                 `json:"budget_duration,omitempty"`
-	Models                []string               `json:"models"`
-	Blocked               bool                   `json:"blocked,omitempty"`
-	TeamMemberPermissions []string               `json:"team_member_permissions,omitempty"`
+	MaxBudget                float64                `json:"max_budget,omitempty"`
+	SoftBudget               float64                `json:"soft_budget,omitempty"`
+	BudgetDuration           string                 `json:"budget_duration,omitempty"`
+	TeamMemberBudgetDuration string                 `json:"team_member_budget_duration,omitempty"`
+	Models                   []string               `json:"models"`
+	Blocked                  bool                   `json:"blocked,omitempty"`
+	TeamMemberPermissions    []string               `json:"team_member_permissions,omitempty"`
 }
 
 // LiteLLMParams represents the parameters for LiteLLM.
