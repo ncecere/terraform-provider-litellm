@@ -21,19 +21,21 @@ type TeamDataSource struct {
 }
 
 type TeamDataSourceModel struct {
-	ID                    types.String  `tfsdk:"id"`
-	TeamID                types.String  `tfsdk:"team_id"`
-	TeamAlias             types.String  `tfsdk:"team_alias"`
-	OrganizationID        types.String  `tfsdk:"organization_id"`
-	Models                types.List    `tfsdk:"models"`
-	MaxBudget             types.Float64 `tfsdk:"max_budget"`
-	Spend                 types.Float64 `tfsdk:"spend"`
-	TPMLimit              types.Int64   `tfsdk:"tpm_limit"`
-	RPMLimit              types.Int64   `tfsdk:"rpm_limit"`
-	BudgetDuration        types.String  `tfsdk:"budget_duration"`
-	Metadata              types.Map     `tfsdk:"metadata"`
-	TeamMemberPermissions types.List    `tfsdk:"team_member_permissions"`
-	Blocked               types.Bool    `tfsdk:"blocked"`
+	ID                       types.String  `tfsdk:"id"`
+	TeamID                   types.String  `tfsdk:"team_id"`
+	TeamAlias                types.String  `tfsdk:"team_alias"`
+	OrganizationID           types.String  `tfsdk:"organization_id"`
+	Models                   types.List    `tfsdk:"models"`
+	MaxBudget                types.Float64 `tfsdk:"max_budget"`
+	SoftBudget               types.Float64 `tfsdk:"soft_budget"`
+	Spend                    types.Float64 `tfsdk:"spend"`
+	TPMLimit                 types.Int64   `tfsdk:"tpm_limit"`
+	RPMLimit                 types.Int64   `tfsdk:"rpm_limit"`
+	BudgetDuration           types.String  `tfsdk:"budget_duration"`
+	Metadata                 types.Map     `tfsdk:"metadata"`
+	SoftBudgetAlertingEmails types.List    `tfsdk:"soft_budget_alerting_emails"`
+	TeamMemberPermissions    types.List    `tfsdk:"team_member_permissions"`
+	Blocked                  types.Bool    `tfsdk:"blocked"`
 }
 
 func (d *TeamDataSource) Metadata(ctx context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
@@ -65,14 +67,18 @@ func (d *TeamDataSource) Schema(ctx context.Context, req datasource.SchemaReques
 				Computed:    true,
 				ElementType: types.StringType,
 			},
-			"max_budget": schema.Float64Attribute{
-				Description: "Maximum budget for the team.",
-				Computed:    true,
-			},
-			"spend": schema.Float64Attribute{
-				Description: "Amount spent by this team.",
-				Computed:    true,
-			},
+		"max_budget": schema.Float64Attribute{
+			Description: "Maximum budget for the team.",
+			Computed:    true,
+		},
+		"soft_budget": schema.Float64Attribute{
+			Description: "Soft budget in USD. Requests will not fail if exceeded, but will fire alerting.",
+			Computed:    true,
+		},
+		"spend": schema.Float64Attribute{
+			Description: "Amount spent by this team.",
+			Computed:    true,
+		},
 			"tpm_limit": schema.Int64Attribute{
 				Description: "Tokens per minute limit for the team.",
 				Computed:    true,
@@ -85,16 +91,21 @@ func (d *TeamDataSource) Schema(ctx context.Context, req datasource.SchemaReques
 				Description: "Budget reset duration.",
 				Computed:    true,
 			},
-			"metadata": schema.MapAttribute{
-				Description: "Arbitrary metadata for the team.",
-				Computed:    true,
-				ElementType: types.StringType,
-			},
-			"team_member_permissions": schema.ListAttribute{
-				Description: "List of permissions granted to team members.",
-				Computed:    true,
-				ElementType: types.StringType,
-			},
+		"metadata": schema.MapAttribute{
+			Description: "Arbitrary metadata for the team.",
+			Computed:    true,
+			ElementType: types.StringType,
+		},
+		"soft_budget_alerting_emails": schema.ListAttribute{
+			Description: "Email addresses to alert when soft budget is exceeded.",
+			Computed:    true,
+			ElementType: types.StringType,
+		},
+		"team_member_permissions": schema.ListAttribute{
+			Description: "List of permissions granted to team members.",
+			Computed:    true,
+			ElementType: types.StringType,
+		},
 			"blocked": schema.BoolAttribute{
 				Description: "Whether the team is blocked.",
 				Computed:    true,
@@ -161,6 +172,9 @@ func (d *TeamDataSource) Read(ctx context.Context, req datasource.ReadRequest, r
 	if maxBudget, ok := teamInfo["max_budget"].(float64); ok {
 		data.MaxBudget = types.Float64Value(maxBudget)
 	}
+	if softBudget, ok := teamInfo["soft_budget"].(float64); ok {
+		data.SoftBudget = types.Float64Value(softBudget)
+	}
 	if spend, ok := teamInfo["spend"].(float64); ok {
 		data.Spend = types.Float64Value(spend)
 	}
@@ -189,6 +203,27 @@ func (d *TeamDataSource) Read(ctx context.Context, req datasource.ReadRequest, r
 		data.Models, _ = types.ListValue(types.StringType, modelsList)
 	} else {
 		data.Models, _ = types.ListValue(types.StringType, []attr.Value{})
+	}
+
+	// Extract soft_budget_alerting_emails from metadata BEFORE metadata filtering.
+	// The API stores this in metadata.soft_budget_alerting_emails but we expose
+	// it as a top-level Terraform attribute for usability.
+	if metadata, ok := teamInfo["metadata"].(map[string]interface{}); ok {
+		if alertEmails, ok := metadata["soft_budget_alerting_emails"].([]interface{}); ok {
+			emailsList := make([]attr.Value, len(alertEmails))
+			for i, e := range alertEmails {
+				if str, ok := e.(string); ok {
+					emailsList[i] = types.StringValue(str)
+				}
+			}
+			data.SoftBudgetAlertingEmails, _ = types.ListValue(types.StringType, emailsList)
+		} else {
+			data.SoftBudgetAlertingEmails, _ = types.ListValue(types.StringType, []attr.Value{})
+		}
+		// Remove from metadata so it doesn't appear in the user-facing metadata map
+		delete(metadata, "soft_budget_alerting_emails")
+	} else {
+		data.SoftBudgetAlertingEmails, _ = types.ListValue(types.StringType, []attr.Value{})
 	}
 
 	// Handle metadata map

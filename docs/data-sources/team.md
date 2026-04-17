@@ -38,10 +38,12 @@ resource "litellm_key" "team_key" {
 * `organization_id` - The organization this team belongs to.
 * `models` - List of models the team can access.
 * `max_budget` - Maximum budget for the team.
+* `soft_budget` - Soft budget in USD. Requests will not fail if exceeded, but will fire alerting.
 * `spend` - Current spend for the team.
 * `tpm_limit` - Tokens per minute limit.
 * `rpm_limit` - Requests per minute limit.
 * `budget_duration` - Budget reset duration.
 * `metadata` - Map of metadata for the team.
+* `soft_budget_alerting_emails` - List of email addresses to alert when the soft budget is exceeded.
 * `team_member_permissions` - List of permissions granted to team members.
 * `blocked` - Whether the team is blocked.

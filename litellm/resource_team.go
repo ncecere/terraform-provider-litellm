@@ -53,9 +53,19 @@ func ResourceLiteLLMTeam() *schema.Resource {
 				Type:     schema.TypeFloat,
 				Optional: true,
 			},
+			"soft_budget": {
+				Type:        schema.TypeFloat,
+				Optional:    true,
+				Description: "Soft budget in USD. Requests will not fail if exceeded, but will fire alerting.",
+			},
 			"budget_duration": {
 				Type:     schema.TypeString,
 				Optional: true,
+			},
+			"team_member_budget_duration": {
+				Type:        schema.TypeString,
+				Optional:    true,
+				Description: "Budget reset duration for team members (e.g. '30d', '1mo').",
 			},
 			"models": {
 				Type:     schema.TypeList,
@@ -67,6 +77,12 @@ func ResourceLiteLLMTeam() *schema.Resource {
 				Optional:    true,
 				Elem:        &schema.Schema{Type: schema.TypeString},
 				Description: "List of permissions granted to team members",
+			},
+			"soft_budget_alerting_emails": {
+				Type:        schema.TypeList,
+				Optional:    true,
+				Elem:        &schema.Schema{Type: schema.TypeString},
+				Description: "Email addresses to alert when soft budget is exceeded.",
 			},
 		},
 	}
@@ -122,6 +138,23 @@ func resourceLiteLLMTeamRead(d *schema.ResourceData, m interface{}) error {
 	d.Set("team_alias", GetStringValue(teamResp.TeamAlias, d.Get("team_alias").(string)))
 	d.Set("organization_id", GetStringValue(teamResp.OrganizationID, d.Get("organization_id").(string)))
 
+	// Extract soft_budget_alerting_emails from metadata before setting general metadata
+	if teamResp.Metadata != nil {
+		if emails, ok := teamResp.Metadata["soft_budget_alerting_emails"].([]interface{}); ok {
+			emailStrings := make([]string, 0, len(emails))
+			for _, e := range emails {
+				if s, ok := e.(string); ok {
+					emailStrings = append(emailStrings, s)
+				}
+			}
+			d.Set("soft_budget_alerting_emails", emailStrings)
+		} else {
+			d.Set("soft_budget_alerting_emails", d.Get("soft_budget_alerting_emails"))
+		}
+		// Remove from metadata so it doesn't appear in the general metadata map
+		delete(teamResp.Metadata, "soft_budget_alerting_emails")
+	}
+
 	// Handle metadata separately as it's a map
 	if teamResp.Metadata != nil {
 		d.Set("metadata", teamResp.Metadata)
@@ -132,7 +165,9 @@ func resourceLiteLLMTeamRead(d *schema.ResourceData, m interface{}) error {
 	d.Set("tpm_limit", GetIntValue(teamResp.TPMLimit, d.Get("tpm_limit").(int)))
 	d.Set("rpm_limit", GetIntValue(teamResp.RPMLimit, d.Get("rpm_limit").(int)))
 	d.Set("max_budget", GetFloatValue(teamResp.MaxBudget, d.Get("max_budget").(float64)))
+	d.Set("soft_budget", GetFloatValue(teamResp.SoftBudget, d.Get("soft_budget").(float64)))
 	d.Set("budget_duration", GetStringValue(teamResp.BudgetDuration, d.Get("budget_duration").(string)))
+	d.Set("team_member_budget_duration", GetStringValue(teamResp.TeamMemberBudgetDuration, d.Get("team_member_budget_duration").(string)))
 
 	// Handle models separately as it's a list
 	if teamResp.Models != nil {
@@ -228,9 +263,22 @@ func buildTeamData(d *schema.ResourceData, teamID string) map[string]interface{}
 		"team_alias": d.Get("team_alias").(string),
 	}
 
-	for _, key := range []string{"organization_id", "metadata", "tpm_limit", "rpm_limit", "max_budget", "budget_duration", "models", "team_member_permissions"} {
+	for _, key := range []string{"organization_id", "metadata", "tpm_limit", "rpm_limit", "max_budget", "soft_budget", "budget_duration", "team_member_budget_duration", "models", "team_member_permissions"} {
 		if v, ok := d.GetOk(key); ok {
 			teamData[key] = v
+		}
+	}
+
+	// Inject soft_budget_alerting_emails into metadata (API stores it there)
+	if v, ok := d.GetOk("soft_budget_alerting_emails"); ok {
+		emails := expandStringList(v.([]interface{}))
+		if len(emails) > 0 {
+			md, _ := teamData["metadata"].(map[string]interface{})
+			if md == nil {
+				md = make(map[string]interface{})
+			}
+			md["soft_budget_alerting_emails"] = emails
+			teamData["metadata"] = md
 		}
 	}
 
