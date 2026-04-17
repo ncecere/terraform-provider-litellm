@@ -62,7 +62,7 @@ The following arguments are supported:
 
 - `guardrail_id` - (String, ForceNew) The unique identifier for the guardrail. If not provided, one will be generated automatically. Changing this forces creation of a new resource.
 - `default_on` - (Bool) Whether this guardrail is enabled by default for all requests.
-- `litellm_params` - (String) A JSON-encoded string containing provider-specific parameters. This field stores only additional configuration specific to the guardrail provider (it does not include `guardrail`, `mode`, or `default_on`, which are top-level attributes). When reading back from the API, only the keys originally configured by the user are preserved, preventing the API's default values from appearing in state.
+- `litellm_params` - (String) A JSON-encoded string containing provider-specific parameters. This field stores only additional configuration specific to the guardrail provider (it does not include `guardrail`, `mode`, or `default_on`, which are top-level attributes). When reading back from the API, only keys originally configured by the user are written to state (so extra server-side keys and broad defaults are not added); among those keys, values LiteLLM masks on read keep the configured secrets, and other values use the API response when present.
 - `guardrail_info` - (String) A JSON-encoded string containing additional metadata or information about the guardrail.
 
 ## Attribute Reference
