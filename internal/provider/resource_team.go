@@ -27,28 +27,28 @@ type TeamResource struct {
 }
 
 type TeamResourceModel struct {
-	ID                    types.String  `tfsdk:"id"`
-	TeamAlias             types.String  `tfsdk:"team_alias"`
-	OrganizationID        types.String  `tfsdk:"organization_id"`
-	Metadata              types.Map     `tfsdk:"metadata"`
-	TPMLimit              types.Int64   `tfsdk:"tpm_limit"`
-	RPMLimit              types.Int64   `tfsdk:"rpm_limit"`
-	TPMLimitType          types.String  `tfsdk:"tpm_limit_type"`
-	RPMLimitType          types.String  `tfsdk:"rpm_limit_type"`
+	ID                       types.String  `tfsdk:"id"`
+	TeamAlias                types.String  `tfsdk:"team_alias"`
+	OrganizationID           types.String  `tfsdk:"organization_id"`
+	Metadata                 types.Map     `tfsdk:"metadata"`
+	TPMLimit                 types.Int64   `tfsdk:"tpm_limit"`
+	RPMLimit                 types.Int64   `tfsdk:"rpm_limit"`
+	TPMLimitType             types.String  `tfsdk:"tpm_limit_type"`
+	RPMLimitType             types.String  `tfsdk:"rpm_limit_type"`
 	MaxBudget                types.Float64 `tfsdk:"max_budget"`
 	SoftBudget               types.Float64 `tfsdk:"soft_budget"`
 	BudgetDuration           types.String  `tfsdk:"budget_duration"`
 	TeamMemberBudgetDuration types.String  `tfsdk:"team_member_budget_duration"`
-	Models                types.List    `tfsdk:"models"`
-	ModelAliases          types.Map     `tfsdk:"model_aliases"`
-	ModelRPMLimit         types.Map     `tfsdk:"model_rpm_limit"`
-	ModelTPMLimit         types.Map     `tfsdk:"model_tpm_limit"`
-	Tags                  types.List    `tfsdk:"tags"`
-	Guardrails            types.List    `tfsdk:"guardrails"`
-	Prompts               types.List    `tfsdk:"prompts"`
-	Blocked               types.Bool    `tfsdk:"blocked"`
-	TeamMemberPermissions types.List    `tfsdk:"team_member_permissions"`
-	TeamMemberBudget      types.Float64 `tfsdk:"team_member_budget"`
+	Models                   types.List    `tfsdk:"models"`
+	ModelAliases             types.Map     `tfsdk:"model_aliases"`
+	ModelRPMLimit            types.Map     `tfsdk:"model_rpm_limit"`
+	ModelTPMLimit            types.Map     `tfsdk:"model_tpm_limit"`
+	Tags                     types.List    `tfsdk:"tags"`
+	Guardrails               types.List    `tfsdk:"guardrails"`
+	Prompts                  types.List    `tfsdk:"prompts"`
+	Blocked                  types.Bool    `tfsdk:"blocked"`
+	TeamMemberPermissions    types.List    `tfsdk:"team_member_permissions"`
+	TeamMemberBudget         types.Float64 `tfsdk:"team_member_budget"`
 	TeamMemberRPMLimit       types.Int64   `tfsdk:"team_member_rpm_limit"`
 	TeamMemberTPMLimit       types.Int64   `tfsdk:"team_member_tpm_limit"`
 	SoftBudgetAlertingEmails types.List    `tfsdk:"soft_budget_alerting_emails"`
@@ -104,46 +104,46 @@ func (r *TeamResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 				Computed:    true,
 				ElementType: types.StringType,
 			},
-		"tpm_limit": schema.Int64Attribute{
-			Description: "Tokens per minute limit for the team.",
-			Optional:    true,
-			Computed:    true,
-		},
-		"rpm_limit": schema.Int64Attribute{
-			Description: "Requests per minute limit for the team.",
-			Optional:    true,
-			Computed:    true,
-		},
-		"tpm_limit_type": schema.StringAttribute{
-			Description: "Type of TPM limit: 'key' or 'team'. If 'team', TPM is shared across all keys for the team.",
-			Optional:    true,
-			Computed:    true,
-		},
-		"rpm_limit_type": schema.StringAttribute{
-			Description: "Type of RPM limit: 'key' or 'team'. If 'team', RPM is shared across all keys for the team.",
-			Optional:    true,
-			Computed:    true,
-		},
-		"max_budget": schema.Float64Attribute{
-			Description: "Maximum budget for the team.",
-			Optional:    true,
-			Computed:    true,
-		},
-		"soft_budget": schema.Float64Attribute{
-			Description: "Soft budget in USD. Requests will not fail if exceeded, but will fire alerting.",
-			Optional:    true,
-			Computed:    true,
-		},
-		"budget_duration": schema.StringAttribute{
-			Description: "Budget reset duration.",
-			Optional:    true,
-			Computed:    true,
-		},
-		"team_member_budget_duration": schema.StringAttribute{
-			Description: "Budget reset duration for team members (e.g. '30d', '1mo').",
-			Optional:    true,
-			Computed:    true,
-		},
+			"tpm_limit": schema.Int64Attribute{
+				Description: "Tokens per minute limit for the team.",
+				Optional:    true,
+				Computed:    true,
+			},
+			"rpm_limit": schema.Int64Attribute{
+				Description: "Requests per minute limit for the team.",
+				Optional:    true,
+				Computed:    true,
+			},
+			"tpm_limit_type": schema.StringAttribute{
+				Description: "Type of TPM limit: 'key' or 'team'. If 'team', TPM is shared across all keys for the team.",
+				Optional:    true,
+				Computed:    true,
+			},
+			"rpm_limit_type": schema.StringAttribute{
+				Description: "Type of RPM limit: 'key' or 'team'. If 'team', RPM is shared across all keys for the team.",
+				Optional:    true,
+				Computed:    true,
+			},
+			"max_budget": schema.Float64Attribute{
+				Description: "Maximum budget for the team.",
+				Optional:    true,
+				Computed:    true,
+			},
+			"soft_budget": schema.Float64Attribute{
+				Description: "Soft budget in USD. Requests will not fail if exceeded, but will fire alerting.",
+				Optional:    true,
+				Computed:    true,
+			},
+			"budget_duration": schema.StringAttribute{
+				Description: "Budget reset duration.",
+				Optional:    true,
+				Computed:    true,
+			},
+			"team_member_budget_duration": schema.StringAttribute{
+				Description: "Budget reset duration for team members (e.g. '30d', '1mo').",
+				Optional:    true,
+				Computed:    true,
+			},
 			"models": schema.ListAttribute{
 				Description: "List of models the team can access.",
 				Optional:    true,
@@ -197,21 +197,21 @@ func (r *TeamResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 				Computed:    true,
 				ElementType: types.StringType,
 			},
-		"team_member_budget": schema.Float64Attribute{
-			Description: "Default budget for team members.",
-			Optional:    true,
-			Computed:    true,
-		},
-		"team_member_rpm_limit": schema.Int64Attribute{
-			Description: "Default RPM limit for team members.",
-			Optional:    true,
-			Computed:    true,
-		},
-		"team_member_tpm_limit": schema.Int64Attribute{
-			Description: "Default TPM limit for team members.",
-			Optional:    true,
-			Computed:    true,
-		},
+			"team_member_budget": schema.Float64Attribute{
+				Description: "Default budget for team members.",
+				Optional:    true,
+				Computed:    true,
+			},
+			"team_member_rpm_limit": schema.Int64Attribute{
+				Description: "Default RPM limit for team members.",
+				Optional:    true,
+				Computed:    true,
+			},
+			"team_member_tpm_limit": schema.Int64Attribute{
+				Description: "Default TPM limit for team members.",
+				Optional:    true,
+				Computed:    true,
+			},
 			"soft_budget_alerting_emails": schema.ListAttribute{
 				Description: "Email addresses to alert when soft budget is exceeded.",
 				Optional:    true,
