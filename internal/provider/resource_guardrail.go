@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -278,6 +279,62 @@ func (r *GuardrailResource) buildGuardrailRequest(ctx context.Context, data *Gua
 	}
 }
 
+// guardrailLitellmParamKeyMaskedByLiteLLM returns true if LiteLLM's _get_masked_values would mask
+// this dict key when returning GET /guardrails/{id}/info. The keywords must stay aligned with:
+// litellm/litellm_core_utils/litellm_logging.py — sensitive_keywords in _get_masked_values.
+//
+// Values for such keys are replaced with partial-prefix/suffix + asterisks in the API response;
+// writing those into Terraform state breaks applies for real secrets. We keep the user's value.
+//
+// Note: matching is substring-based (e.g. "key" matches "api_key" and also "monkey"); that mirrors LiteLLM.
+func guardrailLitellmParamKeyMaskedByLiteLLM(key string) bool {
+	kl := strings.ToLower(key)
+	return strings.Contains(kl, "authorization") ||
+		strings.Contains(kl, "token") ||
+		strings.Contains(kl, "key") ||
+		strings.Contains(kl, "secret") ||
+		strings.Contains(kl, "vertex_credentials")
+}
+
+// mergeGuardrailLitellmParamsFromRead rebuilds the litellm_params JSON string for state after a read.
+// For each key the user configured in additional litellm_params (excluding top-level duplicates
+// guardrail, mode, default_on): if LiteLLM would mask that key, keep the user's value; otherwise
+// prefer the API value when present so non-secret fields can reflect server-side updates.
+func mergeGuardrailLitellmParamsFromRead(userJSON string, apiLitellmParams map[string]interface{}) (string, error) {
+	var userParams map[string]interface{}
+	if err := json.Unmarshal([]byte(userJSON), &userParams); err != nil {
+		return "", err
+	}
+
+	merged := make(map[string]interface{})
+	for k := range userParams {
+		if k == "guardrail" || k == "mode" || k == "default_on" {
+			continue
+		}
+		userVal, userOK := userParams[k]
+		apiVal, apiOK := apiLitellmParams[k]
+
+		switch {
+		case guardrailLitellmParamKeyMaskedByLiteLLM(k) && userOK:
+			merged[k] = userVal
+		case apiOK:
+			merged[k] = apiVal
+		case userOK:
+			merged[k] = userVal
+		}
+	}
+
+	if len(merged) == 0 {
+		return "", nil
+	}
+
+	out, err := json.Marshal(merged)
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
 func (r *GuardrailResource) readGuardrail(ctx context.Context, data *GuardrailResourceModel) error {
 	guardrailID := data.GuardrailID.ValueString()
 	if guardrailID == "" {
@@ -323,28 +380,14 @@ func (r *GuardrailResource) readGuardrail(ctx context.Context, data *GuardrailRe
 			}
 		}
 
-		// Store other litellm_params as JSON (excluding guardrail, mode, default_on).
-		// Only update if the user originally configured litellm_params to avoid
-		// adopting the API's massive default parameter set.
-		// Additionally, only preserve the keys the user originally configured to
-		// prevent the API's expanded defaults from being stored in state.
-		if !data.LitellmParams.IsNull() && !data.LitellmParams.IsUnknown() {
-			// Parse the user's original litellm_params to get configured keys
-			var userParams map[string]interface{}
-			if err := json.Unmarshal([]byte(data.LitellmParams.ValueString()), &userParams); err == nil {
-				otherParams := make(map[string]interface{})
-				for k := range userParams {
-					if k != "guardrail" && k != "mode" && k != "default_on" {
-						if v, exists := litellmParams[k]; exists {
-							otherParams[k] = v
-						}
-					}
-				}
-				if len(otherParams) > 0 {
-					if jsonBytes, err := json.Marshal(otherParams); err == nil {
-						data.LitellmParams = types.StringValue(string(jsonBytes))
-					}
-				}
+		// Merge user-configured litellm_params with GET /guardrails/{id}/info for keys the user set.
+		// LiteLLM masks values whose keys match sensitive_keywords in _get_masked_values (see
+		// guardrailLitellmParamKeyMaskedByLiteLLM). For those keys we keep the configured value;
+		// for other keys we take the API value when present so non-secrets can drift with the server.
+		if !data.LitellmParams.IsNull() && !data.LitellmParams.IsUnknown() && data.LitellmParams.ValueString() != "" {
+			merged, err := mergeGuardrailLitellmParamsFromRead(data.LitellmParams.ValueString(), litellmParams)
+			if err == nil && merged != "" {
+				data.LitellmParams = types.StringValue(merged)
 			}
 		}
 	}
