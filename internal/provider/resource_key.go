@@ -132,6 +132,7 @@ func (r *KeyResource) Schema(ctx context.Context, req resource.SchemaRequest, re
 			"organization_id": schema.StringAttribute{
 				Description: "Organization ID associated with this key.",
 				Optional:    true,
+				Computed:    true,
 			},
 			"budget_id": schema.StringAttribute{
 				Description: "Budget ID to associate with this key.",
