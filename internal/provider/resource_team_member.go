@@ -166,6 +166,11 @@ func (r *TeamMemberResource) Update(ctx context.Context, req resource.UpdateRequ
 		updateReq["max_budget_in_team"] = data.MaxBudgetInTeam.ValueFloat64()
 	}
 
+	// Send explicit null when budget is being cleared (was set, now removed)
+	if !state.MaxBudgetInTeam.IsNull() && data.MaxBudgetInTeam.IsNull() {
+		updateReq["max_budget_in_team"] = nil
+	}
+
 	if err := r.client.DoRequestWithResponse(ctx, "POST", "/team/member_update", updateReq, nil); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to update team member: %s", err))
 		return

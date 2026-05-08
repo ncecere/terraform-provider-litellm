@@ -316,6 +316,31 @@ func (r *TeamResource) Update(ctx context.Context, req resource.UpdateRequest, r
 	data.ID = state.ID
 	teamReq := r.buildTeamRequest(ctx, &data, data.ID.ValueString())
 
+	// Detect fields cleared in this update (non-null in state → null in plan).
+	// Send explicit nil so json.Marshal produces JSON null, which tells the
+	// LiteLLM API (Pydantic exclude_unset=True) to actually clear the value.
+	if !state.MaxBudget.IsNull() && data.MaxBudget.IsNull() {
+		teamReq["max_budget"] = nil
+	}
+	if !state.BudgetDuration.IsNull() && data.BudgetDuration.IsNull() {
+		teamReq["budget_duration"] = nil
+	}
+	if !state.TPMLimit.IsNull() && data.TPMLimit.IsNull() {
+		teamReq["tpm_limit"] = nil
+	}
+	if !state.RPMLimit.IsNull() && data.RPMLimit.IsNull() {
+		teamReq["rpm_limit"] = nil
+	}
+	if !state.TeamMemberBudget.IsNull() && data.TeamMemberBudget.IsNull() {
+		teamReq["team_member_budget"] = nil
+	}
+	if !state.TeamMemberRPMLimit.IsNull() && data.TeamMemberRPMLimit.IsNull() {
+		teamReq["team_member_rpm_limit"] = nil
+	}
+	if !state.TeamMemberTPMLimit.IsNull() && data.TeamMemberTPMLimit.IsNull() {
+		teamReq["team_member_tpm_limit"] = nil
+	}
+
 	if err := r.client.DoRequestWithResponse(ctx, "POST", "/team/update", teamReq, nil); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to update team: %s", err))
 		return
@@ -558,9 +583,13 @@ func (r *TeamResource) readTeam(ctx context.Context, data *TeamResourceModel) er
 	}
 	if maxBudget, ok := teamInfo["max_budget"].(float64); ok {
 		data.MaxBudget = types.Float64Value(maxBudget)
+	} else {
+		data.MaxBudget = types.Float64Null()
 	}
 	if budgetDuration, ok := teamInfo["budget_duration"].(string); ok && budgetDuration != "" {
 		data.BudgetDuration = types.StringValue(budgetDuration)
+	} else {
+		data.BudgetDuration = types.StringNull()
 	}
 	if blocked, ok := teamInfo["blocked"].(bool); ok {
 		data.Blocked = types.BoolValue(blocked)
@@ -573,12 +602,18 @@ func (r *TeamResource) readTeam(ctx context.Context, data *TeamResourceModel) er
 	}
 	if teamMemberBudget, ok := teamInfo["team_member_budget"].(float64); ok {
 		data.TeamMemberBudget = types.Float64Value(teamMemberBudget)
+	} else {
+		data.TeamMemberBudget = types.Float64Null()
 	}
 	if teamMemberRPMLimit, ok := teamInfo["team_member_rpm_limit"].(float64); ok {
 		data.TeamMemberRPMLimit = types.Int64Value(int64(teamMemberRPMLimit))
+	} else {
+		data.TeamMemberRPMLimit = types.Int64Null()
 	}
 	if teamMemberTPMLimit, ok := teamInfo["team_member_tpm_limit"].(float64); ok {
 		data.TeamMemberTPMLimit = types.Int64Value(int64(teamMemberTPMLimit))
+	} else {
+		data.TeamMemberTPMLimit = types.Int64Null()
 	}
 
 	// Handle models list - preserve null when API returns empty and config didn't specify models
