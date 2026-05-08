@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -501,5 +502,102 @@ func TestReadTeam_DetectsDriftWhenAPIStillHasFallbacks(t *testing.T) {
 	// so Terraform detects the drift and plans to clear it.
 	if data.RouterSettings.IsNull() {
 		t.Fatal("router_settings should NOT be null -- API still has fallbacks, Terraform must detect drift")
+	}
+}
+
+// TestApplyTeamNullableClears_AllTransitionsEmitNull verifies that when each
+// nullable field transitions from set in state → null in plan, the resulting
+// map carries explicit nil and json.Marshal serializes it as JSON null.
+// This guards against regressions where omitting the field instead of sending
+// null would let the LiteLLM API (Pydantic exclude_unset=True) keep stale values.
+func TestApplyTeamNullableClears_AllTransitionsEmitNull(t *testing.T) {
+	t.Parallel()
+
+	state := &TeamResourceModel{
+		MaxBudget:          types.Float64Value(100),
+		BudgetDuration:     types.StringValue("30d"),
+		TPMLimit:           types.Int64Value(1000),
+		RPMLimit:           types.Int64Value(60),
+		TeamMemberBudget:   types.Float64Value(50),
+		TeamMemberRPMLimit: types.Int64Value(10),
+		TeamMemberTPMLimit: types.Int64Value(500),
+	}
+	plan := &TeamResourceModel{
+		MaxBudget:          types.Float64Null(),
+		BudgetDuration:     types.StringNull(),
+		TPMLimit:           types.Int64Null(),
+		RPMLimit:           types.Int64Null(),
+		TeamMemberBudget:   types.Float64Null(),
+		TeamMemberRPMLimit: types.Int64Null(),
+		TeamMemberTPMLimit: types.Int64Null(),
+	}
+
+	teamReq := map[string]interface{}{"team_id": "team-123"}
+	applyTeamNullableClears(teamReq, state, plan)
+
+	expectedNullKeys := []string{
+		"max_budget", "budget_duration", "tpm_limit", "rpm_limit",
+		"team_member_budget", "team_member_rpm_limit", "team_member_tpm_limit",
+	}
+	for _, k := range expectedNullKeys {
+		v, ok := teamReq[k]
+		if !ok {
+			t.Errorf("teamReq missing key %q after clear; expected explicit nil", k)
+			continue
+		}
+		if v != nil {
+			t.Errorf("teamReq[%q] = %v, want nil", k, v)
+		}
+	}
+
+	body, err := json.Marshal(teamReq)
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+	bodyStr := string(body)
+	for _, k := range expectedNullKeys {
+		needle := `"` + k + `":null`
+		if !strings.Contains(bodyStr, needle) {
+			t.Errorf("request body missing %s; got %s", needle, bodyStr)
+		}
+	}
+}
+
+// TestApplyTeamNullableClears_NoTransition_NoOp verifies the helper does not
+// inject keys when state and plan agree (both null, or both set) — only the
+// non-null → null transition triggers explicit clears.
+func TestApplyTeamNullableClears_NoTransition_NoOp(t *testing.T) {
+	t.Parallel()
+
+	// Both null (field never set): helper must not introduce keys.
+	state := &TeamResourceModel{
+		MaxBudget:      types.Float64Null(),
+		BudgetDuration: types.StringNull(),
+		TPMLimit:       types.Int64Null(),
+		RPMLimit:       types.Int64Null(),
+	}
+	plan := &TeamResourceModel{
+		MaxBudget:      types.Float64Null(),
+		BudgetDuration: types.StringNull(),
+		TPMLimit:       types.Int64Null(),
+		RPMLimit:       types.Int64Null(),
+	}
+
+	teamReq := map[string]interface{}{}
+	applyTeamNullableClears(teamReq, state, plan)
+
+	if len(teamReq) != 0 {
+		t.Errorf("teamReq should be empty when no transitions; got %v", teamReq)
+	}
+
+	// Both set (stable value): helper must not overwrite to nil.
+	state = &TeamResourceModel{MaxBudget: types.Float64Value(100)}
+	plan = &TeamResourceModel{MaxBudget: types.Float64Value(200)}
+
+	teamReq = map[string]interface{}{"max_budget": float64(200)}
+	applyTeamNullableClears(teamReq, state, plan)
+
+	if v := teamReq["max_budget"]; v != float64(200) {
+		t.Errorf("helper overwrote stable max_budget; got %v, want 200", v)
 	}
 }

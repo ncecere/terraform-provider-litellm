@@ -166,10 +166,7 @@ func (r *TeamMemberResource) Update(ctx context.Context, req resource.UpdateRequ
 		updateReq["max_budget_in_team"] = data.MaxBudgetInTeam.ValueFloat64()
 	}
 
-	// Send explicit null when budget is being cleared (was set, now removed)
-	if !state.MaxBudgetInTeam.IsNull() && data.MaxBudgetInTeam.IsNull() {
-		updateReq["max_budget_in_team"] = nil
-	}
+	applyTeamMemberNullableClears(updateReq, &state, &data)
 
 	if err := r.client.DoRequestWithResponse(ctx, "POST", "/team/member_update", updateReq, nil); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to update team member: %s", err))
@@ -212,4 +209,13 @@ func (r *TeamMemberResource) ImportState(ctx context.Context, req resource.Impor
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("team_id"), parts[0])...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("user_id"), parts[1])...)
+}
+
+// applyTeamMemberNullableClears mutates updateReq to send explicit JSON null for
+// nullable fields that transition from set (non-null in state) to cleared (null in
+// plan). See applyTeamNullableClears in resource_team.go for the rationale.
+func applyTeamMemberNullableClears(updateReq map[string]interface{}, state, plan *TeamMemberResourceModel) {
+	if !state.MaxBudgetInTeam.IsNull() && plan.MaxBudgetInTeam.IsNull() {
+		updateReq["max_budget_in_team"] = nil
+	}
 }
