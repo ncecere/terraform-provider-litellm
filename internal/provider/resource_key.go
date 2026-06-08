@@ -47,6 +47,7 @@ type KeyResourceModel struct {
 	UserID                   types.String  `tfsdk:"user_id"`
 	TeamID                   types.String  `tfsdk:"team_id"`
 	OrganizationID           types.String  `tfsdk:"organization_id"`
+	ProjectID                types.String  `tfsdk:"project_id"`
 	BudgetID                 types.String  `tfsdk:"budget_id"`
 	ServiceAccountID         types.String  `tfsdk:"service_account_id"`
 	MaxParallelRequests      types.Int64   `tfsdk:"max_parallel_requests"`
@@ -131,6 +132,10 @@ func (r *KeyResource) Schema(ctx context.Context, req resource.SchemaRequest, re
 			},
 			"organization_id": schema.StringAttribute{
 				Description: "Organization ID associated with this key.",
+				Optional:    true,
+			},
+			"project_id": schema.StringAttribute{
+				Description: "Project ID associated with this key. When set, models and budget are validated against the project's limits.",
 				Optional:    true,
 			},
 			"budget_id": schema.StringAttribute{
@@ -486,6 +491,9 @@ func (r *KeyResource) buildKeyRequest(ctx context.Context, data *KeyResourceMode
 	if !data.OrganizationID.IsNull() && !data.OrganizationID.IsUnknown() && data.OrganizationID.ValueString() != "" {
 		keyReq["organization_id"] = data.OrganizationID.ValueString()
 	}
+	if !data.ProjectID.IsNull() && !data.ProjectID.IsUnknown() && data.ProjectID.ValueString() != "" {
+		keyReq["project_id"] = data.ProjectID.ValueString()
+	}
 	if !data.BudgetID.IsNull() && !data.BudgetID.IsUnknown() && data.BudgetID.ValueString() != "" {
 		keyReq["budget_id"] = data.BudgetID.ValueString()
 	}
@@ -733,6 +741,9 @@ func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error
 	if orgID, ok := info["organization_id"].(string); ok && orgID != "" {
 		data.OrganizationID = types.StringValue(orgID)
 	}
+	if projectID, ok := info["project_id"].(string); ok && projectID != "" {
+		data.ProjectID = types.StringValue(projectID)
+	}
 	// Only set budget_id if the user explicitly configured it or if the
 	// current value is unknown (needs resolving). The API auto-creates budgets
 	// but we don't want to adopt server-side budget IDs into state.
@@ -756,7 +767,12 @@ func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error
 		data.RPMLimitType = types.StringValue(rpmLimitType)
 	}
 	if budgetDuration, ok := info["budget_duration"].(string); ok && budgetDuration != "" {
-		data.BudgetDuration = types.StringValue(budgetDuration)
+		// LiteLLM may return a default budget_duration (e.g. "30d") even when
+		// the user did not configure one. Only set it if Terraform already had a
+		// configured/known value, otherwise it causes inconsistent result errors.
+		if !data.BudgetDuration.IsNull() {
+			data.BudgetDuration = types.StringValue(budgetDuration)
+		}
 	}
 	if teamID, ok := info["team_id"].(string); ok && teamID != "" {
 		data.TeamID = types.StringValue(teamID)

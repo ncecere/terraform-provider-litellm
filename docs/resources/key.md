@@ -122,6 +122,8 @@ The following arguments are supported:
 
 * `organization_id` - (Optional) Organization ID associated with this key.
 
+* `project_id` - (Optional) Project ID associated with this key. When set, models and budget are validated against the project's limits.
+
 * `budget_id` - (Optional) Budget ID to associate with this key.
 
 * `service_account_id` - (Optional, ForceNew) Identifier for a team-owned service account. When set, the provider calls the service-account API and defaults `key_alias` to this value.

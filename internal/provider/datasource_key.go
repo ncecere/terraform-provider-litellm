@@ -29,6 +29,7 @@ type KeyDataSourceModel struct {
 	Spend               types.Float64 `tfsdk:"spend"`
 	UserID              types.String  `tfsdk:"user_id"`
 	TeamID              types.String  `tfsdk:"team_id"`
+	ProjectID           types.String  `tfsdk:"project_id"`
 	MaxParallelRequests types.Int64   `tfsdk:"max_parallel_requests"`
 	TPMLimit            types.Int64   `tfsdk:"tpm_limit"`
 	RPMLimit            types.Int64   `tfsdk:"rpm_limit"`
@@ -79,6 +80,10 @@ func (d *KeyDataSource) Schema(ctx context.Context, req datasource.SchemaRequest
 			},
 			"team_id": schema.StringAttribute{
 				Description: "Team ID associated with this key.",
+				Computed:    true,
+			},
+			"project_id": schema.StringAttribute{
+				Description: "Project ID associated with this key.",
 				Computed:    true,
 			},
 			"max_parallel_requests": schema.Int64Attribute{
@@ -171,6 +176,9 @@ func (d *KeyDataSource) Read(ctx context.Context, req datasource.ReadRequest, re
 	}
 	if teamID, ok := info["team_id"].(string); ok {
 		data.TeamID = types.StringValue(teamID)
+	}
+	if projectID, ok := info["project_id"].(string); ok {
+		data.ProjectID = types.StringValue(projectID)
 	}
 	if budgetDuration, ok := info["budget_duration"].(string); ok {
 		data.BudgetDuration = types.StringValue(budgetDuration)

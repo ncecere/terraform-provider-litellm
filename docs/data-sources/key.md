@@ -28,6 +28,7 @@ output "key_info" {
 * `id` - The unique identifier of the key.
 * `key_alias` - The human-readable alias for the key.
 * `team_id` - The team ID associated with this key.
+* `project_id` - The project ID associated with this key.
 * `user_id` - The user ID associated with this key.
 * `models` - List of models that can be used with this key.
 * `max_budget` - Maximum budget for this key.

@@ -93,6 +93,127 @@ func TestCreateKeyUsesHashedID(t *testing.T) {
 	}
 }
 
+func TestBuildKeyRequestIncludesProjectID(t *testing.T) {
+	t.Parallel()
+
+	r := &KeyResource{}
+	data := &KeyResourceModel{
+		Key:       types.StringValue("sk-project-key"),
+		ProjectID: types.StringValue("project-123"),
+	}
+
+	keyReq := r.buildKeyRequest(context.Background(), data)
+
+	if keyReq["project_id"] != "project-123" {
+		t.Fatalf("expected project_id 'project-123', got %v", keyReq["project_id"])
+	}
+}
+
+func TestReadKeyDoesNotSetAPIInjectedBudgetDurationWhenUnconfigured(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"key": "sk-budget-duration-default",
+			"info": map[string]interface{}{
+				"token":           "sk-budget-duration-default",
+				"budget_duration": "30d",
+			},
+		})
+	}))
+	defer server.Close()
+
+	r := &KeyResource{
+		client: &Client{
+			APIBase:    server.URL,
+			APIKey:     "test-key",
+			HTTPClient: server.Client(),
+		},
+	}
+
+	data := KeyResourceModel{
+		ID:                       types.StringValue(hashKeyForID("sk-budget-duration-default")),
+		Key:                      types.StringValue("sk-budget-duration-default"),
+		BudgetDuration:           types.StringNull(),
+		Models:                   types.ListNull(types.StringType),
+		AllowedRoutes:            types.ListNull(types.StringType),
+		AllowedPassthroughRoutes: types.ListNull(types.StringType),
+		AllowedCacheControls:     types.ListNull(types.StringType),
+		Guardrails:               types.ListNull(types.StringType),
+		Prompts:                  types.ListNull(types.StringType),
+		EnforcedParams:           types.ListNull(types.StringType),
+		Tags:                     types.ListNull(types.StringType),
+		Metadata:                 types.MapNull(types.StringType),
+		Aliases:                  types.MapNull(types.StringType),
+		Config:                   types.MapNull(types.StringType),
+		Permissions:              types.MapNull(types.StringType),
+		ModelMaxBudget:           types.MapNull(types.Float64Type),
+		ModelRPMLimit:            types.MapNull(types.Int64Type),
+		ModelTPMLimit:            types.MapNull(types.Int64Type),
+	}
+
+	if err := r.readKey(context.Background(), &data); err != nil {
+		t.Fatalf("readKey returned error: %v", err)
+	}
+
+	if !data.BudgetDuration.IsNull() {
+		t.Fatalf("budget_duration should remain null when unconfigured, got %q", data.BudgetDuration.ValueString())
+	}
+}
+
+func TestReadKeyReadsProjectID(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"key": "sk-project-key",
+			"info": map[string]interface{}{
+				"token":      "sk-project-key",
+				"project_id": "project-123",
+			},
+		})
+	}))
+	defer server.Close()
+
+	r := &KeyResource{
+		client: &Client{
+			APIBase:    server.URL,
+			APIKey:     "test-key",
+			HTTPClient: server.Client(),
+		},
+	}
+
+	data := KeyResourceModel{
+		ID:                       types.StringValue(hashKeyForID("sk-project-key")),
+		Key:                      types.StringValue("sk-project-key"),
+		Models:                   types.ListNull(types.StringType),
+		AllowedRoutes:            types.ListNull(types.StringType),
+		AllowedPassthroughRoutes: types.ListNull(types.StringType),
+		AllowedCacheControls:     types.ListNull(types.StringType),
+		Guardrails:               types.ListNull(types.StringType),
+		Prompts:                  types.ListNull(types.StringType),
+		EnforcedParams:           types.ListNull(types.StringType),
+		Tags:                     types.ListNull(types.StringType),
+		Metadata:                 types.MapNull(types.StringType),
+		Aliases:                  types.MapNull(types.StringType),
+		Config:                   types.MapNull(types.StringType),
+		Permissions:              types.MapNull(types.StringType),
+		ModelMaxBudget:           types.MapNull(types.Float64Type),
+		ModelRPMLimit:            types.MapNull(types.Int64Type),
+		ModelTPMLimit:            types.MapNull(types.Int64Type),
+	}
+
+	if err := r.readKey(context.Background(), &data); err != nil {
+		t.Fatalf("readKey returned error: %v", err)
+	}
+
+	if data.ProjectID.ValueString() != "project-123" {
+		t.Fatalf("expected project_id 'project-123', got %q", data.ProjectID.ValueString())
+	}
+}
+
 func TestPredefinedKeyIsSentToAPI(t *testing.T) {
 	t.Parallel()
 
@@ -761,14 +882,14 @@ func TestReadKeyTagsFromMetadata(t *testing.T) {
 // TestMinimalKeyNoKeyAliasNoServiceAccountID verifies the plain minimal case:
 // neither key_alias nor service_account_id is configured.
 //
-//  resource "litellm_key" "minimal" {}
+//	resource "litellm_key" "minimal" {}
 //
 // Expected behaviour:
-//  - buildKeyRequest must NOT include "key_alias" in the payload.
-//  - readKey with an Unknown key_alias (Computed, unresolved) and an API
-//    response that contains no key_alias must resolve the field to null —
-//    i.e. no "inconsistent result after apply" error and no perpetual
-//    "(known after apply)" on subsequent plans.
+//   - buildKeyRequest must NOT include "key_alias" in the payload.
+//   - readKey with an Unknown key_alias (Computed, unresolved) and an API
+//     response that contains no key_alias must resolve the field to null —
+//     i.e. no "inconsistent result after apply" error and no perpetual
+//     "(known after apply)" on subsequent plans.
 func TestMinimalKeyNoKeyAliasNoServiceAccountID(t *testing.T) {
 	t.Parallel()
 
@@ -1108,8 +1229,8 @@ func TestReadKeyPreservesUserProvidedKey(t *testing.T) {
 			// be hashed; simulate that here.
 			"key": hashedToken,
 			"info": map[string]interface{}{
-				"token":     hashedToken,
-				"key_alias": "my-alias",
+				"token":      hashedToken,
+				"key_alias":  "my-alias",
 				"max_budget": 50.0,
 			},
 		})
