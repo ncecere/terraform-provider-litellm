@@ -332,7 +332,7 @@ func (r *OrganizationResource) buildOrganizationRequest(ctx context.Context, dat
 		var metadata map[string]string
 		data.Metadata.ElementsAs(ctx, &metadata, false)
 		if len(metadata) > 0 {
-			orgReq["metadata"] = convertMetadataToNative(metadata)
+			orgReq["metadata"] = convertJSONStringsToNative(metadata)
 		}
 	}
 
@@ -424,7 +424,7 @@ func (r *OrganizationResource) readOrganization(ctx context.Context, data *Organ
 	if metadata, ok := orgInfo["metadata"].(map[string]interface{}); ok && len(metadata) > 0 {
 		metaMap := make(map[string]attr.Value)
 		for k, v := range metadata {
-			metaMap[k] = types.StringValue(metadataValueToString(v))
+			metaMap[k] = types.StringValue(valueToJSONString(v))
 		}
 		data.Metadata, _ = types.MapValue(types.StringType, metaMap)
 	} else if data.Metadata.IsUnknown() {

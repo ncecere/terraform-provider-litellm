@@ -6,9 +6,9 @@ import (
 	"strings"
 )
 
-// convertMetadataToNative takes a Terraform metadata map (map[string]string)
-// and converts values that contain JSON objects or arrays into native Go types
-// so the API receives structured data rather than escaped JSON strings.
+// convertJSONStringsToNative takes a map of string values and converts any values
+// that contain JSON objects or arrays into native Go types so the API receives
+// structured data rather than escaped JSON strings.
 //
 // For example, a Terraform config like:
 //
@@ -17,9 +17,9 @@ import (
 //	}
 //
 // will send the "logging" value as a native JSON array, not a string.
-func convertMetadataToNative(metadata map[string]string) map[string]interface{} {
-	result := make(map[string]interface{}, len(metadata))
-	for k, v := range metadata {
+func convertJSONStringsToNative(values map[string]string) map[string]interface{} {
+	result := make(map[string]interface{}, len(values))
+	for k, v := range values {
 		trimmed := strings.TrimSpace(v)
 		if strings.HasPrefix(trimmed, "[") || strings.HasPrefix(trimmed, "{") {
 			var parsed interface{}
@@ -33,10 +33,10 @@ func convertMetadataToNative(metadata map[string]string) map[string]interface{} 
 	return result
 }
 
-// metadataValueToString converts a metadata value from the API response back
-// to a string for storage in Terraform state. String values are returned as-is;
+// valueToJSONString converts a value from an API response back to a string
+// for storage in Terraform state. String values are returned as-is;
 // non-string values (arrays, objects, numbers, booleans) are JSON-encoded.
-func metadataValueToString(v interface{}) string {
+func valueToJSONString(v interface{}) string {
 	switch val := v.(type) {
 	case string:
 		return val

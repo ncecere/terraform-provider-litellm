@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestConvertMetadataToNative_StringValues(t *testing.T) {
+func TestConvertJSONStringsToNative_StringValues(t *testing.T) {
 	t.Parallel()
 
 	input := map[string]string{
@@ -14,7 +14,7 @@ func TestConvertMetadataToNative_StringValues(t *testing.T) {
 		"version": "1.0",
 	}
 
-	result := convertMetadataToNative(input)
+	result := convertJSONStringsToNative(input)
 
 	if result["env"] != "production" {
 		t.Errorf("expected 'production', got %v", result["env"])
@@ -24,14 +24,14 @@ func TestConvertMetadataToNative_StringValues(t *testing.T) {
 	}
 }
 
-func TestConvertMetadataToNative_JSONArray(t *testing.T) {
+func TestConvertJSONStringsToNative_JSONArray(t *testing.T) {
 	t.Parallel()
 
 	input := map[string]string{
 		"logging": `[{"callback_name":"langsmith","callback_type":"success","callback_vars":{"langsmith_project":"my-project"}}]`,
 	}
 
-	result := convertMetadataToNative(input)
+	result := convertJSONStringsToNative(input)
 
 	// Should be a native array, not a string
 	arr, ok := result["logging"].([]interface{})
@@ -50,14 +50,14 @@ func TestConvertMetadataToNative_JSONArray(t *testing.T) {
 	}
 }
 
-func TestConvertMetadataToNative_JSONObject(t *testing.T) {
+func TestConvertJSONStringsToNative_JSONObject(t *testing.T) {
 	t.Parallel()
 
 	input := map[string]string{
 		"config": `{"key":"value","nested":{"a":1}}`,
 	}
 
-	result := convertMetadataToNative(input)
+	result := convertJSONStringsToNative(input)
 
 	obj, ok := result["config"].(map[string]interface{})
 	if !ok {
@@ -68,7 +68,7 @@ func TestConvertMetadataToNative_JSONObject(t *testing.T) {
 	}
 }
 
-func TestConvertMetadataToNative_MixedValues(t *testing.T) {
+func TestConvertJSONStringsToNative_MixedValues(t *testing.T) {
 	t.Parallel()
 
 	input := map[string]string{
@@ -78,7 +78,7 @@ func TestConvertMetadataToNative_MixedValues(t *testing.T) {
 		"invalid": `{not valid json`,
 	}
 
-	result := convertMetadataToNative(input)
+	result := convertJSONStringsToNative(input)
 
 	// Simple string preserved
 	if result["simple"] != "hello" {
@@ -98,23 +98,23 @@ func TestConvertMetadataToNative_MixedValues(t *testing.T) {
 	}
 }
 
-func TestMetadataValueToString_String(t *testing.T) {
+func TestValueToJSONString_String(t *testing.T) {
 	t.Parallel()
 
-	if got := metadataValueToString("hello"); got != "hello" {
+	if got := valueToJSONString("hello"); got != "hello" {
 		t.Errorf("expected 'hello', got %q", got)
 	}
 }
 
-func TestMetadataValueToString_Nil(t *testing.T) {
+func TestValueToJSONString_Nil(t *testing.T) {
 	t.Parallel()
 
-	if got := metadataValueToString(nil); got != "" {
+	if got := valueToJSONString(nil); got != "" {
 		t.Errorf("expected empty string, got %q", got)
 	}
 }
 
-func TestMetadataValueToString_Array(t *testing.T) {
+func TestValueToJSONString_Array(t *testing.T) {
 	t.Parallel()
 
 	input := []interface{}{
@@ -124,7 +124,7 @@ func TestMetadataValueToString_Array(t *testing.T) {
 		},
 	}
 
-	got := metadataValueToString(input)
+	got := valueToJSONString(input)
 
 	// Should be valid JSON
 	var parsed interface{}
@@ -142,7 +142,7 @@ func TestMetadataValueToString_Array(t *testing.T) {
 	}
 }
 
-func TestMetadataValueToString_Object(t *testing.T) {
+func TestValueToJSONString_Object(t *testing.T) {
 	t.Parallel()
 
 	input := map[string]interface{}{
@@ -150,7 +150,7 @@ func TestMetadataValueToString_Object(t *testing.T) {
 		"num": float64(42),
 	}
 
-	got := metadataValueToString(input)
+	got := valueToJSONString(input)
 
 	var parsed map[string]interface{}
 	if err := json.Unmarshal([]byte(got), &parsed); err != nil {
@@ -161,24 +161,24 @@ func TestMetadataValueToString_Object(t *testing.T) {
 	}
 }
 
-func TestMetadataValueToString_Number(t *testing.T) {
+func TestValueToJSONString_Number(t *testing.T) {
 	t.Parallel()
 
-	if got := metadataValueToString(float64(42)); got != "42" {
+	if got := valueToJSONString(float64(42)); got != "42" {
 		t.Errorf("expected '42', got %q", got)
 	}
 }
 
-func TestMetadataValueToString_Bool(t *testing.T) {
+func TestValueToJSONString_Bool(t *testing.T) {
 	t.Parallel()
 
-	if got := metadataValueToString(true); got != "true" {
+	if got := valueToJSONString(true); got != "true" {
 		t.Errorf("expected 'true', got %q", got)
 	}
 }
 
 // TestMetadataRoundTrip verifies the full cycle:
-// Terraform map(string) → convertMetadataToNative → API → metadataValueToString → map(string)
+// Terraform map(string) → convertJSONStringsToNative → API → valueToJSONString → map(string)
 func TestMetadataRoundTrip(t *testing.T) {
 	t.Parallel()
 
@@ -189,12 +189,12 @@ func TestMetadataRoundTrip(t *testing.T) {
 	}
 
 	// Simulate write: convert for API
-	native := convertMetadataToNative(original)
+	native := convertJSONStringsToNative(original)
 
 	// Simulate read: convert back to strings
 	roundTripped := make(map[string]string, len(native))
 	for k, v := range native {
-		roundTripped[k] = metadataValueToString(v)
+		roundTripped[k] = valueToJSONString(v)
 	}
 
 	// Simple string should be identical

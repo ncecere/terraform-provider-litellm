@@ -481,7 +481,7 @@ func (r *TeamResource) buildTeamRequest(ctx context.Context, data *TeamResourceM
 		var metadata map[string]string
 		data.Metadata.ElementsAs(ctx, &metadata, false)
 		if len(metadata) > 0 {
-			teamReq["metadata"] = convertMetadataToNative(metadata)
+			teamReq["metadata"] = convertJSONStringsToNative(metadata)
 		}
 	}
 
@@ -723,7 +723,7 @@ func (r *TeamResource) readTeam(ctx context.Context, data *TeamResourceModel) er
 			if len(configuredKeys) > 0 && !configuredKeys[k] {
 				continue
 			}
-			metaMap[k] = types.StringValue(metadataValueToString(v))
+			metaMap[k] = types.StringValue(valueToJSONString(v))
 		}
 		if len(metaMap) > 0 {
 			data.Metadata, _ = types.MapValue(types.StringType, metaMap)

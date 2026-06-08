@@ -22,21 +22,21 @@ type ProjectDataSource struct {
 }
 
 type ProjectDataSourceModel struct {
-	ID             types.String  `tfsdk:"id"`
-	ProjectAlias   types.String  `tfsdk:"project_alias"`
-	Description    types.String  `tfsdk:"description"`
-	TeamID         types.String  `tfsdk:"team_id"`
-	Models         types.List    `tfsdk:"models"`
-	Metadata       types.Map     `tfsdk:"metadata"`
-	Tags           types.List    `tfsdk:"tags"`
-	Blocked        types.Bool    `tfsdk:"blocked"`
-	Spend          types.Float64 `tfsdk:"spend"`
-	ModelRPMLimit  types.Map     `tfsdk:"model_rpm_limit"`
-	ModelTPMLimit  types.Map     `tfsdk:"model_tpm_limit"`
-	CreatedAt      types.String  `tfsdk:"created_at"`
-	UpdatedAt      types.String  `tfsdk:"updated_at"`
-	CreatedBy      types.String  `tfsdk:"created_by"`
-	UpdatedBy      types.String  `tfsdk:"updated_by"`
+	ID            types.String  `tfsdk:"id"`
+	ProjectAlias  types.String  `tfsdk:"project_alias"`
+	Description   types.String  `tfsdk:"description"`
+	TeamID        types.String  `tfsdk:"team_id"`
+	Models        types.List    `tfsdk:"models"`
+	Metadata      types.Map     `tfsdk:"metadata"`
+	Tags          types.List    `tfsdk:"tags"`
+	Blocked       types.Bool    `tfsdk:"blocked"`
+	Spend         types.Float64 `tfsdk:"spend"`
+	ModelRPMLimit types.Map     `tfsdk:"model_rpm_limit"`
+	ModelTPMLimit types.Map     `tfsdk:"model_tpm_limit"`
+	CreatedAt     types.String  `tfsdk:"created_at"`
+	UpdatedAt     types.String  `tfsdk:"updated_at"`
+	CreatedBy     types.String  `tfsdk:"created_by"`
+	UpdatedBy     types.String  `tfsdk:"updated_by"`
 }
 
 func (d *ProjectDataSource) Metadata(ctx context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
@@ -205,7 +205,7 @@ func (d *ProjectDataSource) Read(ctx context.Context, req datasource.ReadRequest
 	if metadata, ok := result["metadata"].(map[string]interface{}); ok && len(metadata) > 0 {
 		metaMap := make(map[string]attr.Value)
 		for k, v := range metadata {
-			metaMap[k] = types.StringValue(metadataValueToString(v))
+			metaMap[k] = types.StringValue(valueToJSONString(v))
 		}
 		data.Metadata, _ = types.MapValue(types.StringType, metaMap)
 	} else {
