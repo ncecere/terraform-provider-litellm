@@ -2,6 +2,14 @@
 **/.terraform/*
 test_litellm/*
 
+# Local dev Terraform workspace (ignored; keep docs and reusable runner only)
+dev_testing/*
+!dev_testing/.gitkeep
+!dev_testing/README.md
+!dev_testing/e2e/
+dev_testing/e2e/*
+!dev_testing/e2e/run_case.sh
+
 # Smoke test workspace (generated; per-file state and copied .tf removed between files, directory kept)
 internal_testing/.smoke/
 
