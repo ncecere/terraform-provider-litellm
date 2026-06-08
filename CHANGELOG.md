@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.0.0] - 2026-06-08
 
 ### Added
 - **`litellm_key`**: Add `project_id` support to the resource and data source, allowing keys to be scoped to LiteLLM projects. ([#105](https://github.com/ncecere/terraform-provider-litellm/issues/105))
