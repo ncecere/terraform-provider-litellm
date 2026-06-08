@@ -59,14 +59,15 @@ type MCPServerResourceModel struct {
 	Env             types.Map     `tfsdk:"env"`
 	MCPInfo         *MCPInfoModel `tfsdk:"mcp_info"`
 	// New fields for expanded API support
-	Credentials      types.Map    `tfsdk:"credentials"`
-	AllowedTools     types.List   `tfsdk:"allowed_tools"`
-	ExtraHeaders     types.List   `tfsdk:"extra_headers"`
-	StaticHeaders    types.Map    `tfsdk:"static_headers"`
-	AuthorizationURL types.String `tfsdk:"authorization_url"`
-	TokenURL         types.String `tfsdk:"token_url"`
-	RegistrationURL  types.String `tfsdk:"registration_url"`
-	AllowAllKeys     types.Bool   `tfsdk:"allow_all_keys"`
+	Credentials       types.Map    `tfsdk:"credentials"`
+	AllowedTools      types.List   `tfsdk:"allowed_tools"`
+	ExtraHeaders      types.List   `tfsdk:"extra_headers"`
+	StaticHeaders     types.Map    `tfsdk:"static_headers"`
+	AuthorizationURL  types.String `tfsdk:"authorization_url"`
+	TokenURL          types.String `tfsdk:"token_url"`
+	RegistrationURL   types.String `tfsdk:"registration_url"`
+	AllowAllKeys      types.Bool   `tfsdk:"allow_all_keys"`
+	SkipURLValidation types.Bool   `tfsdk:"skip_url_validation"`
 	// Computed fields
 	CreatedAt types.String `tfsdk:"created_at"`
 	CreatedBy types.String `tfsdk:"created_by"`
@@ -194,6 +195,10 @@ func (r *MCPServerResource) Schema(ctx context.Context, req resource.SchemaReque
 			},
 			"allow_all_keys": schema.BoolAttribute{
 				Description: "Whether to allow all API keys to access this MCP server.",
+				Optional:    true,
+			},
+			"skip_url_validation": schema.BoolAttribute{
+				Description: "Skip MCP server URL reachability validation during creation/update. Useful when the MCP server is reachable by LiteLLM but not by the Terraform runner or validation path.",
 				Optional:    true,
 			},
 			"created_at": schema.StringAttribute{
@@ -471,6 +476,9 @@ func (r *MCPServerResource) buildMCPServerRequest(ctx context.Context, data *MCP
 	// Boolean fields - check IsNull and IsUnknown
 	if !data.AllowAllKeys.IsNull() && !data.AllowAllKeys.IsUnknown() {
 		mcpReq["allow_all_keys"] = data.AllowAllKeys.ValueBool()
+	}
+	if !data.SkipURLValidation.IsNull() && !data.SkipURLValidation.IsUnknown() {
+		mcpReq["skip_url_validation"] = data.SkipURLValidation.ValueBool()
 	}
 
 	// List fields - check IsNull, IsUnknown, and len > 0

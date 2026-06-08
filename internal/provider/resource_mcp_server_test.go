@@ -12,6 +12,42 @@ import (
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
 )
 
+func TestBuildMCPServerRequestIncludesSkipURLValidation(t *testing.T) {
+	t.Parallel()
+
+	r := &MCPServerResource{}
+	data := &MCPServerResourceModel{
+		ServerName:        types.StringValue("test-mcp"),
+		URL:               types.StringValue("http://mcp.internal.svc.cluster.local:8000/mcp"),
+		Transport:         types.StringValue("http"),
+		SkipURLValidation: types.BoolValue(true),
+	}
+
+	req := r.buildMCPServerRequest(context.Background(), data)
+
+	if got, ok := req["skip_url_validation"].(bool); !ok || !got {
+		t.Fatalf("expected skip_url_validation=true, got %T: %v", req["skip_url_validation"], req["skip_url_validation"])
+	}
+}
+
+func TestBuildMCPServerRequestOmitsSkipURLValidationWhenUnconfigured(t *testing.T) {
+	t.Parallel()
+
+	r := &MCPServerResource{}
+	data := &MCPServerResourceModel{
+		ServerName:        types.StringValue("test-mcp"),
+		URL:               types.StringValue("https://example.com/mcp"),
+		Transport:         types.StringValue("http"),
+		SkipURLValidation: types.BoolNull(),
+	}
+
+	req := r.buildMCPServerRequest(context.Background(), data)
+
+	if _, ok := req["skip_url_validation"]; ok {
+		t.Fatalf("skip_url_validation should be omitted when unconfigured, got %v", req["skip_url_validation"])
+	}
+}
+
 func TestBuildMCPServerRequestExtraHeadersList(t *testing.T) {
 	t.Parallel()
 

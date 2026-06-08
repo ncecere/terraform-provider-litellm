@@ -77,6 +77,21 @@ resource "litellm_mcp_server" "authenticated" {
 }
 ```
 
+### Internal URL / Skip URL Validation
+
+Use `skip_url_validation` when the MCP server URL is reachable from LiteLLM but not from the Terraform runner, such as a Kubernetes-internal service DNS name.
+
+```hcl
+resource "litellm_mcp_server" "internal" {
+  server_name         = "lightrag"
+  url                 = "http://mcp.kar-dp-lightrag.svc.cluster.local:8000/mcp"
+  transport           = "http"
+  auth_type           = "none"
+  allow_all_keys      = true
+  skip_url_validation = true
+}
+```
+
 ### Stdio Transport
 
 ```hcl
@@ -151,6 +166,7 @@ The following arguments are supported:
 - `token_url` - (String) OAuth2 token URL (used with `oauth2` auth type).
 - `registration_url` - (String) OAuth2 dynamic client registration URL (used with `oauth2` auth type).
 - `allow_all_keys` - (Bool) Whether all API keys are allowed to access this MCP server.
+- `skip_url_validation` - (Bool) Skip MCP server URL reachability validation during creation/update. Use this when the MCP server is reachable from LiteLLM but not from the Terraform runner or validation path.
 
 ### Nested Blocks
 
