@@ -2,7 +2,9 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"sort"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -14,10 +16,12 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
 )
 
 var _ resource.Resource = &MCPServerResource{}
 var _ resource.ResourceWithImportState = &MCPServerResource{}
+var _ resource.ResourceWithUpgradeState = &MCPServerResource{}
 
 func NewMCPServerResource() resource.Resource {
 	return &MCPServerResource{}
@@ -57,7 +61,7 @@ type MCPServerResourceModel struct {
 	// New fields for expanded API support
 	Credentials      types.Map    `tfsdk:"credentials"`
 	AllowedTools     types.List   `tfsdk:"allowed_tools"`
-	ExtraHeaders     types.Map    `tfsdk:"extra_headers"`
+	ExtraHeaders     types.List   `tfsdk:"extra_headers"`
 	StaticHeaders    types.Map    `tfsdk:"static_headers"`
 	AuthorizationURL types.String `tfsdk:"authorization_url"`
 	TokenURL         types.String `tfsdk:"token_url"`
@@ -75,6 +79,7 @@ func (r *MCPServerResource) Metadata(ctx context.Context, req resource.MetadataR
 func (r *MCPServerResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		Description: "Manages a LiteLLM MCP (Model Context Protocol) server.",
+		Version:     1,
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Description: "The unique identifier for this MCP server (same as server_id).",
@@ -163,8 +168,8 @@ func (r *MCPServerResource) Schema(ctx context.Context, req resource.SchemaReque
 				Computed:    true,
 				ElementType: types.StringType,
 			},
-			"extra_headers": schema.MapAttribute{
-				Description: "Extra headers to send with requests to the MCP server.",
+			"extra_headers": schema.ListAttribute{
+				Description: "Extra header names to forward to the MCP server.",
 				Optional:    true,
 				Computed:    true,
 				ElementType: types.StringType,
@@ -373,6 +378,67 @@ func (r *MCPServerResource) ImportState(ctx context.Context, req resource.Import
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("server_id"), req.ID)...)
 }
 
+// UpgradeState handles state migrations from older schema versions.
+// Version 0 → 1: extra_headers changed from map(string) to list(string)
+// to match the LiteLLM API/OpenAPI schema. Existing map keys become the
+// list of header names.
+func (r *MCPServerResource) UpgradeState(ctx context.Context) map[int64]resource.StateUpgrader {
+	return map[int64]resource.StateUpgrader{
+		0: {
+			PriorSchema: nil,
+			StateUpgrader: func(ctx context.Context, req resource.UpgradeStateRequest, resp *resource.UpgradeStateResponse) {
+				if req.RawState == nil {
+					resp.Diagnostics.AddError(
+						"Unable to Upgrade State",
+						"RawState is nil. This is a bug in the provider.",
+					)
+					return
+				}
+
+				var priorState map[string]json.RawMessage
+				if err := json.Unmarshal(req.RawState.JSON, &priorState); err != nil {
+					resp.Diagnostics.AddError(
+						"Unable to Upgrade State",
+						fmt.Sprintf("Failed to unmarshal prior state JSON: %s", err),
+					)
+					return
+				}
+
+				if raw, ok := priorState["extra_headers"]; ok && string(raw) != "null" {
+					var oldMap map[string]string
+					if err := json.Unmarshal(raw, &oldMap); err == nil {
+						headers := make([]string, 0, len(oldMap))
+						for header := range oldMap {
+							headers = append(headers, header)
+						}
+						sort.Strings(headers)
+						converted, err := json.Marshal(headers)
+						if err != nil {
+							resp.Diagnostics.AddError(
+								"Unable to Upgrade State",
+								fmt.Sprintf("Failed to marshal upgraded extra_headers: %s", err),
+							)
+							return
+						}
+						priorState["extra_headers"] = converted
+					}
+				}
+
+				upgradedJSON, err := json.Marshal(priorState)
+				if err != nil {
+					resp.Diagnostics.AddError(
+						"Unable to Upgrade State",
+						fmt.Sprintf("Failed to marshal upgraded state: %s", err),
+					)
+					return
+				}
+
+				resp.DynamicValue = &tfprotov6.DynamicValue{JSON: upgradedJSON}
+			},
+		},
+	}
+}
+
 func (r *MCPServerResource) buildMCPServerRequest(ctx context.Context, data *MCPServerResourceModel) map[string]interface{} {
 	mcpReq := map[string]interface{}{
 		"server_name":  data.ServerName.ValueString(),
@@ -450,7 +516,7 @@ func (r *MCPServerResource) buildMCPServerRequest(ctx context.Context, data *MCP
 	}
 
 	if !data.ExtraHeaders.IsNull() && !data.ExtraHeaders.IsUnknown() {
-		var extraHeaders map[string]string
+		var extraHeaders []string
 		data.ExtraHeaders.ElementsAs(ctx, &extraHeaders, false)
 		if len(extraHeaders) > 0 {
 			mcpReq["extra_headers"] = extraHeaders
@@ -620,16 +686,16 @@ func (r *MCPServerResource) readMCPServer(ctx context.Context, data *MCPServerRe
 	}
 
 	// Handle extra_headers - preserve null when API returns empty and config didn't specify
-	if extraHeaders, ok := result["extra_headers"].(map[string]interface{}); ok && len(extraHeaders) > 0 {
-		headersMap := make(map[string]attr.Value)
-		for k, v := range extraHeaders {
+	if extraHeaders, ok := result["extra_headers"].([]interface{}); ok && len(extraHeaders) > 0 {
+		headers := make([]attr.Value, 0, len(extraHeaders))
+		for _, v := range extraHeaders {
 			if str, ok := v.(string); ok {
-				headersMap[k] = types.StringValue(str)
+				headers = append(headers, types.StringValue(str))
 			}
 		}
-		data.ExtraHeaders, _ = types.MapValue(types.StringType, headersMap)
+		data.ExtraHeaders, _ = types.ListValue(types.StringType, headers)
 	} else if data.ExtraHeaders.IsUnknown() {
-		data.ExtraHeaders, _ = types.MapValue(types.StringType, map[string]attr.Value{})
+		data.ExtraHeaders, _ = types.ListValue(types.StringType, []attr.Value{})
 	}
 
 	// Handle static_headers - preserve null when API returns empty and config didn't specify

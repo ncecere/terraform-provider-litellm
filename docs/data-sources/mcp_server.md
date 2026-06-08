@@ -58,7 +58,7 @@ The following attributes are exported:
 * `args` - Command arguments.
 * `env` - Environment variables.
 * `allowed_tools` - List of allowed tools.
-* `extra_headers` - Extra headers map.
+* `extra_headers` - Extra header names list.
 * `static_headers` - Static headers map.
 * `authorization_url` - OAuth authorization URL.
 * `token_url` - OAuth token URL.

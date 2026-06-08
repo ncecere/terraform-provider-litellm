@@ -35,7 +35,7 @@ type MCPServerDataSourceModel struct {
 	Args             types.List   `tfsdk:"args"`
 	Env              types.Map    `tfsdk:"env"`
 	AllowedTools     types.List   `tfsdk:"allowed_tools"`
-	ExtraHeaders     types.Map    `tfsdk:"extra_headers"`
+	ExtraHeaders     types.List   `tfsdk:"extra_headers"`
 	StaticHeaders    types.Map    `tfsdk:"static_headers"`
 	AuthorizationURL types.String `tfsdk:"authorization_url"`
 	TokenURL         types.String `tfsdk:"token_url"`
@@ -118,8 +118,8 @@ func (d *MCPServerDataSource) Schema(ctx context.Context, req datasource.SchemaR
 				Computed:    true,
 				ElementType: types.StringType,
 			},
-			"extra_headers": schema.MapAttribute{
-				Description: "Extra headers to send with requests to the MCP server.",
+			"extra_headers": schema.ListAttribute{
+				Description: "Extra header names forwarded to the MCP server.",
 				Computed:    true,
 				ElementType: types.StringType,
 			},
@@ -314,16 +314,16 @@ func (d *MCPServerDataSource) Read(ctx context.Context, req datasource.ReadReque
 	}
 
 	// Handle extra_headers
-	if extraHeaders, ok := result["extra_headers"].(map[string]interface{}); ok {
-		headersMap := make(map[string]attr.Value)
-		for k, v := range extraHeaders {
+	if extraHeaders, ok := result["extra_headers"].([]interface{}); ok {
+		headers := make([]attr.Value, 0, len(extraHeaders))
+		for _, v := range extraHeaders {
 			if str, ok := v.(string); ok {
-				headersMap[k] = types.StringValue(str)
+				headers = append(headers, types.StringValue(str))
 			}
 		}
-		data.ExtraHeaders, _ = types.MapValue(types.StringType, headersMap)
+		data.ExtraHeaders, _ = types.ListValue(types.StringType, headers)
 	} else {
-		data.ExtraHeaders, _ = types.MapValue(types.StringType, map[string]attr.Value{})
+		data.ExtraHeaders, _ = types.ListValue(types.StringType, []attr.Value{})
 	}
 
 	// Handle static_headers
