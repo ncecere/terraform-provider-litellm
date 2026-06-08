@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -132,7 +133,7 @@ func (r *PromptResource) Create(ctx context.Context, req resource.CreateRequest,
 	data.ID = data.PromptID
 
 	// Read back for full state
-	if err := r.readPrompt(ctx, &data); err != nil {
+	if err := r.readPromptWithRetry(ctx, &data, 8); err != nil {
 		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Prompt created but failed to read back: %s", err))
 	}
 
@@ -147,7 +148,7 @@ func (r *PromptResource) Read(ctx context.Context, req resource.ReadRequest, res
 		return
 	}
 
-	if err := r.readPrompt(ctx, &data); err != nil {
+	if err := r.readPromptWithRetry(ctx, &data, 8); err != nil {
 		if IsNotFoundError(err) {
 			resp.State.RemoveResource(ctx)
 			return
@@ -186,7 +187,7 @@ func (r *PromptResource) Update(ctx context.Context, req resource.UpdateRequest,
 	}
 
 	// Read back for full state
-	if err := r.readPrompt(ctx, &data); err != nil {
+	if err := r.readPromptWithRetry(ctx, &data, 8); err != nil {
 		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Prompt updated but failed to read back: %s", err))
 	}
 
@@ -259,18 +260,46 @@ func (r *PromptResource) buildPromptRequest(ctx context.Context, data *PromptRes
 	return promptReq
 }
 
+func (r *PromptResource) readPromptWithRetry(ctx context.Context, data *PromptResourceModel, maxRetries int) error {
+	var err error
+	delay := 1 * time.Second
+	maxDelay := 10 * time.Second
+
+	for i := 0; i < maxRetries; i++ {
+		err = r.readPrompt(ctx, data)
+		if err == nil {
+			return nil
+		}
+
+		if !IsNotFoundError(err) {
+			return err
+		}
+
+		if i < maxRetries-1 {
+			time.Sleep(delay)
+			delay *= 2
+			if delay > maxDelay {
+				delay = maxDelay
+			}
+		}
+	}
+
+	return err
+}
+
 func (r *PromptResource) readPrompt(ctx context.Context, data *PromptResourceModel) error {
 	promptID := data.PromptID.ValueString()
 	if promptID == "" {
 		promptID = data.ID.ValueString()
 	}
 
-	endpoint := fmt.Sprintf("/prompts/%s/info", promptID)
+	endpoint := fmt.Sprintf("/prompts/%s", promptID)
 
-	var result map[string]interface{}
-	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
+	var rawResult map[string]interface{}
+	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &rawResult); err != nil {
 		return err
 	}
+	result := parsePromptResult(rawResult)
 
 	// Update fields from response
 	if id, ok := result["prompt_id"].(string); ok {
@@ -286,10 +315,10 @@ func (r *PromptResource) readPrompt(ctx context.Context, data *PromptResourceMod
 		if apiBase, ok := litellmParams["api_base"].(string); ok {
 			data.APIBase = types.StringValue(apiBase)
 		}
-		if ignoreModel, ok := litellmParams["ignore_prompt_manager_model"].(bool); ok {
+		if ignoreModel, ok := litellmParams["ignore_prompt_manager_model"].(bool); ok && !data.IgnorePromptManagerModel.IsNull() {
 			data.IgnorePromptManagerModel = types.BoolValue(ignoreModel)
 		}
-		if ignoreParams, ok := litellmParams["ignore_prompt_manager_optional_params"].(bool); ok {
+		if ignoreParams, ok := litellmParams["ignore_prompt_manager_optional_params"].(bool); ok && !data.IgnorePromptManagerOptionalParams.IsNull() {
 			data.IgnorePromptManagerOptionalParams = types.BoolValue(ignoreParams)
 		}
 		if dotprompt, ok := litellmParams["dotprompt_content"].(string); ok {
@@ -304,10 +333,17 @@ func (r *PromptResource) readPrompt(ctx context.Context, data *PromptResourceMod
 
 	// Handle prompt_info
 	if promptInfo, ok := result["prompt_info"].(map[string]interface{}); ok {
-		if promptType, ok := promptInfo["prompt_type"].(string); ok {
+		if promptType, ok := promptInfo["prompt_type"].(string); ok && !data.PromptType.IsNull() {
 			data.PromptType = types.StringValue(promptType)
 		}
 	}
 
 	return nil
+}
+
+func parsePromptResult(rawResult map[string]interface{}) map[string]interface{} {
+	if promptSpec, ok := rawResult["prompt_spec"].(map[string]interface{}); ok {
+		return promptSpec
+	}
+	return rawResult
 }

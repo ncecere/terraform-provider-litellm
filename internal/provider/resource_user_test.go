@@ -1,11 +1,77 @@
 package provider
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
+
+func TestReadUserDoesNotSetAPIInjectedDefaultsWhenUnconfigured(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"user_info": map[string]interface{}{
+				"user_id":         "user-defaults",
+				"user_alias":      "User Defaults",
+				"user_email":      "user-defaults@example.com",
+				"user_role":       "internal_user",
+				"budget_duration": "30d",
+				"max_budget":      25.0,
+				"tpm_limit":       10000000.0,
+				"rpm_limit":       1000.0,
+			},
+		})
+	}))
+	defer server.Close()
+
+	r := &UserResource{
+		client: &Client{
+			APIBase:    server.URL,
+			APIKey:     "test-key",
+			HTTPClient: server.Client(),
+		},
+	}
+
+	data := UserResourceModel{
+		ID:             types.StringValue("user-defaults"),
+		UserID:         types.StringValue("user-defaults"),
+		UserRole:       types.StringNull(),
+		BudgetDuration: types.StringNull(),
+		MaxBudget:      types.Float64Null(),
+		TPMLimit:       types.Int64Null(),
+		RPMLimit:       types.Int64Null(),
+		Teams:          types.ListNull(types.StringType),
+		Models:         types.ListNull(types.StringType),
+		Metadata:       types.MapNull(types.StringType),
+	}
+
+	if err := r.readUser(context.Background(), &data); err != nil {
+		t.Fatalf("readUser returned error: %v", err)
+	}
+
+	if !data.UserRole.IsNull() {
+		t.Fatalf("user_role should remain null when unconfigured, got %q", data.UserRole.ValueString())
+	}
+	if !data.BudgetDuration.IsNull() {
+		t.Fatalf("budget_duration should remain null when unconfigured, got %q", data.BudgetDuration.ValueString())
+	}
+	if !data.MaxBudget.IsNull() {
+		t.Fatalf("max_budget should remain null when unconfigured, got %v", data.MaxBudget.ValueFloat64())
+	}
+	if !data.TPMLimit.IsNull() {
+		t.Fatalf("tpm_limit should remain null when unconfigured, got %v", data.TPMLimit.ValueInt64())
+	}
+	if !data.RPMLimit.IsNull() {
+		t.Fatalf("rpm_limit should remain null when unconfigured, got %v", data.RPMLimit.ValueInt64())
+	}
+}
 
 // TestNullPreservationForListAttributes verifies that when the API returns an
 // empty list for an Optional+Computed list attribute that was not specified in

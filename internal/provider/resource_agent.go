@@ -702,6 +702,7 @@ func (r *AgentResource) readAgent(ctx context.Context, data *AgentResourceModel)
 }
 
 func (r *AgentResource) readAgentCard(cardRaw map[string]interface{}, data *AgentResourceModel) {
+	populateAll := data.AgentCard == nil
 	if data.AgentCard == nil {
 		data.AgentCard = &AgentCardModel{}
 	}
@@ -716,19 +717,19 @@ func (r *AgentResource) readAgentCard(cardRaw map[string]interface{}, data *Agen
 	if v, ok := cardRaw["url"].(string); ok {
 		card.URL = types.StringValue(v)
 	}
-	if v, ok := cardRaw["version"].(string); ok && v != "" {
+	if v, ok := cardRaw["version"].(string); ok && v != "" && (populateAll || !card.Version.IsNull()) {
 		card.Version = types.StringValue(v)
 	}
-	if v, ok := cardRaw["protocolVersion"].(string); ok && v != "" {
+	if v, ok := cardRaw["protocolVersion"].(string); ok && v != "" && (populateAll || !card.ProtocolVersion.IsNull()) {
 		card.ProtocolVersion = types.StringValue(v)
 	}
-	if v, ok := cardRaw["preferredTransport"].(string); ok && v != "" {
+	if v, ok := cardRaw["preferredTransport"].(string); ok && v != "" && (populateAll || !card.PreferredTransport.IsNull()) {
 		card.PreferredTransport = types.StringValue(v)
 	}
-	if v, ok := cardRaw["iconUrl"].(string); ok && v != "" {
+	if v, ok := cardRaw["iconUrl"].(string); ok && v != "" && (populateAll || !card.IconURL.IsNull()) {
 		card.IconURL = types.StringValue(v)
 	}
-	if v, ok := cardRaw["documentationUrl"].(string); ok && v != "" {
+	if v, ok := cardRaw["documentationUrl"].(string); ok && v != "" && (populateAll || !card.DocumentationURL.IsNull()) {
 		card.DocumentationURL = types.StringValue(v)
 	}
 
@@ -745,36 +746,36 @@ func (r *AgentResource) readAgentCard(cardRaw map[string]interface{}, data *Agen
 	}
 
 	// Capabilities
-	if capsRaw, ok := cardRaw["capabilities"].(map[string]interface{}); ok {
+	if capsRaw, ok := cardRaw["capabilities"].(map[string]interface{}); ok && (populateAll || card.Capabilities != nil) {
 		if card.Capabilities == nil {
 			card.Capabilities = &AgentCapabilitiesModel{}
 		}
-		if v, ok := capsRaw["streaming"].(bool); ok {
+		if v, ok := capsRaw["streaming"].(bool); ok && (populateAll || !card.Capabilities.Streaming.IsNull()) {
 			card.Capabilities.Streaming = types.BoolValue(v)
 		}
-		if v, ok := capsRaw["pushNotifications"].(bool); ok {
+		if v, ok := capsRaw["pushNotifications"].(bool); ok && (populateAll || !card.Capabilities.PushNotifications.IsNull()) {
 			card.Capabilities.PushNotifications = types.BoolValue(v)
 		}
-		if v, ok := capsRaw["stateTransitionHistory"].(bool); ok {
+		if v, ok := capsRaw["stateTransitionHistory"].(bool); ok && (populateAll || !card.Capabilities.StateTransitionHistory.IsNull()) {
 			card.Capabilities.StateTransitionHistory = types.BoolValue(v)
 		}
 	}
 
 	// Provider
-	if provRaw, ok := cardRaw["provider"].(map[string]interface{}); ok {
+	if provRaw, ok := cardRaw["provider"].(map[string]interface{}); ok && (populateAll || card.Provider != nil) {
 		if card.Provider == nil {
 			card.Provider = &AgentProviderModel{}
 		}
-		if v, ok := provRaw["organization"].(string); ok {
+		if v, ok := provRaw["organization"].(string); ok && (populateAll || !card.Provider.Organization.IsNull()) {
 			card.Provider.Organization = types.StringValue(v)
 		}
-		if v, ok := provRaw["url"].(string); ok {
+		if v, ok := provRaw["url"].(string); ok && (populateAll || !card.Provider.URL.IsNull()) {
 			card.Provider.URL = types.StringValue(v)
 		}
 	}
 
 	// Skills
-	if skillsRaw, ok := cardRaw["skills"].([]interface{}); ok && len(skillsRaw) > 0 {
+	if skillsRaw, ok := cardRaw["skills"].([]interface{}); ok && len(skillsRaw) > 0 && (populateAll || len(card.Skills) > 0) {
 		skills := make([]AgentSkillModel, 0, len(skillsRaw))
 		for _, sRaw := range skillsRaw {
 			if s, ok := sRaw.(map[string]interface{}); ok {

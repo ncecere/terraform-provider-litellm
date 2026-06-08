@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
@@ -106,13 +107,14 @@ func (d *PromptDataSource) Read(ctx context.Context, req datasource.ReadRequest,
 	}
 
 	promptID := data.PromptID.ValueString()
-	endpoint := fmt.Sprintf("/prompts/%s/info", promptID)
+	endpoint := fmt.Sprintf("/prompts/%s", promptID)
 
-	var result map[string]interface{}
-	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
+	var rawResult map[string]interface{}
+	if err := readPromptDataSourceWithRetry(ctx, d.client, endpoint, &rawResult, 8); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read prompt: %s", err))
 		return
 	}
+	result := parsePromptResult(rawResult)
 
 	// Populate the data model
 	data.ID = types.StringValue(promptID)
@@ -149,4 +151,31 @@ func (d *PromptDataSource) Read(ctx context.Context, req datasource.ReadRequest,
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+}
+
+func readPromptDataSourceWithRetry(ctx context.Context, client *Client, endpoint string, result *map[string]interface{}, maxRetries int) error {
+	var err error
+	delay := 1 * time.Second
+	maxDelay := 10 * time.Second
+
+	for i := 0; i < maxRetries; i++ {
+		err = client.DoRequestWithResponse(ctx, "GET", endpoint, nil, result)
+		if err == nil {
+			return nil
+		}
+
+		if !IsNotFoundError(err) {
+			return err
+		}
+
+		if i < maxRetries-1 {
+			time.Sleep(delay)
+			delay *= 2
+			if delay > maxDelay {
+				delay = maxDelay
+			}
+		}
+	}
+
+	return err
 }

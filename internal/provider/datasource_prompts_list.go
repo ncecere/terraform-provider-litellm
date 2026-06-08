@@ -112,12 +112,13 @@ func (d *PromptsListDataSource) Read(ctx context.Context, req datasource.ReadReq
 		return
 	}
 
-	var results []map[string]interface{}
-	if err := d.client.DoRequestWithResponse(ctx, "GET", "/prompts/list", nil, &results); err != nil {
+	var rawResult interface{}
+	if err := d.client.DoRequestWithResponse(ctx, "GET", "/prompts/list", nil, &rawResult); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to list prompts: %s", err))
 		return
 	}
 
+	results := parsePromptsListResult(rawResult)
 	prompts := make([]PromptListItemModel, 0, len(results))
 	for _, result := range results {
 		prompt := PromptListItemModel{}
@@ -161,4 +162,24 @@ func (d *PromptsListDataSource) Read(ctx context.Context, req datasource.ReadReq
 	data.Prompts = prompts
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+}
+
+func parsePromptsListResult(rawResult interface{}) []map[string]interface{} {
+	var rawPrompts []interface{}
+	switch typed := rawResult.(type) {
+	case []interface{}:
+		rawPrompts = typed
+	case map[string]interface{}:
+		if prompts, ok := typed["prompts"].([]interface{}); ok {
+			rawPrompts = prompts
+		}
+	}
+
+	results := make([]map[string]interface{}, 0, len(rawPrompts))
+	for _, item := range rawPrompts {
+		if prompt, ok := item.(map[string]interface{}); ok {
+			results = append(results, prompt)
+		}
+	}
+	return results
 }

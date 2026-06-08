@@ -369,21 +369,22 @@ func (r *UserResource) readUser(ctx context.Context, data *UserResourceModel) er
 	if email, ok := userInfo["user_email"].(string); ok {
 		data.UserEmail = types.StringValue(email)
 	}
-	if role, ok := userInfo["user_role"].(string); ok {
+	if role, ok := userInfo["user_role"].(string); ok && !data.UserRole.IsNull() {
 		data.UserRole = types.StringValue(role)
 	}
-	if budgetDuration, ok := userInfo["budget_duration"].(string); ok {
+	if budgetDuration, ok := userInfo["budget_duration"].(string); ok && !data.BudgetDuration.IsNull() {
 		data.BudgetDuration = types.StringValue(budgetDuration)
 	}
 
-	// Numeric fields
-	if maxBudget, ok := userInfo["max_budget"].(float64); ok {
+	// Numeric fields. These are Optional-only, so avoid writing API-injected
+	// defaults into state when the user did not configure them.
+	if maxBudget, ok := userInfo["max_budget"].(float64); ok && !data.MaxBudget.IsNull() {
 		data.MaxBudget = types.Float64Value(maxBudget)
 	}
-	if tpmLimit, ok := userInfo["tpm_limit"].(float64); ok {
+	if tpmLimit, ok := userInfo["tpm_limit"].(float64); ok && !data.TPMLimit.IsNull() {
 		data.TPMLimit = types.Int64Value(int64(tpmLimit))
 	}
-	if rpmLimit, ok := userInfo["rpm_limit"].(float64); ok {
+	if rpmLimit, ok := userInfo["rpm_limit"].(float64); ok && !data.RPMLimit.IsNull() {
 		data.RPMLimit = types.Int64Value(int64(rpmLimit))
 	}
 

@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"strings"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -95,14 +97,14 @@ func (r *FallbackResource) Create(ctx context.Context, req resource.CreateReques
 	}
 
 	fallbackReq := r.buildFallbackRequest(ctx, &data)
-	if err := r.client.DoRequestWithResponse(ctx, "POST", "/fallback", fallbackReq, nil); err != nil {
+	if err := r.writeFallbackWithRetry(ctx, fallbackReq, 5); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to create fallback: %s", err))
 		return
 	}
 
 	data.ID = types.StringValue(data.Model.ValueString() + ":" + data.FallbackType.ValueString())
 
-	if err := r.readFallback(ctx, &data); err != nil {
+	if err := r.readFallbackWithRetry(ctx, &data, 5); err != nil {
 		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Fallback created but failed to read back: %s", err))
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
@@ -115,7 +117,7 @@ func (r *FallbackResource) Read(ctx context.Context, req resource.ReadRequest, r
 		return
 	}
 
-	if err := r.readFallback(ctx, &data); err != nil {
+	if err := r.readFallbackWithRetry(ctx, &data, 5); err != nil {
 		if IsNotFoundError(err) {
 			resp.State.RemoveResource(ctx)
 			return
@@ -134,12 +136,12 @@ func (r *FallbackResource) Update(ctx context.Context, req resource.UpdateReques
 	}
 
 	fallbackReq := r.buildFallbackRequest(ctx, &data)
-	if err := r.client.DoRequestWithResponse(ctx, "POST", "/fallback", fallbackReq, nil); err != nil {
+	if err := r.writeFallbackWithRetry(ctx, fallbackReq, 5); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to update fallback: %s", err))
 		return
 	}
 
-	if err := r.readFallback(ctx, &data); err != nil {
+	if err := r.readFallbackWithRetry(ctx, &data, 5); err != nil {
 		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Fallback updated but failed to read back: %s", err))
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
@@ -197,6 +199,69 @@ func (r *FallbackResource) buildFallbackRequest(ctx context.Context, data *Fallb
 		"fallback_models": models,
 		"fallback_type":   data.FallbackType.ValueString(),
 	}
+}
+
+func (r *FallbackResource) writeFallbackWithRetry(ctx context.Context, fallbackReq map[string]interface{}, maxRetries int) error {
+	var err error
+	delay := 1 * time.Second
+	maxDelay := 10 * time.Second
+
+	for i := 0; i < maxRetries; i++ {
+		err = r.client.DoRequestWithResponse(ctx, "POST", "/fallback", fallbackReq, nil)
+		if err == nil {
+			return nil
+		}
+
+		if !shouldRetryFallbackWriteError(err) {
+			return err
+		}
+
+		if i < maxRetries-1 {
+			time.Sleep(delay)
+			delay *= 2
+			if delay > maxDelay {
+				delay = maxDelay
+			}
+		}
+	}
+
+	return err
+}
+
+func shouldRetryFallbackWriteError(err error) bool {
+	if IsNotFoundError(err) {
+		return true
+	}
+	errStr := err.Error()
+	return strings.Contains(errStr, "Invalid fallback models") ||
+		strings.Contains(errStr, "not found in router")
+}
+
+func (r *FallbackResource) readFallbackWithRetry(ctx context.Context, data *FallbackResourceModel, maxRetries int) error {
+	var err error
+	delay := 1 * time.Second
+	maxDelay := 10 * time.Second
+
+	for i := 0; i < maxRetries; i++ {
+		err = r.readFallback(ctx, data)
+		if err == nil {
+			return nil
+		}
+
+		if !IsNotFoundError(err) {
+			return err
+		}
+
+		if i < maxRetries-1 {
+			time.Sleep(delay)
+			delay *= 2
+			if delay > maxDelay {
+				delay = maxDelay
+			}
+		}
+	}
+
+	return err
 }
 
 func (r *FallbackResource) readFallback(ctx context.Context, data *FallbackResourceModel) error {

@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
@@ -89,7 +90,7 @@ func (d *CredentialDataSource) Read(ctx context.Context, req datasource.ReadRequ
 	}
 
 	var result map[string]interface{}
-	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
+	if err := readCredentialDataSourceWithRetry(ctx, d.client, endpoint, &result, 8); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read credential '%s': %s", credentialName, err))
 		return
 	}
@@ -117,4 +118,31 @@ func (d *CredentialDataSource) Read(ctx context.Context, req datasource.ReadRequ
 	// Note: We don't expose credential_values in data sources for security reasons
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+}
+
+func readCredentialDataSourceWithRetry(ctx context.Context, client *Client, endpoint string, result *map[string]interface{}, maxRetries int) error {
+	var err error
+	delay := 1 * time.Second
+	maxDelay := 10 * time.Second
+
+	for i := 0; i < maxRetries; i++ {
+		err = client.DoRequestWithResponse(ctx, "GET", endpoint, nil, result)
+		if err == nil {
+			return nil
+		}
+
+		if !IsNotFoundError(err) {
+			return err
+		}
+
+		if i < maxRetries-1 {
+			time.Sleep(delay)
+			delay *= 2
+			if delay > maxDelay {
+				delay = maxDelay
+			}
+		}
+	}
+
+	return err
 }

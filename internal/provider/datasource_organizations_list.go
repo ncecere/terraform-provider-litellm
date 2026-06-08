@@ -121,8 +121,8 @@ func (d *OrganizationsListDataSource) Read(ctx context.Context, req datasource.R
 		endpoint = fmt.Sprintf("/organization/list?org_alias=%s", data.OrgAlias.ValueString())
 	}
 
-	var result map[string]interface{}
-	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
+	var rawResult interface{}
+	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &rawResult); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to list organizations: %s", err))
 		return
 	}
@@ -132,10 +132,15 @@ func (d *OrganizationsListDataSource) Read(ctx context.Context, req datasource.R
 
 	// Parse the response
 	var orgsData []interface{}
-	if orgs, ok := result["organizations"].([]interface{}); ok {
-		orgsData = orgs
-	} else if dataArr, ok := result["data"].([]interface{}); ok {
-		orgsData = dataArr
+	switch result := rawResult.(type) {
+	case []interface{}:
+		orgsData = result
+	case map[string]interface{}:
+		if orgs, ok := result["organizations"].([]interface{}); ok {
+			orgsData = orgs
+		} else if dataArr, ok := result["data"].([]interface{}); ok {
+			orgsData = dataArr
+		}
 	}
 
 	data.Organizations = make([]OrganizationListItem, 0, len(orgsData))

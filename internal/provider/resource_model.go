@@ -278,7 +278,8 @@ func (r *ModelResource) Create(ctx context.Context, req resource.CreateRequest, 
 	data.ID = types.StringValue(modelID)
 
 	// Read back to ensure consistency
-	if err := r.readModelWithRetry(ctx, &data, 5); err != nil {
+	if err := r.readModelWithRetry(ctx, &data, 8); err != nil {
+		finalizeModelComputedDefaults(&data)
 		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Model created but failed to read back: %s", err))
 	}
 
@@ -293,7 +294,7 @@ func (r *ModelResource) Read(ctx context.Context, req resource.ReadRequest, resp
 		return
 	}
 
-	err := r.readModel(ctx, &data)
+	err := r.readModelWithRetry(ctx, &data, 8)
 	if err != nil {
 		if IsNotFoundError(err) {
 			resp.State.RemoveResource(ctx)
@@ -333,6 +334,7 @@ func (r *ModelResource) Update(ctx context.Context, req resource.UpdateRequest, 
 	}
 
 	if err := r.readModel(ctx, &data); err != nil {
+		finalizeModelComputedDefaults(&data)
 		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Model updated but failed to read back: %s", err))
 	}
 
@@ -729,6 +731,18 @@ func (r *ModelResource) readModel(ctx context.Context, data *ModelResourceModel)
 	}
 
 	return nil
+}
+
+func finalizeModelComputedDefaults(data *ModelResourceModel) {
+	if data.Mode.IsUnknown() {
+		data.Mode = types.StringNull()
+	}
+	if data.AccessGroups.IsUnknown() {
+		data.AccessGroups, _ = types.ListValue(types.StringType, []attr.Value{})
+	}
+	if data.AdditionalLiteLLMParams.IsUnknown() {
+		data.AdditionalLiteLLMParams, _ = types.MapValue(types.StringType, map[string]attr.Value{})
+	}
 }
 
 func (r *ModelResource) readModelWithRetry(ctx context.Context, data *ModelResourceModel, maxRetries int) error {

@@ -112,7 +112,7 @@ func (r *CredentialResource) Create(ctx context.Context, req resource.CreateRequ
 
 	// Read back for full state with retry (note: credential_values won't be returned for security).
 	// The retry handles eventual-consistency delays after creating a credential.
-	if err := r.readCredentialWithRetry(ctx, &data, 5); err != nil {
+	if err := r.readCredentialWithRetry(ctx, &data, 8); err != nil {
 		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Credential created but failed to read back: %s", err))
 	}
 
@@ -127,7 +127,7 @@ func (r *CredentialResource) Read(ctx context.Context, req resource.ReadRequest,
 		return
 	}
 
-	if err := r.readCredential(ctx, &data); err != nil {
+	if err := r.readCredentialWithRetry(ctx, &data, 8); err != nil {
 		if IsNotFoundError(err) {
 			resp.State.RemoveResource(ctx)
 			return
@@ -165,7 +165,7 @@ func (r *CredentialResource) Update(ctx context.Context, req resource.UpdateRequ
 	}
 
 	// Read back for full state
-	if err := r.readCredential(ctx, &data); err != nil {
+	if err := r.readCredentialWithRetry(ctx, &data, 8); err != nil {
 		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Credential updated but failed to read back: %s", err))
 	}
 

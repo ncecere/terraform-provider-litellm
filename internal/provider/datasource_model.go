@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
@@ -127,9 +128,15 @@ func (d *ModelDataSource) Read(ctx context.Context, req datasource.ReadRequest, 
 	modelID := data.ModelID.ValueString()
 	endpoint := fmt.Sprintf("/model/info?litellm_model_id=%s", modelID)
 
-	var result map[string]interface{}
-	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
+	var rawResult map[string]interface{}
+	if err := readModelDataSourceWithRetry(ctx, d.client, endpoint, &rawResult, 8); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read model '%s': %s", modelID, err))
+		return
+	}
+
+	result := parseModelInfoResult(rawResult)
+	if len(result) == 0 {
+		resp.Diagnostics.AddError("Not Found", fmt.Sprintf("Model not found: %s", modelID))
 		return
 	}
 
@@ -190,4 +197,40 @@ func (d *ModelDataSource) Read(ctx context.Context, req datasource.ReadRequest, 
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+}
+
+func parseModelInfoResult(rawResult map[string]interface{}) map[string]interface{} {
+	if dataArr, ok := rawResult["data"].([]interface{}); ok && len(dataArr) > 0 {
+		if firstItem, ok := dataArr[0].(map[string]interface{}); ok {
+			return firstItem
+		}
+	}
+	return rawResult
+}
+
+func readModelDataSourceWithRetry(ctx context.Context, client *Client, endpoint string, result *map[string]interface{}, maxRetries int) error {
+	var err error
+	delay := 1 * time.Second
+	maxDelay := 10 * time.Second
+
+	for i := 0; i < maxRetries; i++ {
+		err = client.DoRequestWithResponse(ctx, "GET", endpoint, nil, result)
+		if err == nil {
+			return nil
+		}
+
+		if !IsNotFoundError(err) {
+			return err
+		}
+
+		if i < maxRetries-1 {
+			time.Sleep(delay)
+			delay *= 2
+			if delay > maxDelay {
+				delay = maxDelay
+			}
+		}
+	}
+
+	return err
 }

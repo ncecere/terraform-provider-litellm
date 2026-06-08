@@ -174,13 +174,15 @@ func (d *TagsListDataSource) Read(ctx context.Context, req datasource.ReadReques
 
 		// Handle models list
 		if models, ok := result["models"].([]interface{}); ok {
-			modelsList := make([]attr.Value, len(models))
-			for i, m := range models {
+			modelsList := make([]attr.Value, 0, len(models))
+			for _, m := range models {
 				if str, ok := m.(string); ok {
-					modelsList[i] = types.StringValue(str)
+					modelsList = append(modelsList, types.StringValue(str))
 				}
 			}
 			tag.Models, _ = types.ListValue(types.StringType, modelsList)
+		} else {
+			tag.Models, _ = types.ListValue(types.StringType, []attr.Value{})
 		}
 
 		// Handle model_max_budget

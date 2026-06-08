@@ -129,18 +129,17 @@ func (d *TagDataSource) Read(ctx context.Context, req datasource.ReadRequest, re
 		"names": []string{tagName},
 	}
 
-	var results []map[string]interface{}
-	if err := d.client.DoRequestWithResponse(ctx, "POST", "/tag/info", infoReq, &results); err != nil {
+	var rawResult interface{}
+	if err := d.client.DoRequestWithResponse(ctx, "POST", "/tag/info", infoReq, &rawResult); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read tag: %s", err))
 		return
 	}
 
-	if len(results) == 0 {
+	result := parseTagInfoResult(rawResult, tagName)
+	if len(result) == 0 {
 		resp.Diagnostics.AddError("Not Found", fmt.Sprintf("Tag not found: %s", tagName))
 		return
 	}
-
-	result := results[0]
 
 	// Populate the data model
 	data.ID = types.StringValue(tagName)
@@ -189,4 +188,24 @@ func (d *TagDataSource) Read(ctx context.Context, req datasource.ReadRequest, re
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+}
+
+func parseTagInfoResult(rawResult interface{}, tagName string) map[string]interface{} {
+	switch typed := rawResult.(type) {
+	case []interface{}:
+		if len(typed) > 0 {
+			result, _ := typed[0].(map[string]interface{})
+			return result
+		}
+	case map[string]interface{}:
+		// LiteLLM v1.88 returns an object keyed by tag name:
+		// {"tag-name": { ...tag fields... }}
+		if tag, ok := typed[tagName].(map[string]interface{}); ok {
+			return tag
+		}
+		// Some versions may return the tag fields directly.
+		return typed
+	}
+
+	return nil
 }

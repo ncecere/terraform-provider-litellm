@@ -117,12 +117,13 @@ func (d *GuardrailsListDataSource) Read(ctx context.Context, req datasource.Read
 		return
 	}
 
-	var results []map[string]interface{}
-	if err := d.client.DoRequestWithResponse(ctx, "GET", "/guardrails/list", nil, &results); err != nil {
+	var rawResult interface{}
+	if err := d.client.DoRequestWithResponse(ctx, "GET", "/guardrails/list", nil, &rawResult); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to list guardrails: %s", err))
 		return
 	}
 
+	results := parseGuardrailsListResult(rawResult)
 	guardrails := make([]GuardrailListItemModel, 0, len(results))
 	for _, result := range results {
 		guardrail := GuardrailListItemModel{}
@@ -179,4 +180,24 @@ func (d *GuardrailsListDataSource) Read(ctx context.Context, req datasource.Read
 	data.Guardrails = guardrails
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+}
+
+func parseGuardrailsListResult(rawResult interface{}) []map[string]interface{} {
+	var rawGuardrails []interface{}
+	switch typed := rawResult.(type) {
+	case []interface{}:
+		rawGuardrails = typed
+	case map[string]interface{}:
+		if guardrails, ok := typed["guardrails"].([]interface{}); ok {
+			rawGuardrails = guardrails
+		}
+	}
+
+	results := make([]map[string]interface{}, 0, len(rawGuardrails))
+	for _, item := range rawGuardrails {
+		if guardrail, ok := item.(map[string]interface{}); ok {
+			results = append(results, guardrail)
+		}
+	}
+	return results
 }

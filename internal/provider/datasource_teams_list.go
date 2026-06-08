@@ -126,8 +126,8 @@ func (d *TeamsListDataSource) Read(ctx context.Context, req datasource.ReadReque
 		endpoint = fmt.Sprintf("/team/list?organization_id=%s", data.OrganizationID.ValueString())
 	}
 
-	var result map[string]interface{}
-	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
+	var rawResult interface{}
+	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &rawResult); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to list teams: %s", err))
 		return
 	}
@@ -137,10 +137,15 @@ func (d *TeamsListDataSource) Read(ctx context.Context, req datasource.ReadReque
 
 	// Parse the response
 	var teamsData []interface{}
-	if teams, ok := result["teams"].([]interface{}); ok {
-		teamsData = teams
-	} else if dataArr, ok := result["data"].([]interface{}); ok {
-		teamsData = dataArr
+	switch result := rawResult.(type) {
+	case []interface{}:
+		teamsData = result
+	case map[string]interface{}:
+		if teams, ok := result["teams"].([]interface{}); ok {
+			teamsData = teams
+		} else if dataArr, ok := result["data"].([]interface{}); ok {
+			teamsData = dataArr
+		}
 	}
 
 	data.Teams = make([]TeamListItem, 0, len(teamsData))

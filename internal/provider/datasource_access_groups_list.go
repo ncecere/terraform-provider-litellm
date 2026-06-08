@@ -88,23 +88,46 @@ func (d *AccessGroupsListDataSource) Read(ctx context.Context, req datasource.Re
 		return
 	}
 
-	// /access_group/list returns a map of access_group -> model_names
-	var result map[string][]string
-	if err := d.client.DoRequestWithResponse(ctx, "GET", "/access_group/list", nil, &result); err != nil {
+	var rawResult interface{}
+	if err := d.client.DoRequestWithResponse(ctx, "GET", "/access_group/list", nil, &rawResult); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to list access groups: %s", err))
 		return
 	}
 
-	accessGroups := make([]AccessGroupListItemModel, 0, len(result))
-	for accessGroup, modelNames := range result {
-		item := AccessGroupListItemModel{
-			AccessGroup: types.StringValue(accessGroup),
+	var rawGroups []interface{}
+	if result, ok := rawResult.(map[string]interface{}); ok {
+		if groups, ok := result["access_groups"].([]interface{}); ok {
+			rawGroups = groups
+		} else {
+			// Older shape: {"group-name": ["model-a", "model-b"]}
+			for accessGroup, models := range result {
+				rawGroups = append(rawGroups, map[string]interface{}{
+					"access_group": accessGroup,
+					"model_names":  models,
+				})
+			}
+		}
+	}
+
+	accessGroups := make([]AccessGroupListItemModel, 0, len(rawGroups))
+	for _, rawGroup := range rawGroups {
+		groupMap, ok := rawGroup.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		item := AccessGroupListItemModel{}
+		if accessGroup, ok := groupMap["access_group"].(string); ok {
+			item.AccessGroup = types.StringValue(accessGroup)
 		}
 
-		// Convert model names to list
-		modelsList := make([]attr.Value, len(modelNames))
-		for i, m := range modelNames {
-			modelsList[i] = types.StringValue(m)
+		var modelsList []attr.Value
+		if modelNames, ok := groupMap["model_names"].([]interface{}); ok {
+			modelsList = make([]attr.Value, 0, len(modelNames))
+			for _, m := range modelNames {
+				if str, ok := m.(string); ok {
+					modelsList = append(modelsList, types.StringValue(str))
+				}
+			}
 		}
 		item.ModelNames, _ = types.ListValue(types.StringType, modelsList)
 
