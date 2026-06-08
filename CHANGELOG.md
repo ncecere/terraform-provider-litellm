@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`litellm_key`**: Add `project_id` support to the resource and data source, allowing keys to be scoped to LiteLLM projects. ([#105](https://github.com/ncecere/terraform-provider-litellm/issues/105))
+- **`litellm_mcp_server`**: Add `skip_url_validation` to support MCP server URLs that are reachable by LiteLLM but not by the Terraform runner or validation path. ([#108](https://github.com/ncecere/terraform-provider-litellm/issues/108))
+- **`litellm_unified_access_group`**: Add a resource plus single/list data sources for LiteLLM UI/docs Access Groups using the current `/v1/access_group` API. Supports models, MCP servers, agents, assigned teams, and assigned keys. ([#89](https://github.com/ncecere/terraform-provider-litellm/issues/89))
+- Added dev E2E testing workspace and runner for validating provider behavior against a real LiteLLM dev deployment.
+
+### Changed
+- **`litellm_mcp_server`**: Change `extra_headers` from `map(string)` to `list(string)` to match the LiteLLM API contract. Includes schema versioning and state migration from the previous map form. ([#106](https://github.com/ncecere/terraform-provider-litellm/issues/106))
+
+### Fixed
+- **`litellm_team`**: Preserve configured nullable budget/member fields when the LiteLLM API omits them on read, while still allowing explicit `null` clears. ([#99](https://github.com/ncecere/terraform-provider-litellm/issues/99), [#104](https://github.com/ncecere/terraform-provider-litellm/pull/104))
+- **`litellm_key`**: Prevent API-injected default `budget_duration` from being written into state when it was not configured, avoiding inconsistent results after apply.
+- **`litellm_user`**: Prevent API-injected defaults (`user_role`, `budget_duration`, `max_budget`, `tpm_limit`, `rpm_limit`) from being written into state when they were not configured.
+- **`litellm_agent`**: Preserve omitted optional nested `agent_card` fields/blocks when the API injects defaults, avoiding inconsistent results after apply.
+- **`litellm_model`**: Add retry handling for eventual consistency during resource reads and data source reads, unwrap `{"data": [...]}` responses in the data source, and ensure computed attributes are known when create/update read-back is delayed.
+- **`litellm_fallback`**: Add retry handling for model-router propagation during fallback create/update/read operations.
+- **`litellm_prompt`**: Read prompts from the current `/prompts/{prompt_id}` route, unwrap `prompt_spec` responses, retry read-back for eventual consistency, and preserve null for API-injected defaults on optional-only fields.
+- **`litellm_credential`**: Add retry handling for resource and data source reads to tolerate intermittent API read-back after credential creation.
+- **List/data source response parsing**: Accept current LiteLLM response shapes for teams, organizations, access groups, guardrails, tags, prompts, models, and tag info responses.
+
+### Verified
+- Full Go test suite passes with `go test ./... -count=1`.
+- Dev E2E plan/apply/no-op-plan/destroy passes for team, key, user, budget, model, project-scoped key, access group, tag, MCP server, organization, guardrail, search tool, vector store, fallback, team member, team member add, team block, key block, agent, prompt, credential, and list data sources.
+
 ## [1.4.1] - 2026-04-13
 
 ### Fixed
