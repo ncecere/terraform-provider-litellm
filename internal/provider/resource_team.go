@@ -580,24 +580,40 @@ func (r *TeamResource) readTeam(ctx context.Context, data *TeamResourceModel) er
 	if orgID, ok := teamInfo["organization_id"].(string); ok && orgID != "" {
 		data.OrganizationID = types.StringValue(orgID)
 	}
-	if tpm, ok := teamInfo["tpm_limit"].(float64); ok {
-		data.TPMLimit = types.Int64Value(int64(tpm))
-	} else {
+	if v, exists := teamInfo["tpm_limit"]; exists {
+		if tpm, ok := v.(float64); ok {
+			data.TPMLimit = types.Int64Value(int64(tpm))
+		} else if v == nil {
+			data.TPMLimit = types.Int64Null()
+		}
+	} else if data.TPMLimit.IsUnknown() {
 		data.TPMLimit = types.Int64Null()
 	}
-	if rpm, ok := teamInfo["rpm_limit"].(float64); ok {
-		data.RPMLimit = types.Int64Value(int64(rpm))
-	} else {
+	if v, exists := teamInfo["rpm_limit"]; exists {
+		if rpm, ok := v.(float64); ok {
+			data.RPMLimit = types.Int64Value(int64(rpm))
+		} else if v == nil {
+			data.RPMLimit = types.Int64Null()
+		}
+	} else if data.RPMLimit.IsUnknown() {
 		data.RPMLimit = types.Int64Null()
 	}
-	if maxBudget, ok := teamInfo["max_budget"].(float64); ok {
-		data.MaxBudget = types.Float64Value(maxBudget)
-	} else {
+	if v, exists := teamInfo["max_budget"]; exists {
+		if maxBudget, ok := v.(float64); ok {
+			data.MaxBudget = types.Float64Value(maxBudget)
+		} else if v == nil {
+			data.MaxBudget = types.Float64Null()
+		}
+	} else if data.MaxBudget.IsUnknown() {
 		data.MaxBudget = types.Float64Null()
 	}
-	if budgetDuration, ok := teamInfo["budget_duration"].(string); ok && budgetDuration != "" {
-		data.BudgetDuration = types.StringValue(budgetDuration)
-	} else {
+	if v, exists := teamInfo["budget_duration"]; exists {
+		if budgetDuration, ok := v.(string); ok && budgetDuration != "" {
+			data.BudgetDuration = types.StringValue(budgetDuration)
+		} else if v == nil {
+			data.BudgetDuration = types.StringNull()
+		}
+	} else if data.BudgetDuration.IsUnknown() {
 		data.BudgetDuration = types.StringNull()
 	}
 	if blocked, ok := teamInfo["blocked"].(bool); ok {
@@ -609,19 +625,31 @@ func (r *TeamResource) readTeam(ctx context.Context, data *TeamResourceModel) er
 	if rpmLimitType, ok := teamInfo["rpm_limit_type"].(string); ok && rpmLimitType != "" {
 		data.RPMLimitType = types.StringValue(rpmLimitType)
 	}
-	if teamMemberBudget, ok := teamInfo["team_member_budget"].(float64); ok {
-		data.TeamMemberBudget = types.Float64Value(teamMemberBudget)
-	} else {
+	if v, exists := teamInfo["team_member_budget"]; exists {
+		if teamMemberBudget, ok := v.(float64); ok {
+			data.TeamMemberBudget = types.Float64Value(teamMemberBudget)
+		} else if v == nil {
+			data.TeamMemberBudget = types.Float64Null()
+		}
+	} else if data.TeamMemberBudget.IsUnknown() {
 		data.TeamMemberBudget = types.Float64Null()
 	}
-	if teamMemberRPMLimit, ok := teamInfo["team_member_rpm_limit"].(float64); ok {
-		data.TeamMemberRPMLimit = types.Int64Value(int64(teamMemberRPMLimit))
-	} else {
+	if v, exists := teamInfo["team_member_rpm_limit"]; exists {
+		if teamMemberRPMLimit, ok := v.(float64); ok {
+			data.TeamMemberRPMLimit = types.Int64Value(int64(teamMemberRPMLimit))
+		} else if v == nil {
+			data.TeamMemberRPMLimit = types.Int64Null()
+		}
+	} else if data.TeamMemberRPMLimit.IsUnknown() {
 		data.TeamMemberRPMLimit = types.Int64Null()
 	}
-	if teamMemberTPMLimit, ok := teamInfo["team_member_tpm_limit"].(float64); ok {
-		data.TeamMemberTPMLimit = types.Int64Value(int64(teamMemberTPMLimit))
-	} else {
+	if v, exists := teamInfo["team_member_tpm_limit"]; exists {
+		if teamMemberTPMLimit, ok := v.(float64); ok {
+			data.TeamMemberTPMLimit = types.Int64Value(int64(teamMemberTPMLimit))
+		} else if v == nil {
+			data.TeamMemberTPMLimit = types.Int64Null()
+		}
+	} else if data.TeamMemberTPMLimit.IsUnknown() {
 		data.TeamMemberTPMLimit = types.Int64Null()
 	}
 
