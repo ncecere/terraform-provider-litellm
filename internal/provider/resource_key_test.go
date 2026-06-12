@@ -162,6 +162,59 @@ func TestReadKeyDoesNotSetAPIInjectedBudgetDurationWhenUnconfigured(t *testing.T
 	}
 }
 
+func TestReadKeyDoesNotSetAPIInjectedDefaultUserIDWhenUnconfigured(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"key": "sk-default-user-key",
+			"info": map[string]interface{}{
+				"token":   "sk-default-user-key",
+				"user_id": "default_user_id",
+			},
+		})
+	}))
+	defer server.Close()
+
+	r := &KeyResource{
+		client: &Client{
+			APIBase:    server.URL,
+			APIKey:     "test-key",
+			HTTPClient: server.Client(),
+		},
+	}
+
+	data := KeyResourceModel{
+		ID:                       types.StringValue(hashKeyForID("sk-default-user-key")),
+		Key:                      types.StringValue("sk-default-user-key"),
+		UserID:                   types.StringNull(),
+		Models:                   types.ListNull(types.StringType),
+		AllowedRoutes:            types.ListNull(types.StringType),
+		AllowedPassthroughRoutes: types.ListNull(types.StringType),
+		AllowedCacheControls:     types.ListNull(types.StringType),
+		Guardrails:               types.ListNull(types.StringType),
+		Prompts:                  types.ListNull(types.StringType),
+		EnforcedParams:           types.ListNull(types.StringType),
+		Tags:                     types.ListNull(types.StringType),
+		Metadata:                 types.MapNull(types.StringType),
+		Aliases:                  types.MapNull(types.StringType),
+		Config:                   types.MapNull(types.StringType),
+		Permissions:              types.MapNull(types.StringType),
+		ModelMaxBudget:           types.MapNull(types.Float64Type),
+		ModelRPMLimit:            types.MapNull(types.Int64Type),
+		ModelTPMLimit:            types.MapNull(types.Int64Type),
+	}
+
+	if err := r.readKey(context.Background(), &data); err != nil {
+		t.Fatalf("readKey returned error: %v", err)
+	}
+
+	if !data.UserID.IsNull() {
+		t.Fatalf("user_id should remain null when API returns default_user_id and user_id is unconfigured, got %q", data.UserID.ValueString())
+	}
+}
+
 func TestReadKeyReadsProjectID(t *testing.T) {
 	t.Parallel()
 

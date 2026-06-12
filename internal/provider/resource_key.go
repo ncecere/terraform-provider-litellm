@@ -778,7 +778,13 @@ func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error
 		data.TeamID = types.StringValue(teamID)
 	}
 	if userID, ok := info["user_id"].(string); ok && userID != "" {
-		data.UserID = types.StringValue(userID)
+		// LiteLLM may return its server-side default user ID even when the key was
+		// created/managed without a configured user_id. Since user_id is Optional
+		// (not Computed), adopting this API-injected default into state causes
+		// "was null, but now cty.StringVal(\"default_user_id\")" after apply.
+		if userID != "default_user_id" || !data.UserID.IsNull() {
+			data.UserID = types.StringValue(userID)
+		}
 	}
 	// "key" may be at top level or inside "info" (as "token" or "key").
 	// Only update data.Key when it is currently unknown or null (i.e. the key
