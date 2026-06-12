@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **`litellm_key`**: Preserve null `user_id` state when LiteLLM returns the API-injected `default_user_id`, avoiding inconsistent results after apply. ([#109](https://github.com/ncecere/terraform-provider-litellm/issues/109))
+- **`litellm_team_member`**: Treat LiteLLM's `team_member_already_in_team` response as idempotent success during create so Terraform can adopt existing memberships after lost state. ([#110](https://github.com/ncecere/terraform-provider-litellm/pull/110))
+
+### Verified
+- Full Go test suite passes with `go test ./... -count=1`.
+- Dev E2E import/apply/no-op/destroy passes for imported keys with API-injected `default_user_id`.
+- Dev E2E lost-state re-apply/no-op/destroy passes for existing team memberships.
+
 ## [2.0.0] - 2026-06-08
 
 ### Added
