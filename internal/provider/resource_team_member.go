@@ -118,6 +118,12 @@ func (r *TeamMemberResource) Create(ctx context.Context, req resource.CreateRequ
 	}
 
 	if err := r.client.DoRequestWithResponse(ctx, "POST", "/team/member_add", memberReq, nil); err != nil {
+		// If user is already in team, treat as success (idempotent create).
+		if contains(err.Error(), "status 400") && contains(err.Error(), "team_member_already_in_team") {
+			data.ID = types.StringValue(fmt.Sprintf("%s:%s", data.TeamID.ValueString(), data.UserID.ValueString()))
+			resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+			return
+		}
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to add team member: %s", err))
 		return
 	}
