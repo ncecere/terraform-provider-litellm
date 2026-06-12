@@ -118,8 +118,10 @@ func (r *TeamMemberResource) Create(ctx context.Context, req resource.CreateRequ
 	}
 
 	if err := r.client.DoRequestWithResponse(ctx, "POST", "/team/member_add", memberReq, nil); err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to add team member: %s", err))
-		return
+		if !isTeamMemberAlreadyInTeamError(err) {
+			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to add team member: %s", err))
+			return
+		}
 	}
 
 	data.ID = types.StringValue(fmt.Sprintf("%s:%s", data.TeamID.ValueString(), data.UserID.ValueString()))
@@ -218,4 +220,12 @@ func applyTeamMemberNullableClears(updateReq map[string]interface{}, state, plan
 	if !state.MaxBudgetInTeam.IsNull() && plan.MaxBudgetInTeam.IsNull() {
 		updateReq["max_budget_in_team"] = nil
 	}
+}
+
+func isTeamMemberAlreadyInTeamError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	return contains(errStr, "status 400") && contains(errStr, "team_member_already_in_team")
 }

@@ -2,6 +2,7 @@ package provider
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -12,6 +13,25 @@ import (
 // max_budget_in_team in plan (was set in state) results in explicit JSON null
 // on the wire — required because the LiteLLM API ignores omitted fields under
 // Pydantic exclude_unset=True.
+func TestIsTeamMemberAlreadyInTeamError(t *testing.T) {
+	t.Parallel()
+
+	alreadyErr := errors.New(`API request failed with status 400: {"type":"team_member_already_in_team","message":"User is already in team"}`)
+	if !isTeamMemberAlreadyInTeamError(alreadyErr) {
+		t.Fatal("expected team_member_already_in_team status 400 error to be idempotent")
+	}
+
+	wrongStatus := errors.New(`API request failed with status 500: {"type":"team_member_already_in_team"}`)
+	if isTeamMemberAlreadyInTeamError(wrongStatus) {
+		t.Fatal("status 500 should not be treated as idempotent already-in-team")
+	}
+
+	wrongType := errors.New(`API request failed with status 400: {"type":"other_error"}`)
+	if isTeamMemberAlreadyInTeamError(wrongType) {
+		t.Fatal("other status 400 errors should not be treated as idempotent already-in-team")
+	}
+}
+
 func TestApplyTeamMemberNullableClears_TransitionToNull(t *testing.T) {
 	t.Parallel()
 
