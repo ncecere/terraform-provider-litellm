@@ -89,3 +89,42 @@ func TestApplyTeamMemberNullableClears_NoTransition_NoOp(t *testing.T) {
 		t.Errorf("helper overwrote stable max_budget_in_team; got %v, want 75", v)
 	}
 }
+
+// TestFindMembershipBudgetID covers resolving a member's budget object id from a
+// /team/info response, used to apply budget_duration via /budget/update.
+func TestFindMembershipBudgetID(t *testing.T) {
+	t.Parallel()
+
+	// Nested litellm_budget_table.budget_id is preferred.
+	teamInfo := map[string]interface{}{
+		"team_memberships": []interface{}{
+			map[string]interface{}{
+				"user_id": "alice",
+				"litellm_budget_table": map[string]interface{}{
+					"budget_id":       "budget-alice",
+					"budget_duration": nil,
+				},
+			},
+			map[string]interface{}{
+				"user_id":   "bob",
+				"budget_id": "budget-bob",
+			},
+		},
+	}
+
+	if id, ok := findMembershipBudgetID(teamInfo, "alice"); !ok || id != "budget-alice" {
+		t.Errorf("alice: got (%q, %v), want (\"budget-alice\", true)", id, ok)
+	}
+	// Flat budget_id fallback when no nested table.
+	if id, ok := findMembershipBudgetID(teamInfo, "bob"); !ok || id != "budget-bob" {
+		t.Errorf("bob: got (%q, %v), want (\"budget-bob\", true)", id, ok)
+	}
+	// Unknown user → not found.
+	if id, ok := findMembershipBudgetID(teamInfo, "carol"); ok || id != "" {
+		t.Errorf("carol: got (%q, %v), want (\"\", false)", id, ok)
+	}
+	// Missing team_memberships → not found, no panic.
+	if id, ok := findMembershipBudgetID(map[string]interface{}{}, "alice"); ok || id != "" {
+		t.Errorf("empty teamInfo: got (%q, %v), want (\"\", false)", id, ok)
+	}
+}

@@ -27,29 +27,30 @@ type TeamResource struct {
 }
 
 type TeamResourceModel struct {
-	ID                    types.String  `tfsdk:"id"`
-	TeamAlias             types.String  `tfsdk:"team_alias"`
-	OrganizationID        types.String  `tfsdk:"organization_id"`
-	Metadata              types.Map     `tfsdk:"metadata"`
-	TPMLimit              types.Int64   `tfsdk:"tpm_limit"`
-	RPMLimit              types.Int64   `tfsdk:"rpm_limit"`
-	TPMLimitType          types.String  `tfsdk:"tpm_limit_type"`
-	RPMLimitType          types.String  `tfsdk:"rpm_limit_type"`
-	MaxBudget             types.Float64 `tfsdk:"max_budget"`
-	BudgetDuration        types.String  `tfsdk:"budget_duration"`
-	Models                types.List    `tfsdk:"models"`
-	ModelAliases          types.Map     `tfsdk:"model_aliases"`
-	ModelRPMLimit         types.Map     `tfsdk:"model_rpm_limit"`
-	ModelTPMLimit         types.Map     `tfsdk:"model_tpm_limit"`
-	Tags                  types.List    `tfsdk:"tags"`
-	Guardrails            types.List    `tfsdk:"guardrails"`
-	Prompts               types.List    `tfsdk:"prompts"`
-	Blocked               types.Bool    `tfsdk:"blocked"`
-	TeamMemberPermissions types.List    `tfsdk:"team_member_permissions"`
-	TeamMemberBudget      types.Float64 `tfsdk:"team_member_budget"`
-	TeamMemberRPMLimit    types.Int64   `tfsdk:"team_member_rpm_limit"`
-	TeamMemberTPMLimit    types.Int64   `tfsdk:"team_member_tpm_limit"`
-	RouterSettings        types.Object  `tfsdk:"router_settings"`
+	ID                       types.String  `tfsdk:"id"`
+	TeamAlias                types.String  `tfsdk:"team_alias"`
+	OrganizationID           types.String  `tfsdk:"organization_id"`
+	Metadata                 types.Map     `tfsdk:"metadata"`
+	TPMLimit                 types.Int64   `tfsdk:"tpm_limit"`
+	RPMLimit                 types.Int64   `tfsdk:"rpm_limit"`
+	TPMLimitType             types.String  `tfsdk:"tpm_limit_type"`
+	RPMLimitType             types.String  `tfsdk:"rpm_limit_type"`
+	MaxBudget                types.Float64 `tfsdk:"max_budget"`
+	BudgetDuration           types.String  `tfsdk:"budget_duration"`
+	Models                   types.List    `tfsdk:"models"`
+	ModelAliases             types.Map     `tfsdk:"model_aliases"`
+	ModelRPMLimit            types.Map     `tfsdk:"model_rpm_limit"`
+	ModelTPMLimit            types.Map     `tfsdk:"model_tpm_limit"`
+	Tags                     types.List    `tfsdk:"tags"`
+	Guardrails               types.List    `tfsdk:"guardrails"`
+	Prompts                  types.List    `tfsdk:"prompts"`
+	Blocked                  types.Bool    `tfsdk:"blocked"`
+	TeamMemberPermissions    types.List    `tfsdk:"team_member_permissions"`
+	TeamMemberBudget         types.Float64 `tfsdk:"team_member_budget"`
+	TeamMemberBudgetDuration types.String  `tfsdk:"team_member_budget_duration"`
+	TeamMemberRPMLimit       types.Int64   `tfsdk:"team_member_rpm_limit"`
+	TeamMemberTPMLimit       types.Int64   `tfsdk:"team_member_tpm_limit"`
+	RouterSettings           types.Object  `tfsdk:"router_settings"`
 }
 
 type RouterSettingsModel struct {
@@ -181,6 +182,13 @@ func (r *TeamResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 			"team_member_budget": schema.Float64Attribute{
 				Description: "Default budget for team members.",
 				Optional:    true,
+			},
+			"team_member_budget_duration": schema.StringAttribute{
+				Description: "Default budget reset interval for team members (e.g. \"30d\", \"24h\"). " +
+					"Applied to new memberships created after it is set; it does not retroactively " +
+					"update existing members' budget reset intervals (set budget_duration on the " +
+					"litellm_team_member resource for those).",
+				Optional: true,
 			},
 			"team_member_rpm_limit": schema.Int64Attribute{
 				Description: "Default RPM limit for team members.",
@@ -399,6 +407,9 @@ func (r *TeamResource) buildTeamRequest(ctx context.Context, data *TeamResourceM
 	if !data.TeamMemberBudget.IsNull() && !data.TeamMemberBudget.IsUnknown() {
 		teamReq["team_member_budget"] = data.TeamMemberBudget.ValueFloat64()
 	}
+	if !data.TeamMemberBudgetDuration.IsNull() && !data.TeamMemberBudgetDuration.IsUnknown() && data.TeamMemberBudgetDuration.ValueString() != "" {
+		teamReq["team_member_budget_duration"] = data.TeamMemberBudgetDuration.ValueString()
+	}
 	if !data.TeamMemberRPMLimit.IsNull() && !data.TeamMemberRPMLimit.IsUnknown() {
 		teamReq["team_member_rpm_limit"] = data.TeamMemberRPMLimit.ValueInt64()
 	}
@@ -514,6 +525,9 @@ func applyTeamNullableClears(teamReq map[string]interface{}, state, plan *TeamRe
 	}
 	if !state.TeamMemberBudget.IsNull() && plan.TeamMemberBudget.IsNull() {
 		teamReq["team_member_budget"] = nil
+	}
+	if !state.TeamMemberBudgetDuration.IsNull() && plan.TeamMemberBudgetDuration.IsNull() {
+		teamReq["team_member_budget_duration"] = nil
 	}
 	if !state.TeamMemberRPMLimit.IsNull() && plan.TeamMemberRPMLimit.IsNull() {
 		teamReq["team_member_rpm_limit"] = nil
@@ -633,6 +647,15 @@ func (r *TeamResource) readTeam(ctx context.Context, data *TeamResourceModel) er
 		}
 	} else if data.TeamMemberBudget.IsUnknown() {
 		data.TeamMemberBudget = types.Float64Null()
+	}
+	if v, exists := teamInfo["team_member_budget_duration"]; exists {
+		if teamMemberBudgetDuration, ok := v.(string); ok && teamMemberBudgetDuration != "" {
+			data.TeamMemberBudgetDuration = types.StringValue(teamMemberBudgetDuration)
+		} else if v == nil {
+			data.TeamMemberBudgetDuration = types.StringNull()
+		}
+	} else if data.TeamMemberBudgetDuration.IsUnknown() {
+		data.TeamMemberBudgetDuration = types.StringNull()
 	}
 	if v, exists := teamInfo["team_member_rpm_limit"]; exists {
 		if teamMemberRPMLimit, ok := v.(float64); ok {

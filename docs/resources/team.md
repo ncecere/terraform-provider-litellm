@@ -32,9 +32,10 @@ resource "litellm_team" "full" {
   prompts    = []
 
   team_member_permissions = []
-  team_member_budget      = 50.0
-  team_member_rpm_limit   = 100
-  team_member_tpm_limit   = 10000
+  team_member_budget          = 50.0
+  team_member_budget_duration = "30d"
+  team_member_rpm_limit       = 100
+  team_member_tpm_limit       = 10000
 
   metadata = {
     "environment" = "testing"
@@ -102,6 +103,7 @@ The following arguments are supported:
 * `prompts` - (Optional) List of prompt identifiers associated with the team.
 * `team_member_permissions` - (Optional) List of permissions granted to team members.
 * `team_member_budget` - (Optional) Default budget for each team member.
+* `team_member_budget_duration` - (Optional) Default budget reset interval for each team member (e.g. `30d`, `24h`). Applied to memberships created after it is set; it does not retroactively update existing members' reset intervals — set `budget_duration` on the `litellm_team_member` resource for those.
 * `team_member_rpm_limit` - (Optional) Default requests per minute limit for each team member.
 * `team_member_tpm_limit` - (Optional) Default tokens per minute limit for each team member.
 * `metadata` - (Optional) A map of metadata pairs for the team. Values are strings; use `jsonencode()` for complex values (objects, arrays) — they will be sent as native JSON to the API.

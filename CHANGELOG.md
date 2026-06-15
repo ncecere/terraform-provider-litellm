@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`litellm_team_member`**: New optional `budget_duration` attribute. LiteLLM's `/team/member_add` and `/team/member_update` endpoints accept only `max_budget_in_team` and no reset interval, so a member's in-team budget accrues for the lifetime of the membership and never resets. When `budget_duration` is set, the provider resolves the member's budget object via `/team/info` and applies the interval through `/budget/update`.
+- **`litellm_team`**: New optional `team_member_budget_duration` attribute, forwarded to `/team/new` and `/team/update`. Sets the default budget reset interval for memberships created after it is set (does not retroactively update existing members — use `litellm_team_member.budget_duration` for those).
+
 ## [2.0.1] - 2026-06-12
 
 ### Fixed

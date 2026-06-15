@@ -33,6 +33,7 @@ type TeamMemberResourceModel struct {
 	UserEmail       types.String  `tfsdk:"user_email"`
 	Role            types.String  `tfsdk:"role"`
 	MaxBudgetInTeam types.Float64 `tfsdk:"max_budget_in_team"`
+	BudgetDuration  types.String  `tfsdk:"budget_duration"`
 }
 
 func (r *TeamMemberResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -72,6 +73,14 @@ func (r *TeamMemberResource) Schema(ctx context.Context, req resource.SchemaRequ
 			"max_budget_in_team": schema.Float64Attribute{
 				Description: "Maximum budget for this member in the team.",
 				Optional:    true,
+			},
+			"budget_duration": schema.StringAttribute{
+				Description: "Budget reset interval for this member's in-team budget (e.g. \"30d\", \"24h\"). " +
+					"The LiteLLM /team/member_add and /team/member_update endpoints do not accept a duration, " +
+					"so when set, the provider resolves the member's budget object via /team/info and applies " +
+					"the duration through /budget/update. Without this, max_budget_in_team accrues for the " +
+					"lifetime of the membership and never resets.",
+				Optional: true,
 			},
 		},
 	}
@@ -122,6 +131,11 @@ func (r *TeamMemberResource) Create(ctx context.Context, req resource.CreateRequ
 			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to add team member: %s", err))
 			return
 		}
+	}
+
+	if err := r.applyMemberBudgetDuration(ctx, &data); err != nil {
+		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to apply member budget_duration: %s", err))
+		return
 	}
 
 	data.ID = types.StringValue(fmt.Sprintf("%s:%s", data.TeamID.ValueString(), data.UserID.ValueString()))
@@ -175,6 +189,11 @@ func (r *TeamMemberResource) Update(ctx context.Context, req resource.UpdateRequ
 		return
 	}
 
+	if err := r.applyMemberBudgetDuration(ctx, &data); err != nil {
+		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to apply member budget_duration: %s", err))
+		return
+	}
+
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
@@ -220,6 +239,75 @@ func applyTeamMemberNullableClears(updateReq map[string]interface{}, state, plan
 	if !state.MaxBudgetInTeam.IsNull() && plan.MaxBudgetInTeam.IsNull() {
 		updateReq["max_budget_in_team"] = nil
 	}
+}
+
+// applyMemberBudgetDuration applies the configured budget_duration to the member's
+// in-team budget object. The LiteLLM /team/member_add and /team/member_update endpoints
+// accept only max_budget_in_team (no duration), so the per-member budget object LiteLLM
+// creates has a null reset interval and accrues for the lifetime of the membership. To
+// set a real reset interval we resolve the member's budget_id via /team/info and patch it
+// through /budget/update. No-op when budget_duration is unset.
+func (r *TeamMemberResource) applyMemberBudgetDuration(ctx context.Context, data *TeamMemberResourceModel) error {
+	if data.BudgetDuration.IsNull() || data.BudgetDuration.IsUnknown() || data.BudgetDuration.ValueString() == "" {
+		return nil
+	}
+
+	teamID := data.TeamID.ValueString()
+	userID := data.UserID.ValueString()
+
+	var teamInfo map[string]interface{}
+	if err := r.client.DoRequestWithResponse(ctx, "GET", fmt.Sprintf("/team/info?team_id=%s", teamID), nil, &teamInfo); err != nil {
+		return fmt.Errorf("reading team info to resolve member budget_id: %w", err)
+	}
+
+	budgetID, ok := findMembershipBudgetID(teamInfo, userID)
+	if !ok {
+		return fmt.Errorf("could not resolve budget_id for user %q in team %q from /team/info; "+
+			"set max_budget_in_team so LiteLLM creates a member budget object before applying budget_duration", userID, teamID)
+	}
+
+	budgetReq := map[string]interface{}{
+		"budget_id":       budgetID,
+		"budget_duration": data.BudgetDuration.ValueString(),
+	}
+	if !data.MaxBudgetInTeam.IsNull() && !data.MaxBudgetInTeam.IsUnknown() {
+		budgetReq["max_budget"] = data.MaxBudgetInTeam.ValueFloat64()
+	}
+
+	if err := r.client.DoRequestWithResponse(ctx, "POST", "/budget/update", budgetReq, nil); err != nil {
+		return fmt.Errorf("updating member budget %q duration: %w", budgetID, err)
+	}
+
+	return nil
+}
+
+// findMembershipBudgetID locates the budget object id for userID in a /team/info
+// response. LiteLLM nests per-member budgets under the top-level "team_memberships"
+// array, each entry carrying either a "litellm_budget_table" object (with "budget_id")
+// or a flat "budget_id".
+func findMembershipBudgetID(teamInfo map[string]interface{}, userID string) (string, bool) {
+	memberships, ok := teamInfo["team_memberships"].([]interface{})
+	if !ok {
+		return "", false
+	}
+	for _, m := range memberships {
+		membership, ok := m.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if uid, ok := membership["user_id"].(string); !ok || uid != userID {
+			continue
+		}
+		if table, ok := membership["litellm_budget_table"].(map[string]interface{}); ok {
+			if bid, ok := table["budget_id"].(string); ok && bid != "" {
+				return bid, true
+			}
+		}
+		if bid, ok := membership["budget_id"].(string); ok && bid != "" {
+			return bid, true
+		}
+	}
+	return "", false
 }
 
 func isTeamMemberAlreadyInTeamError(err error) bool {
