@@ -3,7 +3,9 @@ package provider
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -260,7 +262,7 @@ func (r *TeamMemberResource) applyMemberBudgetDuration(ctx context.Context, data
 		return fmt.Errorf("reading team info to resolve member budget_id: %w", err)
 	}
 
-	budgetID, ok := findMembershipBudgetID(teamInfo, userID)
+	budgetID, resetAt, ok := findMembershipBudget(teamInfo, userID)
 	if !ok {
 		return fmt.Errorf("could not resolve budget_id for user %q in team %q from /team/info; "+
 			"set max_budget_in_team so LiteLLM creates a member budget object before applying budget_duration", userID, teamID)
@@ -274,6 +276,20 @@ func (r *TeamMemberResource) applyMemberBudgetDuration(ctx context.Context, data
 		budgetReq["max_budget"] = data.MaxBudgetInTeam.ValueFloat64()
 	}
 
+	// /budget/update is a patch endpoint and (unlike /budget/new) does NOT auto-compute
+	// budget_reset_at from budget_duration. LiteLLM's reset job selects budgets with
+	// budget_reset_at <= now, so a NULL reset_at is never picked up and the budget never
+	// resets. Seed it here, but only when currently empty — the reset job recomputes the
+	// next budget_reset_at after each reset, so overwriting on every apply would perpetually
+	// defer the reset.
+	if resetAt == "" {
+		secs, err := budgetDurationToSeconds(data.BudgetDuration.ValueString())
+		if err != nil {
+			return fmt.Errorf("parsing budget_duration %q: %w", data.BudgetDuration.ValueString(), err)
+		}
+		budgetReq["budget_reset_at"] = time.Now().UTC().Add(time.Duration(secs) * time.Second).Format(time.RFC3339)
+	}
+
 	if err := r.client.DoRequestWithResponse(ctx, "POST", "/budget/update", budgetReq, nil); err != nil {
 		return fmt.Errorf("updating member budget %q duration: %w", budgetID, err)
 	}
@@ -281,33 +297,74 @@ func (r *TeamMemberResource) applyMemberBudgetDuration(ctx context.Context, data
 	return nil
 }
 
-// findMembershipBudgetID locates the budget object id for userID in a /team/info
-// response. LiteLLM nests per-member budgets under the top-level "team_memberships"
-// array, each entry carrying either a "litellm_budget_table" object (with "budget_id")
-// or a flat "budget_id".
-func findMembershipBudgetID(teamInfo map[string]interface{}, userID string) (string, bool) {
-	memberships, ok := teamInfo["team_memberships"].([]interface{})
-	if !ok {
-		return "", false
+// findMembershipBudget locates the budget object id and current reset timestamp for
+// userID in a /team/info response. LiteLLM nests per-member budgets under the top-level
+// "team_memberships" array, each entry carrying either a "litellm_budget_table" object
+// (with "budget_id" / "budget_reset_at") or a flat "budget_id". resetAt is "" when the
+// budget has no reset timestamp set yet.
+func findMembershipBudget(teamInfo map[string]interface{}, userID string) (budgetID string, resetAt string, ok bool) {
+	memberships, mok := teamInfo["team_memberships"].([]interface{})
+	if !mok {
+		return "", "", false
 	}
 	for _, m := range memberships {
-		membership, ok := m.(map[string]interface{})
-		if !ok {
+		membership, mok := m.(map[string]interface{})
+		if !mok {
 			continue
 		}
-		if uid, ok := membership["user_id"].(string); !ok || uid != userID {
+		if uid, uok := membership["user_id"].(string); !uok || uid != userID {
 			continue
 		}
-		if table, ok := membership["litellm_budget_table"].(map[string]interface{}); ok {
-			if bid, ok := table["budget_id"].(string); ok && bid != "" {
-				return bid, true
+		if table, tok := membership["litellm_budget_table"].(map[string]interface{}); tok {
+			bid, _ := table["budget_id"].(string)
+			if bid != "" {
+				rat, _ := table["budget_reset_at"].(string)
+				return bid, rat, true
 			}
 		}
-		if bid, ok := membership["budget_id"].(string); ok && bid != "" {
-			return bid, true
+		if bid, bok := membership["budget_id"].(string); bok && bid != "" {
+			rat, _ := membership["budget_reset_at"].(string)
+			return bid, rat, true
 		}
 	}
-	return "", false
+	return "", "", false
+}
+
+// budgetDurationToSeconds parses LiteLLM budget_duration strings ("30s", "30m", "30h",
+// "30d", "30w", "30mo") into seconds, mirroring litellm's duration_in_seconds. Weeks are
+// 7 days and months 30 days — matching litellm's own approximation. "m" is minutes; "mo"
+// is months.
+func budgetDurationToSeconds(duration string) (int64, error) {
+	d := strings.TrimSpace(duration)
+	if d == "" {
+		return 0, fmt.Errorf("empty duration")
+	}
+	var unit, numStr string
+	if strings.HasSuffix(d, "mo") {
+		unit, numStr = "mo", strings.TrimSuffix(d, "mo")
+	} else {
+		unit, numStr = d[len(d)-1:], d[:len(d)-1]
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(numStr), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid duration value in %q: %w", duration, err)
+	}
+	switch unit {
+	case "s":
+		return n, nil
+	case "m":
+		return n * 60, nil
+	case "h":
+		return n * 3600, nil
+	case "d":
+		return n * 86400, nil
+	case "w":
+		return n * 7 * 86400, nil
+	case "mo":
+		return n * 30 * 86400, nil
+	default:
+		return 0, fmt.Errorf("unsupported duration unit in %q (want s/m/h/d/w/mo)", duration)
+	}
 }
 
 func isTeamMemberAlreadyInTeamError(err error) bool {
