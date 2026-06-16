@@ -3,12 +3,9 @@ package provider
 import (
 	"context"
 	"fmt"
-	"math"
 	"net/url"
 	"regexp"
-	"strconv"
 	"strings"
-	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -80,17 +77,18 @@ func (r *TeamMemberResource) Schema(ctx context.Context, req resource.SchemaRequ
 				Optional:    true,
 			},
 			"budget_duration": schema.StringAttribute{
-				Description: "Budget reset interval for this member's in-team budget (e.g. \"30d\", \"24h\"). " +
-					"The LiteLLM /team/member_add and /team/member_update endpoints do not accept a duration, " +
-					"so when set, the provider resolves the member's budget object via /team/info and applies " +
-					"the duration through /budget/update. Without this, max_budget_in_team accrues for the " +
-					"lifetime of the membership and never resets.",
+				Description: "Reset interval for this member's in-team budget (e.g. \"30d\", \"24h\"). " +
+					"The /team/member_add and /team/member_update endpoints accept only max_budget_in_team " +
+					"(no duration), so the provider patches the duration onto the member's budget object via " +
+					"/budget/update; LiteLLM's reset job then resets the budget on that interval. Requires " +
+					"max_budget_in_team to be set (that is the budget object the duration applies to).",
 				Optional: true,
 				Validators: []validator.String{
 					stringvalidator.RegexMatches(
 						regexp.MustCompile(`^[1-9][0-9]*(s|m|h|d|w|mo)$`),
 						`must be a positive duration like "30d", "24h", "60m" (units: s, m, h, d, w, mo)`,
 					),
+					stringvalidator.AlsoRequires(path.MatchRoot("max_budget_in_team")),
 				},
 			},
 		},
@@ -252,15 +250,17 @@ func applyTeamMemberNullableClears(updateReq map[string]interface{}, state, plan
 	}
 }
 
-// applyMemberBudgetDuration applies the configured budget_duration to the member's
-// in-team budget object. The LiteLLM /team/member_add and /team/member_update endpoints
-// accept only max_budget_in_team (no duration), so the per-member budget object LiteLLM
-// creates has a null reset interval and accrues for the lifetime of the membership. To
-// set a real reset interval we resolve the member's budget_id via /team/info and patch it
-// through /budget/update. No-op when budget_duration is unset.
+// applyMemberBudgetDuration applies (or clears) the member's in-team budget reset
+// interval. /team/member_add and /team/member_update accept only max_budget_in_team and
+// no duration, so the duration is patched onto the member's auto-created budget object
+// via /budget/update. We do NOT set budget_reset_at: LiteLLM's reset job selects
+// budget-table rows where (budget_reset_at IS NULL AND budget_duration IS NOT NULL) OR
+// (budget_reset_at < now), so it resets a duration-only budget and computes the next
+// reset itself. Idempotent: skips the call when the live duration already matches.
 func (r *TeamMemberResource) applyMemberBudgetDuration(ctx context.Context, data *TeamMemberResourceModel) error {
-	if data.BudgetDuration.IsNull() || data.BudgetDuration.IsUnknown() || data.BudgetDuration.ValueString() == "" {
-		return nil
+	desired := ""
+	if !data.BudgetDuration.IsNull() && !data.BudgetDuration.IsUnknown() {
+		desired = data.BudgetDuration.ValueString()
 	}
 
 	teamID := data.TeamID.ValueString()
@@ -271,57 +271,48 @@ func (r *TeamMemberResource) applyMemberBudgetDuration(ctx context.Context, data
 		return fmt.Errorf("reading team info to resolve member budget_id: %w", err)
 	}
 
-	budgetID, resetAt, curDuration, ok := findMembershipBudget(teamInfo, userID)
+	budgetID, curDuration, ok := findMembershipBudget(teamInfo, userID)
 	if !ok {
+		if desired == "" {
+			// No member budget object and none required — nothing to do.
+			return nil
+		}
 		return fmt.Errorf("could not resolve budget_id for user %q in team %q from /team/info; "+
 			"set max_budget_in_team so LiteLLM creates a member budget object before applying budget_duration", userID, teamID)
 	}
 
-	// Nothing to patch if the duration already matches and a reset timestamp is already
-	// set: the reset job maintains budget_reset_at from there, and max_budget_in_team is
-	// applied by /team/member_update on the same Create/Update. Saves a /budget/update call.
-	if curDuration == data.BudgetDuration.ValueString() && resetAt != "" {
+	// Already in the desired state (covers both "matches" and "both unset").
+	if curDuration == desired {
 		return nil
 	}
 
-	budgetReq := map[string]interface{}{
-		"budget_id":       budgetID,
-		"budget_duration": data.BudgetDuration.ValueString(),
+	budgetReq := map[string]interface{}{"budget_id": budgetID}
+	if desired == "" {
+		budgetReq["budget_duration"] = nil // clear the reset interval
+	} else {
+		budgetReq["budget_duration"] = desired
 	}
 	if !data.MaxBudgetInTeam.IsNull() && !data.MaxBudgetInTeam.IsUnknown() {
 		budgetReq["max_budget"] = data.MaxBudgetInTeam.ValueFloat64()
 	}
 
-	// /budget/update is a patch endpoint and (unlike /budget/new) does NOT auto-compute
-	// budget_reset_at from budget_duration. LiteLLM's reset job selects budgets with
-	// budget_reset_at <= now, so a NULL reset_at is never picked up and the budget never
-	// resets. Seed it here, but only when currently empty — the reset job recomputes the
-	// next budget_reset_at after each reset, so overwriting on every apply would perpetually
-	// defer the reset.
-	if resetAt == "" {
-		secs, err := budgetDurationToSeconds(data.BudgetDuration.ValueString())
-		if err != nil {
-			return fmt.Errorf("parsing budget_duration %q: %w", data.BudgetDuration.ValueString(), err)
-		}
-		budgetReq["budget_reset_at"] = time.Now().UTC().Add(time.Duration(secs) * time.Second).Format(time.RFC3339)
-	}
-
 	if err := r.client.DoRequestWithResponse(ctx, "POST", "/budget/update", budgetReq, nil); err != nil {
-		return fmt.Errorf("updating member budget %q duration: %w", budgetID, err)
+		return fmt.Errorf("updating member budget %q: %w", budgetID, err)
 	}
 
 	return nil
 }
 
-// findMembershipBudget locates the budget object id and current reset timestamp for
+// findMembershipBudget locates the budget object id and current budget_duration for
 // userID in a /team/info response. LiteLLM nests per-member budgets under the top-level
 // "team_memberships" array, each entry carrying either a "litellm_budget_table" object
-// (with "budget_id" / "budget_reset_at") or a flat "budget_id". resetAt is "" when the
-// budget has no reset timestamp set yet.
-func findMembershipBudget(teamInfo map[string]interface{}, userID string) (budgetID string, resetAt string, duration string, ok bool) {
+// (with "budget_id" / "budget_duration") or a flat "budget_id". Note: /team/info does not
+// expose the budget's "budget_reset_at" (it serialises the membership budget through the
+// non-Full budget type), so only budget_id and budget_duration are reliable here.
+func findMembershipBudget(teamInfo map[string]interface{}, userID string) (budgetID string, duration string, ok bool) {
 	memberships, mok := teamInfo["team_memberships"].([]interface{})
 	if !mok {
-		return "", "", "", false
+		return "", "", false
 	}
 	for _, m := range memberships {
 		membership, mok := m.(map[string]interface{})
@@ -332,71 +323,17 @@ func findMembershipBudget(teamInfo map[string]interface{}, userID string) (budge
 			continue
 		}
 		if table, tok := membership["litellm_budget_table"].(map[string]interface{}); tok {
-			bid, _ := table["budget_id"].(string)
-			if bid != "" {
-				rat, _ := table["budget_reset_at"].(string)
+			if bid, _ := table["budget_id"].(string); bid != "" {
 				dur, _ := table["budget_duration"].(string)
-				return bid, rat, dur, true
+				return bid, dur, true
 			}
 		}
 		if bid, bok := membership["budget_id"].(string); bok && bid != "" {
-			rat, _ := membership["budget_reset_at"].(string)
 			dur, _ := membership["budget_duration"].(string)
-			return bid, rat, dur, true
+			return bid, dur, true
 		}
 	}
-	return "", "", "", false
-}
-
-// budgetDurationToSeconds parses LiteLLM budget_duration strings ("30s", "30m", "30h",
-// "30d", "30w", "30mo") into seconds, mirroring litellm's duration_in_seconds. Weeks are
-// 7 days and months 30 days — matching litellm's own approximation. "m" is minutes; "mo"
-// is months.
-func budgetDurationToSeconds(duration string) (int64, error) {
-	d := strings.TrimSpace(duration)
-	if d == "" {
-		return 0, fmt.Errorf("empty duration")
-	}
-	var unit, numStr string
-	if strings.HasSuffix(d, "mo") {
-		unit, numStr = "mo", strings.TrimSuffix(d, "mo")
-	} else {
-		unit, numStr = d[len(d)-1:], d[:len(d)-1]
-	}
-	n, err := strconv.ParseInt(strings.TrimSpace(numStr), 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("invalid duration value in %q: %w", duration, err)
-	}
-	if n <= 0 {
-		return 0, fmt.Errorf("duration must be positive in %q", duration)
-	}
-	var mult int64
-	switch unit {
-	case "s":
-		mult = 1
-	case "m":
-		mult = 60
-	case "h":
-		mult = 3600
-	case "d":
-		mult = 86400
-	case "w":
-		mult = 7 * 86400
-	case "mo":
-		mult = 30 * 86400
-	default:
-		return 0, fmt.Errorf("unsupported duration unit in %q (want s/m/h/d/w/mo)", duration)
-	}
-	if n > math.MaxInt64/mult {
-		return 0, fmt.Errorf("duration %q is too large", duration)
-	}
-	secs := n * mult
-	// budget_reset_at is computed via time.Now().Add(time.Duration(secs) * time.Second);
-	// guard against time.Duration (int64 nanoseconds) overflow for absurdly large values.
-	if secs > math.MaxInt64/int64(time.Second) {
-		return 0, fmt.Errorf("duration %q is too large", duration)
-	}
-	return secs, nil
+	return "", "", false
 }
 
 func isTeamMemberAlreadyInTeamError(err error) bool {
