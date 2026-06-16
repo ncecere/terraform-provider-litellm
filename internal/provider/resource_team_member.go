@@ -271,10 +271,17 @@ func (r *TeamMemberResource) applyMemberBudgetDuration(ctx context.Context, data
 		return fmt.Errorf("reading team info to resolve member budget_id: %w", err)
 	}
 
-	budgetID, resetAt, ok := findMembershipBudget(teamInfo, userID)
+	budgetID, resetAt, curDuration, ok := findMembershipBudget(teamInfo, userID)
 	if !ok {
 		return fmt.Errorf("could not resolve budget_id for user %q in team %q from /team/info; "+
 			"set max_budget_in_team so LiteLLM creates a member budget object before applying budget_duration", userID, teamID)
+	}
+
+	// Nothing to patch if the duration already matches and a reset timestamp is already
+	// set: the reset job maintains budget_reset_at from there, and max_budget_in_team is
+	// applied by /team/member_update on the same Create/Update. Saves a /budget/update call.
+	if curDuration == data.BudgetDuration.ValueString() && resetAt != "" {
+		return nil
 	}
 
 	budgetReq := map[string]interface{}{
@@ -311,10 +318,10 @@ func (r *TeamMemberResource) applyMemberBudgetDuration(ctx context.Context, data
 // "team_memberships" array, each entry carrying either a "litellm_budget_table" object
 // (with "budget_id" / "budget_reset_at") or a flat "budget_id". resetAt is "" when the
 // budget has no reset timestamp set yet.
-func findMembershipBudget(teamInfo map[string]interface{}, userID string) (budgetID string, resetAt string, ok bool) {
+func findMembershipBudget(teamInfo map[string]interface{}, userID string) (budgetID string, resetAt string, duration string, ok bool) {
 	memberships, mok := teamInfo["team_memberships"].([]interface{})
 	if !mok {
-		return "", "", false
+		return "", "", "", false
 	}
 	for _, m := range memberships {
 		membership, mok := m.(map[string]interface{})
@@ -328,15 +335,17 @@ func findMembershipBudget(teamInfo map[string]interface{}, userID string) (budge
 			bid, _ := table["budget_id"].(string)
 			if bid != "" {
 				rat, _ := table["budget_reset_at"].(string)
-				return bid, rat, true
+				dur, _ := table["budget_duration"].(string)
+				return bid, rat, dur, true
 			}
 		}
 		if bid, bok := membership["budget_id"].(string); bok && bid != "" {
 			rat, _ := membership["budget_reset_at"].(string)
-			return bid, rat, true
+			dur, _ := membership["budget_duration"].(string)
+			return bid, rat, dur, true
 		}
 	}
-	return "", "", false
+	return "", "", "", false
 }
 
 // budgetDurationToSeconds parses LiteLLM budget_duration strings ("30s", "30m", "30h",
@@ -381,7 +390,13 @@ func budgetDurationToSeconds(duration string) (int64, error) {
 	if n > math.MaxInt64/mult {
 		return 0, fmt.Errorf("duration %q is too large", duration)
 	}
-	return n * mult, nil
+	secs := n * mult
+	// budget_reset_at is computed via time.Now().Add(time.Duration(secs) * time.Second);
+	// guard against time.Duration (int64 nanoseconds) overflow for absurdly large values.
+	if secs > math.MaxInt64/int64(time.Second) {
+		return 0, fmt.Errorf("duration %q is too large", duration)
+	}
+	return secs, nil
 }
 
 func isTeamMemberAlreadyInTeamError(err error) bool {

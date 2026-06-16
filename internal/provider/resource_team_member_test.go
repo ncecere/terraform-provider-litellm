@@ -106,11 +106,12 @@ func TestFindMembershipBudget(t *testing.T) {
 				},
 			},
 			map[string]interface{}{
-				// Nested table with reset_at already set.
+				// Nested table with reset_at + duration already set.
 				"user_id": "bob",
 				"litellm_budget_table": map[string]interface{}{
 					"budget_id":       "budget-bob",
 					"budget_reset_at": "2026-07-16T00:00:00Z",
+					"budget_duration": "30d",
 				},
 			},
 			map[string]interface{}{
@@ -121,22 +122,22 @@ func TestFindMembershipBudget(t *testing.T) {
 		},
 	}
 
-	if id, rat, ok := findMembershipBudget(teamInfo, "alice"); !ok || id != "budget-alice" || rat != "" {
-		t.Errorf("alice: got (%q, %q, %v), want (\"budget-alice\", \"\", true)", id, rat, ok)
+	if id, rat, dur, ok := findMembershipBudget(teamInfo, "alice"); !ok || id != "budget-alice" || rat != "" || dur != "" {
+		t.Errorf("alice: got (%q, %q, %q, %v), want (\"budget-alice\", \"\", \"\", true)", id, rat, dur, ok)
 	}
-	if id, rat, ok := findMembershipBudget(teamInfo, "bob"); !ok || id != "budget-bob" || rat != "2026-07-16T00:00:00Z" {
-		t.Errorf("bob: got (%q, %q, %v), want (\"budget-bob\", \"2026-07-16T00:00:00Z\", true)", id, rat, ok)
+	if id, rat, dur, ok := findMembershipBudget(teamInfo, "bob"); !ok || id != "budget-bob" || rat != "2026-07-16T00:00:00Z" || dur != "30d" {
+		t.Errorf("bob: got (%q, %q, %q, %v), want (\"budget-bob\", \"2026-07-16T00:00:00Z\", \"30d\", true)", id, rat, dur, ok)
 	}
-	if id, _, ok := findMembershipBudget(teamInfo, "carol"); !ok || id != "budget-carol" {
-		t.Errorf("carol: got (%q, _, %v), want (\"budget-carol\", true)", id, ok)
+	if id, _, _, ok := findMembershipBudget(teamInfo, "carol"); !ok || id != "budget-carol" {
+		t.Errorf("carol: got (%q, _, _, %v), want (\"budget-carol\", true)", id, ok)
 	}
 	// Unknown user → not found.
-	if id, _, ok := findMembershipBudget(teamInfo, "dave"); ok || id != "" {
-		t.Errorf("dave: got (%q, _, %v), want (\"\", false)", id, ok)
+	if id, _, _, ok := findMembershipBudget(teamInfo, "dave"); ok || id != "" {
+		t.Errorf("dave: got (%q, _, _, %v), want (\"\", false)", id, ok)
 	}
 	// Missing team_memberships → not found, no panic.
-	if id, _, ok := findMembershipBudget(map[string]interface{}{}, "alice"); ok || id != "" {
-		t.Errorf("empty teamInfo: got (%q, _, %v), want (\"\", false)", id, ok)
+	if id, _, _, ok := findMembershipBudget(map[string]interface{}{}, "alice"); ok || id != "" {
+		t.Errorf("empty teamInfo: got (%q, _, _, %v), want (\"\", false)", id, ok)
 	}
 }
 
@@ -161,6 +162,7 @@ func TestBudgetDurationToSeconds(t *testing.T) {
 		{"0d", 0, true},
 		{"-1h", 0, true},
 		{"99999999999999999d", 0, true}, // overflows int64 seconds
+		{"9999999999s", 0, true},        // fits int64 seconds but overflows time.Duration (ns)
 	}
 	for _, c := range cases {
 		got, err := budgetDurationToSeconds(c.in)

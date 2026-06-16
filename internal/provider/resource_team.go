@@ -3,14 +3,17 @@ package provider
 import (
 	"context"
 	"fmt"
+	"regexp"
 
 	"github.com/google/uuid"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 )
@@ -189,6 +192,12 @@ func (r *TeamResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 					"update existing members' budget reset intervals (set budget_duration on the " +
 					"litellm_team_member resource for those).",
 				Optional: true,
+				Validators: []validator.String{
+					stringvalidator.RegexMatches(
+						regexp.MustCompile(`^[1-9][0-9]*(s|m|h|d|w|mo)$`),
+						`must be a positive duration like "30d", "24h", "60m" (units: s, m, h, d, w, mo)`,
+					),
+				},
 			},
 			"team_member_rpm_limit": schema.Int64Attribute{
 				Description: "Default RPM limit for team members.",
