@@ -3,6 +3,9 @@ package provider
 import (
 	"context"
 	"fmt"
+	"math"
+	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -83,6 +86,12 @@ func (r *TeamMemberResource) Schema(ctx context.Context, req resource.SchemaRequ
 					"the duration through /budget/update. Without this, max_budget_in_team accrues for the " +
 					"lifetime of the membership and never resets.",
 				Optional: true,
+				Validators: []validator.String{
+					stringvalidator.RegexMatches(
+						regexp.MustCompile(`^[1-9][0-9]*(s|m|h|d|w|mo)$`),
+						`must be a positive duration like "30d", "24h", "60m" (units: s, m, h, d, w, mo)`,
+					),
+				},
 			},
 		},
 	}
@@ -258,7 +267,7 @@ func (r *TeamMemberResource) applyMemberBudgetDuration(ctx context.Context, data
 	userID := data.UserID.ValueString()
 
 	var teamInfo map[string]interface{}
-	if err := r.client.DoRequestWithResponse(ctx, "GET", fmt.Sprintf("/team/info?team_id=%s", teamID), nil, &teamInfo); err != nil {
+	if err := r.client.DoRequestWithResponse(ctx, "GET", fmt.Sprintf("/team/info?team_id=%s", url.QueryEscape(teamID)), nil, &teamInfo); err != nil {
 		return fmt.Errorf("reading team info to resolve member budget_id: %w", err)
 	}
 
@@ -349,22 +358,30 @@ func budgetDurationToSeconds(duration string) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("invalid duration value in %q: %w", duration, err)
 	}
+	if n <= 0 {
+		return 0, fmt.Errorf("duration must be positive in %q", duration)
+	}
+	var mult int64
 	switch unit {
 	case "s":
-		return n, nil
+		mult = 1
 	case "m":
-		return n * 60, nil
+		mult = 60
 	case "h":
-		return n * 3600, nil
+		mult = 3600
 	case "d":
-		return n * 86400, nil
+		mult = 86400
 	case "w":
-		return n * 7 * 86400, nil
+		mult = 7 * 86400
 	case "mo":
-		return n * 30 * 86400, nil
+		mult = 30 * 86400
 	default:
 		return 0, fmt.Errorf("unsupported duration unit in %q (want s/m/h/d/w/mo)", duration)
 	}
+	if n > math.MaxInt64/mult {
+		return 0, fmt.Errorf("duration %q is too large", duration)
+	}
+	return n * mult, nil
 }
 
 func isTeamMemberAlreadyInTeamError(err error) bool {

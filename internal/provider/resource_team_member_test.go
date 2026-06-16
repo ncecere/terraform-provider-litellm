@@ -158,6 +158,9 @@ func TestBudgetDurationToSeconds(t *testing.T) {
 		{"", 0, true},
 		{"30x", 0, true},
 		{"abc", 0, true},
+		{"0d", 0, true},
+		{"-1h", 0, true},
+		{"99999999999999999d", 0, true}, // overflows int64 seconds
 	}
 	for _, c := range cases {
 		got, err := budgetDurationToSeconds(c.in)

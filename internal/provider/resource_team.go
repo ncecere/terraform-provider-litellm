@@ -649,9 +649,11 @@ func (r *TeamResource) readTeam(ctx context.Context, data *TeamResourceModel) er
 		data.TeamMemberBudget = types.Float64Null()
 	}
 	if v, exists := teamInfo["team_member_budget_duration"]; exists {
+		// Treat both nil and empty string as unset to avoid leaving a stale value
+		// in state (which would show as drift).
 		if teamMemberBudgetDuration, ok := v.(string); ok && teamMemberBudgetDuration != "" {
 			data.TeamMemberBudgetDuration = types.StringValue(teamMemberBudgetDuration)
-		} else if v == nil {
+		} else {
 			data.TeamMemberBudgetDuration = types.StringNull()
 		}
 	} else if data.TeamMemberBudgetDuration.IsUnknown() {
