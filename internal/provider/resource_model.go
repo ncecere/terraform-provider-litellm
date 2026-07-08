@@ -667,6 +667,25 @@ func (r *ModelResource) readModel(ctx context.Context, data *ModelResourceModel)
 			}
 		}
 
+		// Carry forward keys the user configured in additional_litellm_params
+		// that the API does not echo back in litellm_params (e.g. tags,
+		// max_retries, timeout, stream_timeout). Without this, those keys are
+		// dropped on read-back and Terraform fails the post-apply consistency
+		// check with "element <key> has vanished" ("Provider produced
+		// inconsistent result after apply"). We only do this during normal
+		// Read (filterByState), preserving the value from prior state; on
+		// Import we intentionally reflect the full API state instead.
+		if filterByState {
+			priorParams := data.AdditionalLiteLLMParams.Elements()
+			for k := range stateKeys {
+				if _, present := additionalParams[k]; !present {
+					if prior, ok := priorParams[k]; ok {
+						additionalParams[k] = prior
+					}
+				}
+			}
+		}
+
 		// Set additional_litellm_params from API response to detect drift
 		// for keys that the user configured.
 		data.AdditionalLiteLLMParams, _ = types.MapValue(types.StringType, additionalParams)
