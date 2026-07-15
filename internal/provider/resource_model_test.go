@@ -205,6 +205,32 @@ func TestConvertStringValue(t *testing.T) {
 	}
 }
 
+func TestJSONSemanticallyEqual(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		a    string
+		b    string
+		want bool
+	}{
+		{"whitespace after colon", `{"inputs": "{prompt}"}`, `{"inputs":"{prompt}"}`, true},
+		{"key ordering", `{"a":1,"b":2}`, `{"b":2,"a":1}`, true},
+		{"identical", `{"inputs":"{prompt}"}`, `{"inputs":"{prompt}"}`, true},
+		{"arrays equal", `["a", "b"]`, `["a","b"]`, true},
+		{"different values", `{"inputs":"{prompt}"}`, `{"inputs":"{other}"}`, false},
+		{"different keys", `{"a":1}`, `{"b":1}`, false},
+		{"a not json", `not json {`, `{"a":1}`, false},
+		{"b not json", `{"a":1}`, `not json {`, false},
+	}
+
+	for _, tt := range tests {
+		if got := jsonSemanticallyEqual(tt.a, tt.b); got != tt.want {
+			t.Errorf("%s: jsonSemanticallyEqual(%q, %q) = %v, want %v", tt.name, tt.a, tt.b, got, tt.want)
+		}
+	}
+}
+
 func TestCreateModelSendsAdditionalLiteLLMParams(t *testing.T) {
 	t.Parallel()
 
