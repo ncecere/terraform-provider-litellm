@@ -231,6 +231,36 @@ func TestJSONSemanticallyEqual(t *testing.T) {
 	}
 }
 
+func TestJSONSameShape(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		a    string
+		b    string
+		want bool
+	}{
+		// Masking case: same keys, a scalar value differs (secret masked on read).
+		{"masked scalar value", `{"x-api-key":"realsecret","X-Model-Id":"m"}`, `{"x-api-key":"sk-masked-abc","X-Model-Id":"m"}`, true},
+		{"identical", `{"x-api-key":"a"}`, `{"x-api-key":"a"}`, true},
+		{"nested masked", `{"h":{"k":"real"}}`, `{"h":{"k":"masked"}}`, true},
+		{"array same len differing scalars", `["a","b"]`, `["x","y"]`, true},
+		// Not the same shape -- real structural drift, should NOT be tolerated.
+		{"extra key", `{"a":"1"}`, `{"a":"1","b":"2"}`, false},
+		{"missing key", `{"a":"1","b":"2"}`, `{"a":"1"}`, false},
+		{"renamed key", `{"a":"1"}`, `{"b":"1"}`, false},
+		{"array length differs", `["a"]`, `["a","b"]`, false},
+		{"scalar vs object", `{"a":"1"}`, `"1"`, false},
+		{"a not json", `not json`, `{"a":"1"}`, false},
+	}
+
+	for _, tt := range tests {
+		if got := jsonSameShape(tt.a, tt.b); got != tt.want {
+			t.Errorf("%s: jsonSameShape(%q, %q) = %v, want %v", tt.name, tt.a, tt.b, got, tt.want)
+		}
+	}
+}
+
 func TestReadModelPreservesSemanticallyEqualJSONFormatting(t *testing.T) {
 	t.Parallel()
 
@@ -594,6 +624,62 @@ func TestReadModelExtractsAdditionalLiteLLMParams(t *testing.T) {
 	}
 	if got := additional["max_retries"]; got != "3" {
 		t.Fatalf("expected max_retries=3, got %q", got)
+	}
+}
+
+// TestReadModelPreservesMaskedExtraHeaders verifies that when LiteLLM returns
+// a JSON-valued additional_litellm_params entry (e.g. extra_headers) with a
+// secret leaf masked/encrypted, readModel preserves the prior state value
+// instead of the masked API value -- otherwise every apply fails the
+// post-apply consistency check ("inconsistent result after apply").
+func TestReadModelPreservesMaskedExtraHeaders(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": []interface{}{
+				map[string]interface{}{
+					"model_name": "needs-attribution-classifier-xlab",
+					"litellm_params": map[string]interface{}{
+						"custom_llm_provider": "openai",
+						"model":               "openai/checkpoint-3400",
+						"extra_headers": map[string]interface{}{
+							"x-api-key":  "sk-masked-9999999999",
+							"X-Model-Id": "needs-attribution-classifier-xlab",
+						},
+					},
+					"model_info": map[string]interface{}{"base_model": "checkpoint-3400"},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	r := &ModelResource{
+		client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()},
+	}
+
+	priorHeaders := `{"x-api-key":"realsecret","X-Model-Id":"needs-attribution-classifier-xlab"}`
+	priorParams, _ := types.MapValue(types.StringType, map[string]attr.Value{
+		"extra_headers": types.StringValue(priorHeaders),
+	})
+	data := ModelResourceModel{
+		ID:                      types.StringValue("model-xlab"),
+		AccessGroups:            types.ListUnknown(types.StringType),
+		AdditionalLiteLLMParams: priorParams,
+	}
+
+	if err := r.readModel(context.Background(), &data); err != nil {
+		t.Fatalf("readModel returned error: %v", err)
+	}
+
+	additional := map[string]string{}
+	if diags := data.AdditionalLiteLLMParams.ElementsAs(context.Background(), &additional, false); diags.HasError() {
+		t.Fatalf("failed to decode additional_litellm_params: %v", diags)
+	}
+	if got := additional["extra_headers"]; got != priorHeaders {
+		t.Fatalf("expected extra_headers preserved from prior state %q, got %q", priorHeaders, got)
 	}
 }
 

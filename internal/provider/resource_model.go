@@ -665,16 +665,26 @@ func (r *ModelResource) readModel(ctx context.Context, data *ModelResourceModel)
 			default:
 				// Arrays, objects, and other complex types — serialize back to JSON string.
 				if jsonBytes, err := json.Marshal(v); err == nil {
-					// If the prior config/state value is JSON that is semantically
-					// equal to the API-returned value, preserve the prior string.
-					// json.Marshal emits compact, key-sorted JSON, so a config
-					// value like {"inputs": "{prompt}"} would otherwise round-trip
-					// to {"inputs":"{prompt}"} and fail the post-apply consistency
-					// check purely on formatting.
-					if prior, ok := priorStrings[key]; ok && jsonSemanticallyEqual(prior, string(jsonBytes)) {
+					apiJSON := string(jsonBytes)
+					prior, hasPrior := priorStrings[key]
+					switch {
+					// Preserve the prior string when it's semantically equal to
+					// the API value: json.Marshal emits compact, key-sorted JSON,
+					// so a config value like {"inputs": "{prompt}"} would
+					// otherwise round-trip to {"inputs":"{prompt}"} and fail the
+					// post-apply consistency check purely on formatting.
+					case hasPrior && jsonSemanticallyEqual(prior, apiJSON):
 						additionalParams[key] = types.StringValue(prior)
-					} else {
-						additionalParams[key] = types.StringValue(string(jsonBytes))
+					// Also preserve it when the value has the same SHAPE but
+					// differing scalar leaves -- LiteLLM masks/encrypts secret
+					// values (e.g. an x-api-key inside extra_headers) on read, so
+					// the API value never matches what was sent. We can't
+					// distinguish masking from real drift, so we carry forward the
+					// prior value, mirroring how model_api_key/aws_* are handled.
+					case hasPrior && jsonSameShape(prior, apiJSON):
+						additionalParams[key] = types.StringValue(prior)
+					default:
+						additionalParams[key] = types.StringValue(apiJSON)
 					}
 				}
 			}
@@ -984,6 +994,69 @@ func jsonSemanticallyEqual(a, b string) bool {
 		return false
 	}
 	return reflect.DeepEqual(av, bv)
+}
+
+// jsonSameShape reports whether two JSON strings have the same structure --
+// same object keys (recursively) and same array lengths -- ignoring differences
+// in scalar (string/number/bool) leaf values. It's used to detect the case
+// where LiteLLM returns a value whose secret leaves have been masked/encrypted
+// on read (e.g. an x-api-key inside extra_headers): the shape is identical but
+// a scalar differs. In that case we can't tell a masked value from a genuinely
+// changed one, so the caller preserves the prior state value rather than fail
+// the post-apply consistency check on what is almost always just masking.
+// (This mirrors how model_api_key and the aws_* secret fields are already
+// carried forward from state rather than trusted from the API response.)
+func jsonSameShape(a, b string) bool {
+	var av, bv interface{}
+	if err := json.Unmarshal([]byte(a), &av); err != nil {
+		return false
+	}
+	if err := json.Unmarshal([]byte(b), &bv); err != nil {
+		return false
+	}
+	return sameShape(av, bv)
+}
+
+func sameShape(a, b interface{}) bool {
+	switch at := a.(type) {
+	case map[string]interface{}:
+		bt, ok := b.(map[string]interface{})
+		if !ok || len(at) != len(bt) {
+			return false
+		}
+		for k, av := range at {
+			bv, present := bt[k]
+			if !present || !sameShape(av, bv) {
+				return false
+			}
+		}
+		return true
+	case []interface{}:
+		bt, ok := b.([]interface{})
+		if !ok || len(at) != len(bt) {
+			return false
+		}
+		for i := range at {
+			if !sameShape(at[i], bt[i]) {
+				return false
+			}
+		}
+		return true
+	default:
+		// Scalars (string, float64, bool, nil): shape matches if both are
+		// scalars of a compatible kind. Differing scalar VALUES are treated as
+		// the same shape -- that's the masking case we want to tolerate.
+		return !isJSONContainer(b)
+	}
+}
+
+func isJSONContainer(v interface{}) bool {
+	switch v.(type) {
+	case map[string]interface{}, []interface{}:
+		return true
+	default:
+		return false
+	}
 }
 
 // normalizeAdditionalParams returns a new MapValue where every numeric string
