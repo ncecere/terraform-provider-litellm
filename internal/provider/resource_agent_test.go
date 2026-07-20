@@ -69,11 +69,11 @@ func TestBuildAgentRequest_Full(t *testing.T) {
 	data := &AgentResourceModel{
 		AgentName: types.StringValue("full-agent"),
 		AgentCard: &AgentCardModel{
-			Name:            types.StringValue("Full Agent"),
-			Description:     types.StringValue("A fully configured agent"),
-			URL:             types.StringValue("https://agent.example.com/a2a"),
-			Version:         types.StringValue("1.0.0"),
-			ProtocolVersion: types.StringValue("0.2.6"),
+			Name:               types.StringValue("Full Agent"),
+			Description:        types.StringValue("A fully configured agent"),
+			URL:                types.StringValue("https://agent.example.com/a2a"),
+			Version:            types.StringValue("1.0.0"),
+			ProtocolVersion:    types.StringValue("0.2.6"),
 			DefaultInputModes:  stringListValue("application/json"),
 			DefaultOutputModes: stringListValue("application/json", "text/plain"),
 			PreferredTransport: types.StringValue("httpsse"),

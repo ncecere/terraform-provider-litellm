@@ -22,21 +22,21 @@ type AgentDataSource struct {
 }
 
 type AgentDataSourceModel struct {
-	ID               types.String `tfsdk:"id"`
-	AgentName        types.String `tfsdk:"agent_name"`
-	AgentCardParams  types.Map    `tfsdk:"agent_card_params"`
-	LiteLLMParams    types.Map    `tfsdk:"litellm_params"`
-	TPMLimit         types.Int64  `tfsdk:"tpm_limit"`
-	RPMLimit         types.Int64  `tfsdk:"rpm_limit"`
-	SessionTPMLimit  types.Int64  `tfsdk:"session_tpm_limit"`
-	SessionRPMLimit  types.Int64  `tfsdk:"session_rpm_limit"`
-	StaticHeaders    types.Map    `tfsdk:"static_headers"`
-	ExtraHeaders     types.List   `tfsdk:"extra_headers"`
-	Spend            types.Float64 `tfsdk:"spend"`
-	CreatedAt        types.String `tfsdk:"created_at"`
-	UpdatedAt        types.String `tfsdk:"updated_at"`
-	CreatedBy        types.String `tfsdk:"created_by"`
-	UpdatedBy        types.String `tfsdk:"updated_by"`
+	ID              types.String  `tfsdk:"id"`
+	AgentName       types.String  `tfsdk:"agent_name"`
+	AgentCardParams types.Map     `tfsdk:"agent_card_params"`
+	LiteLLMParams   types.Map     `tfsdk:"litellm_params"`
+	TPMLimit        types.Int64   `tfsdk:"tpm_limit"`
+	RPMLimit        types.Int64   `tfsdk:"rpm_limit"`
+	SessionTPMLimit types.Int64   `tfsdk:"session_tpm_limit"`
+	SessionRPMLimit types.Int64   `tfsdk:"session_rpm_limit"`
+	StaticHeaders   types.Map     `tfsdk:"static_headers"`
+	ExtraHeaders    types.List    `tfsdk:"extra_headers"`
+	Spend           types.Float64 `tfsdk:"spend"`
+	CreatedAt       types.String  `tfsdk:"created_at"`
+	UpdatedAt       types.String  `tfsdk:"updated_at"`
+	CreatedBy       types.String  `tfsdk:"created_by"`
+	UpdatedBy       types.String  `tfsdk:"updated_by"`
 }
 
 func (d *AgentDataSource) Metadata(ctx context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
