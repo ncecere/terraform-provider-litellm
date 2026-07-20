@@ -1,0 +1,70 @@
+# Continuous integration: build, vet, format-check and test on every push and PR.
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+  # Required by dorny/test-reporter to publish the "Test Report" check run.
+  checks: write
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+      - name: Check formatting
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "The following files are not gofmt-formatted:"
+            echo "$unformatted"
+            echo "Run 'gofmt -w .' to fix."
+            exit 1
+          fi
+      - name: Vet
+        run: go vet ./...
+      - name: Build
+        run: go build ./...
+      - name: Install gotestsum
+        run: |
+          go install gotest.tools/gotestsum@v1.13.0
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: Test
+        run: |
+          set -o pipefail
+          gotestsum --junitfile junit.xml --format testname -- -race ./... 2>&1 | tee gotestsum.log
+      - name: Test summary
+        if: ${{ !cancelled() }}
+        run: |
+          {
+            echo '## Test results'
+            echo ''
+            echo '```'
+            # Strip ANSI color escapes so the summary renders as plain text.
+            sed -E 's/\x1b\[[0-9;]*m//g' gotestsum.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload JUnit report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: junit-report
+          path: junit.xml
+          if-no-files-found: warn
+      - name: Publish test report
+        if: ${{ !cancelled() }}
+        uses: dorny/test-reporter@a43b3a5f7366b97d083190328d2c652e1a8b6aa2 # v3.0.0
+        with:
+          name: Test Report
+          path: junit.xml
+          reporter: java-junit
+          fail-on-error: false
