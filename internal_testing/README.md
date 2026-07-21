@@ -21,8 +21,16 @@ docker compose logs -f litellm          # wait for "LiteLLM Proxy is running"
 cd ..
 go build -o terraform-provider-litellm
 
-# 3. Set TF_CLI_CONFIG_FILE to use the dev_overrides terraformrc
-export TF_CLI_CONFIG_FILE="$(pwd)/internal_testing/terraformrc"
+# 3. Point Terraform at the local binary via a dev_overrides CLI config.
+#    (The `make smoke` flow generates this automatically; for the manual
+#    walkthrough, create one pointing at the repo root.)
+cat > internal_testing/.dev.tfrc <<EOF
+provider_installation {
+  dev_overrides { "ncecere/litellm" = "$(pwd)" }
+  direct {}
+}
+EOF
+export TF_CLI_CONFIG_FILE="$(pwd)/internal_testing/.dev.tfrc"
 
 # 4. Create your tfvars (one-time -- defaults match docker-compose)
 cp internal_testing/terraform.tfvars.example internal_testing/terraform.tfvars
@@ -69,7 +77,6 @@ docker compose down -v
 internal_testing/
   docker-compose.yml           # LiteLLM + Postgres stack
   litellm-config.yaml          # minimal LiteLLM proxy config
-  terraformrc                  # dev_overrides pointing at local binary
   provider.tf                  # provider + required_providers block
   variables.tf                 # api_base and api_key variables
   terraform.tfvars.example     # copy to terraform.tfvars (defaults work)

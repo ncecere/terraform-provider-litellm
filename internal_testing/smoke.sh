@@ -33,7 +33,20 @@ exec 3>&1
 exec >"$SMOKE_LOG" 2>&1
 cp "${INTERNAL_TESTING}/provider.tf" "${INTERNAL_TESTING}/variables.tf" "${SMOKE_DIR}/"
 cp "${INTERNAL_TESTING}/terraform.tfvars.example" "${SMOKE_DIR}/terraform.tfvars"
-cp "${INTERNAL_TESTING}/terraformrc" "${SMOKE_DIR}/"
+
+# Generate the CLI config with a dev_override pointing at the provider binary
+# built by `make build` (at the repo root). Generated at runtime because Terraform
+# CLI config files can't interpolate paths, and hard-coding an absolute path only
+# works on one machine. PROVIDER_DIR may be overridden to point elsewhere.
+PROVIDER_DIR="${PROVIDER_DIR:-$REPO_ROOT}"
+cat >"${SMOKE_DIR}/terraformrc" <<EOF
+provider_installation {
+  dev_overrides {
+    "ncecere/litellm" = "${PROVIDER_DIR}"
+  }
+  direct {}
+}
+EOF
 export TF_CLI_CONFIG_FILE="${SMOKE_DIR}/terraformrc"
 export TF_CLI_ARGS="-no-color"
 

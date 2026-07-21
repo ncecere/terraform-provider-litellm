@@ -13,6 +13,9 @@ dev_testing/e2e/*
 # Smoke test workspace (generated; per-file state and copied .tf removed between files, directory kept)
 internal_testing/.smoke/
 
+# Generated dev_overrides CLI config for the manual smoke walkthrough
+internal_testing/.dev.tfrc
+
 # .tfstate files
 *.tfstate
 *.tfstate.*
