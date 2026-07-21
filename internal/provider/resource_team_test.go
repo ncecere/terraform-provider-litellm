@@ -217,6 +217,157 @@ func TestReadTeamWithNestedTeamInfoResponse(t *testing.T) {
 	}
 }
 
+func TestBuildTeamRequest_IncludesTeamMemberBudgetDuration(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	r := &TeamResource{}
+	data := &TeamResourceModel{
+		TeamAlias:                types.StringValue("test-team"),
+		TeamMemberBudgetDuration: types.StringValue("30d"),
+		RouterSettings:           types.ObjectNull(routerSettingsAttrTypes),
+	}
+
+	req := r.buildTeamRequest(ctx, data, "team-123")
+
+	if got, ok := req["team_member_budget_duration"].(string); !ok || got != "30d" {
+		t.Fatalf("expected team_member_budget_duration '30d', got %T: %v", req["team_member_budget_duration"], req["team_member_budget_duration"])
+	}
+}
+
+func TestBuildTeamRequest_OmitsTeamMemberBudgetDurationWhenUnset(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	r := &TeamResource{}
+	for _, tc := range []struct {
+		name string
+		val  types.String
+	}{
+		{"null", types.StringNull()},
+		{"unknown", types.StringUnknown()},
+		{"empty", types.StringValue("")},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			data := &TeamResourceModel{
+				TeamAlias:                types.StringValue("test-team"),
+				TeamMemberBudgetDuration: tc.val,
+				RouterSettings:           types.ObjectNull(routerSettingsAttrTypes),
+			}
+			req := r.buildTeamRequest(ctx, data, "team-123")
+			if _, ok := req["team_member_budget_duration"]; ok {
+				t.Fatalf("team_member_budget_duration should be omitted when %s, got %v", tc.name, req["team_member_budget_duration"])
+			}
+		})
+	}
+}
+
+func TestReadTeam_TeamMemberBudgetDuration(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/team/info":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"team_info": map[string]interface{}{
+					"team_alias":                  "dur-team",
+					"blocked":                     false,
+					"team_member_budget_duration": "7d",
+				},
+			})
+		case "/team/permissions_list":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"team_member_permissions": []interface{}{},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	r := &TeamResource{
+		client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()},
+	}
+
+	data := TeamResourceModel{
+		ID:                       types.StringValue("team-dur"),
+		TeamAlias:                types.StringValue("dur-team"),
+		TeamMemberBudgetDuration: types.StringUnknown(),
+		Models:                   types.ListUnknown(types.StringType),
+		Tags:                     types.ListUnknown(types.StringType),
+		Guardrails:               types.ListUnknown(types.StringType),
+		Prompts:                  types.ListUnknown(types.StringType),
+		Metadata:                 types.MapUnknown(types.StringType),
+		ModelAliases:             types.MapUnknown(types.StringType),
+		ModelRPMLimit:            types.MapUnknown(types.Int64Type),
+		ModelTPMLimit:            types.MapUnknown(types.Int64Type),
+		TeamMemberPermissions:    types.ListUnknown(types.StringType),
+	}
+
+	if err := r.readTeam(context.Background(), &data); err != nil {
+		t.Fatalf("readTeam returned error: %v", err)
+	}
+
+	if data.TeamMemberBudgetDuration.ValueString() != "7d" {
+		t.Fatalf("expected team_member_budget_duration '7d', got %q", data.TeamMemberBudgetDuration.ValueString())
+	}
+}
+
+func TestReadTeam_TeamMemberBudgetDurationEmptyBecomesNull(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/team/info":
+			// API returns empty string -> should be normalized to null (no drift).
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"team_info": map[string]interface{}{
+					"team_alias":                  "dur-team",
+					"blocked":                     false,
+					"team_member_budget_duration": "",
+				},
+			})
+		case "/team/permissions_list":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"team_member_permissions": []interface{}{},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	r := &TeamResource{
+		client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()},
+	}
+
+	data := TeamResourceModel{
+		ID:                       types.StringValue("team-dur"),
+		TeamAlias:                types.StringValue("dur-team"),
+		TeamMemberBudgetDuration: types.StringValue("stale"),
+		Models:                   types.ListUnknown(types.StringType),
+		Tags:                     types.ListUnknown(types.StringType),
+		Guardrails:               types.ListUnknown(types.StringType),
+		Prompts:                  types.ListUnknown(types.StringType),
+		Metadata:                 types.MapUnknown(types.StringType),
+		ModelAliases:             types.MapUnknown(types.StringType),
+		ModelRPMLimit:            types.MapUnknown(types.Int64Type),
+		ModelTPMLimit:            types.MapUnknown(types.Int64Type),
+		TeamMemberPermissions:    types.ListUnknown(types.StringType),
+	}
+
+	if err := r.readTeam(context.Background(), &data); err != nil {
+		t.Fatalf("readTeam returned error: %v", err)
+	}
+
+	if !data.TeamMemberBudgetDuration.IsNull() {
+		t.Fatalf("empty team_member_budget_duration should become null, got %q", data.TeamMemberBudgetDuration.ValueString())
+	}
+}
+
 func TestBuildTeamRequest_RouterSettingsWithFallbacks(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
