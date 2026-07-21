@@ -266,6 +266,26 @@ The following arguments are supported:
   }
   ```
 
+* `additional_model_info` - (Optional) map(string). A map of arbitrary additional fields that will be merged into the `model_info` object sent to the LiteLLM API. The main use case is declaring capability flags (`supports_vision`, `supports_function_calling`, `supports_reasoning`, `supports_response_schema`, …) for models that are missing from LiteLLM's model cost map, so that `/model/info` and `/v1/models` advertise the model's capabilities to clients.
+
+  * Values follow the same string-to-native conversion rules as `additional_litellm_params` (booleans, integers, floats, JSON).
+  * Only keys configured here are managed. LiteLLM merges metadata derived from its model cost map (`max_tokens`, `supports_*`, `litellm_provider`, …) into `/model/info` responses; those derived fields are ignored on read so they never appear as drift, and they are not captured on import.
+  * **Limitation: keys cannot be deleted via update.** Same PATCH-merge behavior as `additional_litellm_params` — to fully remove a key, recreate the resource with `terraform apply -replace`.
+
+  ```hcl
+  resource "litellm_model" "kimi_k3" {
+    model_name          = "kimi-k3"
+    custom_llm_provider = "openrouter"
+    base_model          = "moonshotai/kimi-k3"
+    mode                = "chat"
+
+    additional_model_info = {
+      "supports_vision"           = "true"  # becomes boolean true
+      "supports_function_calling" = "true"
+    }
+  }
+  ```
+
 ### AWS-specific Configuration
 
 * `aws_access_key_id` - (Optional) string (Sensitive). AWS access key ID for AWS-based models.
