@@ -69,6 +69,10 @@ go.work
 junit.xml
 gotestsum.log
 
+# CI coverage artifacts (coverage.out matched by *.out below)
+coverage.html
+coverage.txt
+
 # Dependency directories (remove the comment below to include it)
 # vendor/
 
