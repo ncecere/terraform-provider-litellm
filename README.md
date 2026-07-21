@@ -135,18 +135,38 @@ For full details on the <code>litellm_key</code> resource, see the [key resource
 ### Available Resources
 
 - <code>litellm_model</code>: Manage model configurations. [Documentation](docs/resources/model.md)
-- <code>litellm_team</code>: Manage teams. [Documentation](docs/resources/team.md)
-- <code>litellm_team_member</code>: Manage team members. [Documentation](docs/resources/team_member.md)
-- <code>litellm_team_member_add</code>: Add multiple members to teams. [Documentation](docs/resources/team_member_add.md)
 - <code>litellm_key</code>: Manage API keys. [Documentation](docs/resources/key.md)
+- <code>litellm_key_block</code>: Block/unblock an API key. [Documentation](docs/resources/key_block.md)
+- <code>litellm_team</code>: Manage teams. [Documentation](docs/resources/team.md)
+- <code>litellm_team_block</code>: Block/unblock a team. [Documentation](docs/resources/team_block.md)
+- <code>litellm_team_member</code>: Manage an individual team member. [Documentation](docs/resources/team_member.md)
+- <code>litellm_team_member_add</code>: Manage a batch of team members. [Documentation](docs/resources/team_member_add.md)
+- <code>litellm_organization</code>: Manage organizations. [Documentation](docs/resources/organization.md)
+- <code>litellm_organization_member</code>: Manage organization members. [Documentation](docs/resources/organization_member.md)
+- <code>litellm_project</code>: Manage projects (between teams and keys in the hierarchy). [Documentation](docs/resources/project.md)
+- <code>litellm_user</code>: Manage users. [Documentation](docs/resources/user.md)
+- <code>litellm_budget</code>: Manage reusable budgets and rate limits. [Documentation](docs/resources/budget.md)
+- <code>litellm_tag</code>: Manage tags for categorizing resources. [Documentation](docs/resources/tag.md)
+- <code>litellm_access_group</code>: Manage model access groups. [Documentation](docs/resources/access_group.md)
+- <code>litellm_unified_access_group</code>: Manage access groups via the `/v1/access_group` API. [Documentation](docs/resources/unified_access_group.md)
+- <code>litellm_fallback</code>: Manage model fallback configuration. [Documentation](docs/resources/fallback.md)
+- <code>litellm_guardrail</code>: Manage content-safety guardrails. [Documentation](docs/resources/guardrail.md)
+- <code>litellm_prompt</code>: Manage reusable prompt templates. [Documentation](docs/resources/prompt.md)
+- <code>litellm_agent</code>: Manage LiteLLM Agents (A2A). [Documentation](docs/resources/agent.md)
+- <code>litellm_search_tool</code>: Manage web-search tool configurations. [Documentation](docs/resources/search_tool.md)
 - <code>litellm_mcp_server</code>: Manage MCP (Model Context Protocol) servers. [Documentation](docs/resources/mcp_server.md)
 - <code>litellm_credential</code>: Manage credentials for secure authentication. [Documentation](docs/resources/credential.md)
 - <code>litellm_vector_store</code>: Manage vector stores for embeddings and RAG. [Documentation](docs/resources/vector_store.md)
 
 ### Available Data Sources
 
-- <code>litellm_credential</code>: Retrieve information about existing credentials. [Documentation](docs/data-sources/credential.md)
-- <code>litellm_vector_store</code>: Retrieve information about existing vector stores. [Documentation](docs/data-sources/vector_store.md)
+Single-item lookups:
+
+- <code>litellm_model</code> ([docs](docs/data-sources/model.md)), <code>litellm_key</code> ([docs](docs/data-sources/key.md)), <code>litellm_team</code> ([docs](docs/data-sources/team.md)), <code>litellm_organization</code> ([docs](docs/data-sources/organization.md)), <code>litellm_project</code> ([docs](docs/data-sources/project.md)), <code>litellm_user</code> ([docs](docs/data-sources/user.md)), <code>litellm_budget</code> ([docs](docs/data-sources/budget.md)), <code>litellm_tag</code> ([docs](docs/data-sources/tag.md)), <code>litellm_access_group</code> ([docs](docs/data-sources/access_group.md)), <code>litellm_unified_access_group</code> ([docs](docs/data-sources/unified_access_group.md)), <code>litellm_prompt</code> ([docs](docs/data-sources/prompt.md)), <code>litellm_guardrail</code> ([docs](docs/data-sources/guardrail.md)), <code>litellm_agent</code> ([docs](docs/data-sources/agent.md)), <code>litellm_search_tool</code> ([docs](docs/data-sources/search_tool.md)), <code>litellm_fallback</code> ([docs](docs/data-sources/fallback.md)), <code>litellm_mcp_server</code> ([docs](docs/data-sources/mcp_server.md)), <code>litellm_credential</code> ([docs](docs/data-sources/credential.md)), <code>litellm_vector_store</code> ([docs](docs/data-sources/vector_store.md))
+
+List data sources (return all items of a type):
+
+- <code>litellm_models</code> ([docs](docs/data-sources/models.md)), <code>litellm_keys</code> ([docs](docs/data-sources/keys.md)), <code>litellm_teams</code> ([docs](docs/data-sources/teams.md)), <code>litellm_organizations</code> ([docs](docs/data-sources/organizations.md)), <code>litellm_projects</code> ([docs](docs/data-sources/projects.md)), <code>litellm_users</code> ([docs](docs/data-sources/users.md)), <code>litellm_budgets</code> ([docs](docs/data-sources/budgets.md)), <code>litellm_tags</code> ([docs](docs/data-sources/tags.md)), <code>litellm_access_groups</code> ([docs](docs/data-sources/access_groups.md)), <code>litellm_unified_access_groups</code> ([docs](docs/data-sources/unified_access_groups.md)), <code>litellm_prompts</code> ([docs](docs/data-sources/prompts.md)), <code>litellm_guardrails</code> ([docs](docs/data-sources/guardrails.md)), <code>litellm_agents</code> ([docs](docs/data-sources/agents.md)), <code>litellm_search_tools</code> ([docs](docs/data-sources/search_tools.md)), <code>litellm_mcp_servers</code> ([docs](docs/data-sources/mcp_servers.md))
 
 ## Development
 
@@ -156,22 +176,24 @@ The project is organized as follows:
 
 ```
 terraform-provider-litellm/
-├── litellm/
-│   ├── provider.go
-│   ├── resource_model.go
-│   ├── resource_model_crud.go
-│   ├── resource_team.go
-│   ├── resource_team_member.go
-│   ├── resource_key.go
-│   ├── resource_key_utils.go
-│   ├── types.go
-│   └── utils.go
-├── main.go
+├── internal/
+│   └── provider/               # the provider implementation (registered in main.go)
+│       ├── provider.go         # provider schema + resource/data-source registration
+│       ├── client.go           # LiteLLM API HTTP client
+│       ├── resource_*.go       # one file per resource
+│       ├── datasource_*.go     # one file per data source
+│       └── *_test.go           # unit tests
+├── docs/                       # resource & data-source documentation
+├── internal_testing/           # docker compose LiteLLM + smoke-test configs
+├── main.go                     # provider entrypoint
 ├── go.mod
 ├── go.sum
 ├── Makefile
 └── ...
 ```
+
+> Note: the top-level `litellm/` directory is legacy and no longer used by the
+> provider; `main.go` wires up `internal/provider`.
 
 ### Building the Provider
 
