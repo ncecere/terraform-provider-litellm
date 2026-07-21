@@ -14,7 +14,9 @@ install: build
 	mv terraform-provider-${NAME} ~/.terraform.d/plugins/${HOSTNAME}/${NAMESPACE}/${NAME}/${VERSION}/${OS_ARCH}/terraform-provider-${NAME}_v${VERSION}
 
 test:
-	go test ./...
+	go test -covermode=atomic -coverprofile=coverage.out ./...
+	@printf 'Total coverage: %s\n' "$$(go tool cover -func=coverage.out | tail -1 | awk '{print $$NF}')"
+	@echo "HTML report: go tool cover -html=coverage.out"
 
 fmt:
 	go fmt ./...
