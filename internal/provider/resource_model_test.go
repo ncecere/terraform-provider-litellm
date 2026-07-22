@@ -1199,11 +1199,13 @@ func TestReadModelCostRoundTripCausesNoDrift(t *testing.T) {
 	}
 }
 
-func TestReassertPlannedCostsOverridesStaleReadBack(t *testing.T) {
+func TestReassertPlannedValuesOverridesStaleReadBack(t *testing.T) {
 	t.Parallel()
 
 	// Simulate the post-apply consistency read hitting a stale router:
-	// the plan set output cost to 16, but /model/info still echoes 15.
+	// the plan repointed the deployment (new base_model, new cost, a freshly
+	// added max_input_tokens param), but /model/info still echoes the previous
+	// definition — old base_model, old cost, and no max_input_tokens key.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -1216,7 +1218,7 @@ func TestReassertPlannedCostsOverridesStaleReadBack(t *testing.T) {
 						"output_cost_per_token": 15.0 / 1000000.0, // stale
 					},
 					"model_info": map[string]interface{}{
-						"base_model": "gpt-4o-mini",
+						"base_model": "gpt-4o-mini", // stale
 					},
 				},
 			},
@@ -1234,10 +1236,13 @@ func TestReassertPlannedCostsOverridesStaleReadBack(t *testing.T) {
 
 	data := ModelResourceModel{
 		ID:                         types.StringValue("model-stale"),
+		BaseModel:                  types.StringValue("gpt-4.1-mini"),
 		OutputCostPerMillionTokens: types.Float64Value(16.0),
 		AccessGroups:               types.ListUnknown(types.StringType),
 	}
-	data.AdditionalLiteLLMParams, _ = types.MapValue(types.StringType, map[string]attr.Value{})
+	data.AdditionalLiteLLMParams, _ = types.MapValue(types.StringType, map[string]attr.Value{
+		"max_input_tokens": types.StringValue("1048576"),
+	})
 
 	planned := data
 
@@ -1245,14 +1250,31 @@ func TestReassertPlannedCostsOverridesStaleReadBack(t *testing.T) {
 		t.Fatalf("readModel returned error: %v", err)
 	}
 
-	// Without reassertion the stale echo would clobber the planned value…
+	// Without reassertion the stale echo would clobber the planned values…
 	if got := data.OutputCostPerMillionTokens.ValueFloat64(); got != 15.0 {
-		t.Fatalf("precondition failed: expected stale read-back 15, got %v", got)
+		t.Fatalf("precondition failed: expected stale read-back cost 15, got %v", got)
+	}
+	if got := data.BaseModel.ValueString(); got != "gpt-4o-mini" {
+		t.Fatalf("precondition failed: expected stale read-back base_model gpt-4o-mini, got %q", got)
+	}
+	if _, ok := data.AdditionalLiteLLMParams.Elements()["max_input_tokens"]; ok {
+		t.Fatal("precondition failed: expected max_input_tokens to vanish from stale read-back")
 	}
 
-	// …which is exactly what reassertPlannedCosts prevents in Create/Update.
-	reassertPlannedCosts(&data, &planned)
+	// …which is exactly what reassertPlannedValues prevents in Create/Update.
+	reassertPlannedValues(&data, &planned)
 	if got := data.OutputCostPerMillionTokens.ValueFloat64(); got != 16.0 {
 		t.Fatalf("expected planned cost 16 after reassert, got %v", got)
+	}
+	if got := data.BaseModel.ValueString(); got != "gpt-4.1-mini" {
+		t.Fatalf("expected planned base_model gpt-4.1-mini after reassert, got %q", got)
+	}
+	if v, ok := data.AdditionalLiteLLMParams.Elements()["max_input_tokens"]; !ok || v.(types.String).ValueString() != "1048576" {
+		t.Fatalf("expected planned max_input_tokens after reassert, got %v", data.AdditionalLiteLLMParams)
+	}
+	// Computed attribute with unknown planned value keeps the read-back
+	// resolution instead of being clobbered back to unknown.
+	if data.AccessGroups.IsUnknown() {
+		t.Fatal("expected access_groups to stay resolved (read-back), got unknown")
 	}
 }

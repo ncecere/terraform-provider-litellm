@@ -285,7 +285,7 @@ func (r *ModelResource) Create(ctx context.Context, req resource.CreateRequest, 
 		finalizeModelComputedDefaults(&data)
 		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Model created but failed to read back: %s", err))
 	}
-	reassertPlannedCosts(&data, &planned)
+	reassertPlannedValues(&data, &planned)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -343,7 +343,7 @@ func (r *ModelResource) Update(ctx context.Context, req resource.UpdateRequest, 
 		finalizeModelComputedDefaults(&data)
 		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Model updated but failed to read back: %s", err))
 	}
-	reassertPlannedCosts(&data, &planned)
+	reassertPlannedValues(&data, &planned)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -751,15 +751,62 @@ func (r *ModelResource) readModel(ctx context.Context, data *ModelResourceModel)
 	return nil
 }
 
-// reassertPlannedCosts restores the planned cost values after the post-apply
-// consistency read. LiteLLM's /model/info serves from an in-memory router
-// that can lag a just-issued write, so the read-back may still echo the old
-// cost. Cost attributes are not Computed — the post-apply state must equal
-// the planned value anyway — so trusting a possibly stale echo here only
-// produces "Provider produced inconsistent result after apply" errors.
+// reassertPlannedValues restores the planned attribute values after the
+// post-apply consistency read in Create/Update. LiteLLM's /model/info serves
+// from an in-memory router that can lag a just-issued write, so the read-back
+// may still echo the previous model definition: stale costs, a stale
+// base_model after a repoint, or a litellm_params map that is missing
+// just-added keys (which then "vanish" from additional_litellm_params).
+// Terraform requires the post-apply state to equal the plan for every
+// attribute whose planned value was known, so trusting a possibly stale echo
+// here only produces "Provider produced inconsistent result after apply"
+// errors. Attributes whose planned value is unknown (Computed, not set in
+// config) keep the read-back result — the provider is expected to fill those.
 // Out-of-band changes are still detected during Refresh, where readModel
 // reads the settled value.
-func reassertPlannedCosts(data *ModelResourceModel, planned *ModelResourceModel) {
+func reassertPlannedValues(data *ModelResourceModel, planned *ModelResourceModel) {
+	if !planned.ModelName.IsUnknown() {
+		data.ModelName = planned.ModelName
+	}
+	if !planned.CustomLLMProvider.IsUnknown() {
+		data.CustomLLMProvider = planned.CustomLLMProvider
+	}
+	if !planned.BaseModel.IsUnknown() {
+		data.BaseModel = planned.BaseModel
+	}
+	if !planned.Tier.IsUnknown() {
+		data.Tier = planned.Tier
+	}
+	if !planned.Mode.IsUnknown() {
+		data.Mode = planned.Mode
+	}
+	if !planned.TeamID.IsUnknown() {
+		data.TeamID = planned.TeamID
+	}
+	if !planned.ModelAPIBase.IsUnknown() {
+		data.ModelAPIBase = planned.ModelAPIBase
+	}
+	if !planned.APIVersion.IsUnknown() {
+		data.APIVersion = planned.APIVersion
+	}
+	if !planned.AWSRegionName.IsUnknown() {
+		data.AWSRegionName = planned.AWSRegionName
+	}
+	if !planned.LiteLLMCredentialName.IsUnknown() {
+		data.LiteLLMCredentialName = planned.LiteLLMCredentialName
+	}
+	if !planned.TPM.IsUnknown() {
+		data.TPM = planned.TPM
+	}
+	if !planned.RPM.IsUnknown() {
+		data.RPM = planned.RPM
+	}
+	if !planned.AccessGroups.IsUnknown() {
+		data.AccessGroups = planned.AccessGroups
+	}
+	if !planned.AdditionalLiteLLMParams.IsUnknown() {
+		data.AdditionalLiteLLMParams = planned.AdditionalLiteLLMParams
+	}
 	data.InputCostPerMillionTokens = planned.InputCostPerMillionTokens
 	data.OutputCostPerMillionTokens = planned.OutputCostPerMillionTokens
 	data.InputCostPerPixel = planned.InputCostPerPixel
