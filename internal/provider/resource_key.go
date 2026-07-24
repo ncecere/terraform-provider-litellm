@@ -38,41 +38,42 @@ type KeyResource struct {
 }
 
 type KeyResourceModel struct {
-	ID                       types.String  `tfsdk:"id"`
-	Key                      types.String  `tfsdk:"key"`
-	Models                   types.List    `tfsdk:"models"`
-	AllowedRoutes            types.List    `tfsdk:"allowed_routes"`
-	AllowedPassthroughRoutes types.List    `tfsdk:"allowed_passthrough_routes"`
-	MaxBudget                types.Float64 `tfsdk:"max_budget"`
-	UserID                   types.String  `tfsdk:"user_id"`
-	TeamID                   types.String  `tfsdk:"team_id"`
-	OrganizationID           types.String  `tfsdk:"organization_id"`
-	ProjectID                types.String  `tfsdk:"project_id"`
-	BudgetID                 types.String  `tfsdk:"budget_id"`
-	ServiceAccountID         types.String  `tfsdk:"service_account_id"`
-	MaxParallelRequests      types.Int64   `tfsdk:"max_parallel_requests"`
-	Metadata                 types.Map     `tfsdk:"metadata"`
-	TPMLimit                 types.Int64   `tfsdk:"tpm_limit"`
-	RPMLimit                 types.Int64   `tfsdk:"rpm_limit"`
-	TPMLimitType             types.String  `tfsdk:"tpm_limit_type"`
-	RPMLimitType             types.String  `tfsdk:"rpm_limit_type"`
-	BudgetDuration           types.String  `tfsdk:"budget_duration"`
-	AllowedCacheControls     types.List    `tfsdk:"allowed_cache_controls"`
-	SoftBudget               types.Float64 `tfsdk:"soft_budget"`
-	KeyAlias                 types.String  `tfsdk:"key_alias"`
-	Duration                 types.String  `tfsdk:"duration"`
-	Aliases                  types.Map     `tfsdk:"aliases"`
-	Config                   types.Map     `tfsdk:"config"`
-	Permissions              types.Map     `tfsdk:"permissions"`
-	ModelMaxBudget           types.Map     `tfsdk:"model_max_budget"`
-	ModelRPMLimit            types.Map     `tfsdk:"model_rpm_limit"`
-	ModelTPMLimit            types.Map     `tfsdk:"model_tpm_limit"`
-	Guardrails               types.List    `tfsdk:"guardrails"`
-	Prompts                  types.List    `tfsdk:"prompts"`
-	EnforcedParams           types.List    `tfsdk:"enforced_params"`
-	Tags                     types.List    `tfsdk:"tags"`
-	Blocked                  types.Bool    `tfsdk:"blocked"`
-	RouterSettingsFallbacks  types.Map     `tfsdk:"router_settings_fallbacks"`
+	ID                                   types.String  `tfsdk:"id"`
+	Key                                  types.String  `tfsdk:"key"`
+	Models                               types.List    `tfsdk:"models"`
+	AllowedRoutes                        types.List    `tfsdk:"allowed_routes"`
+	AllowedPassthroughRoutes             types.List    `tfsdk:"allowed_passthrough_routes"`
+	MaxBudget                            types.Float64 `tfsdk:"max_budget"`
+	UserID                               types.String  `tfsdk:"user_id"`
+	TeamID                               types.String  `tfsdk:"team_id"`
+	OrganizationID                       types.String  `tfsdk:"organization_id"`
+	ProjectID                            types.String  `tfsdk:"project_id"`
+	BudgetID                             types.String  `tfsdk:"budget_id"`
+	ServiceAccountID                     types.String  `tfsdk:"service_account_id"`
+	MaxParallelRequests                  types.Int64   `tfsdk:"max_parallel_requests"`
+	Metadata                             types.Map     `tfsdk:"metadata"`
+	TPMLimit                             types.Int64   `tfsdk:"tpm_limit"`
+	RPMLimit                             types.Int64   `tfsdk:"rpm_limit"`
+	TPMLimitType                         types.String  `tfsdk:"tpm_limit_type"`
+	RPMLimitType                         types.String  `tfsdk:"rpm_limit_type"`
+	BudgetDuration                       types.String  `tfsdk:"budget_duration"`
+	AllowedCacheControls                 types.List    `tfsdk:"allowed_cache_controls"`
+	SoftBudget                           types.Float64 `tfsdk:"soft_budget"`
+	KeyAlias                             types.String  `tfsdk:"key_alias"`
+	Duration                             types.String  `tfsdk:"duration"`
+	Aliases                              types.Map     `tfsdk:"aliases"`
+	Config                               types.Map     `tfsdk:"config"`
+	Permissions                          types.Map     `tfsdk:"permissions"`
+	ModelMaxBudget                       types.Map     `tfsdk:"model_max_budget"`
+	ModelRPMLimit                        types.Map     `tfsdk:"model_rpm_limit"`
+	ModelTPMLimit                        types.Map     `tfsdk:"model_tpm_limit"`
+	Guardrails                           types.List    `tfsdk:"guardrails"`
+	Prompts                              types.List    `tfsdk:"prompts"`
+	EnforcedParams                       types.List    `tfsdk:"enforced_params"`
+	Tags                                 types.List    `tfsdk:"tags"`
+	Blocked                              types.Bool    `tfsdk:"blocked"`
+	RouterSettingsFallbacks              types.Map     `tfsdk:"router_settings_fallbacks"`
+	RouterSettingsContextWindowFallbacks types.Map     `tfsdk:"router_settings_context_window_fallbacks"`
 }
 
 func (r *KeyResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -269,7 +270,13 @@ func (r *KeyResource) Schema(ctx context.Context, req resource.SchemaRequest, re
 				Computed:    true,
 			},
 			"router_settings_fallbacks": schema.MapAttribute{
-				Description: "Per-model fallback chain. Keys are primary model names; values are ordered lists of fallback model names. Configures router_settings.fallbacks on the key — only upstream failures (Azure/Bedrock 429s, 5xx, timeouts) trigger the fallback chain; proxy-level quota limits do not.",
+				Description: "Per-model fallback chain. Keys are primary model names; values are ordered lists of fallback model names.",
+				Optional:    true,
+				Computed:    true,
+				ElementType: types.ListType{ElemType: types.StringType},
+			},
+			"router_settings_context_window_fallbacks": schema.MapAttribute{
+				Description: "Per-model context window fallback chain. Keys are primary model names; values are ordered lists of fallback model names used when the primary model's context window is exceeded.",
 				Optional:    true,
 				Computed:    true,
 				ElementType: types.ListType{ElemType: types.StringType},
@@ -482,6 +489,64 @@ func (r *KeyResource) UpgradeState(ctx context.Context) map[int64]resource.State
 	}
 }
 
+// buildFallbacksPayload converts a map(list(string)) attribute into the
+// [{"primary": ["fallback1", ...]}] slice expected by router_settings.
+func buildFallbacksPayload(ctx context.Context, m types.Map) []map[string]interface{} {
+	if m.IsNull() || m.IsUnknown() {
+		return nil
+	}
+	elems := m.Elements()
+	if len(elems) == 0 {
+		return nil
+	}
+	out := make([]map[string]interface{}, 0, len(elems))
+	for primary, v := range elems {
+		var fallbacks []string
+		if lv, ok := v.(types.List); ok {
+			lv.ElementsAs(ctx, &fallbacks, false)
+		}
+		out = append(out, map[string]interface{}{primary: fallbacks})
+	}
+	return out
+}
+
+// readFallbacksField parses a router_settings sub-key (e.g. "fallbacks",
+// "context_window_fallbacks") from the API response and returns the updated
+// attribute value, preserving null/unknown semantics.
+func readFallbacksField(routerSettings map[string]interface{}, key string, current types.Map, elemType types.ListType) types.Map {
+	if routerSettings != nil {
+		if raw, ok := routerSettings[key].([]interface{}); ok && len(raw) > 0 {
+			fallbackMap := make(map[string]attr.Value)
+			for _, entry := range raw {
+				if entryMap, ok := entry.(map[string]interface{}); ok {
+					for primary, fbIface := range entryMap {
+						var vals []attr.Value
+						if fbSlice, ok := fbIface.([]interface{}); ok {
+							for _, f := range fbSlice {
+								if s, ok := f.(string); ok {
+									vals = append(vals, types.StringValue(s))
+								}
+							}
+						}
+						lv, _ := types.ListValue(types.StringType, vals)
+						fallbackMap[primary] = lv
+					}
+				}
+			}
+			m, _ := types.MapValue(elemType, fallbackMap)
+			return m
+		}
+	}
+	if current.IsUnknown() {
+		return types.MapNull(elemType)
+	}
+	if !current.IsNull() {
+		m, _ := types.MapValue(elemType, map[string]attr.Value{})
+		return m
+	}
+	return current
+}
+
 func (r *KeyResource) buildKeyRequest(ctx context.Context, data *KeyResourceModel) map[string]interface{} {
 	keyReq := make(map[string]interface{})
 
@@ -673,24 +738,16 @@ func (r *KeyResource) buildKeyRequest(ctx context.Context, data *KeyResourceMode
 		}
 	}
 
-	// router_settings.fallbacks: [{"primary_model": ["fallback1", ...]}]
-	if !data.RouterSettingsFallbacks.IsNull() && !data.RouterSettingsFallbacks.IsUnknown() {
-		elems := data.RouterSettingsFallbacks.Elements()
-		if len(elems) > 0 {
-			fallbacksList := make([]map[string]interface{}, 0, len(elems))
-			for primary, v := range elems {
-				var fallbacks []string
-				if lv, ok := v.(types.List); ok {
-					lv.ElementsAs(ctx, &fallbacks, false)
-				}
-				fallbacksList = append(fallbacksList, map[string]interface{}{
-					primary: fallbacks,
-				})
-			}
-			keyReq["router_settings"] = map[string]interface{}{
-				"fallbacks": fallbacksList,
-			}
-		}
+	// router_settings: fallbacks and context_window_fallbacks
+	routerSettings := map[string]interface{}{}
+	if fb := buildFallbacksPayload(ctx, data.RouterSettingsFallbacks); fb != nil {
+		routerSettings["fallbacks"] = fb
+	}
+	if cwfb := buildFallbacksPayload(ctx, data.RouterSettingsContextWindowFallbacks); cwfb != nil {
+		routerSettings["context_window_fallbacks"] = cwfb
+	}
+	if len(routerSettings) > 0 {
+		keyReq["router_settings"] = routerSettings
 	}
 
 	// Handle service account
@@ -1054,40 +1111,10 @@ func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error
 		data.ModelTPMLimit, _ = types.MapValue(types.Int64Type, map[string]attr.Value{})
 	}
 
-	// Handle router_settings.fallbacks — the field LiteLLM's router actually reads
-	// (distinct from the top-level "fallbacks" field which is UI-metadata only).
 	listElemType := types.ListType{ElemType: types.StringType}
-	if routerSettings, ok := info["router_settings"].(map[string]interface{}); ok {
-		if fallbacksRaw, ok := routerSettings["fallbacks"].([]interface{}); ok && len(fallbacksRaw) > 0 {
-			fallbackMap := make(map[string]attr.Value)
-			for _, entry := range fallbacksRaw {
-				if entryMap, ok := entry.(map[string]interface{}); ok {
-					for primary, fbIface := range entryMap {
-						var vals []attr.Value
-						if fbSlice, ok := fbIface.([]interface{}); ok {
-							for _, f := range fbSlice {
-								if s, ok := f.(string); ok {
-									vals = append(vals, types.StringValue(s))
-								}
-							}
-						}
-						lv, _ := types.ListValue(types.StringType, vals)
-						fallbackMap[primary] = lv
-					}
-				}
-			}
-			data.RouterSettingsFallbacks, _ = types.MapValue(listElemType, fallbackMap)
-		} else if data.RouterSettingsFallbacks.IsUnknown() {
-			data.RouterSettingsFallbacks = types.MapNull(listElemType)
-		} else if !data.RouterSettingsFallbacks.IsNull() {
-			data.RouterSettingsFallbacks, _ = types.MapValue(listElemType, map[string]attr.Value{})
-		}
-	} else if data.RouterSettingsFallbacks.IsUnknown() {
-		data.RouterSettingsFallbacks = types.MapNull(listElemType)
-	} else if !data.RouterSettingsFallbacks.IsNull() {
-		// router_settings absent from API but user had configured fallbacks — clear to empty
-		data.RouterSettingsFallbacks, _ = types.MapValue(listElemType, map[string]attr.Value{})
-	}
+	routerSettings, _ := info["router_settings"].(map[string]interface{})
+	data.RouterSettingsFallbacks = readFallbacksField(routerSettings, "fallbacks", data.RouterSettingsFallbacks, listElemType)
+	data.RouterSettingsContextWindowFallbacks = readFallbacksField(routerSettings, "context_window_fallbacks", data.RouterSettingsContextWindowFallbacks, listElemType)
 
 	return nil
 }

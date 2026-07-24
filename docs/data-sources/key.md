@@ -41,6 +41,8 @@ output "key_info" {
 * `metadata` - Map of metadata for the key.
 * `tags` - List of tags for the key.
 * `blocked` - Whether the key is blocked.
+* `router_settings_fallbacks` - Per-model fallback chain. Keys are primary model names; values are ordered lists of fallback model names.
+* `router_settings_context_window_fallbacks` - Per-model context window fallback chain.
 
 ## Notes
 

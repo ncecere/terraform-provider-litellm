@@ -21,23 +21,25 @@ type KeyDataSource struct {
 }
 
 type KeyDataSourceModel struct {
-	ID                  types.String  `tfsdk:"id"`
-	Key                 types.String  `tfsdk:"key"`
-	KeyAlias            types.String  `tfsdk:"key_alias"`
-	Models              types.List    `tfsdk:"models"`
-	MaxBudget           types.Float64 `tfsdk:"max_budget"`
-	Spend               types.Float64 `tfsdk:"spend"`
-	UserID              types.String  `tfsdk:"user_id"`
-	TeamID              types.String  `tfsdk:"team_id"`
-	ProjectID           types.String  `tfsdk:"project_id"`
-	MaxParallelRequests types.Int64   `tfsdk:"max_parallel_requests"`
-	TPMLimit            types.Int64   `tfsdk:"tpm_limit"`
-	RPMLimit            types.Int64   `tfsdk:"rpm_limit"`
-	BudgetDuration      types.String  `tfsdk:"budget_duration"`
-	SoftBudget          types.Float64 `tfsdk:"soft_budget"`
-	Metadata            types.Map     `tfsdk:"metadata"`
-	Tags                types.List    `tfsdk:"tags"`
-	Blocked             types.Bool    `tfsdk:"blocked"`
+	ID                                   types.String  `tfsdk:"id"`
+	Key                                  types.String  `tfsdk:"key"`
+	KeyAlias                             types.String  `tfsdk:"key_alias"`
+	Models                               types.List    `tfsdk:"models"`
+	MaxBudget                            types.Float64 `tfsdk:"max_budget"`
+	Spend                                types.Float64 `tfsdk:"spend"`
+	UserID                               types.String  `tfsdk:"user_id"`
+	TeamID                               types.String  `tfsdk:"team_id"`
+	ProjectID                            types.String  `tfsdk:"project_id"`
+	MaxParallelRequests                  types.Int64   `tfsdk:"max_parallel_requests"`
+	TPMLimit                             types.Int64   `tfsdk:"tpm_limit"`
+	RPMLimit                             types.Int64   `tfsdk:"rpm_limit"`
+	BudgetDuration                       types.String  `tfsdk:"budget_duration"`
+	SoftBudget                           types.Float64 `tfsdk:"soft_budget"`
+	Metadata                             types.Map     `tfsdk:"metadata"`
+	Tags                                 types.List    `tfsdk:"tags"`
+	Blocked                              types.Bool    `tfsdk:"blocked"`
+	RouterSettingsFallbacks              types.Map     `tfsdk:"router_settings_fallbacks"`
+	RouterSettingsContextWindowFallbacks types.Map     `tfsdk:"router_settings_context_window_fallbacks"`
 }
 
 func (d *KeyDataSource) Metadata(ctx context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
@@ -119,6 +121,16 @@ func (d *KeyDataSource) Schema(ctx context.Context, req datasource.SchemaRequest
 			"blocked": schema.BoolAttribute{
 				Description: "Whether the key is blocked.",
 				Computed:    true,
+			},
+			"router_settings_fallbacks": schema.MapAttribute{
+				Description: "Per-model fallback chain.",
+				Computed:    true,
+				ElementType: types.ListType{ElemType: types.StringType},
+			},
+			"router_settings_context_window_fallbacks": schema.MapAttribute{
+				Description: "Per-model context window fallback chain.",
+				Computed:    true,
+				ElementType: types.ListType{ElemType: types.StringType},
 			},
 		},
 	}
@@ -259,6 +271,11 @@ func (d *KeyDataSource) Read(ctx context.Context, req datasource.ReadRequest, re
 	} else {
 		data.Metadata, _ = types.MapValue(types.StringType, map[string]attr.Value{})
 	}
+
+	listElemType := types.ListType{ElemType: types.StringType}
+	routerSettings, _ := info["router_settings"].(map[string]interface{})
+	data.RouterSettingsFallbacks = readFallbacksField(routerSettings, "fallbacks", types.MapNull(listElemType), listElemType)
+	data.RouterSettingsContextWindowFallbacks = readFallbacksField(routerSettings, "context_window_fallbacks", types.MapNull(listElemType), listElemType)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }

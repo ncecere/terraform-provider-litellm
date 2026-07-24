@@ -133,25 +133,26 @@ func TestReadKeyDoesNotSetAPIInjectedBudgetDurationWhenUnconfigured(t *testing.T
 	}
 
 	data := KeyResourceModel{
-		ID:                       types.StringValue(hashKeyForID("sk-budget-duration-default")),
-		Key:                      types.StringValue("sk-budget-duration-default"),
-		BudgetDuration:           types.StringNull(),
-		Models:                   types.ListNull(types.StringType),
-		AllowedRoutes:            types.ListNull(types.StringType),
-		AllowedPassthroughRoutes: types.ListNull(types.StringType),
-		AllowedCacheControls:     types.ListNull(types.StringType),
-		Guardrails:               types.ListNull(types.StringType),
-		Prompts:                  types.ListNull(types.StringType),
-		EnforcedParams:           types.ListNull(types.StringType),
-		Tags:                     types.ListNull(types.StringType),
-		Metadata:                 types.MapNull(types.StringType),
-		Aliases:                  types.MapNull(types.StringType),
-		Config:                   types.MapNull(types.StringType),
-		Permissions:              types.MapNull(types.StringType),
-		ModelMaxBudget:           types.MapNull(types.Float64Type),
-		ModelRPMLimit:            types.MapNull(types.Int64Type),
-		ModelTPMLimit:            types.MapNull(types.Int64Type),
-		RouterSettingsFallbacks:  types.MapNull(types.ListType{ElemType: types.StringType}),
+		ID:                                   types.StringValue(hashKeyForID("sk-budget-duration-default")),
+		Key:                                  types.StringValue("sk-budget-duration-default"),
+		BudgetDuration:                       types.StringNull(),
+		Models:                               types.ListNull(types.StringType),
+		AllowedRoutes:                        types.ListNull(types.StringType),
+		AllowedPassthroughRoutes:             types.ListNull(types.StringType),
+		AllowedCacheControls:                 types.ListNull(types.StringType),
+		Guardrails:                           types.ListNull(types.StringType),
+		Prompts:                              types.ListNull(types.StringType),
+		EnforcedParams:                       types.ListNull(types.StringType),
+		Tags:                                 types.ListNull(types.StringType),
+		Metadata:                             types.MapNull(types.StringType),
+		Aliases:                              types.MapNull(types.StringType),
+		Config:                               types.MapNull(types.StringType),
+		Permissions:                          types.MapNull(types.StringType),
+		ModelMaxBudget:                       types.MapNull(types.Float64Type),
+		ModelRPMLimit:                        types.MapNull(types.Int64Type),
+		ModelTPMLimit:                        types.MapNull(types.Int64Type),
+		RouterSettingsFallbacks:              types.MapNull(types.ListType{ElemType: types.StringType}),
+		RouterSettingsContextWindowFallbacks: types.MapNull(types.ListType{ElemType: types.StringType}),
 	}
 
 	if err := r.readKey(context.Background(), &data); err != nil {
@@ -187,25 +188,26 @@ func TestReadKeyDoesNotSetAPIInjectedDefaultUserIDWhenUnconfigured(t *testing.T)
 	}
 
 	data := KeyResourceModel{
-		ID:                       types.StringValue(hashKeyForID("sk-default-user-key")),
-		Key:                      types.StringValue("sk-default-user-key"),
-		UserID:                   types.StringNull(),
-		Models:                   types.ListNull(types.StringType),
-		AllowedRoutes:            types.ListNull(types.StringType),
-		AllowedPassthroughRoutes: types.ListNull(types.StringType),
-		AllowedCacheControls:     types.ListNull(types.StringType),
-		Guardrails:               types.ListNull(types.StringType),
-		Prompts:                  types.ListNull(types.StringType),
-		EnforcedParams:           types.ListNull(types.StringType),
-		Tags:                     types.ListNull(types.StringType),
-		Metadata:                 types.MapNull(types.StringType),
-		Aliases:                  types.MapNull(types.StringType),
-		Config:                   types.MapNull(types.StringType),
-		Permissions:              types.MapNull(types.StringType),
-		ModelMaxBudget:           types.MapNull(types.Float64Type),
-		ModelRPMLimit:            types.MapNull(types.Int64Type),
-		ModelTPMLimit:            types.MapNull(types.Int64Type),
-		RouterSettingsFallbacks:  types.MapNull(types.ListType{ElemType: types.StringType}),
+		ID:                                   types.StringValue(hashKeyForID("sk-default-user-key")),
+		Key:                                  types.StringValue("sk-default-user-key"),
+		UserID:                               types.StringNull(),
+		Models:                               types.ListNull(types.StringType),
+		AllowedRoutes:                        types.ListNull(types.StringType),
+		AllowedPassthroughRoutes:             types.ListNull(types.StringType),
+		AllowedCacheControls:                 types.ListNull(types.StringType),
+		Guardrails:                           types.ListNull(types.StringType),
+		Prompts:                              types.ListNull(types.StringType),
+		EnforcedParams:                       types.ListNull(types.StringType),
+		Tags:                                 types.ListNull(types.StringType),
+		Metadata:                             types.MapNull(types.StringType),
+		Aliases:                              types.MapNull(types.StringType),
+		Config:                               types.MapNull(types.StringType),
+		Permissions:                          types.MapNull(types.StringType),
+		ModelMaxBudget:                       types.MapNull(types.Float64Type),
+		ModelRPMLimit:                        types.MapNull(types.Int64Type),
+		ModelTPMLimit:                        types.MapNull(types.Int64Type),
+		RouterSettingsFallbacks:              types.MapNull(types.ListType{ElemType: types.StringType}),
+		RouterSettingsContextWindowFallbacks: types.MapNull(types.ListType{ElemType: types.StringType}),
 	}
 
 	if err := r.readKey(context.Background(), &data); err != nil {
@@ -241,24 +243,25 @@ func TestReadKeyReadsProjectID(t *testing.T) {
 	}
 
 	data := KeyResourceModel{
-		ID:                       types.StringValue(hashKeyForID("sk-project-key")),
-		Key:                      types.StringValue("sk-project-key"),
-		Models:                   types.ListNull(types.StringType),
-		AllowedRoutes:            types.ListNull(types.StringType),
-		AllowedPassthroughRoutes: types.ListNull(types.StringType),
-		AllowedCacheControls:     types.ListNull(types.StringType),
-		Guardrails:               types.ListNull(types.StringType),
-		Prompts:                  types.ListNull(types.StringType),
-		EnforcedParams:           types.ListNull(types.StringType),
-		Tags:                     types.ListNull(types.StringType),
-		Metadata:                 types.MapNull(types.StringType),
-		Aliases:                  types.MapNull(types.StringType),
-		Config:                   types.MapNull(types.StringType),
-		Permissions:              types.MapNull(types.StringType),
-		ModelMaxBudget:           types.MapNull(types.Float64Type),
-		ModelRPMLimit:            types.MapNull(types.Int64Type),
-		ModelTPMLimit:            types.MapNull(types.Int64Type),
-		RouterSettingsFallbacks:  types.MapNull(types.ListType{ElemType: types.StringType}),
+		ID:                                   types.StringValue(hashKeyForID("sk-project-key")),
+		Key:                                  types.StringValue("sk-project-key"),
+		Models:                               types.ListNull(types.StringType),
+		AllowedRoutes:                        types.ListNull(types.StringType),
+		AllowedPassthroughRoutes:             types.ListNull(types.StringType),
+		AllowedCacheControls:                 types.ListNull(types.StringType),
+		Guardrails:                           types.ListNull(types.StringType),
+		Prompts:                              types.ListNull(types.StringType),
+		EnforcedParams:                       types.ListNull(types.StringType),
+		Tags:                                 types.ListNull(types.StringType),
+		Metadata:                             types.MapNull(types.StringType),
+		Aliases:                              types.MapNull(types.StringType),
+		Config:                               types.MapNull(types.StringType),
+		Permissions:                          types.MapNull(types.StringType),
+		ModelMaxBudget:                       types.MapNull(types.Float64Type),
+		ModelRPMLimit:                        types.MapNull(types.Int64Type),
+		ModelTPMLimit:                        types.MapNull(types.Int64Type),
+		RouterSettingsFallbacks:              types.MapNull(types.ListType{ElemType: types.StringType}),
+		RouterSettingsContextWindowFallbacks: types.MapNull(types.ListType{ElemType: types.StringType}),
 	}
 
 	if err := r.readKey(context.Background(), &data); err != nil {
@@ -521,24 +524,25 @@ func TestReadKeyResolvesUnknownOptionalComputedCollections(t *testing.T) {
 	}
 
 	data := KeyResourceModel{
-		ID:                       types.StringValue("key-123"),
-		Key:                      types.StringValue("key-123"),
-		Models:                   types.ListUnknown(types.StringType),
-		AllowedRoutes:            types.ListUnknown(types.StringType),
-		AllowedPassthroughRoutes: types.ListUnknown(types.StringType),
-		AllowedCacheControls:     types.ListUnknown(types.StringType),
-		Guardrails:               types.ListUnknown(types.StringType),
-		Prompts:                  types.ListUnknown(types.StringType),
-		EnforcedParams:           types.ListUnknown(types.StringType),
-		Tags:                     types.ListUnknown(types.StringType),
-		Metadata:                 types.MapUnknown(types.StringType),
-		Aliases:                  types.MapUnknown(types.StringType),
-		Config:                   types.MapUnknown(types.StringType),
-		Permissions:              types.MapUnknown(types.StringType),
-		ModelMaxBudget:           types.MapUnknown(types.Float64Type),
-		ModelRPMLimit:            types.MapUnknown(types.Int64Type),
-		ModelTPMLimit:            types.MapUnknown(types.Int64Type),
-		RouterSettingsFallbacks:  types.MapUnknown(types.ListType{ElemType: types.StringType}),
+		ID:                                   types.StringValue("key-123"),
+		Key:                                  types.StringValue("key-123"),
+		Models:                               types.ListUnknown(types.StringType),
+		AllowedRoutes:                        types.ListUnknown(types.StringType),
+		AllowedPassthroughRoutes:             types.ListUnknown(types.StringType),
+		AllowedCacheControls:                 types.ListUnknown(types.StringType),
+		Guardrails:                           types.ListUnknown(types.StringType),
+		Prompts:                              types.ListUnknown(types.StringType),
+		EnforcedParams:                       types.ListUnknown(types.StringType),
+		Tags:                                 types.ListUnknown(types.StringType),
+		Metadata:                             types.MapUnknown(types.StringType),
+		Aliases:                              types.MapUnknown(types.StringType),
+		Config:                               types.MapUnknown(types.StringType),
+		Permissions:                          types.MapUnknown(types.StringType),
+		ModelMaxBudget:                       types.MapUnknown(types.Float64Type),
+		ModelRPMLimit:                        types.MapUnknown(types.Int64Type),
+		ModelTPMLimit:                        types.MapUnknown(types.Int64Type),
+		RouterSettingsFallbacks:              types.MapUnknown(types.ListType{ElemType: types.StringType}),
+		RouterSettingsContextWindowFallbacks: types.MapUnknown(types.ListType{ElemType: types.StringType}),
 	}
 
 	if err := r.readKey(context.Background(), &data); err != nil {
@@ -641,24 +645,25 @@ func TestReadKeyWithNestedInfoResponse(t *testing.T) {
 	// In real usage, Create sets the hashed ID before calling readKey.
 	// Simulate that here: Key is known, ID is already hashed.
 	data := KeyResourceModel{
-		ID:                       types.StringValue(hashKeyForID("sk-test-key-123")),
-		Key:                      types.StringValue("sk-test-key-123"),
-		Models:                   types.ListUnknown(types.StringType),
-		AllowedRoutes:            types.ListUnknown(types.StringType),
-		AllowedPassthroughRoutes: types.ListUnknown(types.StringType),
-		AllowedCacheControls:     types.ListUnknown(types.StringType),
-		Guardrails:               types.ListUnknown(types.StringType),
-		Prompts:                  types.ListUnknown(types.StringType),
-		EnforcedParams:           types.ListUnknown(types.StringType),
-		Tags:                     types.ListUnknown(types.StringType),
-		Metadata:                 types.MapUnknown(types.StringType),
-		Aliases:                  types.MapUnknown(types.StringType),
-		Config:                   types.MapUnknown(types.StringType),
-		Permissions:              types.MapUnknown(types.StringType),
-		ModelMaxBudget:           types.MapUnknown(types.Float64Type),
-		ModelRPMLimit:            types.MapUnknown(types.Int64Type),
-		ModelTPMLimit:            types.MapUnknown(types.Int64Type),
-		RouterSettingsFallbacks:  types.MapUnknown(types.ListType{ElemType: types.StringType}),
+		ID:                                   types.StringValue(hashKeyForID("sk-test-key-123")),
+		Key:                                  types.StringValue("sk-test-key-123"),
+		Models:                               types.ListUnknown(types.StringType),
+		AllowedRoutes:                        types.ListUnknown(types.StringType),
+		AllowedPassthroughRoutes:             types.ListUnknown(types.StringType),
+		AllowedCacheControls:                 types.ListUnknown(types.StringType),
+		Guardrails:                           types.ListUnknown(types.StringType),
+		Prompts:                              types.ListUnknown(types.StringType),
+		EnforcedParams:                       types.ListUnknown(types.StringType),
+		Tags:                                 types.ListUnknown(types.StringType),
+		Metadata:                             types.MapUnknown(types.StringType),
+		Aliases:                              types.MapUnknown(types.StringType),
+		Config:                               types.MapUnknown(types.StringType),
+		Permissions:                          types.MapUnknown(types.StringType),
+		ModelMaxBudget:                       types.MapUnknown(types.Float64Type),
+		ModelRPMLimit:                        types.MapUnknown(types.Int64Type),
+		ModelTPMLimit:                        types.MapUnknown(types.Int64Type),
+		RouterSettingsFallbacks:              types.MapUnknown(types.ListType{ElemType: types.StringType}),
+		RouterSettingsContextWindowFallbacks: types.MapUnknown(types.ListType{ElemType: types.StringType}),
 	}
 
 	if err := r.readKey(context.Background(), &data); err != nil {
@@ -1231,23 +1236,24 @@ func TestReadKeyURLEncodesSpecialChars(t *testing.T) {
 	}
 
 	data := &KeyResourceModel{
-		Key:                      types.StringValue(keyWithSpecialChars),
-		Models:                   types.ListNull(types.StringType),
-		AllowedRoutes:            types.ListNull(types.StringType),
-		AllowedPassthroughRoutes: types.ListNull(types.StringType),
-		AllowedCacheControls:     types.ListNull(types.StringType),
-		Guardrails:               types.ListNull(types.StringType),
-		Prompts:                  types.ListNull(types.StringType),
-		EnforcedParams:           types.ListNull(types.StringType),
-		Tags:                     types.ListNull(types.StringType),
-		Metadata:                 types.MapNull(types.StringType),
-		Aliases:                  types.MapNull(types.StringType),
-		Config:                   types.MapNull(types.StringType),
-		Permissions:              types.MapNull(types.StringType),
-		ModelMaxBudget:           types.MapNull(types.Float64Type),
-		ModelRPMLimit:            types.MapNull(types.Int64Type),
-		ModelTPMLimit:            types.MapNull(types.Int64Type),
-		RouterSettingsFallbacks:  types.MapNull(types.ListType{ElemType: types.StringType}),
+		Key:                                  types.StringValue(keyWithSpecialChars),
+		Models:                               types.ListNull(types.StringType),
+		AllowedRoutes:                        types.ListNull(types.StringType),
+		AllowedPassthroughRoutes:             types.ListNull(types.StringType),
+		AllowedCacheControls:                 types.ListNull(types.StringType),
+		Guardrails:                           types.ListNull(types.StringType),
+		Prompts:                              types.ListNull(types.StringType),
+		EnforcedParams:                       types.ListNull(types.StringType),
+		Tags:                                 types.ListNull(types.StringType),
+		Metadata:                             types.MapNull(types.StringType),
+		Aliases:                              types.MapNull(types.StringType),
+		Config:                               types.MapNull(types.StringType),
+		Permissions:                          types.MapNull(types.StringType),
+		ModelMaxBudget:                       types.MapNull(types.Float64Type),
+		ModelRPMLimit:                        types.MapNull(types.Int64Type),
+		ModelTPMLimit:                        types.MapNull(types.Int64Type),
+		RouterSettingsFallbacks:              types.MapNull(types.ListType{ElemType: types.StringType}),
+		RouterSettingsContextWindowFallbacks: types.MapNull(types.ListType{ElemType: types.StringType}),
 	}
 
 	if err := r.readKey(context.Background(), data); err != nil {
@@ -1308,22 +1314,23 @@ func TestReadKeyPreservesUserProvidedKey(t *testing.T) {
 		ID:  types.StringValue(hashKeyForID(rawKey)),
 		Key: types.StringValue(rawKey), // user-provided, already known
 		// Initialise collection fields to avoid nil panics in readKey.
-		Models:                   types.ListNull(types.StringType),
-		AllowedRoutes:            types.ListNull(types.StringType),
-		AllowedPassthroughRoutes: types.ListNull(types.StringType),
-		AllowedCacheControls:     types.ListNull(types.StringType),
-		Guardrails:               types.ListNull(types.StringType),
-		Prompts:                  types.ListNull(types.StringType),
-		EnforcedParams:           types.ListNull(types.StringType),
-		Tags:                     types.ListNull(types.StringType),
-		Metadata:                 types.MapNull(types.StringType),
-		Aliases:                  types.MapNull(types.StringType),
-		Config:                   types.MapNull(types.StringType),
-		Permissions:              types.MapNull(types.StringType),
-		ModelMaxBudget:           types.MapNull(types.Float64Type),
-		ModelRPMLimit:            types.MapNull(types.Int64Type),
-		ModelTPMLimit:            types.MapNull(types.Int64Type),
-		RouterSettingsFallbacks:  types.MapNull(types.ListType{ElemType: types.StringType}),
+		Models:                               types.ListNull(types.StringType),
+		AllowedRoutes:                        types.ListNull(types.StringType),
+		AllowedPassthroughRoutes:             types.ListNull(types.StringType),
+		AllowedCacheControls:                 types.ListNull(types.StringType),
+		Guardrails:                           types.ListNull(types.StringType),
+		Prompts:                              types.ListNull(types.StringType),
+		EnforcedParams:                       types.ListNull(types.StringType),
+		Tags:                                 types.ListNull(types.StringType),
+		Metadata:                             types.MapNull(types.StringType),
+		Aliases:                              types.MapNull(types.StringType),
+		Config:                               types.MapNull(types.StringType),
+		Permissions:                          types.MapNull(types.StringType),
+		ModelMaxBudget:                       types.MapNull(types.Float64Type),
+		ModelRPMLimit:                        types.MapNull(types.Int64Type),
+		ModelTPMLimit:                        types.MapNull(types.Int64Type),
+		RouterSettingsFallbacks:              types.MapNull(types.ListType{ElemType: types.StringType}),
+		RouterSettingsContextWindowFallbacks: types.MapNull(types.ListType{ElemType: types.StringType}),
 	}
 
 	if err := r.readKey(context.Background(), &data); err != nil {
@@ -1389,24 +1396,25 @@ func TestReadKeyPopulatesUnknownKey(t *testing.T) {
 	// This test confirms that when the key in state matches the API
 	// response, it stays unchanged (no-op case).
 	data := KeyResourceModel{
-		ID:                       types.StringValue(hashKeyForID(apiReturnedKey)),
-		Key:                      types.StringValue(apiReturnedKey),
-		Models:                   types.ListNull(types.StringType),
-		AllowedRoutes:            types.ListNull(types.StringType),
-		AllowedPassthroughRoutes: types.ListNull(types.StringType),
-		AllowedCacheControls:     types.ListNull(types.StringType),
-		Guardrails:               types.ListNull(types.StringType),
-		Prompts:                  types.ListNull(types.StringType),
-		EnforcedParams:           types.ListNull(types.StringType),
-		Tags:                     types.ListNull(types.StringType),
-		Metadata:                 types.MapNull(types.StringType),
-		Aliases:                  types.MapNull(types.StringType),
-		Config:                   types.MapNull(types.StringType),
-		Permissions:              types.MapNull(types.StringType),
-		ModelMaxBudget:           types.MapNull(types.Float64Type),
-		ModelRPMLimit:            types.MapNull(types.Int64Type),
-		ModelTPMLimit:            types.MapNull(types.Int64Type),
-		RouterSettingsFallbacks:  types.MapNull(types.ListType{ElemType: types.StringType}),
+		ID:                                   types.StringValue(hashKeyForID(apiReturnedKey)),
+		Key:                                  types.StringValue(apiReturnedKey),
+		Models:                               types.ListNull(types.StringType),
+		AllowedRoutes:                        types.ListNull(types.StringType),
+		AllowedPassthroughRoutes:             types.ListNull(types.StringType),
+		AllowedCacheControls:                 types.ListNull(types.StringType),
+		Guardrails:                           types.ListNull(types.StringType),
+		Prompts:                              types.ListNull(types.StringType),
+		EnforcedParams:                       types.ListNull(types.StringType),
+		Tags:                                 types.ListNull(types.StringType),
+		Metadata:                             types.MapNull(types.StringType),
+		Aliases:                              types.MapNull(types.StringType),
+		Config:                               types.MapNull(types.StringType),
+		Permissions:                          types.MapNull(types.StringType),
+		ModelMaxBudget:                       types.MapNull(types.Float64Type),
+		ModelRPMLimit:                        types.MapNull(types.Int64Type),
+		ModelTPMLimit:                        types.MapNull(types.Int64Type),
+		RouterSettingsFallbacks:              types.MapNull(types.ListType{ElemType: types.StringType}),
+		RouterSettingsContextWindowFallbacks: types.MapNull(types.ListType{ElemType: types.StringType}),
 	}
 
 	if err := r.readKey(context.Background(), &data); err != nil {
@@ -1465,13 +1473,14 @@ func TestBuildKeyRequestOmitsRouterSettingsFallbacksWhenNull(t *testing.T) {
 
 	r := &KeyResource{}
 	data := &KeyResourceModel{
-		RouterSettingsFallbacks: types.MapNull(types.ListType{ElemType: types.StringType}),
+		RouterSettingsFallbacks:              types.MapNull(types.ListType{ElemType: types.StringType}),
+		RouterSettingsContextWindowFallbacks: types.MapNull(types.ListType{ElemType: types.StringType}),
 	}
 
 	req := r.buildKeyRequest(context.Background(), data)
 
 	if _, ok := req["router_settings"]; ok {
-		t.Error("router_settings must not appear in request when router_settings_fallbacks is null")
+		t.Error("router_settings must not appear in request when both fallback fields are null")
 	}
 }
 
@@ -1611,5 +1620,141 @@ func TestReadKeyRouterSettingsFallbacksUnknownResolvesToNull(t *testing.T) {
 	}
 	if !data.RouterSettingsFallbacks.IsNull() {
 		t.Error("router_settings_fallbacks should be null when API returns no router_settings and field was Unknown")
+	}
+}
+
+func TestBuildKeyRequestIncludesContextWindowFallbacks(t *testing.T) {
+	t.Parallel()
+
+	r := &KeyResource{}
+
+	cwfb, _ := types.ListValue(types.StringType, []attr.Value{types.StringValue("claude-haiku-4.5")})
+	cwfbMap, _ := types.MapValue(
+		types.ListType{ElemType: types.StringType},
+		map[string]attr.Value{"claude-sonnet-4.6": cwfb},
+	)
+
+	data := &KeyResourceModel{
+		RouterSettingsContextWindowFallbacks: cwfbMap,
+	}
+
+	req := r.buildKeyRequest(context.Background(), data)
+
+	rs, ok := req["router_settings"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected router_settings in request, got %T", req["router_settings"])
+	}
+	if _, ok := rs["fallbacks"]; ok {
+		t.Error("fallbacks must not appear when only context_window_fallbacks is set")
+	}
+	cwfbList, ok := rs["context_window_fallbacks"].([]map[string]interface{})
+	if !ok {
+		t.Fatalf("expected context_window_fallbacks to be []map[string]interface{}, got %T", rs["context_window_fallbacks"])
+	}
+	if len(cwfbList) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(cwfbList))
+	}
+	fallbacks, ok := cwfbList[0]["claude-sonnet-4.6"].([]string)
+	if !ok {
+		t.Fatalf("expected []string for primary model, got %T", cwfbList[0]["claude-sonnet-4.6"])
+	}
+	if len(fallbacks) != 1 || fallbacks[0] != "claude-haiku-4.5" {
+		t.Errorf("unexpected fallbacks: %v", fallbacks)
+	}
+}
+
+func TestBuildKeyRequestBothFallbackTypes(t *testing.T) {
+	t.Parallel()
+
+	r := &KeyResource{}
+
+	fb, _ := types.ListValue(types.StringType, []attr.Value{types.StringValue("claude-haiku-4.5")})
+	fbMap, _ := types.MapValue(types.ListType{ElemType: types.StringType}, map[string]attr.Value{"claude-sonnet-4.6": fb})
+
+	cwfb, _ := types.ListValue(types.StringType, []attr.Value{types.StringValue("claude-haiku-4.5")})
+	cwfbMap, _ := types.MapValue(types.ListType{ElemType: types.StringType}, map[string]attr.Value{"claude-sonnet-4.6": cwfb})
+
+	data := &KeyResourceModel{
+		RouterSettingsFallbacks:              fbMap,
+		RouterSettingsContextWindowFallbacks: cwfbMap,
+	}
+
+	req := r.buildKeyRequest(context.Background(), data)
+
+	rs, ok := req["router_settings"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected router_settings, got %T", req["router_settings"])
+	}
+	if _, ok := rs["fallbacks"]; !ok {
+		t.Error("fallbacks missing from router_settings")
+	}
+	if _, ok := rs["context_window_fallbacks"]; !ok {
+		t.Error("context_window_fallbacks missing from router_settings")
+	}
+}
+
+func TestReadKeyReadsContextWindowFallbacks(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"key": "sk-cwfb-key",
+			"info": map[string]interface{}{
+				"token": "sk-cwfb-key",
+				"router_settings": map[string]interface{}{
+					"context_window_fallbacks": []interface{}{
+						map[string]interface{}{
+							"claude-sonnet-4.6": []interface{}{"claude-haiku-4.5"},
+						},
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	rc := &KeyResource{
+		client: &Client{
+			APIBase:    server.URL,
+			APIKey:     "test-key",
+			HTTPClient: server.Client(),
+		},
+	}
+
+	cwfb, _ := types.ListValue(types.StringType, []attr.Value{types.StringValue("claude-haiku-4.5")})
+	configured, _ := types.MapValue(types.ListType{ElemType: types.StringType}, map[string]attr.Value{"claude-sonnet-4.6": cwfb})
+
+	data := KeyResourceModel{
+		ID:                                   types.StringValue(hashKeyForID("sk-cwfb-key")),
+		Key:                                  types.StringValue("sk-cwfb-key"),
+		RouterSettingsFallbacks:              types.MapNull(types.ListType{ElemType: types.StringType}),
+		RouterSettingsContextWindowFallbacks: configured,
+	}
+
+	if err := rc.readKey(context.Background(), &data); err != nil {
+		t.Fatalf("readKey returned error: %v", err)
+	}
+
+	if data.RouterSettingsContextWindowFallbacks.IsNull() || data.RouterSettingsContextWindowFallbacks.IsUnknown() {
+		t.Fatal("router_settings_context_window_fallbacks should be known and non-null")
+	}
+	elems := data.RouterSettingsContextWindowFallbacks.Elements()
+	if len(elems) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(elems))
+	}
+	lv, ok := elems["claude-sonnet-4.6"].(types.List)
+	if !ok {
+		t.Fatalf("expected types.List, got %T", elems["claude-sonnet-4.6"])
+	}
+	var fallbacks []string
+	lv.ElementsAs(context.Background(), &fallbacks, false)
+	if len(fallbacks) != 1 || fallbacks[0] != "claude-haiku-4.5" {
+		t.Errorf("unexpected fallbacks: %v", fallbacks)
+	}
+
+	// fallbacks field was null and API didn't return it — should stay null
+	if !data.RouterSettingsFallbacks.IsNull() {
+		t.Error("router_settings_fallbacks should remain null when absent from API response")
 	}
 }
