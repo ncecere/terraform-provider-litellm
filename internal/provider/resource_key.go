@@ -72,6 +72,7 @@ type KeyResourceModel struct {
 	EnforcedParams           types.List    `tfsdk:"enforced_params"`
 	Tags                     types.List    `tfsdk:"tags"`
 	Blocked                  types.Bool    `tfsdk:"blocked"`
+	RouterSettingsFallbacks  types.Map     `tfsdk:"router_settings_fallbacks"`
 }
 
 func (r *KeyResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -266,6 +267,12 @@ func (r *KeyResource) Schema(ctx context.Context, req resource.SchemaRequest, re
 				Description: "Whether the key is blocked.",
 				Optional:    true,
 				Computed:    true,
+			},
+			"router_settings_fallbacks": schema.MapAttribute{
+				Description: "Per-model fallback chain. Keys are primary model names; values are ordered lists of fallback model names. Configures router_settings.fallbacks on the key — only upstream failures (Azure/Bedrock 429s, 5xx, timeouts) trigger the fallback chain; proxy-level quota limits do not.",
+				Optional:    true,
+				Computed:    true,
+				ElementType: types.ListType{ElemType: types.StringType},
 			},
 		},
 	}
@@ -666,6 +673,26 @@ func (r *KeyResource) buildKeyRequest(ctx context.Context, data *KeyResourceMode
 		}
 	}
 
+	// router_settings.fallbacks: [{"primary_model": ["fallback1", ...]}]
+	if !data.RouterSettingsFallbacks.IsNull() && !data.RouterSettingsFallbacks.IsUnknown() {
+		elems := data.RouterSettingsFallbacks.Elements()
+		if len(elems) > 0 {
+			fallbacksList := make([]map[string]interface{}, 0, len(elems))
+			for primary, v := range elems {
+				var fallbacks []string
+				if lv, ok := v.(types.List); ok {
+					lv.ElementsAs(ctx, &fallbacks, false)
+				}
+				fallbacksList = append(fallbacksList, map[string]interface{}{
+					primary: fallbacks,
+				})
+			}
+			keyReq["router_settings"] = map[string]interface{}{
+				"fallbacks": fallbacksList,
+			}
+		}
+	}
+
 	// Handle service account
 	if !data.ServiceAccountID.IsNull() && !data.ServiceAccountID.IsUnknown() && data.ServiceAccountID.ValueString() != "" {
 		saID := data.ServiceAccountID.ValueString()
@@ -1025,6 +1052,41 @@ func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error
 		data.ModelTPMLimit, _ = types.MapValue(types.Int64Type, tpmMap)
 	} else if data.ModelTPMLimit.IsUnknown() {
 		data.ModelTPMLimit, _ = types.MapValue(types.Int64Type, map[string]attr.Value{})
+	}
+
+	// Handle router_settings.fallbacks — the field LiteLLM's router actually reads
+	// (distinct from the top-level "fallbacks" field which is UI-metadata only).
+	listElemType := types.ListType{ElemType: types.StringType}
+	if routerSettings, ok := info["router_settings"].(map[string]interface{}); ok {
+		if fallbacksRaw, ok := routerSettings["fallbacks"].([]interface{}); ok && len(fallbacksRaw) > 0 {
+			fallbackMap := make(map[string]attr.Value)
+			for _, entry := range fallbacksRaw {
+				if entryMap, ok := entry.(map[string]interface{}); ok {
+					for primary, fbIface := range entryMap {
+						var vals []attr.Value
+						if fbSlice, ok := fbIface.([]interface{}); ok {
+							for _, f := range fbSlice {
+								if s, ok := f.(string); ok {
+									vals = append(vals, types.StringValue(s))
+								}
+							}
+						}
+						lv, _ := types.ListValue(types.StringType, vals)
+						fallbackMap[primary] = lv
+					}
+				}
+			}
+			data.RouterSettingsFallbacks, _ = types.MapValue(listElemType, fallbackMap)
+		} else if data.RouterSettingsFallbacks.IsUnknown() {
+			data.RouterSettingsFallbacks = types.MapNull(listElemType)
+		} else if !data.RouterSettingsFallbacks.IsNull() {
+			data.RouterSettingsFallbacks, _ = types.MapValue(listElemType, map[string]attr.Value{})
+		}
+	} else if data.RouterSettingsFallbacks.IsUnknown() {
+		data.RouterSettingsFallbacks = types.MapNull(listElemType)
+	} else if !data.RouterSettingsFallbacks.IsNull() {
+		// router_settings absent from API but user had configured fallbacks — clear to empty
+		data.RouterSettingsFallbacks, _ = types.MapValue(listElemType, map[string]attr.Value{})
 	}
 
 	return nil

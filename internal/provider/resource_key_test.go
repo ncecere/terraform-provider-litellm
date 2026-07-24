@@ -151,6 +151,7 @@ func TestReadKeyDoesNotSetAPIInjectedBudgetDurationWhenUnconfigured(t *testing.T
 		ModelMaxBudget:           types.MapNull(types.Float64Type),
 		ModelRPMLimit:            types.MapNull(types.Int64Type),
 		ModelTPMLimit:            types.MapNull(types.Int64Type),
+		RouterSettingsFallbacks:  types.MapNull(types.ListType{ElemType: types.StringType}),
 	}
 
 	if err := r.readKey(context.Background(), &data); err != nil {
@@ -204,6 +205,7 @@ func TestReadKeyDoesNotSetAPIInjectedDefaultUserIDWhenUnconfigured(t *testing.T)
 		ModelMaxBudget:           types.MapNull(types.Float64Type),
 		ModelRPMLimit:            types.MapNull(types.Int64Type),
 		ModelTPMLimit:            types.MapNull(types.Int64Type),
+		RouterSettingsFallbacks:  types.MapNull(types.ListType{ElemType: types.StringType}),
 	}
 
 	if err := r.readKey(context.Background(), &data); err != nil {
@@ -256,6 +258,7 @@ func TestReadKeyReadsProjectID(t *testing.T) {
 		ModelMaxBudget:           types.MapNull(types.Float64Type),
 		ModelRPMLimit:            types.MapNull(types.Int64Type),
 		ModelTPMLimit:            types.MapNull(types.Int64Type),
+		RouterSettingsFallbacks:  types.MapNull(types.ListType{ElemType: types.StringType}),
 	}
 
 	if err := r.readKey(context.Background(), &data); err != nil {
@@ -535,6 +538,7 @@ func TestReadKeyResolvesUnknownOptionalComputedCollections(t *testing.T) {
 		ModelMaxBudget:           types.MapUnknown(types.Float64Type),
 		ModelRPMLimit:            types.MapUnknown(types.Int64Type),
 		ModelTPMLimit:            types.MapUnknown(types.Int64Type),
+		RouterSettingsFallbacks:  types.MapUnknown(types.ListType{ElemType: types.StringType}),
 	}
 
 	if err := r.readKey(context.Background(), &data); err != nil {
@@ -654,6 +658,7 @@ func TestReadKeyWithNestedInfoResponse(t *testing.T) {
 		ModelMaxBudget:           types.MapUnknown(types.Float64Type),
 		ModelRPMLimit:            types.MapUnknown(types.Int64Type),
 		ModelTPMLimit:            types.MapUnknown(types.Int64Type),
+		RouterSettingsFallbacks:  types.MapUnknown(types.ListType{ElemType: types.StringType}),
 	}
 
 	if err := r.readKey(context.Background(), &data); err != nil {
@@ -1242,6 +1247,7 @@ func TestReadKeyURLEncodesSpecialChars(t *testing.T) {
 		ModelMaxBudget:           types.MapNull(types.Float64Type),
 		ModelRPMLimit:            types.MapNull(types.Int64Type),
 		ModelTPMLimit:            types.MapNull(types.Int64Type),
+		RouterSettingsFallbacks:  types.MapNull(types.ListType{ElemType: types.StringType}),
 	}
 
 	if err := r.readKey(context.Background(), data); err != nil {
@@ -1317,6 +1323,7 @@ func TestReadKeyPreservesUserProvidedKey(t *testing.T) {
 		ModelMaxBudget:           types.MapNull(types.Float64Type),
 		ModelRPMLimit:            types.MapNull(types.Int64Type),
 		ModelTPMLimit:            types.MapNull(types.Int64Type),
+		RouterSettingsFallbacks:  types.MapNull(types.ListType{ElemType: types.StringType}),
 	}
 
 	if err := r.readKey(context.Background(), &data); err != nil {
@@ -1399,6 +1406,7 @@ func TestReadKeyPopulatesUnknownKey(t *testing.T) {
 		ModelMaxBudget:           types.MapNull(types.Float64Type),
 		ModelRPMLimit:            types.MapNull(types.Int64Type),
 		ModelTPMLimit:            types.MapNull(types.Int64Type),
+		RouterSettingsFallbacks:  types.MapNull(types.ListType{ElemType: types.StringType}),
 	}
 
 	if err := r.readKey(context.Background(), &data); err != nil {
@@ -1407,5 +1415,201 @@ func TestReadKeyPopulatesUnknownKey(t *testing.T) {
 
 	if data.Key.ValueString() != apiReturnedKey {
 		t.Errorf("key should remain %q, got %q", apiReturnedKey, data.Key.ValueString())
+	}
+}
+
+func TestBuildKeyRequestIncludesRouterSettingsFallbacks(t *testing.T) {
+	t.Parallel()
+
+	r := &KeyResource{}
+
+	fb1, _ := types.ListValue(types.StringType, []attr.Value{
+		types.StringValue("claude-haiku-4.5"),
+		types.StringValue("claude-opus-4.8"),
+	})
+	fallbacksMap, _ := types.MapValue(
+		types.ListType{ElemType: types.StringType},
+		map[string]attr.Value{"claude-sonnet-4.6": fb1},
+	)
+
+	data := &KeyResourceModel{
+		RouterSettingsFallbacks: fallbacksMap,
+	}
+
+	req := r.buildKeyRequest(context.Background(), data)
+
+	rs, ok := req["router_settings"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected router_settings in request, got %T", req["router_settings"])
+	}
+
+	fbList, ok := rs["fallbacks"].([]map[string]interface{})
+	if !ok {
+		t.Fatalf("expected router_settings.fallbacks to be []map[string]interface{}, got %T", rs["fallbacks"])
+	}
+	if len(fbList) != 1 {
+		t.Fatalf("expected 1 fallback entry, got %d", len(fbList))
+	}
+
+	fallbacks, ok := fbList[0]["claude-sonnet-4.6"].([]string)
+	if !ok {
+		t.Fatalf("expected []string for primary model fallbacks, got %T", fbList[0]["claude-sonnet-4.6"])
+	}
+	if len(fallbacks) != 2 || fallbacks[0] != "claude-haiku-4.5" || fallbacks[1] != "claude-opus-4.8" {
+		t.Errorf("unexpected fallbacks: %v", fallbacks)
+	}
+}
+
+func TestBuildKeyRequestOmitsRouterSettingsFallbacksWhenNull(t *testing.T) {
+	t.Parallel()
+
+	r := &KeyResource{}
+	data := &KeyResourceModel{
+		RouterSettingsFallbacks: types.MapNull(types.ListType{ElemType: types.StringType}),
+	}
+
+	req := r.buildKeyRequest(context.Background(), data)
+
+	if _, ok := req["router_settings"]; ok {
+		t.Error("router_settings must not appear in request when router_settings_fallbacks is null")
+	}
+}
+
+func TestReadKeyReadsRouterSettingsFallbacks(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"key": "sk-fallback-key",
+			"info": map[string]interface{}{
+				"token": "sk-fallback-key",
+				"router_settings": map[string]interface{}{
+					"fallbacks": []interface{}{
+						map[string]interface{}{
+							"claude-sonnet-4.6": []interface{}{"claude-haiku-4.5", "claude-opus-4.8"},
+						},
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	rc := &KeyResource{
+		client: &Client{
+			APIBase:    server.URL,
+			APIKey:     "test-key",
+			HTTPClient: server.Client(),
+		},
+	}
+
+	fb1, _ := types.ListValue(types.StringType, []attr.Value{types.StringValue("claude-haiku-4.5")})
+	configured, _ := types.MapValue(
+		types.ListType{ElemType: types.StringType},
+		map[string]attr.Value{"claude-sonnet-4.6": fb1},
+	)
+
+	data := KeyResourceModel{
+		ID:                      types.StringValue(hashKeyForID("sk-fallback-key")),
+		Key:                     types.StringValue("sk-fallback-key"),
+		RouterSettingsFallbacks: configured,
+	}
+
+	if err := rc.readKey(context.Background(), &data); err != nil {
+		t.Fatalf("readKey returned error: %v", err)
+	}
+
+	if data.RouterSettingsFallbacks.IsNull() || data.RouterSettingsFallbacks.IsUnknown() {
+		t.Fatal("router_settings_fallbacks should be known and non-null after read")
+	}
+
+	elems := data.RouterSettingsFallbacks.Elements()
+	if len(elems) != 1 {
+		t.Fatalf("expected 1 primary model, got %d", len(elems))
+	}
+
+	lv, ok := elems["claude-sonnet-4.6"].(types.List)
+	if !ok {
+		t.Fatalf("expected types.List for primary model, got %T", elems["claude-sonnet-4.6"])
+	}
+
+	var fallbacks []string
+	lv.ElementsAs(context.Background(), &fallbacks, false)
+	if len(fallbacks) != 2 || fallbacks[0] != "claude-haiku-4.5" || fallbacks[1] != "claude-opus-4.8" {
+		t.Errorf("unexpected fallback values: %v", fallbacks)
+	}
+}
+
+func TestReadKeyRouterSettingsFallbacksNullWhenAbsent(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"key":  "sk-no-fallbacks",
+			"info": map[string]interface{}{"token": "sk-no-fallbacks"},
+		})
+	}))
+	defer server.Close()
+
+	rc := &KeyResource{
+		client: &Client{
+			APIBase:    server.URL,
+			APIKey:     "test-key",
+			HTTPClient: server.Client(),
+		},
+	}
+
+	data := KeyResourceModel{
+		ID:                      types.StringValue(hashKeyForID("sk-no-fallbacks")),
+		Key:                     types.StringValue("sk-no-fallbacks"),
+		RouterSettingsFallbacks: types.MapNull(types.ListType{ElemType: types.StringType}),
+	}
+
+	if err := rc.readKey(context.Background(), &data); err != nil {
+		t.Fatalf("readKey returned error: %v", err)
+	}
+
+	if !data.RouterSettingsFallbacks.IsNull() {
+		t.Error("router_settings_fallbacks should remain null when API returns no router_settings")
+	}
+}
+
+func TestReadKeyRouterSettingsFallbacksUnknownResolvesToNull(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"key":  "sk-unknown-fallbacks",
+			"info": map[string]interface{}{"token": "sk-unknown-fallbacks"},
+		})
+	}))
+	defer server.Close()
+
+	rc := &KeyResource{
+		client: &Client{
+			APIBase:    server.URL,
+			APIKey:     "test-key",
+			HTTPClient: server.Client(),
+		},
+	}
+
+	data := KeyResourceModel{
+		ID:                      types.StringValue(hashKeyForID("sk-unknown-fallbacks")),
+		Key:                     types.StringValue("sk-unknown-fallbacks"),
+		RouterSettingsFallbacks: types.MapUnknown(types.ListType{ElemType: types.StringType}),
+	}
+
+	if err := rc.readKey(context.Background(), &data); err != nil {
+		t.Fatalf("readKey returned error: %v", err)
+	}
+
+	if data.RouterSettingsFallbacks.IsUnknown() {
+		t.Fatal("router_settings_fallbacks must not remain Unknown after readKey")
+	}
+	if !data.RouterSettingsFallbacks.IsNull() {
+		t.Error("router_settings_fallbacks should be null when API returns no router_settings and field was Unknown")
 	}
 }
