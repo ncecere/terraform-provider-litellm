@@ -89,21 +89,19 @@ resource "litellm_key" "service_account" {
 resource "litellm_key" "service" {
   key_alias = "key-abc"
   team_id   = "team-abc"
-  models    = ["model-a", "model-b", "model-c"]
+  models    = ["model-a", "model-b", "model-c", "model-d"]
 
   router_settings_fallbacks = {
-    "model-a" = ["model-b", "model-c"]
-    "model-b" = ["model-c"]
+    "model-a" = ["model-c", "model-d"]
+    "model-b" = ["model-c", "model-d"]
   }
 
   router_settings_context_window_fallbacks = {
-    "model-a" = ["model-b", "model-c"]
-    "model-b" = ["model-c"]
+    "model-a" = ["model-c", "model-d"]
+    "model-b" = ["model-c", "model-d"]
   }
 }
 ```
-
-Every model listed as a fallback must also appear in `models`.
 
 ### Key with Complex Metadata (Logging Configuration)
 
@@ -196,7 +194,7 @@ The following arguments are supported:
 
 * `blocked` - (Optional) Whether this key is blocked.
 
-* `router_settings_fallbacks` - (Optional) Per-model fallback chain. Keys are primary model names; values are ordered lists of fallback model names. Every model listed as a fallback must also be present in `models`.
+* `router_settings_fallbacks` - (Optional) Per-model fallback chain. Keys are primary model names; values are ordered lists of fallback model names. Model names are plain strings and do not need to be declared as separate `litellm_model` resources.
 
 * `router_settings_context_window_fallbacks` - (Optional) Per-model context window fallback chain. Same format as `router_settings_fallbacks`; applied when the primary model's context window is exceeded.
 
