@@ -32,3 +32,11 @@ output "ds_key_tags" {
 output "ds_key_metadata" {
   value = data.litellm_key.lookup.metadata
 }
+
+output "ds_key_router_settings_fallbacks" {
+  value = data.litellm_key.lookup.router_settings_fallbacks
+}
+
+output "ds_key_router_settings_context_window_fallbacks" {
+  value = data.litellm_key.lookup.router_settings_context_window_fallbacks
+}
