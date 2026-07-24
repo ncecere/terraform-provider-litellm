@@ -1468,9 +1468,11 @@ func TestBuildKeyRequestIncludesRouterSettingsFallbacks(t *testing.T) {
 	}
 }
 
-func TestBuildKeyRequestOmitsRouterSettingsFallbacksWhenNull(t *testing.T) {
+func TestBuildKeyRequestClearsRouterSettingsFallbacksWhenNull(t *testing.T) {
 	t.Parallel()
 
+	// Null means the user removed the attribute — the provider must send empty
+	// lists so LiteLLM clears any previously configured fallbacks.
 	r := &KeyResource{}
 	data := &KeyResourceModel{
 		RouterSettingsFallbacks:              types.MapNull(types.ListType{ElemType: types.StringType}),
@@ -1479,8 +1481,23 @@ func TestBuildKeyRequestOmitsRouterSettingsFallbacksWhenNull(t *testing.T) {
 
 	req := r.buildKeyRequest(context.Background(), data)
 
-	if _, ok := req["router_settings"]; ok {
-		t.Error("router_settings must not appear in request when both fallback fields are null")
+	rs, ok := req["router_settings"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected router_settings in request to clear fallbacks, got %T", req["router_settings"])
+	}
+	fb, ok := rs["fallbacks"].([]map[string]interface{})
+	if !ok {
+		t.Fatalf("expected fallbacks to be []map[string]interface{}, got %T", rs["fallbacks"])
+	}
+	if len(fb) != 0 {
+		t.Errorf("expected empty fallbacks list, got %v", fb)
+	}
+	cwfb, ok := rs["context_window_fallbacks"].([]map[string]interface{})
+	if !ok {
+		t.Fatalf("expected context_window_fallbacks to be []map[string]interface{}, got %T", rs["context_window_fallbacks"])
+	}
+	if len(cwfb) != 0 {
+		t.Errorf("expected empty context_window_fallbacks list, got %v", cwfb)
 	}
 }
 
@@ -1644,8 +1661,14 @@ func TestBuildKeyRequestIncludesContextWindowFallbacks(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected router_settings in request, got %T", req["router_settings"])
 	}
-	if _, ok := rs["fallbacks"]; ok {
-		t.Error("fallbacks must not appear when only context_window_fallbacks is set")
+	// When RouterSettingsFallbacks is unset (zero value = null), the provider
+	// sends fallbacks: [] to clear any previously configured fallbacks.
+	fb, ok := rs["fallbacks"].([]map[string]interface{})
+	if !ok {
+		t.Fatalf("expected fallbacks to be []map[string]interface{}, got %T", rs["fallbacks"])
+	}
+	if len(fb) != 0 {
+		t.Errorf("expected empty fallbacks list, got %v", fb)
 	}
 	cwfbList, ok := rs["context_window_fallbacks"].([]map[string]interface{})
 	if !ok {

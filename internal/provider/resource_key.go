@@ -491,23 +491,26 @@ func (r *KeyResource) UpgradeState(ctx context.Context) map[int64]resource.State
 
 // buildFallbacksPayload converts a map(list(string)) attribute into the
 // [{"primary": ["fallback1", ...]}] slice expected by router_settings.
-func buildFallbacksPayload(ctx context.Context, m types.Map) []map[string]interface{} {
-	if m.IsNull() || m.IsUnknown() {
-		return nil
+// Returns (payload, true) when the field should be included in the request
+// (including an empty slice to explicitly clear existing fallbacks), and
+// (nil, false) only when the value is unknown (not yet resolved).
+func buildFallbacksPayload(ctx context.Context, m types.Map) ([]map[string]interface{}, bool) {
+	if m.IsUnknown() {
+		return nil, false
 	}
-	elems := m.Elements()
-	if len(elems) == 0 {
-		return nil
+	if m.IsNull() || len(m.Elements()) == 0 {
+		// Explicitly send [] so the API clears any previously configured fallbacks.
+		return []map[string]interface{}{}, true
 	}
-	out := make([]map[string]interface{}, 0, len(elems))
-	for primary, v := range elems {
+	out := make([]map[string]interface{}, 0, len(m.Elements()))
+	for primary, v := range m.Elements() {
 		var fallbacks []string
 		if lv, ok := v.(types.List); ok {
 			lv.ElementsAs(ctx, &fallbacks, false)
 		}
 		out = append(out, map[string]interface{}{primary: fallbacks})
 	}
-	return out
+	return out, true
 }
 
 // readFallbacksField parses a router_settings sub-key (e.g. "fallbacks",
@@ -740,10 +743,10 @@ func (r *KeyResource) buildKeyRequest(ctx context.Context, data *KeyResourceMode
 
 	// router_settings: fallbacks and context_window_fallbacks
 	routerSettings := map[string]interface{}{}
-	if fb := buildFallbacksPayload(ctx, data.RouterSettingsFallbacks); fb != nil {
+	if fb, ok := buildFallbacksPayload(ctx, data.RouterSettingsFallbacks); ok {
 		routerSettings["fallbacks"] = fb
 	}
-	if cwfb := buildFallbacksPayload(ctx, data.RouterSettingsContextWindowFallbacks); cwfb != nil {
+	if cwfb, ok := buildFallbacksPayload(ctx, data.RouterSettingsContextWindowFallbacks); ok {
 		routerSettings["context_window_fallbacks"] = cwfb
 	}
 	if len(routerSettings) > 0 {
