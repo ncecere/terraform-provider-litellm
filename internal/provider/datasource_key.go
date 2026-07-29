@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"net/url"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
@@ -161,13 +162,25 @@ func (d *KeyDataSource) Read(ctx context.Context, req datasource.ReadRequest, re
 		return
 	}
 
+	if err := d.readKeyDataSource(ctx, &data); err != nil {
+		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read key: %s", err))
+		return
+	}
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+}
+
+// readKeyDataSource fetches /key/info for data.Key and maps the response onto data.
+func (d *KeyDataSource) readKeyDataSource(ctx context.Context, data *KeyDataSourceModel) error {
 	keyValue := data.Key.ValueString()
-	endpoint := fmt.Sprintf("/key/info?key=%s", keyValue)
+	// url.QueryEscape ensures special characters in the key (e.g. '#') are
+	// percent-encoded and not interpreted as a URL fragment, which would
+	// silently truncate the key value before it reaches the server.
+	endpoint := fmt.Sprintf("/key/info?key=%s", url.QueryEscape(keyValue))
 
 	var result map[string]interface{}
 	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read key: %s", err))
-		return
+		return err
 	}
 
 	// The /key/info endpoint may return key data nested inside "info"
@@ -277,5 +290,5 @@ func (d *KeyDataSource) Read(ctx context.Context, req datasource.ReadRequest, re
 	data.RouterSettingsFallbacks = readFallbacksField(routerSettings, "fallbacks", types.MapNull(listElemType), listElemType)
 	data.RouterSettingsContextWindowFallbacks = readFallbacksField(routerSettings, "context_window_fallbacks", types.MapNull(listElemType), listElemType)
 
-	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	return nil
 }
