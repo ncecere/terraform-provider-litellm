@@ -81,6 +81,7 @@ internal_testing/
     key_minimal.tf
     key_full.tf
     key_service_account.tf
+    key_fallbacks_full.tf
     key_block_minimal.tf       # blocks the minimal key (destructive)
     team_minimal.tf
     team_full.tf
@@ -117,6 +118,7 @@ internal_testing/
   datasources/                 # one file per data source
     model.tf
     key.tf
+    key_fallbacks.tf           # reads back resources/key_fallbacks_full.tf
     team.tf
     organization.tf
     user.tf
