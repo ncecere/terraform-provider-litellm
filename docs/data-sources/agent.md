@@ -22,15 +22,17 @@ output "agent_name" {
 
 * `agent_name` - The name of the agent.
 * `agent_card_params` - The agent card parameters as a flat string map.
-* `litellm_params` - LiteLLM-specific parameters for the agent.
+* `litellm_params` - (Sensitive) LiteLLM-specific parameters for the agent. Redacted in normal CLI output but still present in state.
 * `tpm_limit` - Tokens per minute limit.
 * `rpm_limit` - Requests per minute limit.
 * `session_tpm_limit` - Per-session tokens per minute limit.
 * `session_rpm_limit` - Per-session requests per minute limit.
-* `static_headers` - Static headers sent with agent requests.
+* `static_headers` - (Sensitive) Static headers sent with agent requests. Redacted in normal CLI output but still present in state.
 * `extra_headers` - Extra header names forwarded from incoming requests.
 * `spend` - Total spend for this agent.
 * `created_at` - Timestamp when the agent was created.
 * `updated_at` - Timestamp when the agent was last updated.
 * `created_by` - User who created the agent.
 * `updated_by` - User who last updated the agent.
+
+> **Upgrade note:** `litellm_params` and `static_headers` now propagate Terraform sensitivity. Root outputs exposing them must set `sensitive = true` or deliberately use `nonsensitive(...)`. Use a LiteLLM `PROXY_ADMIN` credential when reading secret-bearing agent configuration; lower-privilege responses redact or omit those fields.

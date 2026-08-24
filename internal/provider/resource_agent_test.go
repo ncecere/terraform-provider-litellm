@@ -10,8 +10,245 @@ import (
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
+	frameworkdatasource "github.com/hashicorp/terraform-plugin-framework/datasource"
+	frameworkresource "github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
+
+func TestAgentCredentialBearingMapsAreSensitive(t *testing.T) {
+	t.Parallel()
+
+	var resourceResponse frameworkresource.SchemaResponse
+	(&AgentResource{}).Schema(context.Background(), frameworkresource.SchemaRequest{}, &resourceResponse)
+	if resourceResponse.Diagnostics.HasError() {
+		t.Fatalf("resource schema diagnostics: %v", resourceResponse.Diagnostics)
+	}
+	var dataSourceResponse frameworkdatasource.SchemaResponse
+	(&AgentDataSource{}).Schema(context.Background(), frameworkdatasource.SchemaRequest{}, &dataSourceResponse)
+	if dataSourceResponse.Diagnostics.HasError() {
+		t.Fatalf("data source schema diagnostics: %v", dataSourceResponse.Diagnostics)
+	}
+	for _, name := range []string{"litellm_params", "static_headers"} {
+		if !resourceResponse.Schema.Attributes[name].IsSensitive() {
+			t.Errorf("resource %s must be sensitive", name)
+		}
+		if !dataSourceResponse.Schema.Attributes[name].IsSensitive() {
+			t.Errorf("data source %s must be sensitive", name)
+		}
+	}
+}
+
+func TestBuildAgentRequest_BedrockAgentCore(t *testing.T) {
+	t.Parallel()
+
+	arn := "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/example"
+	data := &AgentResourceModel{
+		AgentName: types.StringValue("agentcore-agent"),
+		AgentCard: &AgentCardModel{
+			Name:            types.StringValue("AgentCore Agent"),
+			URL:             types.StringValue(""),
+			ProtocolVersion: types.StringValue("1.0"),
+			Capabilities: &AgentCapabilitiesModel{
+				Streaming: types.BoolValue(true),
+			},
+		},
+		LiteLLMParams: stringMapValue(map[string]string{
+			"custom_llm_provider": "bedrock",
+			"model":               "bedrock/agentcore/" + arn,
+			"qualifier":           "PROD",
+		}),
+	}
+
+	request := (&AgentResource{}).buildAgentRequest(data)
+	card := request["agent_card_params"].(map[string]interface{})
+	if card["url"] != "" || card["protocolVersion"] != "1.0" {
+		t.Fatalf("AgentCore card = %#v, want empty URL and protocolVersion 1.0", card)
+	}
+	capabilities := card["capabilities"].(map[string]interface{})
+	if capabilities["streaming"] != true {
+		t.Fatalf("AgentCore capabilities = %#v", capabilities)
+	}
+	params := request["litellm_params"].(map[string]interface{})
+	if params["custom_llm_provider"] != "bedrock" || params["model"] != "bedrock/agentcore/"+arn || params["qualifier"] != "PROD" {
+		t.Fatalf("AgentCore litellm_params = %#v", params)
+	}
+	if _, present := request["agent_type"]; present {
+		t.Fatalf("AgentCore must not send dashboard-only agent_type: %#v", request)
+	}
+}
+
+func TestReconcileAgentStringMapOwnershipAndSecrets(t *testing.T) {
+	t.Parallel()
+
+	configured := stringMapValue(map[string]string{
+		"model":   "bedrock/agentcore/runtime",
+		"api_key": "secret-value",
+	})
+	observed := map[string]interface{}{
+		"model":     "bedrock/agentcore/runtime",
+		"api_key":   "litellm_enc::masked",
+		"is_public": false,
+	}
+	reconciled, err := reconcileAgentStringMap(configured, observed, true)
+	if err != nil {
+		t.Fatalf("configured reconciliation: %v", err)
+	}
+	if !reconciled.Equal(configured) {
+		t.Fatalf("configured keys or masked secret changed: %#v", reconciled.Elements())
+	}
+	if _, adopted := reconciled.Elements()["is_public"]; adopted {
+		t.Fatalf("API-injected is_public was adopted into configured state: %#v", reconciled.Elements())
+	}
+
+	if _, err := reconcileAgentStringMap(types.MapUnknown(types.StringType), observed, true); err == nil {
+		t.Fatal("unmanaged/imported masked API value must fail instead of entering state")
+	}
+
+	imported, err := reconcileAgentStringMap(types.MapUnknown(types.StringType), map[string]interface{}{
+		"model":     "bedrock/agentcore/runtime",
+		"is_public": false,
+	}, true)
+	if err != nil {
+		t.Fatalf("unmasked import reconciliation: %v", err)
+	}
+	if _, adopted := imported.Elements()["is_public"]; adopted {
+		t.Fatalf("imported map adopted synthetic is_public: %#v", imported.Elements())
+	}
+	if got := imported.Elements()["model"].(types.String).ValueString(); got != "bedrock/agentcore/runtime" {
+		t.Fatalf("imported model = %q", got)
+	}
+
+	headers, err := reconcileAgentStringMap(types.MapUnknown(types.StringType), map[string]interface{}{
+		"is_public": "legitimate-header-value",
+	}, false)
+	if err != nil {
+		t.Fatalf("static header reconciliation: %v", err)
+	}
+	if got := headers.Elements()["is_public"].(types.String).ValueString(); got != "legitimate-header-value" {
+		t.Fatalf("static header is_public = %q", got)
+	}
+}
+
+func TestHydrateUnmanagedAgentUpdateFieldsPreservesRemoteSecrets(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+			"litellm_params": map[string]interface{}{
+				"model":     "bedrock/agentcore/runtime",
+				"is_public": false,
+			},
+			"static_headers": map[string]interface{}{
+				"Authorization": "Bearer preserved",
+				"is_public":     "legitimate-header-value",
+			},
+			"extra_headers": []interface{}{"X-Request-ID"},
+		})
+	}))
+	defer server.Close()
+
+	resource := &AgentResource{client: &Client{APIBase: server.URL, APIKey: "test", HTTPClient: server.Client()}}
+	data := AgentResourceModel{
+		ID:            types.StringValue("agent-update"),
+		AgentName:     types.StringValue("agent"),
+		LiteLLMParams: types.MapNull(types.StringType),
+		StaticHeaders: types.MapNull(types.StringType),
+		ExtraHeaders:  types.ListNull(types.StringType),
+	}
+	if err := resource.hydrateUnmanagedAgentUpdateFields(context.Background(), &data); err != nil {
+		t.Fatalf("hydrate unmanaged fields: %v", err)
+	}
+	if _, present := data.LiteLLMParams.Elements()["is_public"]; present {
+		t.Fatalf("synthetic litellm_params.is_public was retained: %#v", data.LiteLLMParams.Elements())
+	}
+	if got := data.StaticHeaders.Elements()["is_public"].(types.String).ValueString(); got != "legitimate-header-value" {
+		t.Fatalf("legitimate static header is_public = %q", got)
+	}
+	request := resource.buildAgentRequest(&data)
+	params := request["litellm_params"].(map[string]interface{})
+	if _, present := params["is_public"]; present {
+		t.Fatalf("update request included synthetic is_public: %#v", params)
+	}
+	headers := request["static_headers"].(map[string]interface{})
+	if headers["Authorization"] != "Bearer preserved" || headers["is_public"] != "legitimate-header-value" {
+		t.Fatalf("update request lost static headers: %#v", headers)
+	}
+}
+
+func TestHydrateMaskedPlannedAgentValuesPreservesRealChanges(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+			"litellm_params": map[string]interface{}{
+				"model":   "remote-old-model",
+				"api_key": "real-api-key-value",
+			},
+			"static_headers": map[string]interface{}{},
+			"extra_headers":  []interface{}{},
+		})
+	}))
+	defer server.Close()
+
+	resource := &AgentResource{client: &Client{APIBase: server.URL, APIKey: "test", HTTPClient: server.Client()}}
+	data := AgentResourceModel{
+		ID:        types.StringValue("agent-masked-plan"),
+		AgentName: types.StringValue("agent"),
+		LiteLLMParams: stringMapValue(map[string]string{
+			"model":   "planned-new-model",
+			"api_key": "ab****yz",
+		}),
+		StaticHeaders: types.MapNull(types.StringType),
+		ExtraHeaders:  types.ListNull(types.StringType),
+	}
+	if err := resource.hydrateUnmanagedAgentUpdateFields(context.Background(), &data); err != nil {
+		t.Fatalf("hydrate masked planned value: %v", err)
+	}
+	params := data.LiteLLMParams.Elements()
+	if got := params["api_key"].(types.String).ValueString(); got != "real-api-key-value" {
+		t.Fatalf("hydrated api_key = %q", got)
+	}
+	if got := params["model"].(types.String).ValueString(); got != "planned-new-model" {
+		t.Fatalf("genuine planned model update was overwritten: %q", got)
+	}
+	request := resource.buildAgentRequest(&data)
+	requestParams := request["litellm_params"].(map[string]interface{})
+	if requestParams["api_key"] != "real-api-key-value" || requestParams["model"] != "planned-new-model" {
+		t.Fatalf("update request params = %#v", requestParams)
+	}
+}
+
+func TestReadAgentRejectsMaskedImportState(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+			"agent_id":   "agent-masked-import",
+			"agent_name": "masked",
+			"litellm_params": map[string]interface{}{
+				"model":   "bedrock/agentcore/runtime",
+				"api_key": "ab****yz",
+			},
+		})
+	}))
+	defer server.Close()
+
+	resource := &AgentResource{client: &Client{APIBase: server.URL, APIKey: "test", HTTPClient: server.Client()}}
+	data := AgentResourceModel{
+		ID:            types.StringValue("agent-masked-import"),
+		LiteLLMParams: types.MapUnknown(types.StringType),
+	}
+	err := resource.readAgent(context.Background(), &data)
+	if err == nil || !strings.Contains(err.Error(), "PROXY_ADMIN") {
+		t.Fatalf("masked import read error = %v, want PROXY_ADMIN guidance", err)
+	}
+	if !data.LiteLLMParams.IsUnknown() {
+		t.Fatalf("masked import value entered state: %#v", data.LiteLLMParams)
+	}
+}
 
 func TestBuildAgentRequest_Minimal(t *testing.T) {
 	t.Parallel()
