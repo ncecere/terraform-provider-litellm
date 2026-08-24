@@ -36,6 +36,7 @@ resource "litellm_key" "team_key" {
 * `team_id` - The team ID.
 * `team_alias` - The human-readable alias for the team.
 * `organization_id` - The organization this team belongs to.
+* `access_group_ids` - Unordered set of access group IDs associated with the team.
 * `models` - List of models the team can access.
 * `max_budget` - Maximum budget for the team.
 * `spend` - Current spend for the team.
