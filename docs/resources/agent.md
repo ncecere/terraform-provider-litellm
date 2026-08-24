@@ -17,6 +17,42 @@ resource "litellm_agent" "simple" {
 }
 ```
 
+### AWS Bedrock AgentCore
+
+LiteLLM v1.98.0 does not persist an `agent_type` value. Its dashboard's “Bedrock AgentCore” recipe creates an ordinary agent with `custom_llm_provider = "bedrock"` and a `bedrock/agentcore/` model. The current resource supports that payload directly:
+
+```hcl
+variable "agent_runtime_arn" {
+  type = string
+}
+
+resource "litellm_agent" "agentcore" {
+  agent_name = "bedrock-agentcore"
+
+  # AgentCore derives the invocation endpoint from the ARN, so an empty
+  # agent-card URL is intentional for this provider-backed agent.
+  agent_card {
+    name             = "Bedrock AgentCore"
+    url              = ""
+    protocol_version = "1.0"
+
+    capabilities {
+      streaming = true
+    }
+  }
+
+  litellm_params = {
+    custom_llm_provider = "bedrock"
+    model               = "bedrock/agentcore/${var.agent_runtime_arn}"
+    qualifier           = "PROD" # optional
+  }
+}
+```
+
+Agent CRUD itself is not enterprise-gated. Invocation requires AWS permissions and an AgentCore runtime that implements the **A2A protocol**; a generic non-A2A AgentCore handler is not compatible with LiteLLM's `/a2a/{agent_id}` bridge.
+
+By default, LiteLLM uses AWS workload credentials and SigV4. Prefer an IAM role attached to the LiteLLM proxy with `bedrock-agentcore:InvokeAgentRuntime` scoped to the runtime ARN, plus any environment-specific KMS and network permissions. Cognito/JWT authentication can be configured through `litellm_params.api_key`; static AWS keys and session tokens are also accepted by LiteLLM but become Terraform state data. `litellm_params` and `static_headers` are marked sensitive to redact normal CLI output, but sensitivity does not encrypt or remove values from state.
+
 ### Full Agent with Capabilities and Skills
 
 ```hcl
@@ -94,18 +130,18 @@ resource "litellm_agent" "full" {
 ### Top-level
 
 * `agent_name` - (Required) The name of the agent.
-* `litellm_params` - (Optional) Map of LiteLLM-specific parameters (e.g. `model`, `api_key`).
+* `litellm_params` - (Optional, Sensitive) Map of LiteLLM-specific parameters (e.g. `model`, `api_key`). Prefer proxy workload identity over static credentials. Sensitive values remain present in Terraform state.
 * `tpm_limit` - (Optional) Tokens per minute limit for the agent.
 * `rpm_limit` - (Optional) Requests per minute limit for the agent.
 * `session_tpm_limit` - (Optional) Per-session tokens per minute limit.
 * `session_rpm_limit` - (Optional) Per-session requests per minute limit.
-* `static_headers` - (Optional) Map of static headers to send with agent requests.
+* `static_headers` - (Optional, Sensitive) Map of static headers to send with agent requests. Sensitive values remain present in Terraform state.
 * `extra_headers` - (Optional) List of extra header names to forward from incoming requests.
 
 ### agent_card Block (Required)
 
 * `name` - (Required) Display name of the agent.
-* `url` - (Required) The URL endpoint for the agent.
+* `url` - (Required) The URL endpoint for the agent. Set it to an empty string for provider-backed agents such as Bedrock AgentCore, where LiteLLM derives the endpoint from `litellm_params`.
 * `description` - (Optional) Human-readable description of the agent.
 * `version` - (Optional) Version of the agent.
 * `protocol_version` - (Optional) A2A protocol version (e.g. `0.2.6`).
@@ -162,3 +198,9 @@ Agents can be imported using their agent ID:
 ```shell
 terraform import litellm_agent.example <agent-id>
 ```
+
+Import and Read should use a LiteLLM `PROXY_ADMIN` credential when agent configuration contains secrets. LiteLLM masks `litellm_params` and omits `static_headers` for lower-privilege readers; the provider rejects an import that would otherwise store an unrecoverable masked value. Before every PUT, a proxy-admin preflight rehydrates unmanaged parameter/header fields so an earlier redacted import cannot erase remote credentials.
+
+## Upgrade Note: Sensitive Agent Maps
+
+`litellm_params` and `static_headers` are now schema-sensitive in both the resource and data source. Existing root-module outputs that expose either map must also set `sensitive = true`, or deliberately call `nonsensitive(...)` after reviewing the contents. This redacts ordinary Terraform CLI/UI rendering but does not remove or encrypt values already held in state.

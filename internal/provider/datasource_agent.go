@@ -61,8 +61,9 @@ func (d *AgentDataSource) Schema(ctx context.Context, req datasource.SchemaReque
 				ElementType: types.StringType,
 			},
 			"litellm_params": schema.MapAttribute{
-				Description: "LiteLLM-specific parameters for the agent.",
+				Description: "LiteLLM-specific parameters for the agent. Marked sensitive because it can contain JWTs or AWS credentials.",
 				Computed:    true,
+				Sensitive:   true,
 				ElementType: types.StringType,
 			},
 			"tpm_limit": schema.Int64Attribute{
@@ -82,8 +83,9 @@ func (d *AgentDataSource) Schema(ctx context.Context, req datasource.SchemaReque
 				Computed:    true,
 			},
 			"static_headers": schema.MapAttribute{
-				Description: "Static headers sent with agent requests.",
+				Description: "Static headers sent with agent requests. Marked sensitive because headers commonly contain authorization credentials.",
 				Computed:    true,
+				Sensitive:   true,
 				ElementType: types.StringType,
 			},
 			"extra_headers": schema.ListAttribute{

@@ -114,9 +114,10 @@ func (r *AgentResource) Schema(ctx context.Context, req resource.SchemaRequest, 
 				Required:    true,
 			},
 			"litellm_params": schema.MapAttribute{
-				Description: "LiteLLM-specific parameters for the agent (e.g. model, api_key).",
+				Description: "LiteLLM-specific parameters for the agent (e.g. model, api_key). Marked sensitive because it can contain JWTs or AWS credentials.",
 				Optional:    true,
 				Computed:    true,
+				Sensitive:   true,
 				ElementType: types.StringType,
 			},
 			"tpm_limit": schema.Int64Attribute{
@@ -136,9 +137,10 @@ func (r *AgentResource) Schema(ctx context.Context, req resource.SchemaRequest, 
 				Optional:    true,
 			},
 			"static_headers": schema.MapAttribute{
-				Description: "Static headers to send with agent requests.",
+				Description: "Static headers to send with agent requests. Marked sensitive because headers commonly contain authorization credentials.",
 				Optional:    true,
 				Computed:    true,
+				Sensitive:   true,
 				ElementType: types.StringType,
 			},
 			"extra_headers": schema.ListAttribute{
@@ -395,6 +397,10 @@ func (r *AgentResource) Update(ctx context.Context, req resource.UpdateRequest, 
 		return
 	}
 	data.ID = state.ID
+	if err := r.hydrateUnmanagedAgentUpdateFields(ctx, &data); err != nil {
+		resp.Diagnostics.AddError("Agent Update Preflight Error", fmt.Sprintf("Unable to preserve unmanaged agent configuration before update: %s", err))
+		return
+	}
 
 	agentReq := r.buildAgentRequest(&data)
 
@@ -433,6 +439,93 @@ func (r *AgentResource) Delete(ctx context.Context, req resource.DeleteRequest, 
 
 func (r *AgentResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+}
+
+func agentMapContainsMaskedValues(value types.Map) bool {
+	if value.IsNull() || value.IsUnknown() {
+		return false
+	}
+	for key, element := range value.Elements() {
+		if stringValue, ok := element.(types.String); ok && !stringValue.IsNull() && !stringValue.IsUnknown() && isMaskedAgentAPIValue(key, stringValue.ValueString()) {
+			return true
+		}
+	}
+	return false
+}
+
+func hydrateAgentUpdateMap(planned types.Map, remote map[string]interface{}, excludeSyntheticIsPublic bool) (types.Map, error) {
+	if planned.IsNull() || planned.IsUnknown() {
+		return reconcileAgentStringMap(planned, remote, excludeSyntheticIsPublic)
+	}
+	values := make(map[string]attr.Value, len(planned.Elements()))
+	for key, element := range planned.Elements() {
+		if excludeSyntheticIsPublic && key == "is_public" {
+			continue
+		}
+		stringValue, ok := element.(types.String)
+		if !ok || stringValue.IsNull() || stringValue.IsUnknown() {
+			values[key] = element
+			continue
+		}
+		if !isMaskedAgentAPIValue(key, stringValue.ValueString()) {
+			// Preserve genuine planned updates; preflight only replaces masks.
+			values[key] = stringValue
+			continue
+		}
+		remoteValue, exists := remote[key]
+		if !exists || isMaskedAgentAPIValue(key, remoteValue) {
+			return planned, fmt.Errorf("LiteLLM did not return an unmasked value for agent configuration key %q during update preflight", key)
+		}
+		values[key] = types.StringValue(metadataValueToString(remoteValue))
+	}
+	value, diagnostics := types.MapValue(types.StringType, values)
+	if diagnostics.HasError() {
+		return planned, fmt.Errorf("build hydrated agent map: %v", diagnostics.Errors())
+	}
+	return value, nil
+}
+
+// hydrateUnmanagedAgentUpdateFields protects secret-bearing fields that
+// LiteLLM's PUT endpoint clears when omitted. Update requires PROXY_ADMIN, so
+// this preflight can recover the full values even when an earlier lower-role
+// import/read response redacted them.
+func (r *AgentResource) hydrateUnmanagedAgentUpdateFields(ctx context.Context, data *AgentResourceModel) error {
+	needsParams := data.LiteLLMParams.IsNull() || data.LiteLLMParams.IsUnknown() || agentMapContainsMaskedValues(data.LiteLLMParams)
+	needsHeaders := data.StaticHeaders.IsNull() || data.StaticHeaders.IsUnknown() || agentMapContainsMaskedValues(data.StaticHeaders)
+	needsExtraHeaders := data.ExtraHeaders.IsNull() || data.ExtraHeaders.IsUnknown()
+	if !needsParams && !needsHeaders && !needsExtraHeaders {
+		return nil
+	}
+
+	endpoint := fmt.Sprintf("/v1/agents/%s", url.PathEscape(data.ID.ValueString()))
+	var result map[string]interface{}
+	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
+		return err
+	}
+	if needsParams {
+		params, _ := result["litellm_params"].(map[string]interface{})
+		value, err := hydrateAgentUpdateMap(data.LiteLLMParams, params, true)
+		if err != nil {
+			return err
+		}
+		data.LiteLLMParams = value
+	}
+	if needsHeaders {
+		headers, _ := result["static_headers"].(map[string]interface{})
+		value, err := hydrateAgentUpdateMap(data.StaticHeaders, headers, false)
+		if err != nil {
+			return err
+		}
+		data.StaticHeaders = value
+	}
+	if needsExtraHeaders {
+		if headers, ok := result["extra_headers"].([]interface{}); ok {
+			data.ExtraHeaders = interfaceSliceToStringList(headers)
+		} else {
+			data.ExtraHeaders = types.ListValueMust(types.StringType, []attr.Value{})
+		}
+	}
+	return nil
 }
 
 // --- Build request ---
@@ -616,6 +709,79 @@ func (r *AgentResource) buildAgentRequest(data *AgentResourceModel) map[string]i
 	return req
 }
 
+// reconcileAgentStringMap keeps configured map keys selectively owned while
+// allowing imports/unconfigured Optional+Computed maps to adopt API values.
+// LiteLLM injects fields such as litellm_params.is_public and can mask
+// credential values, neither of which should create false drift or expose
+// secrets in normal CLI output.
+func isMaskedAgentAPIValue(key string, rawValue interface{}) bool {
+	value, ok := rawValue.(string)
+	if !ok {
+		return false
+	}
+	if isMaskedMetadataAPIString(value) {
+		return true
+	}
+	lowerKey := strings.ToLower(key)
+	sensitiveKey := false
+	for _, keyword := range []string{"authorization", "token", "key", "secret", "vertex_credentials", "credentials", "password", "passwd"} {
+		if strings.Contains(lowerKey, keyword) {
+			sensitiveKey = true
+			break
+		}
+	}
+	if !sensitiveKey {
+		return false
+	}
+	if value == "*****" {
+		return true
+	}
+	runes := []rune(value)
+	return len(runes) == 8 && string(runes[2:6]) == "****"
+}
+
+func reconcileAgentStringMap(current types.Map, raw map[string]interface{}, excludeSyntheticIsPublic bool) (types.Map, error) {
+	managed := !current.IsNull() && !current.IsUnknown()
+	configured := map[string]string{}
+	if managed {
+		if diagnostics := current.ElementsAs(context.Background(), &configured, false); diagnostics.HasError() {
+			return current, fmt.Errorf("decode configured agent map: %v", diagnostics.Errors())
+		}
+	}
+	observed := make(map[string]attr.Value)
+	for key, rawValue := range raw {
+		// LiteLLM injects is_public into response litellm_params, but it is not
+		// part of the persisted/user-managed request map.
+		if excludeSyntheticIsPublic && key == "is_public" {
+			continue
+		}
+		configuredValue, owned := configured[key]
+		if managed && !owned {
+			continue
+		}
+		if isMaskedAgentAPIValue(key, rawValue) {
+			if !owned {
+				return current, fmt.Errorf("LiteLLM returned masked agent configuration without a prior Terraform value; use a PROXY_ADMIN credential for import/read")
+			}
+			observed[key] = types.StringValue(configuredValue)
+			continue
+		}
+		value := metadataValueToString(rawValue)
+		if owned {
+			value = metadataValueToStringPreservingMasked(rawValue, configuredValue)
+		}
+		observed[key] = types.StringValue(value)
+	}
+	if stringMapMatchesAttrValues(current, observed) {
+		return current, nil
+	}
+	value, diagnostics := types.MapValue(types.StringType, observed)
+	if diagnostics.HasError() {
+		return current, fmt.Errorf("build agent map state: %v", diagnostics.Errors())
+	}
+	return value, nil
+}
+
 // --- Read agent ---
 
 func (r *AgentResource) readAgent(ctx context.Context, data *AgentResourceModel) error {
@@ -671,22 +837,22 @@ func (r *AgentResource) readAgent(ctx context.Context, data *AgentResourceModel)
 
 	// LiteLLM params
 	if params, ok := result["litellm_params"].(map[string]interface{}); ok && len(params) > 0 {
-		paramMap := map[string]attr.Value{}
-		for k, v := range params {
-			paramMap[k] = types.StringValue(fmt.Sprintf("%v", v))
+		value, err := reconcileAgentStringMap(data.LiteLLMParams, params, true)
+		if err != nil {
+			return err
 		}
-		data.LiteLLMParams, _ = types.MapValue(types.StringType, paramMap)
+		data.LiteLLMParams = value
 	} else if data.LiteLLMParams.IsUnknown() {
 		data.LiteLLMParams = types.MapNull(types.StringType)
 	}
 
 	// Static headers
 	if headers, ok := result["static_headers"].(map[string]interface{}); ok && len(headers) > 0 {
-		headerMap := map[string]attr.Value{}
-		for k, v := range headers {
-			headerMap[k] = types.StringValue(fmt.Sprintf("%v", v))
+		value, err := reconcileAgentStringMap(data.StaticHeaders, headers, false)
+		if err != nil {
+			return err
 		}
-		data.StaticHeaders, _ = types.MapValue(types.StringType, headerMap)
+		data.StaticHeaders = value
 	} else if data.StaticHeaders.IsUnknown() {
 		data.StaticHeaders = types.MapNull(types.StringType)
 	}

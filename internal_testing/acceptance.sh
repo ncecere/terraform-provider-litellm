@@ -45,7 +45,7 @@ run_case() {
 # Explicit coverage table. litellm_project is enterprise-only and intentionally
 # excluded; every other registered resource has a lifecycle case here.
 run_case access_group resources model_minimal.tf,access_group_minimal.tf
-run_case agent resources agent_minimal.tf datasources agent.tf,agents_list.tf
+run_case agent resources agent_minimal.tf,agent_bedrock_agentcore.tf datasources agent.tf,agents_list.tf
 run_case budget resources budget_minimal.tf
 run_case credential resources credential_minimal.tf
 run_case fallback resources fallback_minimal.tf
