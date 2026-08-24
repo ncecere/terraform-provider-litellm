@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -617,7 +618,9 @@ func (r *ModelResource) readModel(ctx context.Context, data *ModelResourceModel)
 		// the imported resource captures the full API state.
 		filterByState := !data.AdditionalLiteLLMParams.IsNull() && !data.AdditionalLiteLLMParams.IsUnknown()
 		stateKeys := make(map[string]struct{})
+		priorStrings := make(map[string]string)
 		if filterByState {
+			data.AdditionalLiteLLMParams.ElementsAs(ctx, &priorStrings, false)
 			for k := range data.AdditionalLiteLLMParams.Elements() {
 				stateKeys[k] = struct{}{}
 			}
@@ -662,7 +665,17 @@ func (r *ModelResource) readModel(ctx context.Context, data *ModelResourceModel)
 			default:
 				// Arrays, objects, and other complex types — serialize back to JSON string.
 				if jsonBytes, err := json.Marshal(v); err == nil {
-					additionalParams[key] = types.StringValue(string(jsonBytes))
+					// If the prior config/state value is JSON that is semantically
+					// equal to the API-returned value, preserve the prior string.
+					// json.Marshal emits compact, key-sorted JSON, so a config
+					// value like {"inputs": "{prompt}"} would otherwise round-trip
+					// to {"inputs":"{prompt}"} and fail the post-apply consistency
+					// check purely on formatting.
+					if prior, ok := priorStrings[key]; ok && jsonSemanticallyEqual(prior, string(jsonBytes)) {
+						additionalParams[key] = types.StringValue(prior)
+					} else {
+						additionalParams[key] = types.StringValue(string(jsonBytes))
+					}
 				}
 			}
 		}
@@ -955,6 +968,22 @@ func normalizeNumericString(s string) string {
 		return strconv.FormatFloat(f, 'f', -1, 64)
 	}
 	return s
+}
+
+// jsonSemanticallyEqual reports whether two strings are both valid JSON that
+// decode to the same value, ignoring formatting differences (whitespace, key
+// ordering). Used on read-back so a JSON-valued additional_litellm_params
+// entry that only differs from the provider's compact re-marshal by formatting
+// is not treated as drift.
+func jsonSemanticallyEqual(a, b string) bool {
+	var av, bv interface{}
+	if err := json.Unmarshal([]byte(a), &av); err != nil {
+		return false
+	}
+	if err := json.Unmarshal([]byte(b), &bv); err != nil {
+		return false
+	}
+	return reflect.DeepEqual(av, bv)
 }
 
 // normalizeAdditionalParams returns a new MapValue where every numeric string

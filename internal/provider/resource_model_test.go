@@ -205,6 +205,90 @@ func TestConvertStringValue(t *testing.T) {
 	}
 }
 
+func TestJSONSemanticallyEqual(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		a    string
+		b    string
+		want bool
+	}{
+		{"whitespace after colon", `{"inputs": "{prompt}"}`, `{"inputs":"{prompt}"}`, true},
+		{"key ordering", `{"a":1,"b":2}`, `{"b":2,"a":1}`, true},
+		{"identical", `{"inputs":"{prompt}"}`, `{"inputs":"{prompt}"}`, true},
+		{"arrays equal", `["a", "b"]`, `["a","b"]`, true},
+		{"different values", `{"inputs":"{prompt}"}`, `{"inputs":"{other}"}`, false},
+		{"different keys", `{"a":1}`, `{"b":1}`, false},
+		{"a not json", `not json {`, `{"a":1}`, false},
+		{"b not json", `{"a":1}`, `not json {`, false},
+	}
+
+	for _, tt := range tests {
+		if got := jsonSemanticallyEqual(tt.a, tt.b); got != tt.want {
+			t.Errorf("%s: jsonSemanticallyEqual(%q, %q) = %v, want %v", tt.name, tt.a, tt.b, got, tt.want)
+		}
+	}
+}
+
+func TestReadModelPreservesSemanticallyEqualJSONFormatting(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": []interface{}{
+				map[string]interface{}{
+					"model_name": "gpt-4o-mini",
+					"litellm_params": map[string]interface{}{
+						"custom_llm_provider": "openai",
+						"model":               "openai/gpt-4o-mini",
+						"input_schema":        map[string]interface{}{"inputs": "{prompt}"},
+						"ordering":            map[string]interface{}{"a": 1.0, "b": 2.0},
+						"stop_sequences":      []interface{}{"</end>", "STOP"},
+					},
+					"model_info": map[string]interface{}{"base_model": "gpt-4o-mini"},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	r := &ModelResource{client: &Client{
+		APIBase:    server.URL,
+		APIKey:     "test-key",
+		HTTPClient: server.Client(),
+	}}
+	prior, _ := types.MapValue(types.StringType, map[string]attr.Value{
+		"input_schema":   types.StringValue(`{"inputs": "{prompt}"}`),
+		"ordering":       types.StringValue(`{"b": 2, "a": 1}`),
+		"stop_sequences": types.StringValue(`["</end>", "STOP"]`),
+	})
+	data := ModelResourceModel{
+		ID:                      types.StringValue("model-123"),
+		AdditionalLiteLLMParams: prior,
+	}
+
+	if err := r.readModel(context.Background(), &data); err != nil {
+		t.Fatalf("readModel returned error: %v", err)
+	}
+
+	var got map[string]string
+	if diags := data.AdditionalLiteLLMParams.ElementsAs(context.Background(), &got, false); diags.HasError() {
+		t.Fatalf("decode additional_litellm_params: %v", diags)
+	}
+	want := map[string]string{
+		"input_schema":   `{"inputs": "{prompt}"}`,
+		"ordering":       `{"b": 2, "a": 1}`,
+		"stop_sequences": `["</end>", "STOP"]`,
+	}
+	for key, value := range want {
+		if got[key] != value {
+			t.Errorf("additional_litellm_params[%q] = %q, want preserved %q", key, got[key], value)
+		}
+	}
+}
+
 func TestCreateModelSendsAdditionalLiteLLMParams(t *testing.T) {
 	t.Parallel()
 
