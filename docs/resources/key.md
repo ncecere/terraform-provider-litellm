@@ -28,6 +28,31 @@ resource "litellm_key" "predefined" {
 }
 ```
 
+### Write-Only Predefined Key
+
+Terraform or OpenTofu 1.11 and later can send a predefined key without storing it in plan or state through `key_wo`. For end-to-end protection, source the value from an ephemeral resource or variable; a non-ephemeral source can still persist the secret independently of this resource.
+
+```hcl
+variable "litellm_key" {
+  type      = string
+  sensitive = true
+  ephemeral = true
+}
+
+resource "litellm_key" "write_only" {
+  key_wo         = var.litellm_key
+  key_wo_version = "1"
+  key_alias      = "prod-key-1"
+  models         = ["gpt-4o"]
+}
+```
+
+`key_wo_version` is persisted because Terraform cannot compare write-only values. Change both the secret and version to replace the key. Replacement deletes and recreates the LiteLLM key, including its server-side spend history and budget window. The ephemeral source must be available during both plan and apply; applying a saved plan requires supplying the ephemeral input again.
+
+In write-only mode, `key` remains null and `id` contains only `sha256:<key-hash>`. The provider uses this hash for Read, Update, and Delete; plaintext is not stored in Terraform private state.
+
+> **Compatibility:** The optional write-only argument requires Terraform or OpenTofu 1.11+. Older clients can continue using the provider when `key_wo` is omitted, but reject configurations that set it.
+
 ### Key with Budget and Rate Limits
 
 ```hcl
@@ -108,7 +133,11 @@ resource "litellm_key" "with_logging" {
 
 The following arguments are supported:
 
-* `key` - (Optional) User-defined key value. If not set, LiteLLM generates a 16-digit unique `sk-` key automatically. The key is stored as a sensitive value in state.
+* `key` - (Optional) User-defined key value. If not set, LiteLLM generates a 16-digit unique `sk-` key automatically. The key is stored as a sensitive value in state. Conflicts with `key_wo`.
+
+* `key_wo` - (Optional, Sensitive, Write-only) Predefined key sent to LiteLLM but represented only by null in plan and state. Must be configured with `key_wo_version`. Requires Terraform or OpenTofu 1.11+.
+
+* `key_wo_version` - (Optional, ForceNew) Persisted version or nonce for `key_wo`. Change this whenever the write-only secret changes. It conflicts with configurations that omit `key_wo`.
 
 * `key_alias` - (Optional) Human-readable alias for this key.
 
@@ -180,7 +209,7 @@ In addition to all arguments above, the following attributes are exported:
 
 * `id` - Non-sensitive unique identifier for this key (SHA256 hash of the key value). This is safe to appear in logs and CI/CD output.
 
-* `key` - The API key token (sensitive). This is the actual secret used for authentication.
+* `key` - The API key token (sensitive). This is the actual secret used for authentication for generated or stateful predefined keys. It remains null in write-only mode.
 
 ## Import
 
@@ -191,6 +220,17 @@ $ terraform import litellm_key.example sk-xxxxxxxxxxxx
 ```
 
 The provider will automatically hash the key for the resource ID and store the raw value in the sensitive `key` attribute.
+
+To import without storing the raw key, configure `key_wo` with `key_wo_version = "1"`, calculate the SHA256 hash outside Terraform, and import the prefixed hash:
+
+```shell
+TF_VAR_litellm_key="$LITELLM_KEY" terraform import \
+  litellm_key.example "sha256:<64-character-sha256>"
+```
+
+Hash import initializes `key_wo_version` to `"1"`; the configuration must initially match it. The ephemeral input must be available during import and subsequent operations. An initial apply may be needed to normalize other Optional+Computed key attributes.
+
+Switching an existing stateful `key` resource to `key_wo` replaces the key and removes plaintext from the current state. Historical local backups or remote-state versions may still contain the old value and must be expired or purged according to the backend's retention controls.
 
 ## Upgrade Notes
 

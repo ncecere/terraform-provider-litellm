@@ -14,6 +14,112 @@ import (
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
 )
 
+func TestKeyWriteOnlySchemaAndValidators(t *testing.T) {
+	t.Parallel()
+
+	keyResource := &KeyResource{}
+	var response resource.SchemaResponse
+	keyResource.Schema(context.Background(), resource.SchemaRequest{}, &response)
+	if response.Diagnostics.HasError() {
+		t.Fatalf("schema diagnostics: %v", response.Diagnostics)
+	}
+	keyWO, ok := response.Schema.Attributes["key_wo"]
+	if !ok || !keyWO.IsWriteOnly() || !keyWO.IsSensitive() {
+		t.Fatalf("key_wo must be sensitive and write-only: %#v", keyWO)
+	}
+	version, ok := response.Schema.Attributes["key_wo_version"]
+	if !ok || version.IsWriteOnly() || version.IsSensitive() {
+		t.Fatalf("key_wo_version must be persisted and non-sensitive: %#v", version)
+	}
+	if got := len(keyResource.ConfigValidators(context.Background())); got != 2 {
+		t.Fatalf("config validators = %d, want 2", got)
+	}
+}
+
+func TestKeyLookupIdentifier(t *testing.T) {
+	t.Parallel()
+
+	raw := "sk-write-only-test"
+	id := hashKeyForID(raw)
+	hash := strings.TrimPrefix(id, "sha256:")
+	tests := map[string]struct {
+		data    KeyResourceModel
+		want    string
+		wantErr bool
+	}{
+		"stateful plaintext": {
+			data: KeyResourceModel{Key: types.StringValue(raw), KeyWOVersion: types.StringNull()},
+			want: raw,
+		},
+		"write-only hash": {
+			data: KeyResourceModel{ID: types.StringValue(id), Key: types.StringNull(), KeyWOVersion: types.StringValue("1")},
+			want: hash,
+		},
+		"invalid write-only ID": {
+			data:    KeyResourceModel{ID: types.StringValue("sha256:not-a-hash"), KeyWOVersion: types.StringValue("1")},
+			wantErr: true,
+		},
+		"missing stateful key": {
+			data:    KeyResourceModel{Key: types.StringNull(), KeyWOVersion: types.StringNull()},
+			wantErr: true,
+		},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			got, err := keyLookupIdentifier(&test.data)
+			if test.wantErr {
+				if err == nil {
+					t.Fatalf("keyLookupIdentifier() = %q, want error", got)
+				}
+				return
+			}
+			if err != nil || got != test.want {
+				t.Fatalf("keyLookupIdentifier() = %q, %v; want %q", got, err, test.want)
+			}
+		})
+	}
+}
+
+func TestReadKeyWriteOnlyUsesHashAndKeepsPlaintextNull(t *testing.T) {
+	t.Parallel()
+
+	raw := "sk-write-only-read-test"
+	id := hashKeyForID(raw)
+	hash := strings.TrimPrefix(id, "sha256:")
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/key/info" || request.URL.Query().Get("key") != hash {
+			http.Error(writer, "unexpected key identifier", http.StatusBadRequest)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+			"key": hash,
+			"info": map[string]interface{}{
+				"token":     hash,
+				"key_alias": "write-only",
+				"models":    []interface{}{"gpt-4o"},
+			},
+		})
+	}))
+	defer server.Close()
+
+	resource := &KeyResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
+	data := KeyResourceModel{
+		ID:           types.StringValue(id),
+		Key:          types.StringNull(),
+		KeyWO:        types.StringNull(),
+		KeyWOVersion: types.StringValue("1"),
+		Models:       stringListValue("gpt-4o"),
+	}
+	if err := resource.readKey(context.Background(), &data); err != nil {
+		t.Fatalf("readKey returned error: %v", err)
+	}
+	if !data.Key.IsNull() || !data.KeyWO.IsNull() || data.ID.ValueString() != id {
+		t.Fatalf("write-only read changed secret state: %#v", data)
+	}
+}
+
 func TestKeyMetadataSchemaIsSensitive(t *testing.T) {
 	t.Parallel()
 
