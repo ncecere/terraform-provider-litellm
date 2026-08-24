@@ -271,7 +271,6 @@ func TestJSONContainsMaskedValue(t *testing.T) {
 	}{
 		{"masked nested secret", `{"headers":{"x-api-key":"sk****99"}}`, true},
 		{"redacted marker", `{"token":"***REDACTED***"}`, true},
-		{"LiteLLM encrypted marker", `{"token":"litellm_enc::opaque"}`, true},
 		{"unmasked scalar drift", `{"headers":{"x-api-key":"changed-value"}}`, false},
 		{"asterisks below mask threshold", `{"value":"a***b"}`, false},
 		{"invalid JSON", `not json`, false},

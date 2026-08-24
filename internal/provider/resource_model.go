@@ -1393,7 +1393,7 @@ func isJSONContainer(v interface{}) bool {
 
 func isMaskedAPIString(value string) bool {
 	upper := strings.ToUpper(value)
-	return strings.HasPrefix(value, "litellm_enc::") || strings.Contains(value, "****") || strings.Contains(upper, "REDACTED")
+	return strings.Contains(value, "****") || strings.Contains(upper, "REDACTED")
 }
 
 func jsonContainsMaskedValue(value string) bool {

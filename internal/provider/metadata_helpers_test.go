@@ -207,8 +207,23 @@ func TestMetadataValueToStringPreservingMaskedScalar(t *testing.T) {
 	if got := metadataValueToStringPreservingMasked("litellm_enc::opaque", "configured-secret"); got != "configured-secret" {
 		t.Fatalf("masked scalar = %q, want configured value", got)
 	}
-	if got := metadataValueToStringPreservingMasked("changed", "configured"); got != "changed" {
-		t.Fatalf("unmasked scalar = %q, want API value", got)
+	if got := metadataValueToStringPreservingMasked("***REDACTED***", "configured-secret"); got != "configured-secret" {
+		t.Fatalf("redacted scalar = %q, want configured value", got)
+	}
+	for _, apiValue := range []string{"changed", "not-redacted", "status****"} {
+		if got := metadataValueToStringPreservingMasked(apiValue, "configured"); got != apiValue {
+			t.Fatalf("unmasked scalar = %q, want API value %q", got, apiValue)
+		}
+	}
+}
+
+func TestMetadataValueToStringPreservingMaskedDoesNotHideStructuralDrift(t *testing.T) {
+	t.Parallel()
+
+	for _, configured := range []string{`{"secret":"configured"}`, `["configured"]`} {
+		if got := metadataValueToStringPreservingMasked("litellm_enc::opaque", configured); got != "litellm_enc::opaque" {
+			t.Fatalf("masked scalar replacing %s = %q, want structural drift", configured, got)
+		}
 	}
 }
 

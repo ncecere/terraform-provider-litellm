@@ -56,7 +56,16 @@ func metadataValueToString(v interface{}) string {
 // redacted. The API structure and every unmasked value remain authoritative.
 func metadataValueToStringPreservingMasked(apiValue interface{}, configured string) string {
 	if apiString, ok := apiValue.(string); ok {
-		if isMaskedAPIString(apiString) {
+		if isMaskedMetadataAPIString(apiString) {
+			var configuredValue interface{}
+			if err := json.Unmarshal([]byte(configured), &configuredValue); err == nil {
+				switch configuredValue.(type) {
+				case map[string]interface{}, []interface{}:
+					// A container becoming a masked scalar is structural drift, not
+					// a corresponding masked string leaf.
+					return apiString
+				}
+			}
 			return configured
 		}
 		return apiString
@@ -69,10 +78,19 @@ func metadataValueToStringPreservingMasked(apiValue interface{}, configured stri
 	return metadataValueToString(restoreMaskedMetadataLeaves(apiValue, configuredValue))
 }
 
+func isMaskedMetadataAPIString(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	upper := strings.ToUpper(trimmed)
+	return strings.HasPrefix(trimmed, "litellm_enc::") ||
+		upper == "***REDACTED***" ||
+		upper == "<REDACTED>" ||
+		upper == "[REDACTED]"
+}
+
 func restoreMaskedMetadataLeaves(apiValue, configuredValue interface{}) interface{} {
 	switch apiValue := apiValue.(type) {
 	case string:
-		if isMaskedAPIString(apiValue) {
+		if isMaskedMetadataAPIString(apiValue) {
 			if configuredString, ok := configuredValue.(string); ok {
 				return configuredString
 			}
