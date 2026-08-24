@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/hashicorp/terraform-plugin-framework-validators/mapvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -19,6 +20,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -37,39 +39,40 @@ type ModelResource struct {
 
 // ModelResourceModel describes the resource data model.
 type ModelResourceModel struct {
-	ID                             types.String  `tfsdk:"id"`
-	ModelName                      types.String  `tfsdk:"model_name"`
-	CustomLLMProvider              types.String  `tfsdk:"custom_llm_provider"`
-	TPM                            types.Int64   `tfsdk:"tpm"`
-	RPM                            types.Int64   `tfsdk:"rpm"`
-	ReasoningEffort                types.String  `tfsdk:"reasoning_effort"`
-	ThinkingEnabled                types.Bool    `tfsdk:"thinking_enabled"`
-	ThinkingBudgetTokens           types.Int64   `tfsdk:"thinking_budget_tokens"`
-	MergeReasoningContentInChoices types.Bool    `tfsdk:"merge_reasoning_content_in_choices"`
-	ModelAPIKey                    types.String  `tfsdk:"model_api_key"`
-	ModelAPIBase                   types.String  `tfsdk:"model_api_base"`
-	APIVersion                     types.String  `tfsdk:"api_version"`
-	BaseModel                      types.String  `tfsdk:"base_model"`
-	Tier                           types.String  `tfsdk:"tier"`
-	TeamID                         types.String  `tfsdk:"team_id"`
-	Mode                           types.String  `tfsdk:"mode"`
-	LiteLLMCredentialName          types.String  `tfsdk:"litellm_credential_name"`
-	InputCostPerMillionTokens      types.Float64 `tfsdk:"input_cost_per_million_tokens"`
-	OutputCostPerMillionTokens     types.Float64 `tfsdk:"output_cost_per_million_tokens"`
-	InputCostPerPixel              types.Float64 `tfsdk:"input_cost_per_pixel"`
-	OutputCostPerPixel             types.Float64 `tfsdk:"output_cost_per_pixel"`
-	InputCostPerSecond             types.Float64 `tfsdk:"input_cost_per_second"`
-	OutputCostPerSecond            types.Float64 `tfsdk:"output_cost_per_second"`
-	AWSAccessKeyID                 types.String  `tfsdk:"aws_access_key_id"`
-	AWSSecretAccessKey             types.String  `tfsdk:"aws_secret_access_key"`
-	AWSRegionName                  types.String  `tfsdk:"aws_region_name"`
-	AWSSessionName                 types.String  `tfsdk:"aws_session_name"`
-	AWSRoleName                    types.String  `tfsdk:"aws_role_name"`
-	VertexProject                  types.String  `tfsdk:"vertex_project"`
-	VertexLocation                 types.String  `tfsdk:"vertex_location"`
-	VertexCredentials              types.String  `tfsdk:"vertex_credentials"`
-	AccessGroups                   types.List    `tfsdk:"access_groups"`
-	AdditionalLiteLLMParams        types.Map     `tfsdk:"additional_litellm_params"`
+	ID                                types.String  `tfsdk:"id"`
+	ModelName                         types.String  `tfsdk:"model_name"`
+	CustomLLMProvider                 types.String  `tfsdk:"custom_llm_provider"`
+	TPM                               types.Int64   `tfsdk:"tpm"`
+	RPM                               types.Int64   `tfsdk:"rpm"`
+	ReasoningEffort                   types.String  `tfsdk:"reasoning_effort"`
+	ThinkingEnabled                   types.Bool    `tfsdk:"thinking_enabled"`
+	ThinkingBudgetTokens              types.Int64   `tfsdk:"thinking_budget_tokens"`
+	MergeReasoningContentInChoices    types.Bool    `tfsdk:"merge_reasoning_content_in_choices"`
+	ModelAPIKey                       types.String  `tfsdk:"model_api_key"`
+	ModelAPIBase                      types.String  `tfsdk:"model_api_base"`
+	APIVersion                        types.String  `tfsdk:"api_version"`
+	BaseModel                         types.String  `tfsdk:"base_model"`
+	Tier                              types.String  `tfsdk:"tier"`
+	TeamID                            types.String  `tfsdk:"team_id"`
+	Mode                              types.String  `tfsdk:"mode"`
+	LiteLLMCredentialName             types.String  `tfsdk:"litellm_credential_name"`
+	InputCostPerMillionTokens         types.Float64 `tfsdk:"input_cost_per_million_tokens"`
+	OutputCostPerMillionTokens        types.Float64 `tfsdk:"output_cost_per_million_tokens"`
+	InputCostPerPixel                 types.Float64 `tfsdk:"input_cost_per_pixel"`
+	OutputCostPerPixel                types.Float64 `tfsdk:"output_cost_per_pixel"`
+	InputCostPerSecond                types.Float64 `tfsdk:"input_cost_per_second"`
+	OutputCostPerSecond               types.Float64 `tfsdk:"output_cost_per_second"`
+	AWSAccessKeyID                    types.String  `tfsdk:"aws_access_key_id"`
+	AWSSecretAccessKey                types.String  `tfsdk:"aws_secret_access_key"`
+	AWSRegionName                     types.String  `tfsdk:"aws_region_name"`
+	AWSSessionName                    types.String  `tfsdk:"aws_session_name"`
+	AWSRoleName                       types.String  `tfsdk:"aws_role_name"`
+	VertexProject                     types.String  `tfsdk:"vertex_project"`
+	VertexLocation                    types.String  `tfsdk:"vertex_location"`
+	VertexCredentials                 types.String  `tfsdk:"vertex_credentials"`
+	AccessGroups                      types.List    `tfsdk:"access_groups"`
+	AdditionalLiteLLMParams           types.Map     `tfsdk:"additional_litellm_params"`
+	AdditionalLiteLLMParamsConfigured types.Bool    `tfsdk:"additional_litellm_params_configured"`
 }
 
 func (r *ModelResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -231,10 +234,23 @@ func (r *ModelResource) Schema(ctx context.Context, req resource.SchemaRequest, 
 				ElementType: types.StringType,
 			},
 			"additional_litellm_params": schema.MapAttribute{
-				Description: "Additional parameters to pass to litellm_params.",
+				Description: "Additional parameters to pass to litellm_params. Removing configured keys replaces the model so LiteLLM cannot silently retain them.",
 				Optional:    true,
 				Computed:    true,
 				ElementType: types.StringType,
+				Validators: []validator.Map{
+					mapvalidator.NoNullValues(),
+				},
+				PlanModifiers: []planmodifier.Map{
+					modelAdditionalParamsRemovalModifier{},
+				},
+			},
+			"additional_litellm_params_configured": schema.BoolAttribute{
+				Description: "Internal state marker indicating whether additional_litellm_params is explicitly managed by configuration.",
+				Computed:    true,
+				PlanModifiers: []planmodifier.Bool{
+					modelAdditionalParamsOwnershipModifier{},
+				},
 			},
 		},
 	}
@@ -264,6 +280,16 @@ func (r *ModelResource) Create(ctx context.Context, req resource.CreateRequest, 
 	if resp.Diagnostics.HasError() {
 		return
 	}
+
+	var configuredAdditionalParams types.Map
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("additional_litellm_params"), &configuredAdditionalParams)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if !configuredAdditionalParams.IsNull() && !configuredAdditionalParams.IsUnknown() {
+		data.AdditionalLiteLLMParams = configuredAdditionalParams
+	}
+	data.AdditionalLiteLLMParamsConfigured = types.BoolValue(!configuredAdditionalParams.IsNull() && !configuredAdditionalParams.IsUnknown())
 
 	// Normalise numeric strings in additional_litellm_params so that the
 	// planned value uses the same canonical form as the read-back value.
@@ -295,6 +321,13 @@ func (r *ModelResource) Read(ctx context.Context, req resource.ReadRequest, resp
 		return
 	}
 
+	priorAdditionalParams := data.AdditionalLiteLLMParams
+	importedMarker, privateDiags := req.Private.GetKey(ctx, modelImportedPrivateKey)
+	resp.Diagnostics.Append(privateDiags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	err := r.readModelWithRetry(ctx, &data, 8)
 	if err != nil {
 		if IsNotFoundError(err) {
@@ -303,6 +336,14 @@ func (r *ModelResource) Read(ctx context.Context, req resource.ReadRequest, resp
 		}
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read model: %s", err))
 		return
+	}
+
+	if data.AdditionalLiteLLMParamsConfigured.IsNull() || data.AdditionalLiteLLMParamsConfigured.IsUnknown() {
+		configured := len(inferLegacyConfiguredAdditionalParamKeys(priorAdditionalParams)) > 0
+		if string(importedMarker) == "true" {
+			configured = false
+		}
+		data.AdditionalLiteLLMParamsConfigured = types.BoolValue(configured)
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
@@ -315,6 +356,13 @@ func (r *ModelResource) Update(ctx context.Context, req resource.UpdateRequest, 
 	if resp.Diagnostics.HasError() {
 		return
 	}
+
+	var configuredAdditionalParams types.Map
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("additional_litellm_params"), &configuredAdditionalParams)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	data.AdditionalLiteLLMParamsConfigured = types.BoolValue(!configuredAdditionalParams.IsNull() && !configuredAdditionalParams.IsUnknown())
 
 	// Normalise numeric strings in additional_litellm_params so that the
 	// planned value uses the same canonical form as the read-back value.
@@ -360,6 +408,7 @@ func (r *ModelResource) Delete(ctx context.Context, req resource.DeleteRequest, 
 
 func (r *ModelResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+	resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelImportedPrivateKey, []byte("true"))...)
 }
 
 func (r *ModelResource) createOrUpdateModel(ctx context.Context, data *ModelResourceModel, modelID string, isUpdate bool) error {
