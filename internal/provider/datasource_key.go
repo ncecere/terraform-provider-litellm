@@ -2,15 +2,24 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/url"
+	"regexp"
+	"strings"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/datasourcevalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
 var _ datasource.DataSource = &KeyDataSource{}
+var _ datasource.DataSourceWithConfigValidators = &KeyDataSource{}
 
 func NewKeyDataSource() datasource.DataSource {
 	return &KeyDataSource{}
@@ -23,6 +32,7 @@ type KeyDataSource struct {
 type KeyDataSourceModel struct {
 	ID                  types.String  `tfsdk:"id"`
 	Key                 types.String  `tfsdk:"key"`
+	KeyHash             types.String  `tfsdk:"key_hash"`
 	KeyAlias            types.String  `tfsdk:"key_alias"`
 	Models              types.List    `tfsdk:"models"`
 	MaxBudget           types.Float64 `tfsdk:"max_budget"`
@@ -38,6 +48,16 @@ type KeyDataSourceModel struct {
 	Metadata            types.Map     `tfsdk:"metadata"`
 	Tags                types.List    `tfsdk:"tags"`
 	Blocked             types.Bool    `tfsdk:"blocked"`
+	RouterSettings      types.Object  `tfsdk:"router_settings"`
+}
+
+func (d *KeyDataSource) ConfigValidators(ctx context.Context) []datasource.ConfigValidator {
+	return []datasource.ConfigValidator{
+		datasourcevalidator.ExactlyOneOf(
+			path.MatchRoot("key"),
+			path.MatchRoot("key_hash"),
+		),
+	}
 }
 
 func (d *KeyDataSource) Metadata(ctx context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
@@ -49,13 +69,20 @@ func (d *KeyDataSource) Schema(ctx context.Context, req datasource.SchemaRequest
 		Description: "Retrieves information about a LiteLLM API key.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
-				Description: "The unique identifier for this key.",
+				Description: "Non-sensitive SHA256 management identifier for this key.",
 				Computed:    true,
 			},
 			"key": schema.StringAttribute{
-				Description: "The API key value to look up.",
-				Required:    true,
+				Description: "The raw API key value to look up. Conflicts with key_hash.",
+				Optional:    true,
 				Sensitive:   true,
+			},
+			"key_hash": schema.StringAttribute{
+				Description: "A sha256:<64-hex> management identifier used to look up a write-only key without reintroducing the raw token into Terraform state. Conflicts with key.",
+				Optional:    true,
+				Validators: []validator.String{
+					stringvalidator.RegexMatches(regexp.MustCompile(`^sha256:[0-9a-fA-F]{64}$`), "must use the sha256:<64-hex> management identifier format"),
+				},
 			},
 			"key_alias": schema.StringAttribute{
 				Description: "User-friendly alias for the key.",
@@ -120,6 +147,7 @@ func (d *KeyDataSource) Schema(ctx context.Context, req datasource.SchemaRequest
 				Description: "Whether the key is blocked.",
 				Computed:    true,
 			},
+			"router_settings": keyRouterSettingsDataSourceAttribute(),
 		},
 	}
 }
@@ -141,6 +169,31 @@ func (d *KeyDataSource) Configure(ctx context.Context, req datasource.ConfigureR
 	d.client = client
 }
 
+func keyDataSourceLookup(data *KeyDataSourceModel) (string, string, error) {
+	if !data.KeyHash.IsNull() && !data.KeyHash.IsUnknown() {
+		hash, err := keyHashFromID(data.KeyHash.ValueString())
+		if err != nil {
+			return "", "", err
+		}
+		hash = strings.ToLower(hash)
+		return hash, "sha256:" + hash, nil
+	}
+	if data.Key.IsNull() || data.Key.IsUnknown() || data.Key.ValueString() == "" {
+		return "", "", fmt.Errorf("exactly one of key or key_hash must be known and non-empty")
+	}
+	key := data.Key.ValueString()
+	return key, hashKeyForID(key), nil
+}
+
+func keyDataSourceReadError(err error) string {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return fmt.Sprintf("LiteLLM returned HTTP %d while reading the key. The response body was omitted because it may contain the lookup token.", apiErr.StatusCode)
+	}
+	// Go transport errors can embed the complete query URL, including a raw key.
+	return "The key read request failed at the transport layer. Error details were omitted because they may contain the lookup token."
+}
+
 func (d *KeyDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
 	var data KeyDataSourceModel
 
@@ -149,12 +202,16 @@ func (d *KeyDataSource) Read(ctx context.Context, req datasource.ReadRequest, re
 		return
 	}
 
-	keyValue := data.Key.ValueString()
-	endpoint := fmt.Sprintf("/key/info?key=%s", keyValue)
+	lookupValue, managementID, err := keyDataSourceLookup(&data)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Key Lookup", err.Error())
+		return
+	}
+	endpoint := fmt.Sprintf("/key/info?key=%s", url.QueryEscape(lookupValue))
 
 	var result map[string]interface{}
 	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read key: %s", err))
+		resp.Diagnostics.AddError("Key Read Error", keyDataSourceReadError(err))
 		return
 	}
 
@@ -164,8 +221,8 @@ func (d *KeyDataSource) Read(ctx context.Context, req datasource.ReadRequest, re
 		info = nested
 	}
 
-	// Set ID
-	data.ID = data.Key
+	// Never copy the sensitive raw key into the non-sensitive data source ID.
+	data.ID = types.StringValue(managementID)
 
 	// Update fields from response
 	if keyAlias, ok := info["key_alias"].(string); ok {
@@ -245,6 +302,15 @@ func (d *KeyDataSource) Read(ctx context.Context, req datasource.ReadRequest, re
 		data.Tags, _ = types.ListValue(types.StringType, tagsList)
 	} else {
 		data.Tags, _ = types.ListValue(types.StringType, []attr.Value{})
+	}
+
+	if routerSettings, present, err := keyRouterSettingsFromAPI(info["router_settings"], types.ObjectNull(keyRouterSettingsAttrTypes)); err != nil {
+		resp.Diagnostics.AddError("Router Settings Read Error", err.Error())
+		return
+	} else if present {
+		data.RouterSettings = routerSettings
+	} else {
+		data.RouterSettings = types.ObjectNull(keyRouterSettingsAttrTypes)
 	}
 
 	// Handle metadata map

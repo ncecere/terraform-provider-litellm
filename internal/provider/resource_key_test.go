@@ -15,6 +15,15 @@ import (
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
 )
 
+func mustBuildKeyRequest(t *testing.T, r *KeyResource, data *KeyResourceModel) map[string]interface{} {
+	t.Helper()
+	request, err := r.buildKeyRequest(context.Background(), data)
+	if err != nil {
+		t.Fatalf("buildKeyRequest: %v", err)
+	}
+	return request
+}
+
 func TestKeyWriteOnlySchemaAndValidators(t *testing.T) {
 	t.Parallel()
 
@@ -227,7 +236,7 @@ func TestCreateKeyUsesHashedID(t *testing.T) {
 		Key: types.StringUnknown(),
 	}
 
-	keyReq := r.buildKeyRequest(context.Background(), data)
+	keyReq := mustBuildKeyRequest(t, r, data)
 	var result map[string]interface{}
 	if err := r.client.DoRequestWithResponse(context.Background(), "POST", "/key/generate", keyReq, &result); err != nil {
 		t.Fatalf("POST /key/generate: %v", err)
@@ -260,7 +269,7 @@ func TestBuildKeyRequestIncludesProjectID(t *testing.T) {
 		ProjectID: types.StringValue("project-123"),
 	}
 
-	keyReq := r.buildKeyRequest(context.Background(), data)
+	keyReq := mustBuildKeyRequest(t, r, data)
 
 	if keyReq["project_id"] != "project-123" {
 		t.Fatalf("expected project_id 'project-123', got %v", keyReq["project_id"])
@@ -460,7 +469,7 @@ func TestPredefinedKeyIsSentToAPI(t *testing.T) {
 		Key: types.StringValue("sk-my-predefined-key"),
 	}
 
-	keyReq := r.buildKeyRequest(context.Background(), data)
+	keyReq := mustBuildKeyRequest(t, r, data)
 
 	// Verify the predefined key is included in the request body
 	if keyReq["key"] != "sk-my-predefined-key" {
@@ -1052,7 +1061,7 @@ func TestBuildKeyRequestMetadataWithJSON(t *testing.T) {
 		}),
 	}
 
-	req := r.buildKeyRequest(context.Background(), data)
+	req := mustBuildKeyRequest(t, r, data)
 
 	meta, ok := req["metadata"].(map[string]interface{})
 	if !ok {
@@ -1158,7 +1167,7 @@ func TestMinimalKeyNoKeyAliasNoServiceAccountID(t *testing.T) {
 	}
 
 	// 1. buildKeyRequest must NOT include key_alias when neither field is set.
-	keyReq := r.buildKeyRequest(context.Background(), data)
+	keyReq := mustBuildKeyRequest(t, r, data)
 	if _, exists := keyReq["key_alias"]; exists {
 		t.Errorf("key_alias must not appear in request when neither key_alias nor service_account_id is configured, got %v", keyReq["key_alias"])
 	}
@@ -1215,7 +1224,7 @@ func TestServiceAccountIDDefaultsKeyAlias(t *testing.T) {
 		KeyAlias: types.StringNull(),
 	}
 
-	keyReq := r.buildKeyRequest(context.Background(), data)
+	keyReq := mustBuildKeyRequest(t, r, data)
 
 	if keyReq["key_alias"] != "github-ci" {
 		t.Errorf("expected key_alias 'github-ci', got %v", keyReq["key_alias"])
@@ -1244,7 +1253,7 @@ func TestServiceAccountIDKeyAliasExplicitOverride(t *testing.T) {
 		KeyAlias:         types.StringValue("my-custom-alias"),
 	}
 
-	keyReq := r.buildKeyRequest(context.Background(), data)
+	keyReq := mustBuildKeyRequest(t, r, data)
 
 	if keyReq["key_alias"] != "my-custom-alias" {
 		t.Errorf("expected explicit key_alias 'my-custom-alias', got %v", keyReq["key_alias"])
