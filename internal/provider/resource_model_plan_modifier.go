@@ -59,6 +59,41 @@ func (modelAdditionalParamsRemovalModifier) PlanModifyMap(ctx context.Context, r
 	)
 }
 
+type modelAdditionalModelInfoRemovalModifier struct{}
+
+var _ planmodifier.Map = modelAdditionalModelInfoRemovalModifier{}
+
+func (modelAdditionalModelInfoRemovalModifier) Description(context.Context) string {
+	return "Replaces the model when configured additional model information keys are removed."
+}
+
+func (m modelAdditionalModelInfoRemovalModifier) MarkdownDescription(ctx context.Context) string {
+	return m.Description(ctx)
+}
+
+func (modelAdditionalModelInfoRemovalModifier) PlanModifyMap(ctx context.Context, req planmodifier.MapRequest, resp *planmodifier.MapResponse) {
+	if req.State.Raw.IsNull() || req.ConfigValue.IsUnknown() || req.StateValue.IsNull() || req.StateValue.IsUnknown() {
+		return
+	}
+
+	var configuredState types.Bool
+	resp.Diagnostics.Append(req.State.GetAttribute(ctx, path.Root("additional_model_info_configured"), &configuredState)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	configured := !configuredState.IsNull() && !configuredState.IsUnknown() && configuredState.ValueBool()
+	if configuredState.IsNull() || configuredState.IsUnknown() {
+		configured = len(configuredAdditionalParamKeys(req.StateValue)) > 0
+	}
+
+	resp.PlanValue, resp.RequiresReplace = planAdditionalParamRemoval(
+		req.ConfigValue,
+		req.StateValue,
+		req.PlanValue,
+		configured,
+	)
+}
+
 func planAdditionalParamRemoval(config, state, proposedPlan types.Map, configured bool) (types.Map, bool) {
 	if config.IsUnknown() || state.IsNull() || state.IsUnknown() {
 		return proposedPlan, false
@@ -148,6 +183,31 @@ func (modelAdditionalParamsOwnershipModifier) PlanModifyBool(ctx context.Context
 
 	var configuredMap types.Map
 	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("additional_litellm_params"), &configuredMap)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	resp.PlanValue = planAdditionalParamsOwnership(configuredMap)
+}
+
+type modelAdditionalModelInfoOwnershipModifier struct{}
+
+var _ planmodifier.Bool = modelAdditionalModelInfoOwnershipModifier{}
+
+func (modelAdditionalModelInfoOwnershipModifier) Description(context.Context) string {
+	return "Records whether additional_model_info is explicitly configured."
+}
+
+func (m modelAdditionalModelInfoOwnershipModifier) MarkdownDescription(ctx context.Context) string {
+	return m.Description(ctx)
+}
+
+func (modelAdditionalModelInfoOwnershipModifier) PlanModifyBool(ctx context.Context, req planmodifier.BoolRequest, resp *planmodifier.BoolResponse) {
+	if req.Plan.Raw.IsNull() {
+		return
+	}
+
+	var configuredMap types.Map
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("additional_model_info"), &configuredMap)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}

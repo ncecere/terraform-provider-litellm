@@ -1556,3 +1556,240 @@ func TestReassertPlannedCostsOverridesStaleReadBack(t *testing.T) {
 		t.Fatalf("expected planned cost 16 after reassert, got %v", got)
 	}
 }
+
+func TestCreateModelSendsAdditionalModelInfo(t *testing.T) {
+	t.Parallel()
+
+	var capturedBody map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" {
+			_ = json.NewDecoder(r.Body).Decode(&capturedBody)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok"})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	r := &ModelResource{
+		client: &Client{
+			APIBase:    server.URL,
+			APIKey:     "test-key",
+			HTTPClient: server.Client(),
+		},
+	}
+
+	additionalInfo, _ := types.MapValue(types.StringType, map[string]attr.Value{
+		"supports_vision":           types.StringValue("true"),
+		"supports_function_calling": types.StringValue("true"),
+		"max_input_tokens":          types.StringValue("128000"),
+	})
+
+	data := &ModelResourceModel{
+		ModelName:           types.StringValue("kimi-k3"),
+		CustomLLMProvider:   types.StringValue("openrouter"),
+		BaseModel:           types.StringValue("moonshotai/kimi-k3"),
+		AdditionalModelInfo: additionalInfo,
+	}
+
+	if err := r.createOrUpdateModel(context.Background(), data, "test-id", false); err != nil {
+		t.Fatalf("createOrUpdateModel returned error: %v", err)
+	}
+
+	modelInfo, ok := capturedBody["model_info"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("model_info missing in request body: %v", capturedBody)
+	}
+
+	if got := modelInfo["supports_vision"]; got != true {
+		t.Fatalf("expected supports_vision=true (bool), got %v (%T)", got, got)
+	}
+	if got := modelInfo["supports_function_calling"]; got != true {
+		t.Fatalf("expected supports_function_calling=true (bool), got %v (%T)", got, got)
+	}
+	// convertStringValue turns "128000" into an integer.
+	if got := modelInfo["max_input_tokens"]; got != float64(128000) {
+		t.Fatalf("expected max_input_tokens=128000, got %v (%T)", got, got)
+	}
+	// Fixed fields must still be present.
+	if got := modelInfo["base_model"]; got != "moonshotai/kimi-k3" {
+		t.Fatalf("expected base_model to be preserved, got %v", got)
+	}
+}
+
+func TestPatchModelSendsAdditionalModelInfo(t *testing.T) {
+	t.Parallel()
+
+	var capturedBody map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "PATCH" {
+			_ = json.NewDecoder(r.Body).Decode(&capturedBody)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok"})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	r := &ModelResource{
+		client: &Client{
+			APIBase:    server.URL,
+			APIKey:     "test-key",
+			HTTPClient: server.Client(),
+		},
+	}
+
+	additionalInfo, _ := types.MapValue(types.StringType, map[string]attr.Value{
+		"supports_reasoning": types.StringValue("true"),
+	})
+
+	data := &ModelResourceModel{
+		ID:                  types.StringValue("model-info-patch"),
+		ModelName:           types.StringValue("kimi-k3"),
+		CustomLLMProvider:   types.StringValue("openrouter"),
+		BaseModel:           types.StringValue("moonshotai/kimi-k3"),
+		AdditionalModelInfo: additionalInfo,
+	}
+
+	if err := r.patchModel(context.Background(), data); err != nil {
+		t.Fatalf("patchModel returned error: %v", err)
+	}
+
+	modelInfo, ok := capturedBody["model_info"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("model_info missing in request body: %v", capturedBody)
+	}
+	if got := modelInfo["supports_reasoning"]; got != true {
+		t.Fatalf("expected supports_reasoning=true (bool), got %v (%T)", got, got)
+	}
+}
+
+func TestReadModelExtractsAdditionalModelInfoOnlyForConfiguredKeys(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": []interface{}{
+				map[string]interface{}{
+					"model_name": "kimi-k3",
+					"litellm_params": map[string]interface{}{
+						"custom_llm_provider": "openrouter",
+						"model":               "openrouter/moonshotai/kimi-k3",
+					},
+					"model_info": map[string]interface{}{
+						"base_model":       "moonshotai/kimi-k3",
+						"supports_vision":  true,
+						"request_template": map[string]interface{}{"inputs": "{prompt}"},
+						// Metadata merged from LiteLLM's model cost map — the
+						// user never configured these and they must NOT be
+						// read into additional_model_info.
+						"max_tokens":              8192.0,
+						"supports_prompt_caching": false,
+						"litellm_provider":        "openrouter",
+						"input_cost_per_token":    2.5e-07,
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	r := &ModelResource{
+		client: &Client{
+			APIBase:    server.URL,
+			APIKey:     "test-key",
+			HTTPClient: server.Client(),
+		},
+	}
+
+	priorInfo, _ := types.MapValue(types.StringType, map[string]attr.Value{
+		"supports_vision":  types.StringValue("true"),
+		"request_template": types.StringValue(`{ "inputs": "{prompt}" }`),
+	})
+
+	data := ModelResourceModel{
+		ID:                      types.StringValue("model-info-read"),
+		AccessGroups:            types.ListUnknown(types.StringType),
+		AdditionalLiteLLMParams: types.MapUnknown(types.StringType),
+		AdditionalModelInfo:     priorInfo,
+	}
+
+	if err := r.readModel(context.Background(), &data); err != nil {
+		t.Fatalf("readModel returned error: %v", err)
+	}
+
+	info := map[string]string{}
+	if diags := data.AdditionalModelInfo.ElementsAs(context.Background(), &info, false); diags.HasError() {
+		t.Fatalf("failed to decode additional_model_info: %v", diags)
+	}
+
+	if got := info["supports_vision"]; got != "true" {
+		t.Fatalf("expected supports_vision=true, got %q", got)
+	}
+	if got := info["request_template"]; got != `{ "inputs": "{prompt}" }` {
+		t.Fatalf("expected semantically equal JSON formatting to be preserved, got %q", got)
+	}
+	if len(info) != 2 {
+		t.Fatalf("expected only configured keys to be read back, got %v", info)
+	}
+}
+
+func TestReadModelResolvesUnknownAdditionalModelInfo(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": []interface{}{
+				map[string]interface{}{
+					"model_name": "gpt-4o-mini",
+					"litellm_params": map[string]interface{}{
+						"custom_llm_provider": "openai",
+						"model":               "openai/gpt-4o-mini",
+					},
+					"model_info": map[string]interface{}{
+						"base_model": "gpt-4o-mini",
+						// Cost-map metadata that must not be captured.
+						"max_tokens":      16384.0,
+						"supports_vision": true,
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	r := &ModelResource{
+		client: &Client{
+			APIBase:    server.URL,
+			APIKey:     "test-key",
+			HTTPClient: server.Client(),
+		},
+	}
+
+	// Simulate Create (or Import) where additional_model_info was not configured.
+	data := ModelResourceModel{
+		ID:                      types.StringValue("model-info-unknown"),
+		AccessGroups:            types.ListUnknown(types.StringType),
+		AdditionalLiteLLMParams: types.MapUnknown(types.StringType),
+		AdditionalModelInfo:     types.MapUnknown(types.StringType),
+	}
+
+	if err := r.readModel(context.Background(), &data); err != nil {
+		t.Fatalf("readModel returned error: %v", err)
+	}
+
+	if data.AdditionalModelInfo.IsUnknown() {
+		t.Fatal("additional_model_info must be known after read")
+	}
+	if got := len(data.AdditionalModelInfo.Elements()); got != 0 {
+		t.Fatalf("expected empty additional_model_info, got %d elements: %v", got, data.AdditionalModelInfo)
+	}
+}

@@ -75,6 +75,8 @@ type ModelResourceModel struct {
 	AccessGroups                      types.List    `tfsdk:"access_groups"`
 	AdditionalLiteLLMParams           types.Map     `tfsdk:"additional_litellm_params"`
 	AdditionalLiteLLMParamsConfigured types.Bool    `tfsdk:"additional_litellm_params_configured"`
+	AdditionalModelInfo               types.Map     `tfsdk:"additional_model_info"`
+	AdditionalModelInfoConfigured     types.Bool    `tfsdk:"additional_model_info_configured"`
 }
 
 func (r *ModelResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -257,6 +259,30 @@ func (r *ModelResource) Schema(ctx context.Context, req resource.SchemaRequest, 
 					modelAdditionalParamsOwnershipModifier{},
 				},
 			},
+			"additional_model_info": schema.MapAttribute{
+				Description: "Additional fields to store in model_info, e.g. capability flags " +
+					"(supports_vision, supports_function_calling, supports_reasoning, …) for models " +
+					"missing from LiteLLM's model cost map. Values are strings and are converted to " +
+					"native JSON types (int, float, bool, JSON) for the API. Only keys configured " +
+					"here are managed; fields LiteLLM derives from its model cost map are left alone.",
+				Optional:    true,
+				Computed:    true,
+				ElementType: types.StringType,
+				Validators: []validator.Map{
+					mapvalidator.NoNullValues(),
+					modelInfoReservedKeysValidator{},
+				},
+				PlanModifiers: []planmodifier.Map{
+					modelAdditionalModelInfoRemovalModifier{},
+				},
+			},
+			"additional_model_info_configured": schema.BoolAttribute{
+				Description: "Internal state marker indicating whether additional_model_info is explicitly managed by configuration.",
+				Computed:    true,
+				PlanModifiers: []planmodifier.Bool{
+					modelAdditionalModelInfoOwnershipModifier{},
+				},
+			},
 		},
 	}
 }
@@ -296,9 +322,20 @@ func (r *ModelResource) Create(ctx context.Context, req resource.CreateRequest, 
 	}
 	data.AdditionalLiteLLMParamsConfigured = types.BoolValue(!configuredAdditionalParams.IsNull() && !configuredAdditionalParams.IsUnknown())
 
-	// Normalise numeric strings in additional_litellm_params so that the
-	// planned value uses the same canonical form as the read-back value.
+	var configuredModelInfo types.Map
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("additional_model_info"), &configuredModelInfo)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if !configuredModelInfo.IsNull() && !configuredModelInfo.IsUnknown() {
+		data.AdditionalModelInfo = configuredModelInfo
+	}
+	data.AdditionalModelInfoConfigured = types.BoolValue(!configuredModelInfo.IsNull() && !configuredModelInfo.IsUnknown())
+
+	// Normalise numeric strings in string-map attributes so that planned values
+	// use the same canonical form as their API read-back values.
 	data.AdditionalLiteLLMParams = normalizeAdditionalParams(ctx, data.AdditionalLiteLLMParams)
+	data.AdditionalModelInfo = normalizeAdditionalParams(ctx, data.AdditionalModelInfo)
 
 	modelID := uuid.New().String()
 
@@ -330,6 +367,7 @@ func (r *ModelResource) Read(ctx context.Context, req resource.ReadRequest, resp
 	}
 
 	priorAdditionalParams := data.AdditionalLiteLLMParams
+	priorModelInfo := data.AdditionalModelInfo
 	importedMarker, privateDiags := req.Private.GetKey(ctx, modelImportedPrivateKey)
 	resp.Diagnostics.Append(privateDiags...)
 	if resp.Diagnostics.HasError() {
@@ -353,6 +391,13 @@ func (r *ModelResource) Read(ctx context.Context, req resource.ReadRequest, resp
 		}
 		data.AdditionalLiteLLMParamsConfigured = types.BoolValue(configured)
 	}
+	if data.AdditionalModelInfoConfigured.IsNull() || data.AdditionalModelInfoConfigured.IsUnknown() {
+		configured := len(configuredAdditionalParamKeys(priorModelInfo)) > 0
+		if string(importedMarker) == "true" {
+			configured = false
+		}
+		data.AdditionalModelInfoConfigured = types.BoolValue(configured)
+	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -372,9 +417,17 @@ func (r *ModelResource) Update(ctx context.Context, req resource.UpdateRequest, 
 	}
 	data.AdditionalLiteLLMParamsConfigured = types.BoolValue(!configuredAdditionalParams.IsNull() && !configuredAdditionalParams.IsUnknown())
 
-	// Normalise numeric strings in additional_litellm_params so that the
-	// planned value uses the same canonical form as the read-back value.
+	var configuredModelInfo types.Map
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("additional_model_info"), &configuredModelInfo)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	data.AdditionalModelInfoConfigured = types.BoolValue(!configuredModelInfo.IsNull() && !configuredModelInfo.IsUnknown())
+
+	// Normalise numeric strings in string-map attributes so that planned values
+	// use the same canonical form as their API read-back values.
 	data.AdditionalLiteLLMParams = normalizeAdditionalParams(ctx, data.AdditionalLiteLLMParams)
+	data.AdditionalModelInfo = normalizeAdditionalParams(ctx, data.AdditionalModelInfo)
 
 	var state ModelResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
@@ -551,6 +604,16 @@ func (r *ModelResource) createOrUpdateModel(ctx context.Context, data *ModelReso
 		data.AccessGroups.ElementsAs(ctx, &accessGroups, false)
 		if len(accessGroups) > 0 {
 			modelInfo["access_groups"] = accessGroups
+		}
+	}
+
+	// Add additional_model_info to the request. Like additional_litellm_params,
+	// values are strings in Terraform but converted to native types for the API.
+	if !data.AdditionalModelInfo.IsNull() && !data.AdditionalModelInfo.IsUnknown() {
+		elements := make(map[string]string)
+		data.AdditionalModelInfo.ElementsAs(ctx, &elements, false)
+		for key, value := range elements {
+			modelInfo[key] = convertStringValue(value)
 		}
 	}
 
@@ -835,6 +898,34 @@ func (r *ModelResource) readModel(ctx context.Context, data *ModelResourceModel)
 		data.AccessGroups, _ = types.ListValue(types.StringType, []attr.Value{})
 	}
 
+	// Read back additional_model_info. Only keys configured in state are
+	// consulted because /model/info also merges model cost-map metadata.
+	if !data.AdditionalModelInfo.IsNull() && !data.AdditionalModelInfo.IsUnknown() {
+		priorValues := data.AdditionalModelInfo.Elements()
+		infoValues := make(map[string]attr.Value)
+		if hasModelInfo {
+			for key, priorValue := range priorValues {
+				rawValue, exists := modelInfo[key]
+				if !exists {
+					continue
+				}
+				value, ok := stringifyAPIValue(rawValue)
+				if !ok {
+					continue
+				}
+				priorString, hasPriorString := priorValue.(types.String)
+				readString, hasReadString := value.(types.String)
+				if hasPriorString && hasReadString && jsonSemanticallyEqual(priorString.ValueString(), readString.ValueString()) {
+					value = priorValue
+				}
+				infoValues[key] = value
+			}
+		}
+		data.AdditionalModelInfo, _ = types.MapValue(types.StringType, infoValues)
+	} else {
+		data.AdditionalModelInfo, _ = types.MapValue(types.StringType, map[string]attr.Value{})
+	}
+
 	// Ensure mode is never Unknown after a Read. Terraform requires all
 	// Computed attributes to resolve to a known (or null) value after apply.
 	// Wildcard routes (e.g. openai/*) may not have a mode set in the API
@@ -897,6 +988,32 @@ func readBackCost(current types.Float64, raw interface{}, scale float64) types.F
 	return types.Float64Value(value)
 }
 
+// stringifyAPIValue converts a raw JSON value into the canonical string
+// representation used by string-map attributes.
+func stringifyAPIValue(rawValue interface{}) (attr.Value, bool) {
+	switch value := rawValue.(type) {
+	case string:
+		if number, err := strconv.ParseFloat(value, 64); err == nil {
+			return types.StringValue(strconv.FormatFloat(number, 'f', -1, 64)), true
+		}
+		return types.StringValue(value), true
+	case bool:
+		return types.StringValue(strconv.FormatBool(value)), true
+	case float64:
+		return types.StringValue(strconv.FormatFloat(value, 'f', -1, 64)), true
+	case int:
+		return types.StringValue(strconv.Itoa(value)), true
+	case int64:
+		return types.StringValue(strconv.FormatInt(value, 10)), true
+	default:
+		jsonValue, err := json.Marshal(value)
+		if err != nil {
+			return nil, false
+		}
+		return types.StringValue(string(jsonValue)), true
+	}
+}
+
 func finalizeModelComputedDefaults(data *ModelResourceModel) {
 	if data.Mode.IsUnknown() {
 		data.Mode = types.StringNull()
@@ -906,6 +1023,9 @@ func finalizeModelComputedDefaults(data *ModelResourceModel) {
 	}
 	if data.AdditionalLiteLLMParams.IsUnknown() {
 		data.AdditionalLiteLLMParams, _ = types.MapValue(types.StringType, map[string]attr.Value{})
+	}
+	if data.AdditionalModelInfo.IsUnknown() {
+		data.AdditionalModelInfo, _ = types.MapValue(types.StringType, map[string]attr.Value{})
 	}
 }
 
@@ -1158,6 +1278,16 @@ func (r *ModelResource) patchModel(ctx context.Context, data *ModelResourceModel
 		data.AccessGroups.ElementsAs(ctx, &accessGroups, false)
 		if len(accessGroups) > 0 {
 			modelInfo["access_groups"] = accessGroups
+		}
+	}
+
+	// Add additional_model_info to the request. Like additional_litellm_params,
+	// values are strings in Terraform but converted to native types for the API.
+	if !data.AdditionalModelInfo.IsNull() && !data.AdditionalModelInfo.IsUnknown() {
+		elements := make(map[string]string)
+		data.AdditionalModelInfo.ElementsAs(ctx, &elements, false)
+		for key, value := range elements {
+			modelInfo[key] = convertStringValue(value)
 		}
 	}
 

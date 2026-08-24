@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -173,6 +174,8 @@ func consistencyTestModel(baseModel, tier string) ModelResourceModel {
 		AccessGroups:                      types.ListUnknown(types.StringType),
 		AdditionalLiteLLMParams:           types.MapUnknown(types.StringType),
 		AdditionalLiteLLMParamsConfigured: types.BoolValue(false),
+		AdditionalModelInfo:               types.MapValueMust(types.StringType, map[string]attr.Value{}),
+		AdditionalModelInfoConfigured:     types.BoolValue(false),
 	}
 }
 

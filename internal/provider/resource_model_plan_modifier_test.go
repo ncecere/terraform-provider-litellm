@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	resourceschema "github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
@@ -258,6 +259,17 @@ func TestModelComputedCollectionPlanModifiers(t *testing.T) {
 	if got := additionalParams.PlanModifiers[0].Description(ctx); got != "Replaces the model when configured additional LiteLLM parameter keys are removed." {
 		t.Fatalf("unexpected additional_litellm_params plan modifier: %q", got)
 	}
+
+	additionalInfo, ok := schemaResp.Schema.Attributes["additional_model_info"].(resourceschema.MapAttribute)
+	if !ok {
+		t.Fatal("additional_model_info is not a map attribute")
+	}
+	if len(additionalInfo.PlanModifiers) != 1 {
+		t.Fatalf("additional_model_info plan modifiers = %d, want only the removal-aware modifier", len(additionalInfo.PlanModifiers))
+	}
+	if got := additionalInfo.PlanModifiers[0].Description(ctx); got != "Replaces the model when configured additional model information keys are removed." {
+		t.Fatalf("unexpected additional_model_info plan modifier: %q", got)
+	}
 }
 
 func TestModelAdditionalParamsRejectNullValues(t *testing.T) {
@@ -287,6 +299,47 @@ func TestModelAdditionalParamsRejectNullValues(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			var validationResp validator.MapResponse
 			request := validator.MapRequest{ConfigValue: types.MapValueMust(types.StringType, map[string]attr.Value{"timeout": test.value})}
+			for _, mapValidator := range attribute.Validators {
+				mapValidator.ValidateMap(ctx, request, &validationResp)
+			}
+			if got := validationResp.Diagnostics.HasError(); got != test.wantError {
+				t.Fatalf("validation error = %v, want %v: %v", got, test.wantError, validationResp.Diagnostics)
+			}
+		})
+	}
+}
+
+func TestModelAdditionalInfoValidators(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	var schemaResp resource.SchemaResponse
+	(&ModelResource{}).Schema(ctx, resource.SchemaRequest{}, &schemaResp)
+	if schemaResp.Diagnostics.HasError() {
+		t.Fatalf("schema diagnostics: %v", schemaResp.Diagnostics)
+	}
+	attribute, ok := schemaResp.Schema.Attributes["additional_model_info"].(resourceschema.MapAttribute)
+	if !ok {
+		t.Fatal("additional_model_info is not a map attribute")
+	}
+
+	tests := []struct {
+		name      string
+		values    map[string]attr.Value
+		wantError bool
+	}{
+		{"capability flag", map[string]attr.Value{"supports_vision": types.StringValue("true")}, false},
+		{"dedicated reserved key", map[string]attr.Value{"base_model": types.StringValue("other")}, true},
+		{"audit reserved key", map[string]attr.Value{"updated_by": types.StringValue("someone")}, true},
+		{"null value", map[string]attr.Value{"supports_vision": types.StringNull()}, true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var validationResp validator.MapResponse
+			request := validator.MapRequest{
+				Path:        path.Root("additional_model_info"),
+				ConfigValue: types.MapValueMust(types.StringType, test.values),
+			}
 			for _, mapValidator := range attribute.Validators {
 				mapValidator.ValidateMap(ctx, request, &validationResp)
 			}
