@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
@@ -85,19 +86,32 @@ func (d *FallbackDataSource) Read(ctx context.Context, req datasource.ReadReques
 		fallbackType = "general"
 	}
 
-	endpoint := fmt.Sprintf("/fallback/%s?fallback_type=%s",
-		url.PathEscape(data.Model.ValueString()),
-		url.QueryEscape(fallbackType))
-
-	var result map[string]interface{}
-	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
+	data.FallbackType = types.StringValue(fallbackType)
+	if err := d.readFallbackWithRetry(ctx, &data, fallbackReadMaxAttempts, fallbackReadInitialDelay, fallbackReadMaxDelay); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read fallback for model '%s': %s", data.Model.ValueString(), err))
 		return
 	}
 
-	data.ID = types.StringValue(data.Model.ValueString() + ":" + fallbackType)
-	data.FallbackType = types.StringValue(fallbackType)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+}
 
+func (d *FallbackDataSource) readFallbackWithRetry(ctx context.Context, data *FallbackDataSourceModel, maxAttempts int, initialDelay, maxDelay time.Duration) error {
+	return retryFallbackRead(ctx, maxAttempts, initialDelay, maxDelay, func() error {
+		return d.readFallback(ctx, data)
+	})
+}
+
+func (d *FallbackDataSource) readFallback(ctx context.Context, data *FallbackDataSourceModel) error {
+	endpoint := fmt.Sprintf("/fallback/%s?fallback_type=%s",
+		url.PathEscape(data.Model.ValueString()),
+		url.QueryEscape(data.FallbackType.ValueString()))
+
+	var result map[string]interface{}
+	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
+		return err
+	}
+
+	data.ID = types.StringValue(data.Model.ValueString() + ":" + data.FallbackType.ValueString())
 	if fallbackModels, ok := result["fallback_models"].([]interface{}); ok {
 		list := make([]attr.Value, 0, len(fallbackModels))
 		for _, m := range fallbackModels {
@@ -110,5 +124,5 @@ func (d *FallbackDataSource) Read(ctx context.Context, req datasource.ReadReques
 		data.FallbackModels, _ = types.ListValue(types.StringType, []attr.Value{})
 	}
 
-	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	return nil
 }
