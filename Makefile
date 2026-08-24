@@ -1,8 +1,8 @@
-HOSTNAME=registry.terraform.io
-NAMESPACE=local
-NAME=litellm
-VERSION=1.0.0
-OS_ARCH=darwin_amd64
+HOSTNAME ?= registry.terraform.io
+NAMESPACE ?= local
+NAME ?= litellm
+VERSION ?= 1.0.0
+OS_ARCH ?= $(shell go env GOOS)_$(shell go env GOARCH)
 
 default: install
 
@@ -14,6 +14,9 @@ install: build
 	mv terraform-provider-${NAME} ~/.terraform.d/plugins/${HOSTNAME}/${NAMESPACE}/${NAME}/${VERSION}/${OS_ARCH}/terraform-provider-${NAME}_v${VERSION}
 
 test:
+	go test ./...
+
+coverage:
 	go test -covermode=atomic -coverprofile=coverage.out ./...
 	@printf 'Total coverage: %s\n' "$$(go tool cover -func=coverage.out | tail -1 | awk '{print $$NF}')"
 	@echo "HTML report: go tool cover -html=coverage.out"
@@ -53,4 +56,4 @@ smoke: build
 	@test -n "$(resources)$(datasources)" || (echo "Usage: make smoke resources=file.tf [datasources=file.tf]"; exit 1)
 	@sh internal_testing/smoke.sh $(CURDIR) resources $(strip $(subst ,, ,$(resources))) datasources $(strip $(subst ,, ,$(datasources)))
 
-.PHONY: build install test fmt vet lint clean local logs smoke
+.PHONY: build install test coverage fmt vet lint clean local logs smoke
