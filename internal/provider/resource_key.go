@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/resourcevalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
@@ -130,6 +132,7 @@ type KeyResourceModel struct {
 	EnforcedParams           types.List    `tfsdk:"enforced_params"`
 	Tags                     types.List    `tfsdk:"tags"`
 	Blocked                  types.Bool    `tfsdk:"blocked"`
+	RouterSettings           types.Object  `tfsdk:"router_settings"`
 }
 
 func (r *KeyResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -345,6 +348,7 @@ func (r *KeyResource) Schema(ctx context.Context, req resource.SchemaRequest, re
 				Optional:    true,
 				Computed:    true,
 			},
+			"router_settings": keyRouterSettingsResourceAttribute(),
 		},
 	}
 }
@@ -398,7 +402,11 @@ func (r *KeyResource) Create(ctx context.Context, req resource.CreateRequest, re
 		return
 	}
 
-	keyReq := r.buildKeyRequest(ctx, &data)
+	keyReq, err := r.buildKeyRequest(ctx, &data)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Key Request", err.Error())
+		return
+	}
 	if writeOnlyMode {
 		keyReq["key"] = writeOnlyKey.ValueString()
 	}
@@ -425,6 +433,12 @@ func (r *KeyResource) Create(ctx context.Context, req resource.CreateRequest, re
 	} else if keyVal, ok := result["key"].(string); ok {
 		data.Key = types.StringValue(keyVal)
 		data.ID = types.StringValue(hashKeyForID(keyVal))
+	}
+
+	if !data.RouterSettings.IsNull() {
+		if err := r.waitForKeyRouterSettings(ctx, &data); err != nil {
+			resp.Diagnostics.AddError("Router Settings Did Not Converge", "The key was created, but "+err.Error()+". Terraform retained the key identity for recovery.")
+		}
 	}
 
 	// Read back for full state
@@ -478,12 +492,23 @@ func (r *KeyResource) Update(ctx context.Context, req resource.UpdateRequest, re
 		resp.Diagnostics.AddError("Key Identity Error", fmt.Sprintf("Unable to identify key for update: %s", err))
 		return
 	}
-	updateReq := r.buildKeyRequest(ctx, &data)
+	updateReq, err := r.buildKeyRequest(ctx, &data)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Key Request", err.Error())
+		return
+	}
 	updateReq["key"] = keyIdentifier
+	applyKeyRouterSettingsUpdateSemantics(updateReq, data.RouterSettings, state.RouterSettings)
 
 	if err := r.client.DoRequestWithResponse(ctx, "POST", "/key/update", updateReq, nil); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to update key: %s", err))
 		return
+	}
+
+	if !data.RouterSettings.IsNull() || !state.RouterSettings.IsNull() {
+		if err := r.waitForKeyRouterSettings(ctx, &data); err != nil {
+			resp.Diagnostics.AddError("Router Settings Did Not Converge", err.Error()+". The remote key may have changed; run Terraform again after reviewing the key.")
+		}
 	}
 
 	if err := r.readKey(ctx, &data); err != nil {
@@ -612,7 +637,7 @@ func (r *KeyResource) UpgradeState(ctx context.Context) map[int64]resource.State
 	}
 }
 
-func (r *KeyResource) buildKeyRequest(ctx context.Context, data *KeyResourceModel) map[string]interface{} {
+func (r *KeyResource) buildKeyRequest(ctx context.Context, data *KeyResourceModel) (map[string]interface{}, error) {
 	keyReq := make(map[string]interface{})
 
 	// String fields - check IsNull, IsUnknown, and empty string
@@ -803,6 +828,14 @@ func (r *KeyResource) buildKeyRequest(ctx context.Context, data *KeyResourceMode
 		}
 	}
 
+	if !data.RouterSettings.IsNull() && !data.RouterSettings.IsUnknown() {
+		routerSettings, err := keyRouterSettingsPayload(data.RouterSettings)
+		if err != nil {
+			return nil, err
+		}
+		keyReq["router_settings"] = routerSettings
+	}
+
 	// Handle service account
 	if !data.ServiceAccountID.IsNull() && !data.ServiceAccountID.IsUnknown() && data.ServiceAccountID.ValueString() != "" {
 		saID := data.ServiceAccountID.ValueString()
@@ -817,7 +850,7 @@ func (r *KeyResource) buildKeyRequest(ctx context.Context, data *KeyResourceMode
 		}
 	}
 
-	return keyReq
+	return keyReq, nil
 }
 
 func stringMapMatchesAttrValues(current types.Map, observed map[string]attr.Value) bool {
@@ -833,26 +866,91 @@ func stringMapMatchesAttrValues(current types.Map, observed map[string]attr.Valu
 	return true
 }
 
-func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error {
+func (r *KeyResource) getKeyInfo(ctx context.Context, data *KeyResourceModel) (map[string]interface{}, map[string]interface{}, error) {
 	keyIdentifier, err := keyLookupIdentifier(data)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 
 	// url.QueryEscape ensures special characters in a plaintext key (e.g. '#')
 	// are not interpreted as a URL fragment. LiteLLM also accepts the SHA256
 	// token hash used to manage write-only keys without recovering plaintext.
 	endpoint := fmt.Sprintf("/key/info?key=%s", url.QueryEscape(keyIdentifier))
-
 	var result map[string]interface{}
 	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
-		return err
+		return nil, nil, err
 	}
-
-	// The /key/info endpoint may return key data nested inside "info"
 	info := result
 	if nested, ok := result["info"].(map[string]interface{}); ok {
 		info = nested
+	}
+	return result, info, nil
+}
+
+func isTransientRouterSettingsReadStatus(status int) bool {
+	return status == http.StatusNotFound || status == http.StatusRequestTimeout || status == http.StatusTooManyRequests || status >= 500
+}
+
+func (r *KeyResource) waitForKeyRouterSettings(ctx context.Context, data *KeyResourceModel) error {
+	var wanted map[string]interface{}
+	if !data.RouterSettings.IsNull() {
+		var err error
+		wanted, err = keyRouterSettingsPayload(data.RouterSettings)
+		if err != nil {
+			return fmt.Errorf("build planned router settings")
+		}
+	}
+
+	const attempts = 6
+	stableMatches := 0
+	lastDetail := "the read-back document did not match the planned document"
+	for attempt := 0; attempt < attempts; attempt++ {
+		_, info, err := r.getKeyInfo(ctx, data)
+		if err == nil {
+			matches, comparisonErr := keyRouterSettingsMatchAPI(wanted, info["router_settings"])
+			if comparisonErr != nil {
+				// Do not include response values because arbitrary router settings
+				// can contain sensitive data.
+				return fmt.Errorf("LiteLLM returned malformed or unsupported router settings during read-back")
+			}
+			if matches {
+				stableMatches++
+				if stableMatches >= 2 {
+					return nil
+				}
+			} else {
+				stableMatches = 0
+				lastDetail = "the read-back document did not match the planned document"
+			}
+		} else {
+			stableMatches = 0
+			var apiErr *APIError
+			if errors.As(err, &apiErr) {
+				lastDetail = fmt.Sprintf("the read-back request returned HTTP %d", apiErr.StatusCode)
+				if !isTransientRouterSettingsReadStatus(apiErr.StatusCode) {
+					return fmt.Errorf("LiteLLM router-settings read-back returned HTTP %d", apiErr.StatusCode)
+				}
+			} else {
+				// Transport errors can embed the request URL and therefore a raw
+				// stateful key. Keep the convergence diagnostic deliberately generic.
+				lastDetail = "the read-back transport request failed"
+			}
+		}
+		if attempt+1 < attempts {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(250 * time.Millisecond):
+			}
+		}
+	}
+	return fmt.Errorf("LiteLLM did not return the complete planned router settings after the key mutation: %s", lastDetail)
+}
+
+func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error {
+	result, info, err := r.getKeyInfo(ctx, data)
+	if err != nil {
+		return err
 	}
 
 	// Update computed fields from response.
@@ -1170,6 +1268,17 @@ func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error
 		data.ModelRPMLimit, _ = types.MapValue(types.Int64Type, rpmMap)
 	} else if data.ModelRPMLimit.IsUnknown() {
 		data.ModelRPMLimit, _ = types.MapValue(types.Int64Type, map[string]attr.Value{})
+	}
+
+	// router_settings is Optional rather than Optional+Computed. An absent block
+	// intentionally leaves remote key settings unmanaged; a present block owns
+	// the complete LiteLLM router-settings document.
+	if !data.RouterSettings.IsNull() {
+		routerSettings, _, err := keyRouterSettingsFromAPI(info["router_settings"], data.RouterSettings)
+		if err != nil {
+			return err
+		}
+		data.RouterSettings = routerSettings
 	}
 
 	// Handle model_tpm_limit map

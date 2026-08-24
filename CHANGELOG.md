@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`litellm_key` resource and data source**: Add complete LiteLLM v1.98.0 `router_settings` support with ordered fallback JSON, retry policies, model-group aliases, routing groups, affinity, tag routing, whole-document ownership, and explicit removal semantics. Key data-source lookups now URL-escape raw tokens and expose only a SHA256 management ID instead of copying the token into a non-sensitive ID. ([#97](https://github.com/ncecere/terraform-provider-litellm/issues/97), [#98](https://github.com/ncecere/terraform-provider-litellm/pull/98), [#147](https://github.com/ncecere/terraform-provider-litellm/pull/147)) — thanks @orolega for #98 and @alexeishtakal for #147
+
 ### Changed
 - **Development and CI**: Add read-only build/vet/format/race-test CI with coverage and JUnit artifacts, broaden provider unit coverage, make local provider installation architecture-aware, and add an isolated, failure-preserving LiteLLM v1.98.0 smoke/acceptance harness covering 22 non-enterprise resources. ([#145](https://github.com/ncecere/terraform-provider-litellm/issues/145)) — thanks @msabramo
 

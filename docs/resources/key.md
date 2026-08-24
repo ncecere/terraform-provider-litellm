@@ -49,7 +49,7 @@ resource "litellm_key" "write_only" {
 
 `key_wo_version` is persisted because Terraform cannot compare write-only values. Change both the secret and version to replace the key. Replacement deletes and recreates the LiteLLM key, including its server-side spend history and budget window. The ephemeral source must be available during both plan and apply; applying a saved plan requires supplying the ephemeral input again.
 
-In write-only mode, `key` remains null and `id` contains only `sha256:<key-hash>`. The provider uses this hash for Read, Update, and Delete; plaintext is not stored in Terraform private state.
+In write-only mode, `key` remains null and `id` contains only `sha256:<key-hash>`. The provider uses this hash for Read, Update, and Delete; plaintext is not stored in Terraform private state. The same `id` can be passed to the `litellm_key` data source's `key_hash` argument for hash-only lookup.
 
 > **Key entropy:** Use a cryptographically random key with at least 128 bits of entropy. The unsalted SHA256 management identifier does not authenticate to LiteLLM, but it is visible in ordinary Terraform output and lets an observer verify offline guesses of a weak or patterned predefined key.
 
@@ -89,6 +89,44 @@ resource "litellm_key" "example" {
   }
 }
 ```
+
+### Key-Specific Router Settings
+
+`router_settings` is a complete key-level override. When present, it takes precedence over team router settings; Terraform owns and replaces the complete document. Ordered or heterogeneous fields use `jsonencode()` so their JSON semantics round-trip without losing order or object-valued aliases.
+
+```hcl
+resource "litellm_key" "routed" {
+  key_alias = "routed-key"
+  models    = ["gpt-4o", "gpt-4o-mini"]
+
+  router_settings = {
+    routing_strategy = "usage-based-routing-v2"
+    num_retries      = 3
+    timeout          = 30.5
+    retry_after      = 0.25
+
+    fallbacks = jsonencode([
+      { "gpt-4o" = ["gpt-4o-mini"] },
+      { "*" = ["emergency-model"] }
+    ])
+
+    model_group_alias = jsonencode({
+      fast = "gpt-4o-mini"
+      primary = {
+        model  = "gpt-4o"
+        hidden = true
+      }
+    })
+
+    retry_policy = {
+      rate_limit_error_retries      = 5
+      internal_server_error_retries = 2
+    }
+  }
+}
+```
+
+Removing the entire block sends an explicit empty object to clear the key-level override and restores team/global inheritance. Setting `fallbacks = jsonencode([])` retains a non-empty key-level settings document and intentionally suppresses inherited fallbacks.
 
 ### Service Account Key
 
@@ -204,6 +242,27 @@ The following arguments are supported:
 * `tags` - (Optional) List of tags. **Note:** Requires LiteLLM Enterprise license.
 
 * `blocked` - (Optional) Whether this key is blocked.
+
+* `router_settings` - (Optional) Complete key-specific router-settings document. Omitting the block leaves remote settings unmanaged. A configured block replaces the complete document on update rather than merging individual fields. Supported LiteLLM v1.98.0 fields:
+  * `routing_strategy_args` - (Optional) JSON object passed to the routing strategy.
+  * `routing_strategy` - (Optional) Routing strategy name.
+  * `routing_groups` - (Optional) JSON array of routing groups.
+  * `retry_policy` - (Optional) Typed retry counts: `bad_request_error_retries`, `authentication_error_retries`, `timeout_error_retries`, `rate_limit_error_retries`, `content_policy_violation_error_retries`, and `internal_server_error_retries`.
+  * `model_group_retry_policy` - (Optional) JSON object mapping model groups to retry policies. Nested retry keys use LiteLLM's PascalCase names, such as `RateLimitErrorRetries`.
+  * `model_group_affinity_config` - (Optional) JSON object mapping affinity groups to lists of model groups.
+  * `allowed_fails` - (Optional) Failures allowed before cooldown.
+  * `cooldown_time` - (Optional) Cooldown duration in seconds.
+  * `num_retries` - (Optional) Number of request retries.
+  * `timeout` - (Optional) Request timeout in seconds.
+  * `max_retries` - (Optional) Maximum retries.
+  * `retry_after` - (Optional) Retry delay in seconds; decimal values are supported.
+  * `fallbacks` - (Optional) Ordered JSON array of model fallback mappings.
+  * `context_window_fallbacks` - (Optional) Ordered JSON array of context-window fallback mappings.
+  * `model_group_alias` - (Optional) JSON object mapping aliases to model groups or alias configuration objects.
+  * `enable_tag_filtering` - (Optional) Enables request-tag routing.
+  * `tag_routing_prefix` - (Optional) Prefix for tag-based routing.
+
+  LiteLLM v1.98.0 accepts and stores all fields above, but its per-key request path currently applies only `fallbacks`, `context_window_fallbacks`, `num_retries`, `timeout`, `model_group_retry_policy`, `routing_strategy`, `enable_tag_filtering`, and `model_group_alias`. Other accepted fields are exposed for API fidelity and future LiteLLM behavior.
 
 ## Attribute Reference
 
