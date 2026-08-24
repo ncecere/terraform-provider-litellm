@@ -227,6 +227,39 @@ func TestConfiguredAdditionalParamKeysSorted(t *testing.T) {
 	}
 }
 
+func TestModelComputedCollectionPlanModifiers(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	var schemaResp resource.SchemaResponse
+	(&ModelResource{}).Schema(ctx, resource.SchemaRequest{}, &schemaResp)
+	if schemaResp.Diagnostics.HasError() {
+		t.Fatalf("schema diagnostics: %v", schemaResp.Diagnostics)
+	}
+
+	accessGroups, ok := schemaResp.Schema.Attributes["access_groups"].(resourceschema.ListAttribute)
+	if !ok {
+		t.Fatal("access_groups is not a list attribute")
+	}
+	if len(accessGroups.PlanModifiers) != 1 {
+		t.Fatalf("access_groups plan modifiers = %d, want 1", len(accessGroups.PlanModifiers))
+	}
+	if got := accessGroups.PlanModifiers[0].Description(ctx); got != "Once set, the value of this attribute in state will not change." {
+		t.Fatalf("unexpected access_groups plan modifier: %q", got)
+	}
+
+	additionalParams, ok := schemaResp.Schema.Attributes["additional_litellm_params"].(resourceschema.MapAttribute)
+	if !ok {
+		t.Fatal("additional_litellm_params is not a map attribute")
+	}
+	if len(additionalParams.PlanModifiers) != 1 {
+		t.Fatalf("additional_litellm_params plan modifiers = %d, want only the removal-aware modifier", len(additionalParams.PlanModifiers))
+	}
+	if got := additionalParams.PlanModifiers[0].Description(ctx); got != "Replaces the model when configured additional LiteLLM parameter keys are removed." {
+		t.Fatalf("unexpected additional_litellm_params plan modifier: %q", got)
+	}
+}
+
 func TestModelAdditionalParamsRejectNullValues(t *testing.T) {
 	t.Parallel()
 
