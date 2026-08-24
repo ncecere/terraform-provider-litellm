@@ -21,6 +21,8 @@ func TestIsNotFoundError(t *testing.T) {
 		{"not found phrase", errors.New("resource not found"), true},
 		{"404 status", errors.New("request failed with status 404"), true},
 		{"does not exist", errors.New("the key does not exist"), true},
+		{"typed 404", &APIError{StatusCode: 404, Body: "internal error"}, true},
+		{"typed 500 body says not found and 404", &APIError{StatusCode: 500, Body: "server not found after 404 lookup"}, false},
 		{"unrelated", errors.New("internal server error"), false},
 	}
 	for _, tc := range cases {

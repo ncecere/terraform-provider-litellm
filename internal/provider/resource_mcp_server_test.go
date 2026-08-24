@@ -39,7 +39,7 @@ func TestReadMCPServerFallsBackToCollection(t *testing.T) {
 		writer.Header().Set("Content-Type", "application/json")
 		if request.URL.Path == "/v1/mcp/server/server-1" {
 			writer.WriteHeader(http.StatusInternalServerError)
-			_, _ = writer.Write([]byte(`{"error":"individual read failed"}`))
+			_, _ = writer.Write([]byte(`{"error":"server not found after internal 404 lookup"}`))
 			return
 		}
 		if request.URL.Path == "/v1/mcp/server" {

@@ -4,10 +4,20 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 )
+
+type APIError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("API request failed with status %d: %s", e.StatusCode, e.Body)
+}
 
 // DoRequest performs an HTTP request with context and standard headers.
 func (c *Client) DoRequest(ctx context.Context, method, path string, body interface{}) (*http.Response, error) {
@@ -59,7 +69,7 @@ func (c *Client) DoRequestWithResponse(ctx context.Context, method, path string,
 
 	// Handle non-2xx status codes
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(bodyBytes))
+		return &APIError{StatusCode: resp.StatusCode, Body: string(bodyBytes)}
 	}
 
 	// If no result expected, return early
@@ -83,6 +93,10 @@ func (c *Client) DoRequestWithResponse(ctx context.Context, method, path string,
 func IsNotFoundError(err error) bool {
 	if err == nil {
 		return false
+	}
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.StatusCode == http.StatusNotFound
 	}
 	errStr := err.Error()
 	return contains(errStr, "not found") ||
