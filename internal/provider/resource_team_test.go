@@ -8,11 +8,148 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
+	resourceschema "github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 )
+
+func TestTeamIDSchemaSupportsConfiguredOrGeneratedIdentity(t *testing.T) {
+	t.Parallel()
+
+	var response resource.SchemaResponse
+	(&TeamResource{}).Schema(context.Background(), resource.SchemaRequest{}, &response)
+	if response.Diagnostics.HasError() {
+		t.Fatalf("schema diagnostics: %v", response.Diagnostics)
+	}
+	attribute, ok := response.Schema.Attributes["team_id"].(resourceschema.StringAttribute)
+	if !ok {
+		t.Fatalf("team_id schema type = %T, want schema.StringAttribute", response.Schema.Attributes["team_id"])
+	}
+	if !attribute.Optional || !attribute.Computed || attribute.Required {
+		t.Fatalf("team_id must be Optional+Computed: %#v", attribute)
+	}
+	if len(attribute.Validators) != 1 {
+		t.Fatalf("team_id validators = %d, want 1", len(attribute.Validators))
+	}
+	if len(attribute.PlanModifiers) != 2 {
+		t.Fatalf("team_id plan modifiers = %d, want state preservation and replacement", len(attribute.PlanModifiers))
+	}
+}
+
+func TestTeamImportMirrorsIDAndTeamID(t *testing.T) {
+	t.Parallel()
+
+	teamResource := &TeamResource{}
+	var schemaResponse resource.SchemaResponse
+	teamResource.Schema(context.Background(), resource.SchemaRequest{}, &schemaResponse)
+	state, err := nullStateFor(schemaResponse.Schema)
+	if err != nil {
+		t.Fatalf("build import state: %v", err)
+	}
+	response := &resource.ImportStateResponse{State: state}
+	teamResource.ImportState(
+		context.Background(),
+		resource.ImportStateRequest{ID: "external-team"},
+		response,
+	)
+	if response.Diagnostics.HasError() {
+		t.Fatalf("import diagnostics: %v", response.Diagnostics)
+	}
+	var data TeamResourceModel
+	response.Diagnostics.Append(response.State.Get(context.Background(), &data)...)
+	if response.Diagnostics.HasError() {
+		t.Fatalf("decode imported state: %v", response.Diagnostics)
+	}
+	if data.ID.ValueString() != "external-team" || data.TeamID.ValueString() != "external-team" {
+		t.Fatalf("imported identity: id=%q team_id=%q", data.ID.ValueString(), data.TeamID.ValueString())
+	}
+}
+
+func TestTeamIDForCreatePreservesCustomOrGeneratesUUID(t *testing.T) {
+	t.Parallel()
+
+	if got := teamIDForCreate(types.StringValue("engineering-platform")); got != "engineering-platform" {
+		t.Fatalf("configured team ID = %q, want engineering-platform", got)
+	}
+	for name, value := range map[string]types.String{
+		"null":    types.StringNull(),
+		"unknown": types.StringUnknown(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := teamIDForCreate(value)
+			if _, err := uuid.Parse(got); err != nil {
+				t.Fatalf("generated team ID %q is not a UUID: %v", got, err)
+			}
+		})
+	}
+}
+
+func TestReadTeamCustomIDIsEscapedAndMirrored(t *testing.T) {
+	t.Parallel()
+
+	const teamID = "engineering/group #1&ops"
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if got := request.URL.Query().Get("team_id"); got != teamID {
+			http.Error(writer, "unexpected team ID: "+got, http.StatusBadRequest)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		switch request.URL.Path {
+		case "/team/info":
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+				"team_info": map[string]interface{}{
+					"team_id":    teamID,
+					"team_alias": "Engineering Platform",
+				},
+			})
+		case "/team/permissions_list":
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+				"team_member_permissions": []interface{}{},
+			})
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	teamResource := &TeamResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
+	data := TeamResourceModel{
+		ID:                    types.StringValue(teamID),
+		TeamID:                types.StringNull(),
+		TeamAlias:             types.StringValue("Engineering Platform"),
+		TeamMemberPermissions: types.ListUnknown(types.StringType),
+	}
+	if err := teamResource.readTeam(context.Background(), &data); err != nil {
+		t.Fatalf("readTeam returned error: %v", err)
+	}
+	if data.TeamID.ValueString() != teamID || data.ID.ValueString() != teamID {
+		t.Fatalf("team identity not mirrored: id=%q team_id=%q", data.ID.ValueString(), data.TeamID.ValueString())
+	}
+}
+
+func TestReadTeamRejectsMismatchedRemoteIdentity(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+			"team_info": map[string]interface{}{
+				"team_id":    "different-team",
+				"team_alias": "Different",
+			},
+		})
+	}))
+	defer server.Close()
+
+	teamResource := &TeamResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
+	data := TeamResourceModel{ID: types.StringValue("expected-team")}
+	if err := teamResource.readTeam(context.Background(), &data); err == nil || !strings.Contains(err.Error(), "different-team") {
+		t.Fatalf("readTeam mismatch error = %v, want remote identity diagnostic", err)
+	}
+}
 
 func TestReadTeamResolvesUnknownOptionalComputedCollections(t *testing.T) {
 	t.Parallel()

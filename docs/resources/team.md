@@ -14,6 +14,20 @@ resource "litellm_team" "minimal" {
 }
 ```
 
+### Custom Team ID
+
+Set `team_id` when an external identity provider or JWT group claim must refer to a stable, predetermined LiteLLM team identity:
+
+```hcl
+resource "litellm_team" "identity_group" {
+  team_id    = "engineering-platform"
+  team_alias = "Engineering Platform"
+  models     = ["gpt-4o"]
+}
+```
+
+If omitted, the provider generates a UUID as before. Changing `team_id` replaces the team.
+
 ### Full
 
 ```hcl
@@ -89,6 +103,7 @@ resource "litellm_team" "with_fallbacks" {
 The following arguments are supported:
 
 * `team_alias` - (Required) A human-readable alias for the team.
+* `team_id` - (Optional, Computed, Forces replacement) Stable LiteLLM team identifier. Supply a predetermined value for external identity or JWT group mapping, or omit it to let the provider generate a UUID.
 * `organization_id` - (Optional) The ID of the organization this team belongs to.
 * `max_budget` - (Optional) Maximum budget allocated to the team.
 * `budget_duration` - (Optional) Duration for the budget cycle (e.g., `"30d"`, `"7d"`, `"1h"`).
@@ -119,7 +134,8 @@ The following arguments are supported:
 
 In addition to the arguments above, the following attributes are exported:
 
-* `id` - The unique identifier of the team.
+* `id` - The Terraform resource identifier. It always matches `team_id`.
+* `team_id` - The configured or generated LiteLLM team identifier.
 
 The following attributes are both Optional and Computed (they are read back from the API if not explicitly set):
 
