@@ -180,8 +180,8 @@ terraform-provider-litellm/
 │   └── provider/               # the provider implementation (registered in main.go)
 │       ├── provider.go         # provider schema + resource/data-source registration
 │       ├── client.go           # LiteLLM API HTTP client
-│       ├── resource_*.go       # one file per resource
-│       ├── datasource_*.go     # one file per data source
+│       ├── resource_*.go       # resource implementations and helpers
+│       ├── datasource_*.go     # data-source implementations and helpers
 │       └── *_test.go           # unit tests
 ├── docs/                       # resource & data-source documentation
 ├── internal_testing/           # docker compose LiteLLM + smoke-test configs
@@ -192,8 +192,8 @@ terraform-provider-litellm/
 └── ...
 ```
 
-> Note: the top-level `litellm/` directory is legacy and no longer used by the
-> provider; `main.go` wires up `internal/provider`.
+> Note: the top-level `litellm/` directory is legacy and is not wired into the
+> provider binary; `main.go` registers `internal/provider`.
 
 ### Building the Provider
 
