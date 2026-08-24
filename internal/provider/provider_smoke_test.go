@@ -291,10 +291,12 @@ func TestResourcesImportState(t *testing.T) {
 		metaResp := &resource.MetadataResponse{}
 		res.Metadata(context.Background(), resource.MetadataRequest{ProviderTypeName: "litellm"}, metaResp)
 
-		// litellm_fallback's ImportState performs a live read and rebuilds the
-		// whole state from the API response, so it can't be exercised against a
-		// synthetic null state / stub the way passthrough importers can.
-		if metaResp.TypeName == "litellm_fallback" {
+		// litellm_fallback performs a live read during import. litellm_model writes
+		// framework private state, whose initialization is only available through
+		// the framework RPC path. Neither can be exercised safely with this direct
+		// synthetic ImportStateResponse; both are covered by live lifecycle/import
+		// testing instead.
+		if metaResp.TypeName == "litellm_fallback" || metaResp.TypeName == "litellm_model" {
 			continue
 		}
 
@@ -333,10 +335,11 @@ func TestResourcesImportState(t *testing.T) {
 	}
 }
 
-// TestResourcesImportStateRejectsMalformedID feeds a bare ID with no separator
-// to every importer. Composite-ID resources must surface an error; passthrough
-// resources accept it. The point of the test is that neither path panics.
-func TestResourcesImportStateRejectsMalformedID(t *testing.T) {
+// TestResourcesImportStateMalformedIDDoesNotPanic feeds a bare ID with no
+// separator to every importer. Composite-ID resources may return diagnostics,
+// while passthrough resources accept it; this broad smoke test only verifies
+// that neither path panics. Resource-specific tests own grammar assertions.
+func TestResourcesImportStateMalformedIDDoesNotPanic(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
