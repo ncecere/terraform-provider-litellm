@@ -19,6 +19,12 @@ import (
 var _ resource.Resource = &FallbackResource{}
 var _ resource.ResourceWithImportState = &FallbackResource{}
 
+const (
+	fallbackReadMaxAttempts  = 5
+	fallbackReadInitialDelay = time.Second
+	fallbackReadMaxDelay     = 10 * time.Second
+)
+
 func NewFallbackResource() resource.Resource {
 	return &FallbackResource{}
 }
@@ -104,7 +110,7 @@ func (r *FallbackResource) Create(ctx context.Context, req resource.CreateReques
 
 	data.ID = types.StringValue(data.Model.ValueString() + ":" + data.FallbackType.ValueString())
 
-	if err := r.readFallbackWithRetry(ctx, &data, 5); err != nil {
+	if err := r.readFallbackWithRetry(ctx, &data, fallbackReadMaxAttempts); err != nil {
 		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Fallback created but failed to read back: %s", err))
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
@@ -117,7 +123,7 @@ func (r *FallbackResource) Read(ctx context.Context, req resource.ReadRequest, r
 		return
 	}
 
-	if err := r.readFallbackWithRetry(ctx, &data, 5); err != nil {
+	if err := r.readFallbackWithRetry(ctx, &data, fallbackReadMaxAttempts); err != nil {
 		if IsNotFoundError(err) {
 			resp.State.RemoveResource(ctx)
 			return
@@ -141,7 +147,7 @@ func (r *FallbackResource) Update(ctx context.Context, req resource.UpdateReques
 		return
 	}
 
-	if err := r.readFallbackWithRetry(ctx, &data, 5); err != nil {
+	if err := r.readFallbackWithRetry(ctx, &data, fallbackReadMaxAttempts); err != nil {
 		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Fallback updated but failed to read back: %s", err))
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
@@ -237,23 +243,47 @@ func shouldRetryFallbackWriteError(err error) bool {
 		strings.Contains(errStr, "not found in router")
 }
 
-func (r *FallbackResource) readFallbackWithRetry(ctx context.Context, data *FallbackResourceModel, maxRetries int) error {
-	var err error
-	delay := 1 * time.Second
-	maxDelay := 10 * time.Second
+func (r *FallbackResource) readFallbackWithRetry(ctx context.Context, data *FallbackResourceModel, maxAttempts int) error {
+	return retryFallbackRead(ctx, maxAttempts, fallbackReadInitialDelay, fallbackReadMaxDelay, func() error {
+		return r.readFallback(ctx, data)
+	})
+}
 
-	for i := 0; i < maxRetries; i++ {
-		err = r.readFallback(ctx, data)
-		if err == nil {
-			return nil
+// retryFallbackRead retries only not-found responses because LiteLLM fallback
+// updates can take time to propagate between proxy workers. The delay is
+// configurable so tests can exercise retry behavior without sleeping.
+func retryFallbackRead(ctx context.Context, maxAttempts int, initialDelay, maxDelay time.Duration, read func() error) error {
+	if maxAttempts < 1 {
+		return fmt.Errorf("fallback read requires at least one attempt")
+	}
+
+	delay := initialDelay
+	var err error
+
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
 		}
 
-		if !IsNotFoundError(err) {
+		err = read()
+		if err == nil || !IsNotFoundError(err) {
 			return err
 		}
+		if attempt == maxAttempts-1 {
+			break
+		}
 
-		if i < maxRetries-1 {
-			time.Sleep(delay)
+		if delay > 0 {
+			timer := time.NewTimer(delay)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			}
+		}
+
+		if delay < maxDelay {
 			delay *= 2
 			if delay > maxDelay {
 				delay = maxDelay
