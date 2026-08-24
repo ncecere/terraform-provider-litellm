@@ -9,8 +9,6 @@ on:
 
 permissions:
   contents: read
-  # Required by dorny/test-reporter to publish the "Test Report" check run.
-  checks: write
 
 jobs:
   build-test:
@@ -46,10 +44,15 @@ jobs:
       - name: Coverage report
         if: ${{ !cancelled() }}
         run: |
-          # HTML report (uploaded as an artifact) and a plain-text func breakdown.
-          go tool cover -html=coverage.out -o coverage.html
-          go tool cover -func=coverage.out > coverage.txt
-          total="$(grep '^total:' coverage.txt | awk '{print $NF}')"
+          total="unavailable"
+          if [ -s coverage.out ]; then
+            # HTML artifact and plain-text per-function breakdown.
+            go tool cover -html=coverage.out -o coverage.html
+            go tool cover -func=coverage.out > coverage.txt
+            total="$(awk '/^total:/ {print $NF}' coverage.txt)"
+          else
+            echo '::notice::coverage.out was not produced; see the first failing step.'
+          fi
           echo "coverage_total=$total" >> "$GITHUB_OUTPUT"
         id: coverage
       - name: Test summary
@@ -60,18 +63,24 @@ jobs:
             echo ''
             echo '```'
             # Strip ANSI color escapes so the summary renders as plain text.
-            sed -E 's/\x1b\[[0-9;]*m//g' gotestsum.log
+            if [ -f gotestsum.log ]; then
+              sed -E 's/\x1b\[[0-9;]*m//g' gotestsum.log
+            else
+              echo 'Tests did not start; see the first failing step.'
+            fi
             echo '```'
             echo ''
             echo "## Coverage: ${{ steps.coverage.outputs.coverage_total }}"
-            echo ''
-            echo '<details><summary>Per-function coverage</summary>'
-            echo ''
-            echo '```'
-            cat coverage.txt
-            echo '```'
-            echo ''
-            echo '</details>'
+            if [ -f coverage.txt ]; then
+              echo ''
+              echo '<details><summary>Per-function coverage</summary>'
+              echo ''
+              echo '```'
+              cat coverage.txt
+              echo '```'
+              echo ''
+              echo '</details>'
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload coverage report
         if: ${{ !cancelled() }}
@@ -90,11 +99,3 @@ jobs:
           name: junit-report
           path: junit.xml
           if-no-files-found: warn
-      - name: Publish test report
-        if: ${{ !cancelled() }}
-        uses: dorny/test-reporter@a43b3a5f7366b97d083190328d2c652e1a8b6aa2 # v3.0.0
-        with:
-          name: Test Report
-          path: junit.xml
-          reporter: java-junit
-          fail-on-error: false
