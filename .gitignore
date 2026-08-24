@@ -3,7 +3,7 @@
 test_litellm/*
 
 # Local dev validation workspace; never commit its contents
-dev_testing/
+/dev_testing/
 
 # Isolated smoke-test workspaces and retained logs
 internal_testing/.smoke/
@@ -84,6 +84,7 @@ coverage.txt
 *.log
 
 # Local environment and credential files
+/dev.env
 .env
 .env.*
 *.env
