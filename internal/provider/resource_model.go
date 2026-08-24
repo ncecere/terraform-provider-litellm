@@ -391,13 +391,10 @@ func (r *ModelResource) Update(ctx context.Context, req resource.UpdateRequest, 
 		return
 	}
 
-	planned := data
-
 	if err := r.readModelAfterUpdate(ctx, &data, plannedData, state, 8); err != nil {
 		resp.Diagnostics.AddError("Model Update Not Yet Consistent", fmt.Sprintf("LiteLLM accepted the model update but did not return the planned values before the consistency timeout: %s", err))
 		return
 	}
-	reassertPlannedCosts(&data, &planned)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -850,14 +847,11 @@ func (r *ModelResource) readModel(ctx context.Context, data *ModelResourceModel)
 	return nil
 }
 
-// reassertPlannedCosts restores the planned cost values after the post-apply
-// consistency read. LiteLLM's /model/info serves from an in-memory router
-// that can lag a just-issued write, so the read-back may still echo the old
-// cost. Cost attributes are not Computed — the post-apply state must equal
-// the planned value anyway — so trusting a possibly stale echo here only
-// produces "Provider produced inconsistent result after apply" errors.
-// Out-of-band changes are still detected during Refresh, where readModel
-// reads the settled value.
+// reassertPlannedCosts restores planned cost values after Create's read-back.
+// LiteLLM's router can lag a just-created database row, while Terraform
+// requires these non-Computed attributes to equal the creation plan. Update
+// uses readModelAfterUpdate instead and verifies changed costs stabilize before
+// publishing state. Ordinary Read remains authoritative for out-of-band drift.
 func reassertPlannedCosts(data *ModelResourceModel, planned *ModelResourceModel) {
 	data.InputCostPerMillionTokens = planned.InputCostPerMillionTokens
 	data.OutputCostPerMillionTokens = planned.OutputCostPerMillionTokens
