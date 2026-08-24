@@ -36,12 +36,12 @@ clean:
 
 # Start LiteLLM + DB for local/smoke testing. Run once before make smoke.
 local:
-	cd internal_testing && docker compose up -d
+	@sh internal_testing/compose.sh up -d
 	@echo "Run make logs to follow LiteLLM logs, then make smoke resources=... or datasources=..."
 
 # Follow LiteLLM proxy logs (run after make local).
 logs:
-	cd internal_testing && docker compose logs -f litellm
+	@sh internal_testing/compose.sh logs -f litellm
 
 # Smoke test: selected files run together in an isolated plan/apply/no-drift/destroy workspace.
 # Requires: make local (LiteLLM + DB up), make build. At least one of resources= or datasources= is required (comma-separated).

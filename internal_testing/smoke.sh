@@ -78,13 +78,21 @@ provider_installation {
   direct {}
 }
 EOF
+# Do not let ambient Terraform flags or provider variables redirect this run.
+# In particular, acceptance preflights localhost and must not be overridable by
+# TF_CLI_ARGS_plan=-var=litellm_api_base=... or TF_VAR_litellm_api_base.
+unset TF_CLI_ARGS TF_CLI_ARGS_plan TF_CLI_ARGS_apply TF_CLI_ARGS_destroy
+unset TF_VAR_litellm_api_base TF_VAR_litellm_api_key
+unset LITELLM_API_BASE LITELLM_API_KEY
 export TF_CLI_CONFIG_FILE="$SMOKE_DIR/terraformrc"
 export TF_CLI_ARGS=-no-color
+export TF_IN_AUTOMATION=1
 
 RESOURCE_NAMES=
 DATASOURCE_NAMES=
 DIR=
 FOUND=0
+MISSING=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     resources) DIR=$RESOURCES; shift ;;
@@ -105,7 +113,10 @@ while [ "$#" -gt 0 ]; do
             DATASOURCE_NAMES="$DATASOURCE_NAMES $name"
           fi
         else
-          [ -n "$DIR" ] && echo "Warning: file not found: $file" >&3
+          if [ -n "$DIR" ]; then
+            echo "Requested smoke file not found: $file" >&3
+            MISSING=1
+          fi
         fi
       done
       shift
@@ -115,6 +126,10 @@ done
 
 if [ "$FOUND" -ne 1 ]; then
   echo "No requested files were found under internal_testing." >&3
+  exit 1
+fi
+if [ "$MISSING" -ne 0 ]; then
+  echo "Refusing a partial smoke run because one or more requested files are missing." >&3
   exit 1
 fi
 

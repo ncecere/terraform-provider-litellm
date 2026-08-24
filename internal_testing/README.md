@@ -13,8 +13,8 @@ cd terraform-provider-litellm
 
 # 1. Start the LiteLLM proxy + Postgres
 cd internal_testing
-docker compose up -d
-docker compose logs -f litellm          # wait for "LiteLLM Proxy is running"
+./compose.sh up -d
+./compose.sh logs -f litellm            # wait for "LiteLLM Proxy is running"
 # Ctrl-C once it's healthy
 
 # 2. Build the provider binary (back in repo root)
@@ -55,29 +55,31 @@ The `docker-compose.yml` starts two services:
 **Defaults** (no `.env` file needed):
 - API base: `http://localhost:4000`
 - Master key: `sk-testing-key`
-- Host ports: `4000` (LiteLLM) and `5432` (Postgres). Override occupied ports with `LITELLM_TEST_PORT` or `POSTGRES_TEST_PORT`; acceptance requires LiteLLM on `4000`.
+- LiteLLM binds only to loopback port `4000`; Postgres is available only inside the Compose network. Override the LiteLLM host port with `LITELLM_TEST_PORT` for manual smoke tests; acceptance requires `4000`.
+- `compose.sh` derives a checkout-specific project name so containers and volumes are not shared across clones or worktrees.
 - Models stored in DB (`STORE_MODEL_IN_DB=True`), so the Terraform provider
   can create them at runtime.
 
 ```bash
 # Start
-docker compose up -d
+./compose.sh up -d
 
 # View logs
-docker compose logs -f litellm
+./compose.sh logs -f litellm
 
 # Stop (keep data)
-docker compose down
+./compose.sh down
 
 # Stop and wipe all data
-docker compose down -v
+./compose.sh down -v
 ```
 
 ## Directory Layout
 
 ```
 internal_testing/
-  docker-compose.yml           # LiteLLM + Postgres stack
+  docker-compose.yml           # pinned LiteLLM + Postgres stack
+  compose.sh                   # checkout-isolated Compose wrapper
   litellm-config.yaml          # minimal LiteLLM proxy config
   provider.tf                  # provider + required_providers block
   variables.tf                 # api_base and api_key variables
@@ -242,6 +244,6 @@ rm provider.tf variables.tf terraform.tfvars
   cd internal_testing
   rm -f terraform.tfstate terraform.tfstate.backup
   rm -f *.tf.bak
-  docker compose down -v   # wipes the database too
-  docker compose up -d     # fresh start
+  ./compose.sh down -v   # wipes this checkout's test database
+  ./compose.sh up -d     # fresh start
   ```
