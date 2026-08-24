@@ -13,21 +13,21 @@ resource "litellm_model" "fallback_full_fallback" {
 }
 
 resource "litellm_fallback" "full_general" {
-  model          = litellm_model.fallback_full_primary.model_name
+  model           = litellm_model.fallback_full_primary.model_name
   fallback_models = [litellm_model.fallback_full_fallback.model_name]
-  fallback_type  = "general"
+  fallback_type   = "general"
 }
 
 resource "litellm_fallback" "full_context_window" {
-  model          = litellm_model.fallback_full_primary.model_name
+  model           = litellm_model.fallback_full_primary.model_name
   fallback_models = [litellm_model.fallback_full_fallback.model_name]
-  fallback_type  = "context_window"
+  fallback_type   = "context_window"
 }
 
 resource "litellm_fallback" "full_content_policy" {
-  model          = litellm_model.fallback_full_primary.model_name
+  model           = litellm_model.fallback_full_primary.model_name
   fallback_models = [litellm_model.fallback_full_fallback.model_name]
-  fallback_type  = "content_policy"
+  fallback_type   = "content_policy"
 }
 
 output "fallback_full_model" {

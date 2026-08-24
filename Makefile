@@ -43,7 +43,7 @@ local:
 logs:
 	cd internal_testing && docker compose logs -f litellm
 
-# Smoke test: for each given file run plan -> apply -> destroy in .smoke (one file at a time).
+# Smoke test: selected files run together in an isolated plan/apply/no-drift/destroy workspace.
 # Requires: make local (LiteLLM + DB up), make build. At least one of resources= or datasources= is required (comma-separated).
 # Usage:
 #   make smoke resources=model_minimal.tf
@@ -54,6 +54,11 @@ logs:
 smoke: build
 	@test -f terraform-provider-$(NAME) || (echo "Run 'make build' first."; exit 1)
 	@test -n "$(resources)$(datasources)" || (echo "Usage: make smoke resources=file.tf [datasources=file.tf]"; exit 1)
-	@sh internal_testing/smoke.sh $(CURDIR) resources $(strip $(subst ,, ,$(resources))) datasources $(strip $(subst ,, ,$(datasources)))
+	@sh internal_testing/smoke.sh "$(CURDIR)" resources $(strip $(subst ,, ,$(resources))) datasources $(strip $(subst ,, ,$(datasources)))
 
-.PHONY: build install test coverage fmt vet lint clean local logs smoke
+# Destructive local acceptance matrix. Start the pinned disposable Compose stack first.
+# Usage: TF_ACC=1 LITELLM_ACCEPTANCE_CONFIRM=local-v1.98.0 make testacc
+testacc: build
+	@sh internal_testing/acceptance.sh
+
+.PHONY: build install test coverage fmt vet lint clean local logs smoke testacc

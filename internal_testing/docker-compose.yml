@@ -12,9 +12,9 @@
 
 services:
   litellm:
-    image: docker.litellm.ai/berriai/litellm:main-stable
+    image: docker.litellm.ai/berriai/litellm:v1.98.0
     ports:
-      - "4000:4000"
+      - "${LITELLM_TEST_PORT:-4000}:4000"
     environment:
       DATABASE_URL: "postgresql://llmproxy:dbpassword9090@db:5432/litellm"
       STORE_MODEL_IN_DB: "True"
@@ -40,13 +40,12 @@ services:
 
   db:
     image: postgres:16
-    container_name: litellm_test_db
     environment:
       POSTGRES_DB: litellm
       POSTGRES_USER: llmproxy
       POSTGRES_PASSWORD: dbpassword9090
     ports:
-      - "5432:5432"
+      - "${POSTGRES_TEST_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -58,4 +57,3 @@ services:
 
 volumes:
   postgres_data:
-    name: litellm_test_postgres_data
