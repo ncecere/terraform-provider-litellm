@@ -19,7 +19,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64default"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/mapplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
@@ -77,6 +76,7 @@ type ModelResourceModel struct {
 	AdditionalLiteLLMParams           types.Map     `tfsdk:"additional_litellm_params"`
 	AdditionalLiteLLMParamsConfigured types.Bool    `tfsdk:"additional_litellm_params_configured"`
 	AdditionalModelInfo               types.Map     `tfsdk:"additional_model_info"`
+	AdditionalModelInfoConfigured     types.Bool    `tfsdk:"additional_model_info_configured"`
 }
 
 func (r *ModelResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -268,8 +268,19 @@ func (r *ModelResource) Schema(ctx context.Context, req resource.SchemaRequest, 
 				Optional:    true,
 				Computed:    true,
 				ElementType: types.StringType,
+				Validators: []validator.Map{
+					mapvalidator.NoNullValues(),
+					modelInfoReservedKeysValidator{},
+				},
 				PlanModifiers: []planmodifier.Map{
-					mapplanmodifier.UseStateForUnknown(),
+					modelAdditionalModelInfoRemovalModifier{},
+				},
+			},
+			"additional_model_info_configured": schema.BoolAttribute{
+				Description: "Internal state marker indicating whether additional_model_info is explicitly managed by configuration.",
+				Computed:    true,
+				PlanModifiers: []planmodifier.Bool{
+					modelAdditionalModelInfoOwnershipModifier{},
 				},
 			},
 		},
@@ -311,6 +322,16 @@ func (r *ModelResource) Create(ctx context.Context, req resource.CreateRequest, 
 	}
 	data.AdditionalLiteLLMParamsConfigured = types.BoolValue(!configuredAdditionalParams.IsNull() && !configuredAdditionalParams.IsUnknown())
 
+	var configuredModelInfo types.Map
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("additional_model_info"), &configuredModelInfo)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if !configuredModelInfo.IsNull() && !configuredModelInfo.IsUnknown() {
+		data.AdditionalModelInfo = configuredModelInfo
+	}
+	data.AdditionalModelInfoConfigured = types.BoolValue(!configuredModelInfo.IsNull() && !configuredModelInfo.IsUnknown())
+
 	// Normalise numeric strings in string-map attributes so that planned values
 	// use the same canonical form as their API read-back values.
 	data.AdditionalLiteLLMParams = normalizeAdditionalParams(ctx, data.AdditionalLiteLLMParams)
@@ -346,6 +367,7 @@ func (r *ModelResource) Read(ctx context.Context, req resource.ReadRequest, resp
 	}
 
 	priorAdditionalParams := data.AdditionalLiteLLMParams
+	priorModelInfo := data.AdditionalModelInfo
 	importedMarker, privateDiags := req.Private.GetKey(ctx, modelImportedPrivateKey)
 	resp.Diagnostics.Append(privateDiags...)
 	if resp.Diagnostics.HasError() {
@@ -369,6 +391,13 @@ func (r *ModelResource) Read(ctx context.Context, req resource.ReadRequest, resp
 		}
 		data.AdditionalLiteLLMParamsConfigured = types.BoolValue(configured)
 	}
+	if data.AdditionalModelInfoConfigured.IsNull() || data.AdditionalModelInfoConfigured.IsUnknown() {
+		configured := len(configuredAdditionalParamKeys(priorModelInfo)) > 0
+		if string(importedMarker) == "true" {
+			configured = false
+		}
+		data.AdditionalModelInfoConfigured = types.BoolValue(configured)
+	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -387,6 +416,13 @@ func (r *ModelResource) Update(ctx context.Context, req resource.UpdateRequest, 
 		return
 	}
 	data.AdditionalLiteLLMParamsConfigured = types.BoolValue(!configuredAdditionalParams.IsNull() && !configuredAdditionalParams.IsUnknown())
+
+	var configuredModelInfo types.Map
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("additional_model_info"), &configuredModelInfo)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	data.AdditionalModelInfoConfigured = types.BoolValue(!configuredModelInfo.IsNull() && !configuredModelInfo.IsUnknown())
 
 	// Normalise numeric strings in string-map attributes so that planned values
 	// use the same canonical form as their API read-back values.
@@ -865,16 +901,24 @@ func (r *ModelResource) readModel(ctx context.Context, data *ModelResourceModel)
 	// Read back additional_model_info. Only keys configured in state are
 	// consulted because /model/info also merges model cost-map metadata.
 	if !data.AdditionalModelInfo.IsNull() && !data.AdditionalModelInfo.IsUnknown() {
+		priorValues := data.AdditionalModelInfo.Elements()
 		infoValues := make(map[string]attr.Value)
 		if hasModelInfo {
-			for key := range data.AdditionalModelInfo.Elements() {
+			for key, priorValue := range priorValues {
 				rawValue, exists := modelInfo[key]
 				if !exists {
 					continue
 				}
-				if value, ok := stringifyAPIValue(rawValue); ok {
-					infoValues[key] = value
+				value, ok := stringifyAPIValue(rawValue)
+				if !ok {
+					continue
 				}
+				priorString, hasPriorString := priorValue.(types.String)
+				readString, hasReadString := value.(types.String)
+				if hasPriorString && hasReadString && jsonSemanticallyEqual(priorString.ValueString(), readString.ValueString()) {
+					value = priorValue
+				}
+				infoValues[key] = value
 			}
 		}
 		data.AdditionalModelInfo, _ = types.MapValue(types.StringType, infoValues)

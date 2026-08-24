@@ -270,7 +270,10 @@ The following arguments are supported:
 
   * Values follow the same string-to-native conversion rules as `additional_litellm_params` (booleans, integers, floats, JSON).
   * Only keys configured here are managed. LiteLLM merges metadata derived from its model cost map (`max_tokens`, `supports_*`, `litellm_provider`, …) into `/model/info` responses; those derived fields are ignored on read so they never appear as drift, and they are not captured on import.
-  * **Limitation: keys cannot be deleted via update.** Same PATCH-merge behavior as `additional_litellm_params` — to fully remove a key, recreate the resource with `terraform apply -replace`.
+  * Adding keys or changing values uses an in-place model update.
+  * **Removing a key, clearing the map, or removing the argument replaces the model.** LiteLLM merges `model_info` during updates, so replacement ensures removed capability metadata is not silently retained.
+  * LiteLLM fields managed by dedicated resource arguments (`base_model`, `tier`, `mode`, `team_id`, `access_groups`, and internal identity fields) are rejected as reserved keys.
+  * Imported and cost-map-derived metadata is not adopted into this map. Set `additional_model_info` explicitly when Terraform should manage selected fields.
 
   ```hcl
   resource "litellm_model" "kimi_k3" {

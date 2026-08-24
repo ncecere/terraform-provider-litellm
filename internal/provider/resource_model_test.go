@@ -1684,8 +1684,9 @@ func TestReadModelExtractsAdditionalModelInfoOnlyForConfiguredKeys(t *testing.T)
 						"model":               "openrouter/moonshotai/kimi-k3",
 					},
 					"model_info": map[string]interface{}{
-						"base_model":      "moonshotai/kimi-k3",
-						"supports_vision": true,
+						"base_model":       "moonshotai/kimi-k3",
+						"supports_vision":  true,
+						"request_template": map[string]interface{}{"inputs": "{prompt}"},
 						// Metadata merged from LiteLLM's model cost map — the
 						// user never configured these and they must NOT be
 						// read into additional_model_info.
@@ -1709,7 +1710,8 @@ func TestReadModelExtractsAdditionalModelInfoOnlyForConfiguredKeys(t *testing.T)
 	}
 
 	priorInfo, _ := types.MapValue(types.StringType, map[string]attr.Value{
-		"supports_vision": types.StringValue("true"),
+		"supports_vision":  types.StringValue("true"),
+		"request_template": types.StringValue(`{ "inputs": "{prompt}" }`),
 	})
 
 	data := ModelResourceModel{
@@ -1731,7 +1733,10 @@ func TestReadModelExtractsAdditionalModelInfoOnlyForConfiguredKeys(t *testing.T)
 	if got := info["supports_vision"]; got != "true" {
 		t.Fatalf("expected supports_vision=true, got %q", got)
 	}
-	if len(info) != 1 {
+	if got := info["request_template"]; got != `{ "inputs": "{prompt}" }` {
+		t.Fatalf("expected semantically equal JSON formatting to be preserved, got %q", got)
+	}
+	if len(info) != 2 {
 		t.Fatalf("expected only configured keys to be read back, got %v", info)
 	}
 }
