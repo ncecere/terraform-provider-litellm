@@ -3,16 +3,22 @@ package provider
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
+	"strings"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/resourcevalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
@@ -21,12 +27,62 @@ import (
 var _ resource.Resource = &KeyResource{}
 var _ resource.ResourceWithImportState = &KeyResource{}
 var _ resource.ResourceWithUpgradeState = &KeyResource{}
+var _ resource.ResourceWithConfigValidators = &KeyResource{}
 
-// hashKeyForID produces a non-sensitive identifier from a raw API key.
-// Format: "sha256:<hex digest>" so it is self-documenting and non-reversible.
+func (r *KeyResource) ConfigValidators(ctx context.Context) []resource.ConfigValidator {
+	return []resource.ConfigValidator{
+		resourcevalidator.RequiredTogether(
+			path.MatchRoot("key_wo"),
+			path.MatchRoot("key_wo_version"),
+		),
+		resourcevalidator.Conflicting(
+			path.MatchRoot("key"),
+			path.MatchRoot("key_wo"),
+		),
+	}
+}
+
+// hashKeyForID produces the non-sensitive management identifier used by this
+// provider. Because an unsalted digest permits offline guesses, callers should
+// use cryptographically random, high-entropy predefined keys.
+// Format: "sha256:<hex digest>".
 func hashKeyForID(rawKey string) string {
 	h := sha256.Sum256([]byte(rawKey))
 	return fmt.Sprintf("sha256:%x", h)
+}
+
+func keyHashFromID(id string) (string, error) {
+	const prefix = "sha256:"
+	if !strings.HasPrefix(id, prefix) {
+		return "", fmt.Errorf("key ID %q does not contain a SHA256 key hash", id)
+	}
+	hash := strings.TrimPrefix(id, prefix)
+	if len(hash) != sha256.Size*2 {
+		return "", fmt.Errorf("key ID contains an invalid SHA256 hash length")
+	}
+	if _, err := hex.DecodeString(hash); err != nil {
+		return "", fmt.Errorf("key ID contains an invalid SHA256 hash: %w", err)
+	}
+	return hash, nil
+}
+
+func keyLookupIdentifier(data *KeyResourceModel) (string, error) {
+	if !data.KeyWOVersion.IsNull() && !data.KeyWOVersion.IsUnknown() {
+		return keyHashFromID(data.ID.ValueString())
+	}
+	key := data.Key.ValueString()
+	if key == "" {
+		return "", fmt.Errorf("key value is empty, cannot identify the LiteLLM key")
+	}
+	return key, nil
+}
+
+func writeOnlyKeyCreateError(err error) string {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return fmt.Sprintf("LiteLLM returned HTTP %d while creating the write-only key. The response body was omitted because it may contain the submitted secret.", apiErr.StatusCode)
+	}
+	return "The write-only key request failed. Error details were omitted because an intermediary may include the submitted secret."
 }
 
 func NewKeyResource() resource.Resource {
@@ -40,6 +96,8 @@ type KeyResource struct {
 type KeyResourceModel struct {
 	ID                       types.String  `tfsdk:"id"`
 	Key                      types.String  `tfsdk:"key"`
+	KeyWO                    types.String  `tfsdk:"key_wo"`
+	KeyWOVersion             types.String  `tfsdk:"key_wo_version"`
 	Models                   types.List    `tfsdk:"models"`
 	AllowedRoutes            types.List    `tfsdk:"allowed_routes"`
 	AllowedPassthroughRoutes types.List    `tfsdk:"allowed_passthrough_routes"`
@@ -91,12 +149,31 @@ func (r *KeyResource) Schema(ctx context.Context, req resource.SchemaRequest, re
 				},
 			},
 			"key": schema.StringAttribute{
-				Description: "The API key value. If not specified, a key will be generated.",
+				Description: "The API key value. If not specified, a key will be generated. Use key_wo instead to avoid storing a predefined key in Terraform artifacts.",
 				Optional:    true,
 				Computed:    true,
 				Sensitive:   true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"key_wo": schema.StringAttribute{
+				Description: "Write-only predefined API key value. Terraform sends this value to LiteLLM but does not store it in plan or state artifacts. Use a cryptographically random, high-entropy key because its persisted SHA256 management identifier permits offline guesses of weak values. Requires Terraform 1.11 or compatible OpenTofu support.",
+				Optional:    true,
+				Sensitive:   true,
+				WriteOnly:   true,
+				Validators: []validator.String{
+					stringvalidator.LengthAtLeast(1),
+				},
+			},
+			"key_wo_version": schema.StringAttribute{
+				Description: "Persisted version or nonce for key_wo. Change it when the write-only key changes; changing or removing it replaces the LiteLLM key.",
+				Optional:    true,
+				Validators: []validator.String{
+					stringvalidator.LengthAtLeast(1),
+				},
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
 				},
 			},
 			"models": schema.ListAttribute{
@@ -297,7 +374,34 @@ func (r *KeyResource) Create(ctx context.Context, req resource.CreateRequest, re
 		return
 	}
 
+	var writeOnlyKey types.String
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("key_wo"), &writeOnlyKey)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if writeOnlyKey.IsUnknown() {
+		resp.Diagnostics.AddError("Invalid Write-Only Key", "key_wo must be known during apply; the provider will not fall back to generating and storing a key.")
+		return
+	}
+	writeOnlyMode := !writeOnlyKey.IsNull()
+	if writeOnlyMode {
+		if writeOnlyKey.ValueString() == "" {
+			resp.Diagnostics.AddError("Invalid Write-Only Key", "key_wo must be non-empty during apply.")
+			return
+		}
+		if data.KeyWOVersion.IsNull() || data.KeyWOVersion.IsUnknown() || data.KeyWOVersion.ValueString() == "" {
+			resp.Diagnostics.AddError("Invalid Write-Only Key Version", "key_wo_version must be known and non-empty whenever key_wo is configured.")
+			return
+		}
+	} else if !data.KeyWOVersion.IsNull() {
+		resp.Diagnostics.AddError("Invalid Write-Only Key Version", "key_wo_version cannot be configured without key_wo.")
+		return
+	}
+
 	keyReq := r.buildKeyRequest(ctx, &data)
+	if writeOnlyMode {
+		keyReq["key"] = writeOnlyKey.ValueString()
+	}
 
 	endpoint := "/key/generate"
 	if !data.ServiceAccountID.IsNull() && data.ServiceAccountID.ValueString() != "" {
@@ -306,11 +410,19 @@ func (r *KeyResource) Create(ctx context.Context, req resource.CreateRequest, re
 
 	var result map[string]interface{}
 	if err := r.client.DoRequestWithResponse(ctx, "POST", endpoint, keyReq, &result); err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to create key: %s", err))
+		if writeOnlyMode {
+			resp.Diagnostics.AddError("Write-Only Key Creation Error", writeOnlyKeyCreateError(err))
+		} else {
+			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to create key: %s", err))
+		}
 		return
 	}
 
-	if keyVal, ok := result["key"].(string); ok {
+	if writeOnlyMode {
+		data.ID = types.StringValue(hashKeyForID(writeOnlyKey.ValueString()))
+		data.Key = types.StringNull()
+		data.KeyWO = types.StringNull()
+	} else if keyVal, ok := result["key"].(string); ok {
 		data.Key = types.StringValue(keyVal)
 		data.ID = types.StringValue(hashKeyForID(keyVal))
 	}
@@ -359,9 +471,15 @@ func (r *KeyResource) Update(ctx context.Context, req resource.UpdateRequest, re
 
 	data.ID = state.ID
 	data.Key = state.Key
+	data.KeyWO = types.StringNull()
 
+	keyIdentifier, err := keyLookupIdentifier(&data)
+	if err != nil {
+		resp.Diagnostics.AddError("Key Identity Error", fmt.Sprintf("Unable to identify key for update: %s", err))
+		return
+	}
 	updateReq := r.buildKeyRequest(ctx, &data)
-	updateReq["key"] = data.Key.ValueString()
+	updateReq["key"] = keyIdentifier
 
 	if err := r.client.DoRequestWithResponse(ctx, "POST", "/key/update", updateReq, nil); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to update key: %s", err))
@@ -383,8 +501,13 @@ func (r *KeyResource) Delete(ctx context.Context, req resource.DeleteRequest, re
 		return
 	}
 
+	keyIdentifier, err := keyLookupIdentifier(&data)
+	if err != nil {
+		resp.Diagnostics.AddError("Key Identity Error", fmt.Sprintf("Unable to identify key for deletion: %s", err))
+		return
+	}
 	deleteReq := map[string]interface{}{
-		"keys": []string{data.Key.ValueString()},
+		"keys": []string{keyIdentifier},
 	}
 
 	if err := r.client.DoRequestWithResponse(ctx, "POST", "/key/delete", deleteReq, nil); err != nil {
@@ -396,8 +519,21 @@ func (r *KeyResource) Delete(ctx context.Context, req resource.DeleteRequest, re
 }
 
 func (r *KeyResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	// The import ID is the raw API key value. Store it in "key" (sensitive)
-	// and use a SHA256 hash as the non-sensitive resource ID.
+	if strings.HasPrefix(req.ID, "sha256:") {
+		if _, err := keyHashFromID(req.ID); err != nil {
+			resp.Diagnostics.AddError("Invalid Write-Only Key Import", err.Error())
+			return
+		}
+		// A hash import avoids placing the raw token in state. Version "1" is
+		// the documented bootstrap value and must match configuration initially.
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("key"), types.StringNull())...)
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("key_wo_version"), "1")...)
+		return
+	}
+
+	// Legacy/stateful import accepts the raw API key and stores it in the
+	// sensitive key attribute so existing workflows remain compatible.
 	rawKey := req.ID
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), hashKeyForID(rawKey))...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("key"), rawKey)...)
@@ -698,15 +834,15 @@ func stringMapMatchesAttrValues(current types.Map, observed map[string]attr.Valu
 }
 
 func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error {
-	keyVal := data.Key.ValueString()
-	if keyVal == "" {
-		return fmt.Errorf("key value is empty, cannot read key info")
+	keyIdentifier, err := keyLookupIdentifier(data)
+	if err != nil {
+		return err
 	}
 
-	// url.QueryEscape ensures special characters in the key (e.g. '#') are
-	// percent-encoded and not interpreted as a URL fragment, which would
-	// silently truncate the key value before it reaches the server.
-	endpoint := fmt.Sprintf("/key/info?key=%s", url.QueryEscape(keyVal))
+	// url.QueryEscape ensures special characters in a plaintext key (e.g. '#')
+	// are not interpreted as a URL fragment. LiteLLM also accepts the SHA256
+	// token hash used to manage write-only keys without recovering plaintext.
+	endpoint := fmt.Sprintf("/key/info?key=%s", url.QueryEscape(keyIdentifier))
 
 	var result map[string]interface{}
 	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
@@ -806,7 +942,7 @@ func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error
 	// custom key value it is already known and must NOT be overwritten — the
 	// /key/info endpoint returns a hashed token, not the raw key, so
 	// overwriting would cause "inconsistent values for sensitive attribute".
-	if data.Key.IsUnknown() || data.Key.IsNull() {
+	if data.KeyWOVersion.IsNull() && (data.Key.IsUnknown() || data.Key.IsNull()) {
 		if keyValue, ok := result["key"].(string); ok && keyValue != "" {
 			data.Key = types.StringValue(keyValue)
 			data.ID = types.StringValue(hashKeyForID(keyValue))
