@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"strings"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -57,19 +59,20 @@ type AgentObjectPermissionModel struct {
 }
 
 type AgentCardModel struct {
-	Name               types.String            `tfsdk:"name"`
-	Description        types.String            `tfsdk:"description"`
-	URL                types.String            `tfsdk:"url"`
-	Version            types.String            `tfsdk:"version"`
-	ProtocolVersion    types.String            `tfsdk:"protocol_version"`
-	DefaultInputModes  types.List              `tfsdk:"default_input_modes"`
-	DefaultOutputModes types.List              `tfsdk:"default_output_modes"`
-	Capabilities       *AgentCapabilitiesModel `tfsdk:"capabilities"`
-	Skills             []AgentSkillModel       `tfsdk:"skills"`
-	Provider           *AgentProviderModel     `tfsdk:"provider"`
-	PreferredTransport types.String            `tfsdk:"preferred_transport"`
-	IconURL            types.String            `tfsdk:"icon_url"`
-	DocumentationURL   types.String            `tfsdk:"documentation_url"`
+	Name                              types.String            `tfsdk:"name"`
+	Description                       types.String            `tfsdk:"description"`
+	URL                               types.String            `tfsdk:"url"`
+	Version                           types.String            `tfsdk:"version"`
+	ProtocolVersion                   types.String            `tfsdk:"protocol_version"`
+	DefaultInputModes                 types.List              `tfsdk:"default_input_modes"`
+	DefaultOutputModes                types.List              `tfsdk:"default_output_modes"`
+	Capabilities                      *AgentCapabilitiesModel `tfsdk:"capabilities"`
+	Skills                            []AgentSkillModel       `tfsdk:"skills"`
+	Provider                          *AgentProviderModel     `tfsdk:"provider"`
+	PreferredTransport                types.String            `tfsdk:"preferred_transport"`
+	IconURL                           types.String            `tfsdk:"icon_url"`
+	DocumentationURL                  types.String            `tfsdk:"documentation_url"`
+	SupportsAuthenticatedExtendedCard types.Bool              `tfsdk:"supports_authenticated_extended_card"`
 }
 
 type AgentResourceModel struct {
@@ -207,6 +210,10 @@ func (r *AgentResource) Schema(ctx context.Context, req resource.SchemaRequest, 
 					},
 					"documentation_url": schema.StringAttribute{
 						Description: "URL for the agent's documentation.",
+						Optional:    true,
+					},
+					"supports_authenticated_extended_card": schema.BoolAttribute{
+						Description: "Whether the agent supports an authenticated extended A2A card.",
 						Optional:    true,
 					},
 				},
@@ -397,7 +404,13 @@ func (r *AgentResource) Update(ctx context.Context, req resource.UpdateRequest, 
 		return
 	}
 
-	if err := r.readAgent(ctx, &data); err != nil {
+	changedCapabilities := changedAgentCapabilityFieldsNotConverged(data, state, state)
+	if len(changedCapabilities) > 0 {
+		if err := r.readAgentCapabilitiesAfterUpdate(ctx, &data, data, state, 8); err != nil {
+			resp.Diagnostics.AddError("Agent Capability Update Not Yet Consistent", fmt.Sprintf("LiteLLM accepted the agent update but did not return the planned capability values before the consistency timeout: %s", err))
+			return
+		}
+	} else if err := r.readAgent(ctx, &data); err != nil {
 		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Agent updated but failed to read back: %s", err))
 	}
 
@@ -452,6 +465,9 @@ func (r *AgentResource) buildAgentRequest(data *AgentResourceModel) map[string]i
 		}
 		if !data.AgentCard.DocumentationURL.IsNull() && !data.AgentCard.DocumentationURL.IsUnknown() {
 			card["documentationUrl"] = data.AgentCard.DocumentationURL.ValueString()
+		}
+		if !data.AgentCard.SupportsAuthenticatedExtendedCard.IsNull() && !data.AgentCard.SupportsAuthenticatedExtendedCard.IsUnknown() {
+			card["supportsAuthenticatedExtendedCard"] = data.AgentCard.SupportsAuthenticatedExtendedCard.ValueBool()
 		}
 		if !data.AgentCard.DefaultInputModes.IsNull() && !data.AgentCard.DefaultInputModes.IsUnknown() {
 			card["defaultInputModes"] = listToStringSlice(data.AgentCard.DefaultInputModes)
@@ -732,6 +748,14 @@ func (r *AgentResource) readAgentCard(cardRaw map[string]interface{}, data *Agen
 	if v, ok := cardRaw["documentationUrl"].(string); ok && v != "" && (populateAll || !card.DocumentationURL.IsNull()) {
 		card.DocumentationURL = types.StringValue(v)
 	}
+	if populateAll {
+		if value, ok := cardRaw["supportsAuthenticatedExtendedCard"].(bool); ok {
+			card.SupportsAuthenticatedExtendedCard = types.BoolValue(value)
+		}
+	} else if !card.SupportsAuthenticatedExtendedCard.IsNull() {
+		value, _ := cardRaw["supportsAuthenticatedExtendedCard"].(bool)
+		card.SupportsAuthenticatedExtendedCard = types.BoolValue(value)
+	}
 
 	// Default modes
 	if modes, ok := cardRaw["defaultInputModes"].([]interface{}); ok && len(modes) > 0 {
@@ -745,19 +769,25 @@ func (r *AgentResource) readAgentCard(cardRaw map[string]interface{}, data *Agen
 		card.DefaultOutputModes = types.ListNull(types.StringType)
 	}
 
-	// Capabilities
-	if capsRaw, ok := cardRaw["capabilities"].(map[string]interface{}); ok && (populateAll || card.Capabilities != nil) {
-		if card.Capabilities == nil {
-			card.Capabilities = &AgentCapabilitiesModel{}
+	// Capabilities are authoritative when the block/field is managed. LiteLLM
+	// may accept unsupported flags but omit them from subsequent reads; an
+	// omitted managed key therefore means false, not "preserve planned state".
+	capsRaw, hasCapabilities := cardRaw["capabilities"].(map[string]interface{})
+	if populateAll && hasCapabilities {
+		card.Capabilities = &AgentCapabilitiesModel{
+			Streaming:              types.BoolValue(agentCapabilityValue(capsRaw, "streaming")),
+			PushNotifications:      types.BoolValue(agentCapabilityValue(capsRaw, "pushNotifications")),
+			StateTransitionHistory: types.BoolValue(agentCapabilityValue(capsRaw, "stateTransitionHistory")),
 		}
-		if v, ok := capsRaw["streaming"].(bool); ok && (populateAll || !card.Capabilities.Streaming.IsNull()) {
-			card.Capabilities.Streaming = types.BoolValue(v)
+	} else if !populateAll && card.Capabilities != nil {
+		if !card.Capabilities.Streaming.IsNull() {
+			card.Capabilities.Streaming = types.BoolValue(agentCapabilityValue(capsRaw, "streaming"))
 		}
-		if v, ok := capsRaw["pushNotifications"].(bool); ok && (populateAll || !card.Capabilities.PushNotifications.IsNull()) {
-			card.Capabilities.PushNotifications = types.BoolValue(v)
+		if !card.Capabilities.PushNotifications.IsNull() {
+			card.Capabilities.PushNotifications = types.BoolValue(agentCapabilityValue(capsRaw, "pushNotifications"))
 		}
-		if v, ok := capsRaw["stateTransitionHistory"].(bool); ok && (populateAll || !card.Capabilities.StateTransitionHistory.IsNull()) {
-			card.Capabilities.StateTransitionHistory = types.BoolValue(v)
+		if !card.Capabilities.StateTransitionHistory.IsNull() {
+			card.Capabilities.StateTransitionHistory = types.BoolValue(agentCapabilityValue(capsRaw, "stateTransitionHistory"))
 		}
 	}
 
@@ -814,6 +844,162 @@ func (r *AgentResource) readAgentCard(cardRaw map[string]interface{}, data *Agen
 		}
 		card.Skills = skills
 	}
+}
+
+func agentCapabilityValue(capabilities map[string]interface{}, key string) bool {
+	value, _ := capabilities[key].(bool)
+	return value
+}
+
+func changedAgentCapabilityFieldsNotConverged(planned, prior, observed AgentResourceModel) []string {
+	if planned.AgentCard == nil {
+		return nil
+	}
+
+	var priorCard, observedCard *AgentCardModel
+	priorCard = prior.AgentCard
+	observedCard = observed.AgentCard
+	stale := make([]string, 0, 4)
+	check := func(name string, plannedValue types.Bool, priorValue types.Bool, priorPresent bool, observedValue types.Bool, observedPresent bool) {
+		if plannedValue.IsNull() || plannedValue.IsUnknown() {
+			return
+		}
+		if priorPresent && plannedValue.Equal(priorValue) {
+			return
+		}
+		if !observedPresent || !plannedValue.Equal(observedValue) {
+			stale = append(stale, name)
+		}
+	}
+
+	check(
+		"agent_card.supports_authenticated_extended_card",
+		planned.AgentCard.SupportsAuthenticatedExtendedCard,
+		priorAuthValue(priorCard),
+		priorCard != nil,
+		priorAuthValue(observedCard),
+		observedCard != nil,
+	)
+
+	plannedCapabilities := planned.AgentCard.Capabilities
+	if plannedCapabilities == nil {
+		return stale
+	}
+	var priorCapabilities, observedCapabilities *AgentCapabilitiesModel
+	if priorCard != nil {
+		priorCapabilities = priorCard.Capabilities
+	}
+	if observedCard != nil {
+		observedCapabilities = observedCard.Capabilities
+	}
+	checkCapability := func(name string, plannedValue types.Bool, priorValue types.Bool, observedValue types.Bool) {
+		check(name, plannedValue, priorValue, priorCapabilities != nil, observedValue, observedCapabilities != nil)
+	}
+	checkCapability("agent_card.capabilities.streaming", plannedCapabilities.Streaming, capabilityStreaming(priorCapabilities), capabilityStreaming(observedCapabilities))
+	checkCapability("agent_card.capabilities.push_notifications", plannedCapabilities.PushNotifications, capabilityPushNotifications(priorCapabilities), capabilityPushNotifications(observedCapabilities))
+	checkCapability("agent_card.capabilities.state_transition_history", plannedCapabilities.StateTransitionHistory, capabilityStateTransitionHistory(priorCapabilities), capabilityStateTransitionHistory(observedCapabilities))
+	return stale
+}
+
+func priorAuthValue(card *AgentCardModel) types.Bool {
+	if card == nil {
+		return types.BoolNull()
+	}
+	return card.SupportsAuthenticatedExtendedCard
+}
+
+func capabilityStreaming(capabilities *AgentCapabilitiesModel) types.Bool {
+	if capabilities == nil {
+		return types.BoolNull()
+	}
+	return capabilities.Streaming
+}
+
+func capabilityPushNotifications(capabilities *AgentCapabilitiesModel) types.Bool {
+	if capabilities == nil {
+		return types.BoolNull()
+	}
+	return capabilities.PushNotifications
+}
+
+func capabilityStateTransitionHistory(capabilities *AgentCapabilitiesModel) types.Bool {
+	if capabilities == nil {
+		return types.BoolNull()
+	}
+	return capabilities.StateTransitionHistory
+}
+
+func (r *AgentResource) readAgentCapabilitiesAfterUpdate(ctx context.Context, data *AgentResourceModel, planned, prior AgentResourceModel, maxRetries int) error {
+	if maxRetries < 1 {
+		return fmt.Errorf("maxRetries must be at least 1")
+	}
+
+	delay := 250 * time.Millisecond
+	maxDelay := 2 * time.Second
+	var lastErr error
+	var staleFields []string
+	consecutiveMatches := 0
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		candidate := cloneAgentResourceModel(planned)
+		lastErr = r.readAgent(ctx, &candidate)
+		if lastErr == nil {
+			staleFields = changedAgentCapabilityFieldsNotConverged(planned, prior, candidate)
+			if len(staleFields) == 0 {
+				consecutiveMatches++
+				if consecutiveMatches >= 2 {
+					*data = candidate
+					return nil
+				}
+			} else {
+				consecutiveMatches = 0
+			}
+		} else if !IsNotFoundError(lastErr) {
+			return lastErr
+		} else {
+			consecutiveMatches = 0
+		}
+
+		if attempt == maxRetries-1 {
+			break
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+		delay *= 2
+		if delay > maxDelay {
+			delay = maxDelay
+		}
+	}
+	if lastErr != nil {
+		return lastErr
+	}
+	return fmt.Errorf("capability fields did not remain at their planned values after %d reads: %s", maxRetries, strings.Join(staleFields, ", "))
+}
+
+func cloneAgentResourceModel(source AgentResourceModel) AgentResourceModel {
+	cloned := source
+	if source.AgentCard != nil {
+		card := *source.AgentCard
+		cloned.AgentCard = &card
+		if source.AgentCard.Capabilities != nil {
+			capabilities := *source.AgentCard.Capabilities
+			cloned.AgentCard.Capabilities = &capabilities
+		}
+		if source.AgentCard.Provider != nil {
+			provider := *source.AgentCard.Provider
+			cloned.AgentCard.Provider = &provider
+		}
+		cloned.AgentCard.Skills = append([]AgentSkillModel(nil), source.AgentCard.Skills...)
+	}
+	if source.ObjectPermission != nil {
+		permission := *source.ObjectPermission
+		cloned.ObjectPermission = &permission
+	}
+	return cloned
 }
 
 func (r *AgentResource) readObjectPermission(permRaw map[string]interface{}, data *AgentResourceModel) {

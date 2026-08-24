@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -69,16 +71,17 @@ func TestBuildAgentRequest_Full(t *testing.T) {
 	data := &AgentResourceModel{
 		AgentName: types.StringValue("full-agent"),
 		AgentCard: &AgentCardModel{
-			Name:               types.StringValue("Full Agent"),
-			Description:        types.StringValue("A fully configured agent"),
-			URL:                types.StringValue("https://agent.example.com/a2a"),
-			Version:            types.StringValue("1.0.0"),
-			ProtocolVersion:    types.StringValue("0.2.6"),
-			DefaultInputModes:  stringListValue("application/json"),
-			DefaultOutputModes: stringListValue("application/json", "text/plain"),
-			PreferredTransport: types.StringValue("httpsse"),
-			IconURL:            types.StringValue("https://example.com/icon.png"),
-			DocumentationURL:   types.StringValue("https://docs.example.com"),
+			Name:                              types.StringValue("Full Agent"),
+			Description:                       types.StringValue("A fully configured agent"),
+			URL:                               types.StringValue("https://agent.example.com/a2a"),
+			Version:                           types.StringValue("1.0.0"),
+			ProtocolVersion:                   types.StringValue("0.2.6"),
+			DefaultInputModes:                 stringListValue("application/json"),
+			DefaultOutputModes:                stringListValue("application/json", "text/plain"),
+			PreferredTransport:                types.StringValue("httpsse"),
+			IconURL:                           types.StringValue("https://example.com/icon.png"),
+			DocumentationURL:                  types.StringValue("https://docs.example.com"),
+			SupportsAuthenticatedExtendedCard: types.BoolValue(true),
 			Capabilities: &AgentCapabilitiesModel{
 				Streaming:              types.BoolValue(true),
 				PushNotifications:      types.BoolValue(false),
@@ -131,6 +134,9 @@ func TestBuildAgentRequest_Full(t *testing.T) {
 	}
 	if card["preferredTransport"] != "httpsse" {
 		t.Errorf("expected preferredTransport 'httpsse', got %v", card["preferredTransport"])
+	}
+	if card["supportsAuthenticatedExtendedCard"] != true {
+		t.Errorf("expected supportsAuthenticatedExtendedCard true, got %v", card["supportsAuthenticatedExtendedCard"])
 	}
 
 	caps, ok := card["capabilities"].(map[string]interface{})
@@ -187,11 +193,12 @@ func TestReadAgent_PopulatesState(t *testing.T) {
 			"agent_id":   "agent-abc-123",
 			"agent_name": "my-agent",
 			"agent_card_params": map[string]interface{}{
-				"name":            "My Agent",
-				"description":     "A helpful agent",
-				"url":             "https://agent.example.com",
-				"version":         "1.0.0",
-				"protocolVersion": "0.2.6",
+				"name":                              "My Agent",
+				"description":                       "A helpful agent",
+				"url":                               "https://agent.example.com",
+				"version":                           "1.0.0",
+				"protocolVersion":                   "0.2.6",
+				"supportsAuthenticatedExtendedCard": true,
 				"capabilities": map[string]interface{}{
 					"streaming":         true,
 					"pushNotifications": false,
@@ -295,6 +302,9 @@ func TestReadAgent_PopulatesState(t *testing.T) {
 	if data.AgentCard.ProtocolVersion.ValueString() != "0.2.6" {
 		t.Errorf("expected protocolVersion '0.2.6', got %q", data.AgentCard.ProtocolVersion.ValueString())
 	}
+	if !data.AgentCard.SupportsAuthenticatedExtendedCard.ValueBool() {
+		t.Error("expected supportsAuthenticatedExtendedCard true")
+	}
 
 	// Capabilities
 	if data.AgentCard.Capabilities == nil {
@@ -348,6 +358,184 @@ func TestReadAgent_PopulatesState(t *testing.T) {
 	// Extra headers
 	if data.ExtraHeaders.IsNull() || data.ExtraHeaders.IsUnknown() {
 		t.Fatal("expected extra_headers to be populated")
+	}
+}
+
+func TestReadAgentCardMissingManagedCapabilitiesBecomeFalse(t *testing.T) {
+	t.Parallel()
+
+	resource := &AgentResource{}
+	data := AgentResourceModel{AgentCard: &AgentCardModel{
+		SupportsAuthenticatedExtendedCard: types.BoolValue(true),
+		Capabilities: &AgentCapabilitiesModel{
+			Streaming:              types.BoolValue(true),
+			PushNotifications:      types.BoolValue(true),
+			StateTransitionHistory: types.BoolValue(true),
+		},
+	}}
+
+	resource.readAgentCard(map[string]interface{}{
+		"capabilities": map[string]interface{}{"streaming": true},
+	}, &data)
+
+	if !data.AgentCard.Capabilities.Streaming.ValueBool() {
+		t.Error("expected returned streaming capability to remain true")
+	}
+	if data.AgentCard.Capabilities.PushNotifications.ValueBool() {
+		t.Error("expected omitted pushNotifications capability to become false")
+	}
+	if data.AgentCard.Capabilities.StateTransitionHistory.ValueBool() {
+		t.Error("expected omitted stateTransitionHistory capability to become false")
+	}
+	if data.AgentCard.SupportsAuthenticatedExtendedCard.ValueBool() {
+		t.Error("expected omitted supportsAuthenticatedExtendedCard to become false")
+	}
+}
+
+func TestReadAgentCardMissingCapabilitiesMapClearsManagedValues(t *testing.T) {
+	t.Parallel()
+
+	resource := &AgentResource{}
+	data := AgentResourceModel{AgentCard: &AgentCardModel{Capabilities: &AgentCapabilitiesModel{
+		Streaming:         types.BoolValue(true),
+		PushNotifications: types.BoolValue(true),
+	}}}
+	resource.readAgentCard(map[string]interface{}{}, &data)
+
+	if data.AgentCard.Capabilities.Streaming.ValueBool() || data.AgentCard.Capabilities.PushNotifications.ValueBool() {
+		t.Fatalf("omitted capabilities map retained managed values: %#v", data.AgentCard.Capabilities)
+	}
+}
+
+func TestReadAgentCardLeavesUnmanagedCapabilityNull(t *testing.T) {
+	t.Parallel()
+
+	resource := &AgentResource{}
+	data := AgentResourceModel{AgentCard: &AgentCardModel{Capabilities: &AgentCapabilitiesModel{
+		Streaming:         types.BoolValue(true),
+		PushNotifications: types.BoolNull(),
+	}}}
+	resource.readAgentCard(map[string]interface{}{
+		"capabilities": map[string]interface{}{
+			"streaming":         true,
+			"pushNotifications": true,
+		},
+	}, &data)
+
+	if !data.AgentCard.Capabilities.PushNotifications.IsNull() {
+		t.Fatalf("unmanaged push_notifications became %v, want null", data.AgentCard.Capabilities.PushNotifications)
+	}
+}
+
+func TestReadAgentCardImportPopulatesMissingCapabilitiesAsFalse(t *testing.T) {
+	t.Parallel()
+
+	resource := &AgentResource{}
+	data := AgentResourceModel{}
+	resource.readAgentCard(map[string]interface{}{
+		"capabilities": map[string]interface{}{"streaming": true},
+	}, &data)
+
+	if data.AgentCard == nil || data.AgentCard.Capabilities == nil {
+		t.Fatal("import did not populate capabilities")
+	}
+	if !data.AgentCard.Capabilities.Streaming.ValueBool() || data.AgentCard.Capabilities.PushNotifications.ValueBool() || data.AgentCard.Capabilities.StateTransitionHistory.ValueBool() {
+		t.Fatalf("unexpected imported capabilities: %#v", data.AgentCard.Capabilities)
+	}
+}
+
+func TestChangedAgentCapabilityFieldsNotConverged(t *testing.T) {
+	t.Parallel()
+
+	prior := AgentResourceModel{AgentCard: &AgentCardModel{
+		SupportsAuthenticatedExtendedCard: types.BoolValue(false),
+		Capabilities: &AgentCapabilitiesModel{
+			PushNotifications: types.BoolValue(false),
+		},
+	}}
+	planned := cloneAgentResourceModel(prior)
+	planned.AgentCard.SupportsAuthenticatedExtendedCard = types.BoolValue(true)
+	planned.AgentCard.Capabilities.PushNotifications = types.BoolValue(true)
+	observed := cloneAgentResourceModel(planned)
+	observed.AgentCard.Capabilities.PushNotifications = types.BoolValue(false)
+
+	got := changedAgentCapabilityFieldsNotConverged(planned, prior, observed)
+	want := []string{"agent_card.capabilities.push_notifications"}
+	if len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("stale fields = %v, want %v", got, want)
+	}
+}
+
+func TestReadAgentCapabilitiesAfterUpdateRequiresStableValues(t *testing.T) {
+	t.Parallel()
+
+	var reads atomic.Int32
+	sequence := []bool{true, false, true, true}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		index := int(reads.Add(1)) - 1
+		if index >= len(sequence) {
+			index = len(sequence) - 1
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"agent_id": "agent-1",
+			"agent_card_params": map[string]interface{}{
+				"supportsAuthenticatedExtendedCard": sequence[index],
+			},
+		})
+	}))
+	defer server.Close()
+
+	resource := &AgentResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
+	prior := AgentResourceModel{
+		ID: types.StringValue("agent-1"),
+		AgentCard: &AgentCardModel{
+			SupportsAuthenticatedExtendedCard: types.BoolValue(false),
+		},
+	}
+	planned := cloneAgentResourceModel(prior)
+	planned.AgentCard.SupportsAuthenticatedExtendedCard = types.BoolValue(true)
+	data := cloneAgentResourceModel(planned)
+
+	if err := resource.readAgentCapabilitiesAfterUpdate(context.Background(), &data, planned, prior, 5); err != nil {
+		t.Fatalf("readAgentCapabilitiesAfterUpdate returned error: %v", err)
+	}
+	if got := reads.Load(); got != 4 {
+		t.Fatalf("read count = %d, want 4", got)
+	}
+	if !data.AgentCard.SupportsAuthenticatedExtendedCard.ValueBool() || !planned.AgentCard.SupportsAuthenticatedExtendedCard.ValueBool() {
+		t.Fatal("stable read did not preserve planned true value")
+	}
+}
+
+func TestReadAgentCapabilitiesAfterUpdateRejectsPersistentOmission(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"agent_id": "agent-1",
+			"agent_card_params": map[string]interface{}{
+				"capabilities": map[string]interface{}{"streaming": true},
+			},
+		})
+	}))
+	defer server.Close()
+
+	resource := &AgentResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
+	prior := AgentResourceModel{
+		ID: types.StringValue("agent-1"),
+		AgentCard: &AgentCardModel{Capabilities: &AgentCapabilitiesModel{
+			PushNotifications: types.BoolValue(false),
+		}},
+	}
+	planned := cloneAgentResourceModel(prior)
+	planned.AgentCard.Capabilities.PushNotifications = types.BoolValue(true)
+	data := cloneAgentResourceModel(planned)
+
+	err := resource.readAgentCapabilitiesAfterUpdate(context.Background(), &data, planned, prior, 3)
+	if err == nil || !strings.Contains(err.Error(), "push_notifications") {
+		t.Fatalf("error = %v, want persistent push_notifications omission", err)
 	}
 }
 

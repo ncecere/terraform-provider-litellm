@@ -49,7 +49,8 @@ resource "litellm_agent" "full" {
 
     preferred_transport = "httpsse"
     icon_url            = "https://example.com/icon.png"
-    documentation_url   = "https://docs.example.com/code-reviewer"
+    documentation_url                   = "https://docs.example.com/code-reviewer"
+    supports_authenticated_extended_card = true
 
     capabilities {
       streaming                = true
@@ -113,12 +114,15 @@ resource "litellm_agent" "full" {
 * `preferred_transport` - (Optional) Preferred transport protocol (e.g. `httpsse`, `websocket`).
 * `icon_url` - (Optional) URL for the agent's icon.
 * `documentation_url` - (Optional) URL for the agent's documentation.
+* `supports_authenticated_extended_card` - (Optional) Whether the agent supports an authenticated extended A2A card.
 
 ### capabilities Block (Optional, inside agent_card)
 
 * `streaming` - (Optional) Whether the agent supports streaming responses.
 * `push_notifications` - (Optional) Whether the agent supports push notifications.
 * `state_transition_history` - (Optional) Whether the agent supports state transition history.
+
+Configured capability values are read authoritatively. If LiteLLM accepts a flag but omits it from read-back, the provider treats the effective value as `false` and reports the rejected update instead of retaining false clean state. Unconfigured fields remain unmanaged.
 
 ### provider Block (Optional, inside agent_card)
 

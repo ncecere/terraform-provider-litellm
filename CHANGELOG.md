@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`litellm_model`**: Read configured per-token, per-pixel, and per-second costs back from LiteLLM so out-of-band billing changes become visible in Terraform plans, while scaling per-token values and tolerating floating-point round-trip noise. ([#138](https://github.com/ncecere/terraform-provider-litellm/issues/138)) — thanks @runixer
 - **`litellm_model`**: Add `additional_model_info` for managing capability flags and other custom `model_info` metadata without adopting LiteLLM cost-map-derived fields. ([#140](https://github.com/ncecere/terraform-provider-litellm/issues/140)) — thanks @runixer
 - **`litellm_user`**: Treat `teams` as unordered membership during read-back and reconcile additions/removals through LiteLLM's dedicated team-member endpoints, preventing order-only inconsistent results while preserving real membership drift. ([#150](https://github.com/ncecere/terraform-provider-litellm/issues/150))
+- **`litellm_agent`**: Make configured capability read-back authoritative when LiteLLM omits unsupported flags, wait for stable post-update values, and add the A2A `supports_authenticated_extended_card` field. ([#124](https://github.com/ncecere/terraform-provider-litellm/issues/124))
 
 ## [2.0.1] - 2026-06-12
 
