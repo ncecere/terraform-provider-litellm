@@ -3,6 +3,8 @@
 Manages MCP (Model Context Protocol) server configurations in LiteLLM. MCP servers allow LLM models to access external tools and data sources through a standardized protocol.
 
 > **Note:** Server names and aliases **cannot contain hyphens** (`-`). The LiteLLM API rejects them. Use underscores (`_`) instead.
+>
+> The provider falls back to LiteLLM's MCP server collection endpoint if the individual server read returns an unexpected error. If all read-back paths fail after LiteLLM has already accepted a create or update, Terraform retains a recoverable state with known values and reports a warning instead of emitting cascading unknown-value errors.
 
 ## Example Usage
 

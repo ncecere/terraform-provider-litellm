@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -294,10 +295,17 @@ func (r *MCPServerResource) Create(ctx context.Context, req resource.CreateReque
 		data.ID = types.StringValue(serverID)
 	}
 
-	// Read back for full state
+	if data.ServerID.IsNull() || data.ServerID.IsUnknown() || data.ServerID.ValueString() == "" {
+		resp.Diagnostics.AddError("Invalid Create Response", "LiteLLM created the MCP server but did not return a server_id, so the provider cannot manage it.")
+		return
+	}
+
+	// Read back for full state. If every read path fails after a successful
+	// create, publish a recoverable state with no unknown computed values.
 	if err := r.readMCPServer(ctx, &data); err != nil {
 		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("MCP server created but failed to read back: %s", err))
 	}
+	resolveUnknownMCPServerState(&data, nil)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -311,7 +319,7 @@ func (r *MCPServerResource) Read(ctx context.Context, req resource.ReadRequest, 
 	}
 
 	if err := r.readMCPServer(ctx, &data); err != nil {
-		if IsNotFoundError(err) {
+		if IsAPIErrorStatus(err, 404) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
@@ -348,10 +356,12 @@ func (r *MCPServerResource) Update(ctx context.Context, req resource.UpdateReque
 		return
 	}
 
-	// Read back for full state
+	// Read back for full state. Preserve prior known computed values if every
+	// read path fails after LiteLLM accepted the update.
 	if err := r.readMCPServer(ctx, &data); err != nil {
 		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("MCP server updated but failed to read back: %s", err))
 	}
+	resolveUnknownMCPServerState(&data, &state)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -371,7 +381,7 @@ func (r *MCPServerResource) Delete(ctx context.Context, req resource.DeleteReque
 
 	endpoint := fmt.Sprintf("/v1/mcp/server/%s", serverID)
 	if err := r.client.DoRequestWithResponse(ctx, "DELETE", endpoint, nil, nil); err != nil {
-		if !IsNotFoundError(err) {
+		if !IsAPIErrorStatus(err, 404) {
 			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to delete MCP server: %s", err))
 			return
 		}
@@ -580,16 +590,149 @@ func (r *MCPServerResource) buildMCPServerRequest(ctx context.Context, data *MCP
 	return mcpReq
 }
 
+func resolveUnknownMCPServerState(data *MCPServerResourceModel, previous *MCPServerResourceModel) {
+	var prior MCPServerResourceModel
+	if previous != nil {
+		prior = *previous
+	}
+
+	resolveString := func(current, fallback types.String) types.String {
+		if !current.IsUnknown() {
+			return current
+		}
+		if previous != nil && !fallback.IsUnknown() {
+			return fallback
+		}
+		return types.StringNull()
+	}
+	resolveBool := func(current, fallback types.Bool) types.Bool {
+		if !current.IsUnknown() {
+			return current
+		}
+		if previous != nil && !fallback.IsUnknown() {
+			return fallback
+		}
+		return types.BoolNull()
+	}
+	resolveList := func(current, fallback types.List) types.List {
+		if !current.IsUnknown() {
+			return current
+		}
+		if previous != nil && !fallback.IsUnknown() {
+			return fallback
+		}
+		return types.ListNull(types.StringType)
+	}
+	resolveStringMap := func(current, fallback types.Map) types.Map {
+		if !current.IsUnknown() {
+			return current
+		}
+		if previous != nil && !fallback.IsUnknown() {
+			return fallback
+		}
+		return types.MapNull(types.StringType)
+	}
+
+	data.ID = resolveString(data.ID, prior.ID)
+	data.ServerID = resolveString(data.ServerID, prior.ServerID)
+	data.ServerName = resolveString(data.ServerName, prior.ServerName)
+	data.Alias = resolveString(data.Alias, prior.Alias)
+	data.Description = resolveString(data.Description, prior.Description)
+	data.URL = resolveString(data.URL, prior.URL)
+	data.Transport = resolveString(data.Transport, prior.Transport)
+	data.SpecVersion = resolveString(data.SpecVersion, prior.SpecVersion)
+	data.AuthType = resolveString(data.AuthType, prior.AuthType)
+	data.Command = resolveString(data.Command, prior.Command)
+	data.AuthorizationURL = resolveString(data.AuthorizationURL, prior.AuthorizationURL)
+	data.TokenURL = resolveString(data.TokenURL, prior.TokenURL)
+	data.RegistrationURL = resolveString(data.RegistrationURL, prior.RegistrationURL)
+	data.CreatedAt = resolveString(data.CreatedAt, prior.CreatedAt)
+	data.CreatedBy = resolveString(data.CreatedBy, prior.CreatedBy)
+	data.AllowAllKeys = resolveBool(data.AllowAllKeys, prior.AllowAllKeys)
+	data.SkipURLValidation = resolveBool(data.SkipURLValidation, prior.SkipURLValidation)
+	data.MCPAccessGroups = resolveList(data.MCPAccessGroups, prior.MCPAccessGroups)
+	data.Args = resolveList(data.Args, prior.Args)
+	data.AllowedTools = resolveList(data.AllowedTools, prior.AllowedTools)
+	data.ExtraHeaders = resolveList(data.ExtraHeaders, prior.ExtraHeaders)
+	data.Env = resolveStringMap(data.Env, prior.Env)
+	data.Credentials = resolveStringMap(data.Credentials, prior.Credentials)
+	data.StaticHeaders = resolveStringMap(data.StaticHeaders, prior.StaticHeaders)
+
+	if data.MCPInfo != nil {
+		var priorInfo MCPInfoModel
+		if prior.MCPInfo != nil {
+			priorInfo = *prior.MCPInfo
+		}
+		data.MCPInfo.ServerName = resolveString(data.MCPInfo.ServerName, priorInfo.ServerName)
+		data.MCPInfo.Description = resolveString(data.MCPInfo.Description, priorInfo.Description)
+		data.MCPInfo.LogoURL = resolveString(data.MCPInfo.LogoURL, priorInfo.LogoURL)
+		if data.MCPInfo.MCPServerCostInfo != nil {
+			var priorCost MCPServerCostInfoModel
+			hasPriorCost := priorInfo.MCPServerCostInfo != nil
+			if hasPriorCost {
+				priorCost = *priorInfo.MCPServerCostInfo
+			}
+			if data.MCPInfo.MCPServerCostInfo.DefaultCostPerQuery.IsUnknown() {
+				if hasPriorCost && !priorCost.DefaultCostPerQuery.IsUnknown() {
+					data.MCPInfo.MCPServerCostInfo.DefaultCostPerQuery = priorCost.DefaultCostPerQuery
+				} else {
+					data.MCPInfo.MCPServerCostInfo.DefaultCostPerQuery = types.Float64Null()
+				}
+			}
+			if data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery.IsUnknown() {
+				if hasPriorCost && !priorCost.ToolNameToCostPerQuery.IsUnknown() {
+					data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery = priorCost.ToolNameToCostPerQuery
+				} else {
+					data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery = types.MapNull(types.Float64Type)
+				}
+			}
+		}
+	}
+}
+
+func (r *MCPServerResource) getMCPServer(ctx context.Context, serverID string) (map[string]interface{}, error) {
+	endpoint := fmt.Sprintf("/v1/mcp/server/%s", serverID)
+	var result map[string]interface{}
+	individualErr := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result)
+	if individualErr == nil || IsAPIErrorStatus(individualErr, 404) {
+		return result, individualErr
+	}
+
+	// Older LiteLLM versions can return 500 for the individual endpoint while
+	// the collection endpoint still returns the successfully created server.
+	delay := 250 * time.Millisecond
+	for attempt := 0; attempt < 5; attempt++ {
+		var servers []map[string]interface{}
+		if err := r.client.DoRequestWithResponse(ctx, "GET", "/v1/mcp/server", nil, &servers); err == nil {
+			for _, server := range servers {
+				if id, ok := server["server_id"].(string); ok && id == serverID {
+					return server, nil
+				}
+			}
+		}
+		if attempt == 4 {
+			break
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+		delay *= 2
+	}
+	return nil, individualErr
+}
+
 func (r *MCPServerResource) readMCPServer(ctx context.Context, data *MCPServerResourceModel) error {
 	serverID := data.ID.ValueString()
 	if serverID == "" {
 		serverID = data.ServerID.ValueString()
 	}
 
-	endpoint := fmt.Sprintf("/v1/mcp/server/%s", serverID)
-
-	var result map[string]interface{}
-	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
+	result, err := r.getMCPServer(ctx, serverID)
+	if err != nil {
 		return err
 	}
 

@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`litellm_agent`**: Make configured capability read-back authoritative when LiteLLM omits unsupported flags, wait for stable post-update values, and add the A2A `supports_authenticated_extended_card` field. ([#124](https://github.com/ncecere/terraform-provider-litellm/issues/124))
 - **`litellm_guardrail`**: Ignore nested null defaults that LiteLLM adds to configured `litellm_params` objects while retaining explicit nulls and real nested drift. ([#125](https://github.com/ncecere/terraform-provider-litellm/issues/125))
 - **`litellm_key`**: Mark `metadata` sensitive and preserve configured nested secret leaves when LiteLLM reads them back as encrypted values, while continuing to expose unmasked metadata drift. ([#115](https://github.com/ncecere/terraform-provider-litellm/issues/115))
+- **`litellm_mcp_server`**: Fall back to the MCP collection endpoint when individual read-back fails and resolve computed unknowns after successful mutations so backend read errors remain recoverable. ([#116](https://github.com/ncecere/terraform-provider-litellm/issues/116))
 
 ## [2.0.1] - 2026-06-12
 

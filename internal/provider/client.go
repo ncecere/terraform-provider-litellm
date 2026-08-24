@@ -4,10 +4,20 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 )
+
+type APIError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("API request failed with status %d: %s", e.StatusCode, e.Body)
+}
 
 // DoRequest performs an HTTP request with context and standard headers.
 func (c *Client) DoRequest(ctx context.Context, method, path string, body interface{}) (*http.Response, error) {
@@ -59,7 +69,7 @@ func (c *Client) DoRequestWithResponse(ctx context.Context, method, path string,
 
 	// Handle non-2xx status codes
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(bodyBytes))
+		return &APIError{StatusCode: resp.StatusCode, Body: string(bodyBytes)}
 	}
 
 	// If no result expected, return early
@@ -79,10 +89,22 @@ func (c *Client) DoRequestWithResponse(ctx context.Context, method, path string,
 	return nil
 }
 
-// IsNotFoundError checks if the error message indicates a not found condition.
+// IsAPIErrorStatus reports whether an error came from an HTTP API response
+// with the exact status code. Callers that must distinguish absence from an
+// unexpected error should use this instead of response-body heuristics.
+func IsAPIErrorStatus(err error, statusCode int) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && apiErr.StatusCode == statusCode
+}
+
+// IsNotFoundError retains compatibility with LiteLLM endpoints that return
+// non-404 statuses (commonly 400) with a not-found message in the body.
 func IsNotFoundError(err error) bool {
 	if err == nil {
 		return false
+	}
+	if IsAPIErrorStatus(err, http.StatusNotFound) {
+		return true
 	}
 	errStr := err.Error()
 	return contains(errStr, "not found") ||

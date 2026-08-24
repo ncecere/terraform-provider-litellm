@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -27,6 +28,122 @@ func TestBuildMCPServerRequestIncludesSkipURLValidation(t *testing.T) {
 
 	if got, ok := req["skip_url_validation"].(bool); !ok || !got {
 		t.Fatalf("expected skip_url_validation=true, got %T: %v", req["skip_url_validation"], req["skip_url_validation"])
+	}
+}
+
+func TestReadMCPServerFallsBackToCollection(t *testing.T) {
+	t.Parallel()
+
+	var collectionReads atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		if request.URL.Path == "/v1/mcp/server/server-1" {
+			writer.WriteHeader(http.StatusInternalServerError)
+			_, _ = writer.Write([]byte(`{"error":"server not found after internal 404 lookup"}`))
+			return
+		}
+		if request.URL.Path == "/v1/mcp/server" {
+			if collectionReads.Add(1) < 3 {
+				_ = json.NewEncoder(writer).Encode([]map[string]interface{}{})
+				return
+			}
+			_ = json.NewEncoder(writer).Encode([]map[string]interface{}{
+				{
+					"server_id":         "server-1",
+					"server_name":       "test-mcp",
+					"url":               "http://mcp.internal/mcp",
+					"transport":         "http",
+					"auth_type":         "none",
+					"allow_all_keys":    true,
+					"mcp_access_groups": []interface{}{},
+					"args":              []interface{}{},
+					"env":               map[string]interface{}{},
+					"credentials":       map[string]interface{}{},
+					"allowed_tools":     []interface{}{},
+					"extra_headers":     []interface{}{},
+					"static_headers":    map[string]interface{}{},
+				},
+			})
+			return
+		}
+		http.NotFound(writer, request)
+	}))
+	defer server.Close()
+
+	resource := &MCPServerResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
+	data := MCPServerResourceModel{
+		ID:              types.StringValue("server-1"),
+		ServerID:        types.StringValue("server-1"),
+		MCPAccessGroups: types.ListUnknown(types.StringType),
+		Args:            types.ListUnknown(types.StringType),
+		Env:             types.MapUnknown(types.StringType),
+		Credentials:     types.MapUnknown(types.StringType),
+		AllowedTools:    types.ListUnknown(types.StringType),
+		ExtraHeaders:    types.ListUnknown(types.StringType),
+		StaticHeaders:   types.MapUnknown(types.StringType),
+	}
+
+	if err := resource.readMCPServer(context.Background(), &data); err != nil {
+		t.Fatalf("readMCPServer returned error: %v", err)
+	}
+	if data.ServerName.ValueString() != "test-mcp" || data.URL.ValueString() != "http://mcp.internal/mcp" {
+		t.Fatalf("collection fallback did not populate server: %#v", data)
+	}
+	assertMCPServerCollectionsKnown(t, data)
+	if got := collectionReads.Load(); got != 3 {
+		t.Fatalf("collection reads = %d, want 3", got)
+	}
+}
+
+func TestResolveUnknownMCPServerStateAfterFailedCreate(t *testing.T) {
+	t.Parallel()
+
+	data := MCPServerResourceModel{
+		ID:              types.StringValue("server-1"),
+		ServerID:        types.StringValue("server-1"),
+		MCPAccessGroups: types.ListUnknown(types.StringType),
+		Args:            types.ListUnknown(types.StringType),
+		Env:             types.MapUnknown(types.StringType),
+		Credentials:     types.MapUnknown(types.StringType),
+		AllowedTools:    types.ListUnknown(types.StringType),
+		ExtraHeaders:    types.ListUnknown(types.StringType),
+		StaticHeaders:   types.MapUnknown(types.StringType),
+		CreatedAt:       types.StringUnknown(),
+		CreatedBy:       types.StringUnknown(),
+		MCPInfo: &MCPInfoModel{MCPServerCostInfo: &MCPServerCostInfoModel{
+			ToolNameToCostPerQuery: types.MapUnknown(types.Float64Type),
+		}},
+	}
+
+	resolveUnknownMCPServerState(&data, nil)
+	assertMCPServerCollectionsKnown(t, data)
+	if data.CreatedAt.IsUnknown() || data.CreatedBy.IsUnknown() || data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery.IsUnknown() {
+		t.Fatalf("failed create retained unknown computed state: %#v", data)
+	}
+}
+
+func TestResolveUnknownMCPServerStatePreservesPriorValues(t *testing.T) {
+	t.Parallel()
+
+	data := MCPServerResourceModel{
+		AllowedTools: types.ListUnknown(types.StringType),
+		CreatedAt:    types.StringUnknown(),
+	}
+	prior := MCPServerResourceModel{
+		AllowedTools: stringListValue("search"),
+		CreatedAt:    types.StringValue("2026-01-01T00:00:00Z"),
+	}
+	resolveUnknownMCPServerState(&data, &prior)
+
+	if !data.AllowedTools.Equal(prior.AllowedTools) || !data.CreatedAt.Equal(prior.CreatedAt) {
+		t.Fatalf("prior values not preserved: %#v", data)
+	}
+}
+
+func assertMCPServerCollectionsKnown(t *testing.T, data MCPServerResourceModel) {
+	t.Helper()
+	if data.MCPAccessGroups.IsUnknown() || data.Args.IsUnknown() || data.Env.IsUnknown() || data.Credentials.IsUnknown() || data.AllowedTools.IsUnknown() || data.ExtraHeaders.IsUnknown() || data.StaticHeaders.IsUnknown() {
+		t.Fatalf("MCP server retained unknown collection state: %#v", data)
 	}
 }
 
