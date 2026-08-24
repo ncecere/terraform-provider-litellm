@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`litellm_model`**: Add `additional_model_info` for managing capability flags and other custom `model_info` metadata without adopting LiteLLM cost-map-derived fields. ([#140](https://github.com/ncecere/terraform-provider-litellm/issues/140)) — thanks @runixer
 - **`litellm_user`**: Treat `teams` as unordered membership during read-back and reconcile additions/removals through LiteLLM's dedicated team-member endpoints, preventing order-only inconsistent results while preserving real membership drift. ([#150](https://github.com/ncecere/terraform-provider-litellm/issues/150))
 - **`litellm_agent`**: Make configured capability read-back authoritative when LiteLLM omits unsupported flags, wait for stable post-update values, and add the A2A `supports_authenticated_extended_card` field. ([#124](https://github.com/ncecere/terraform-provider-litellm/issues/124))
+- **`litellm_guardrail`**: Ignore nested null defaults that LiteLLM adds to configured `litellm_params` objects while retaining explicit nulls and real nested drift. ([#125](https://github.com/ncecere/terraform-provider-litellm/issues/125))
 
 ## [2.0.1] - 2026-06-12
 
