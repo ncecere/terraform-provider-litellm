@@ -50,3 +50,75 @@ func metadataValueToString(v interface{}) string {
 		return string(b)
 	}
 }
+
+// metadataValueToStringPreservingMasked converts an API metadata value while
+// retaining configured values only at leaves LiteLLM returned as encrypted or
+// redacted. The API structure and every unmasked value remain authoritative.
+func metadataValueToStringPreservingMasked(apiValue interface{}, configured string) string {
+	if apiString, ok := apiValue.(string); ok {
+		if isMaskedMetadataAPIString(apiString) {
+			var configuredValue interface{}
+			if err := json.Unmarshal([]byte(configured), &configuredValue); err == nil {
+				switch configuredValue.(type) {
+				case map[string]interface{}, []interface{}:
+					// A container becoming a masked scalar is structural drift, not
+					// a corresponding masked string leaf.
+					return apiString
+				}
+			}
+			return configured
+		}
+		return apiString
+	}
+
+	var configuredValue interface{}
+	if err := json.Unmarshal([]byte(configured), &configuredValue); err != nil {
+		return metadataValueToString(apiValue)
+	}
+	return metadataValueToString(restoreMaskedMetadataLeaves(apiValue, configuredValue))
+}
+
+func isMaskedMetadataAPIString(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	upper := strings.ToUpper(trimmed)
+	return strings.HasPrefix(trimmed, "litellm_enc::") ||
+		upper == "***REDACTED***" ||
+		upper == "<REDACTED>" ||
+		upper == "[REDACTED]"
+}
+
+func restoreMaskedMetadataLeaves(apiValue, configuredValue interface{}) interface{} {
+	switch apiValue := apiValue.(type) {
+	case string:
+		if isMaskedMetadataAPIString(apiValue) {
+			if configuredString, ok := configuredValue.(string); ok {
+				return configuredString
+			}
+		}
+		return apiValue
+	case map[string]interface{}:
+		configuredObject, _ := configuredValue.(map[string]interface{})
+		restored := make(map[string]interface{}, len(apiValue))
+		for key, child := range apiValue {
+			if configuredChild, exists := configuredObject[key]; exists {
+				restored[key] = restoreMaskedMetadataLeaves(child, configuredChild)
+			} else {
+				restored[key] = child
+			}
+		}
+		return restored
+	case []interface{}:
+		configuredArray, _ := configuredValue.([]interface{})
+		restored := make([]interface{}, len(apiValue))
+		for index, child := range apiValue {
+			if index < len(configuredArray) {
+				restored[index] = restoreMaskedMetadataLeaves(child, configuredArray[index])
+			} else {
+				restored[index] = child
+			}
+		}
+		return restored
+	default:
+		return apiValue
+	}
+}

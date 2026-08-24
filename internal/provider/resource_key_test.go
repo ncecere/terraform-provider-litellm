@@ -14,6 +14,23 @@ import (
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
 )
 
+func TestKeyMetadataSchemaIsSensitive(t *testing.T) {
+	t.Parallel()
+
+	var response resource.SchemaResponse
+	(&KeyResource{}).Schema(context.Background(), resource.SchemaRequest{}, &response)
+	if response.Diagnostics.HasError() {
+		t.Fatalf("schema diagnostics: %v", response.Diagnostics)
+	}
+	metadata, ok := response.Schema.Attributes["metadata"]
+	if !ok {
+		t.Fatal("metadata schema attribute is missing")
+	}
+	if !metadata.IsSensitive() {
+		t.Fatal("metadata schema attribute must be sensitive")
+	}
+}
+
 func TestHashKeyForID(t *testing.T) {
 	t.Parallel()
 
@@ -835,6 +852,49 @@ func TestReadKeyMetadataWithComplexValues(t *testing.T) {
 		}
 	} else {
 		t.Errorf("expected config to be types.String, got %T", elems["config"])
+	}
+}
+
+func TestReadKeyMetadataPreservesEncryptedLeaves(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"key": "sk-meta-encrypted",
+			"info": map[string]interface{}{
+				"token": "sk-meta-encrypted",
+				"metadata": map[string]interface{}{
+					"logging": []interface{}{
+						map[string]interface{}{
+							"callback_name": "langfuse_otel",
+							"callback_vars": map[string]interface{}{
+								"host":       "https://example.invalid",
+								"public_key": "litellm_enc::opaque-public",
+								"secret_key": "litellm_enc::opaque-secret",
+							},
+						},
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	resource := &KeyResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
+	configured := `[{"callback_name":"langfuse_otel","callback_vars":{"host":"https://example.invalid","public_key":"public-original","secret_key":"secret-original"}}]`
+	originalMetadata := stringMapValue(map[string]string{"logging": configured})
+	data := KeyResourceModel{
+		ID:       types.StringValue(hashKeyForID("sk-meta-encrypted")),
+		Key:      types.StringValue("sk-meta-encrypted"),
+		Metadata: originalMetadata,
+	}
+
+	if err := resource.readKey(context.Background(), &data); err != nil {
+		t.Fatalf("readKey returned error: %v", err)
+	}
+	if !data.Metadata.Equal(originalMetadata) {
+		t.Fatalf("metadata = %v, want configured encrypted leaves preserved", data.Metadata)
 	}
 }
 

@@ -179,6 +179,54 @@ func TestMetadataValueToString_Bool(t *testing.T) {
 
 // TestMetadataRoundTrip verifies the full cycle:
 // Terraform map(string) → convertMetadataToNative → API → metadataValueToString → map(string)
+func TestMetadataValueToStringPreservingMasked(t *testing.T) {
+	t.Parallel()
+
+	configured := `[{"callback_name":"langfuse_otel","callback_vars":{"host":"https://configured.example","public_key":"pk-original","secret_key":"sk-original"}}]`
+	apiValue := []interface{}{
+		map[string]interface{}{
+			"callback_name": "langfuse_otel",
+			"callback_vars": map[string]interface{}{
+				"host":       "https://changed.example",
+				"public_key": "litellm_enc::public",
+				"secret_key": "litellm_enc::secret",
+			},
+		},
+	}
+
+	got := metadataValueToStringPreservingMasked(apiValue, configured)
+	want := `[{"callback_name":"langfuse_otel","callback_vars":{"host":"https://changed.example","public_key":"pk-original","secret_key":"sk-original"}}]`
+	if got != want {
+		t.Fatalf("preserved metadata = %s, want %s", got, want)
+	}
+}
+
+func TestMetadataValueToStringPreservingMaskedScalar(t *testing.T) {
+	t.Parallel()
+
+	if got := metadataValueToStringPreservingMasked("litellm_enc::opaque", "configured-secret"); got != "configured-secret" {
+		t.Fatalf("masked scalar = %q, want configured value", got)
+	}
+	if got := metadataValueToStringPreservingMasked("***REDACTED***", "configured-secret"); got != "configured-secret" {
+		t.Fatalf("redacted scalar = %q, want configured value", got)
+	}
+	for _, apiValue := range []string{"changed", "not-redacted", "status****"} {
+		if got := metadataValueToStringPreservingMasked(apiValue, "configured"); got != apiValue {
+			t.Fatalf("unmasked scalar = %q, want API value %q", got, apiValue)
+		}
+	}
+}
+
+func TestMetadataValueToStringPreservingMaskedDoesNotHideStructuralDrift(t *testing.T) {
+	t.Parallel()
+
+	for _, configured := range []string{`{"secret":"configured"}`, `["configured"]`} {
+		if got := metadataValueToStringPreservingMasked("litellm_enc::opaque", configured); got != "litellm_enc::opaque" {
+			t.Fatalf("masked scalar replacing %s = %q, want structural drift", configured, got)
+		}
+	}
+}
+
 func TestMetadataRoundTrip(t *testing.T) {
 	t.Parallel()
 

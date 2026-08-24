@@ -152,9 +152,10 @@ func (r *KeyResource) Schema(ctx context.Context, req resource.SchemaRequest, re
 				Computed:    true,
 			},
 			"metadata": schema.MapAttribute{
-				Description: "Metadata for the key.",
+				Description: "Metadata for the key. Marked sensitive because values may contain API keys or other credentials.",
 				Optional:    true,
 				Computed:    true,
+				Sensitive:   true,
 				ElementType: types.StringType,
 			},
 			"tpm_limit": schema.Int64Attribute{
@@ -683,6 +684,19 @@ func (r *KeyResource) buildKeyRequest(ctx context.Context, data *KeyResourceMode
 	return keyReq
 }
 
+func stringMapMatchesAttrValues(current types.Map, observed map[string]attr.Value) bool {
+	if current.IsNull() || current.IsUnknown() || len(current.Elements()) != len(observed) {
+		return false
+	}
+	for key, observedValue := range observed {
+		currentValue, exists := current.Elements()[key]
+		if !exists || !currentValue.Equal(observedValue) {
+			return false
+		}
+	}
+	return true
+}
+
 func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error {
 	keyVal := data.Key.ValueString()
 	if keyVal == "" {
@@ -922,8 +936,8 @@ func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error
 	if metadata, ok := info["metadata"].(map[string]interface{}); ok && len(metadata) > 0 {
 		// Build set of user-configured metadata keys
 		configuredKeys := make(map[string]bool)
+		currentMeta := make(map[string]string)
 		if !data.Metadata.IsNull() && !data.Metadata.IsUnknown() {
-			var currentMeta map[string]string
 			data.Metadata.ElementsAs(ctx, &currentMeta, false)
 			for k := range currentMeta {
 				configuredKeys[k] = true
@@ -936,10 +950,19 @@ func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error
 			if len(configuredKeys) > 0 && !configuredKeys[k] {
 				continue
 			}
-			metaMap[k] = types.StringValue(metadataValueToString(v))
+			value := metadataValueToString(v)
+			if configured, exists := currentMeta[k]; exists {
+				value = metadataValueToStringPreservingMasked(v, configured)
+			}
+			metaMap[k] = types.StringValue(value)
 		}
 		if len(metaMap) > 0 {
-			data.Metadata, _ = types.MapValue(types.StringType, metaMap)
+			// Keep the planned/state value when the API representation is
+			// semantically identical. Rebuilding the map would discard dynamic
+			// sensitivity marks inherited from sensitive input expressions.
+			if !stringMapMatchesAttrValues(data.Metadata, metaMap) {
+				data.Metadata, _ = types.MapValue(types.StringType, metaMap)
+			}
 		} else if data.Metadata.IsUnknown() {
 			data.Metadata, _ = types.MapValue(types.StringType, map[string]attr.Value{})
 		}
