@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **`litellm_team`**: Keep API-injected `max_budget` and `budget_duration` defaults out of state when those attributes are unconfigured, preventing inconsistent results after create while preserving explicit clear-to-null behavior. ([#152](https://github.com/ncecere/terraform-provider-litellm/issues/152))
+- **`litellm_fallback` data source**: Retry transient not-found responses while LiteLLM propagates newly created fallback routes, matching the existing resource read behavior. ([#153](https://github.com/ncecere/terraform-provider-litellm/issues/153))
+- **`litellm_model`**: Preserve configured `additional_litellm_params` keys such as `tags`, `max_retries`, and `timeout` when LiteLLM omits them during read-back. ([#120](https://github.com/ncecere/terraform-provider-litellm/issues/120)) — thanks @ripiomatiascalvo
+- **`litellm_model`**: Preserve configured formatting for semantically equivalent JSON-valued `additional_litellm_params`, avoiding post-apply inconsistencies caused only by whitespace or key ordering. ([#126](https://github.com/ncecere/terraform-provider-litellm/issues/126)) — thanks @msabramo
 - **`litellm_model`**: Preserve configured `additional_litellm_params` values when LiteLLM masks direct secrets such as `azure_ad_token` or nested JSON secret values during read-back, while continuing to surface unmasked remote drift. ([#119](https://github.com/ncecere/terraform-provider-litellm/issues/119)) — thanks @msabramo
 
 ## [2.0.1] - 2026-06-12
