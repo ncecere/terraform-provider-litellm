@@ -544,12 +544,10 @@ func (r *UserResource) reconcileUserTeams(ctx context.Context, userID string, cu
 	sort.Strings(removals)
 	sort.Strings(additions)
 
-	for _, teamID := range removals {
-		request := map[string]interface{}{"team_id": teamID, "user_id": userID}
-		if err := r.client.DoRequestWithResponse(ctx, "POST", "/team/member_delete", request, nil); err != nil {
-			return fmt.Errorf("remove user from team %s: %w", teamID, err)
-		}
-	}
+	// Add destinations before removing old memberships. A failed destination
+	// must not revoke existing access or delete LiteLLM team-scoped keys. If a
+	// later removal fails, refresh exposes the temporary extra membership and a
+	// subsequent apply can safely retry the removal.
 	for _, teamID := range additions {
 		request := map[string]interface{}{
 			"team_id": teamID,
@@ -560,6 +558,12 @@ func (r *UserResource) reconcileUserTeams(ctx context.Context, userID string, cu
 		}
 		if err := r.client.DoRequestWithResponse(ctx, "POST", "/team/member_add", request, nil); err != nil {
 			return fmt.Errorf("add user to team %s: %w", teamID, err)
+		}
+	}
+	for _, teamID := range removals {
+		request := map[string]interface{}{"team_id": teamID, "user_id": userID}
+		if err := r.client.DoRequestWithResponse(ctx, "POST", "/team/member_delete", request, nil); err != nil {
+			return fmt.Errorf("remove user from team %s: %w", teamID, err)
 		}
 	}
 	return nil

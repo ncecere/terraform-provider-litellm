@@ -353,12 +353,39 @@ func TestReconcileUserTeamsUsesDedicatedEndpoints(t *testing.T) {
 	if len(requests) != 2 {
 		t.Fatalf("request count = %d, want 2", len(requests))
 	}
-	if requests[0].path != "/team/member_delete" || requests[0].body["team_id"] != "team-b" || requests[0].body["user_id"] != "user-1" {
-		t.Fatalf("unexpected delete request: %#v", requests[0])
+	member, ok := requests[0].body["member"].(map[string]interface{})
+	if requests[0].path != "/team/member_add" || requests[0].body["team_id"] != "team-c" || !ok || member["user_id"] != "user-1" || member["role"] != "user" {
+		t.Fatalf("unexpected add request: %#v", requests[0])
 	}
-	member, ok := requests[1].body["member"].(map[string]interface{})
-	if requests[1].path != "/team/member_add" || requests[1].body["team_id"] != "team-c" || !ok || member["user_id"] != "user-1" || member["role"] != "user" {
-		t.Fatalf("unexpected add request: %#v", requests[1])
+	if requests[1].path != "/team/member_delete" || requests[1].body["team_id"] != "team-b" || requests[1].body["user_id"] != "user-1" {
+		t.Fatalf("unexpected delete request: %#v", requests[1])
+	}
+}
+
+func TestReconcileUserTeamsDoesNotRemoveWhenAdditionFails(t *testing.T) {
+	t.Parallel()
+
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		paths = append(paths, request.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		if request.URL.Path == "/team/member_add" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"detail":"destination team does not exist"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	resource := &UserResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
+	current := types.ListValueMust(types.StringType, []attr.Value{types.StringValue("team-old")})
+	planned := types.ListValueMust(types.StringType, []attr.Value{types.StringValue("team-invalid")})
+	if err := resource.reconcileUserTeams(context.Background(), "user-1", current, planned); err == nil {
+		t.Fatal("reconcileUserTeams returned nil error for failed addition")
+	}
+	if len(paths) != 1 || paths[0] != "/team/member_add" {
+		t.Fatalf("requests after failed addition = %v, want only /team/member_add", paths)
 	}
 }
 
