@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Development and CI**: Add read-only build/vet/format/race-test CI with coverage and JUnit artifacts, broaden provider unit coverage, make local provider installation architecture-aware, and add an isolated, failure-preserving LiteLLM v1.98.0 smoke/acceptance harness covering 22 non-enterprise resources. ([#145](https://github.com/ncecere/terraform-provider-litellm/issues/145)) — thanks @msabramo
+
 ### Fixed
 - **`litellm_team`**: Keep API-injected `max_budget` and `budget_duration` defaults out of state when those attributes are unconfigured, preventing inconsistent results after create while preserving explicit clear-to-null behavior. ([#152](https://github.com/ncecere/terraform-provider-litellm/issues/152))
 - **`litellm_fallback` data source**: Retry transient not-found responses while LiteLLM propagates newly created fallback routes, matching the existing resource read behavior. ([#153](https://github.com/ncecere/terraform-provider-litellm/issues/153))

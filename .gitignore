@@ -10,8 +10,13 @@ dev_testing/*
 dev_testing/e2e/*
 !dev_testing/e2e/run_case.sh
 
-# Smoke test workspace (generated; per-file state and copied .tf removed between files, directory kept)
+# Isolated smoke-test workspaces and retained logs
 internal_testing/.smoke/
+internal_testing/.smoke.*/
+internal_testing/.smoke-logs/
+
+# Generated dev_overrides CLI config for the manual smoke walkthrough
+internal_testing/.dev.tfrc
 
 # .tfstate files
 *.tfstate
@@ -64,6 +69,11 @@ Thumbs.db
 *.test
 *.out
 go.work
+
+# CI test and coverage artifacts
+junit.xml
+coverage.html
+coverage.txt
 
 # Dependency directories (remove the comment below to include it)
 # vendor/
