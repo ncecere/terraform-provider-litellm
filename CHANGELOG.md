@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`litellm_model`**: Preserve configured formatting for semantically equivalent JSON-valued `additional_litellm_params`, avoiding post-apply inconsistencies caused only by whitespace or key ordering. ([#126](https://github.com/ncecere/terraform-provider-litellm/issues/126)) — thanks @msabramo
 - **`litellm_model`**: Preserve configured `additional_litellm_params` values when LiteLLM masks direct secrets such as `azure_ad_token` or nested JSON secret values during read-back, while continuing to surface unmasked remote drift. ([#119](https://github.com/ncecere/terraform-provider-litellm/issues/119)) — thanks @msabramo
 - **`litellm_model`**: Plan model replacement when configured `additional_litellm_params` keys are removed or cleared, ensuring LiteLLM actually drops the remote values instead of silently retaining them through merge-style updates. Imported or API-computed parameters remain adopted while the argument is omitted. ([#151](https://github.com/ncecere/terraform-provider-litellm/issues/151))
+- **`litellm_model`**: Retry post-update reads until changed fields remain at their planned values across consecutive reads, preventing stale LiteLLM router-cache responses from causing inconsistent results after updates such as `base_model` changes. ([#148](https://github.com/ncecere/terraform-provider-litellm/issues/148))
 
 ## [2.0.1] - 2026-06-12
 
