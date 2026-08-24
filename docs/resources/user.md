@@ -57,7 +57,7 @@ The following arguments are supported:
 In addition to the arguments above, the following attributes are exported:
 
 * `id` - The unique identifier of the user (same as `user_id`).
-* `key` - (Sensitive) The API key generated for the user. Only populated when `auto_create_key` is `true`.
+* `key` - (Sensitive) The API key generated for a newly created user. It is not available when adopting or importing an existing user because LiteLLM cannot return existing raw keys.
 
 The following attributes are both Optional and Computed (they are read back from the API if not explicitly set):
 
@@ -77,8 +77,14 @@ terraform import litellm_user.example <user-id>
 
 ~> **Note:** The `key` attribute will not be populated after import, as API keys cannot be retrieved from the LiteLLM API after creation.
 
+## Adopting an Existing User
+
+If `/user/new` returns HTTP 409, the provider can adopt an existing user when `user_email` is known and `/user/list` returns exactly one account with that exact email. If `user_id` is configured, it must also match the existing account. Partial, missing, ambiguous, or conflicting identity matches fail without updating the account.
+
+After identity verification, configured user fields and team memberships are reconciled. Adoption fails before mutation if configuration would require clearing a non-empty alias, models list, or metadata map because LiteLLM ignores empty values for those fields. Adoption does not request another auto-created key because its raw value could not be recovered into Terraform state. Removing an existing team membership calls LiteLLM's `/team/member_delete`, which also deletes that user's keys scoped to the removed team. Once adopted, Terraform owns the user: destroying the resource deletes the existing LiteLLM user.
+
 ## Notes
 
-- The `user_email` attribute is **not** required.
+- The `user_email` attribute is **not** required for a new user, but it is required for safe automatic adoption after a conflict.
 - The `user_id` attribute is ForceNew — changing it will destroy and recreate the resource.
-- When `auto_create_key` is `true` (the default), a `key` is generated on creation and stored in state.
+- When `auto_create_key` is `true` (the default), a `key` is generated and stored in state only when LiteLLM creates a new user.
