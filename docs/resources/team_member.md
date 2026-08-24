@@ -24,7 +24,7 @@ resource "litellm_team_member" "developer" {
 - `team_id` - (Required) The ID of the team.
 - `user_id` - (Required) The ID of the user to add to the team.
 - `user_email` - (Required) The email address of the user.
-- `role` - (Required) The role of the user within the team. Valid values: `org_admin`, `internal_user`, `internal_user_viewer`, `admin`, `user`.
+- `role` - (Required) The role of the user within the team. LiteLLM v1.98 supports `admin` or `user`.
 - `max_budget_in_team` - (Optional) The maximum budget allocated to this user within the team.
 - `budget_duration` - (Optional) Recurring reset interval for this member's budget, such as `30d`, `24h`, `1mo`, or `monthly`. It may be set without an explicit `max_budget_in_team` to override an inherited/default interval. LiteLLM manages `budget_reset_at` and subsequent resets; the provider sends this value directly through the native team-member API.
 

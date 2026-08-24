@@ -65,10 +65,10 @@ func (r *TeamMemberResource) Schema(ctx context.Context, req resource.SchemaRequ
 				Required:    true,
 			},
 			"role": schema.StringAttribute{
-				Description: "Role in the team (org_admin, internal_user, internal_user_viewer, admin, user).",
+				Description: "Role in the team (admin or user).",
 				Required:    true,
 				Validators: []validator.String{
-					stringvalidator.OneOf("org_admin", "internal_user", "internal_user_viewer", "admin", "user"),
+					stringvalidator.OneOf("admin", "user"),
 				},
 			},
 			"max_budget_in_team": schema.Float64Attribute{
@@ -150,30 +150,48 @@ func (r *TeamMemberResource) Create(ctx context.Context, req resource.CreateRequ
 		return
 	}
 
-	memberReq := buildTeamMemberAddRequest(&data)
+	// Refuse implicit adoption. This preflight distinguishes an account that
+	// existed before Create from a membership that appears only after an
+	// ambiguous/partially successful add request.
+	observed := data
+	preexisting, err := r.readTeamMember(ctx, &observed)
+	if err != nil {
+		resp.Diagnostics.AddError("Team Member Preflight Error", fmt.Sprintf("Unable to verify that the team member does not already exist: %s", err))
+		return
+	}
+	if preexisting {
+		resp.Diagnostics.AddError("Team Member Already Exists", "The user is already in this team. Import the membership before managing it with Terraform.")
+		return
+	}
 
+	memberReq := buildTeamMemberAddRequest(&data)
 	if err := r.client.DoRequestWithResponse(ctx, "POST", "/team/member_add", memberReq, nil); err != nil {
-		// LiteLLM can report duplicate/partially-created memberships through
-		// several status/body shapes. Verify the exact team+user identity before
-		// deciding whether Create can safely continue as reconciliation.
-		observed := data
-		exists, verifyErr := r.readTeamMember(ctx, &observed)
+		// If the exact roster entry appeared after a preflight that proved it was
+		// absent, recover a partially successful/ambiguous add through the native
+		// update endpoint. Budget rows alone are not membership proof.
+		postAdd := data
+		exists, verifyErr := r.readTeamMember(ctx, &postAdd)
 		if verifyErr != nil || !exists {
 			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to add team member: %s", err))
 			return
 		}
 		if updateErr := r.client.DoRequestWithResponse(ctx, "POST", "/team/member_update", buildTeamMemberUpdateRequest(&data), nil); updateErr != nil {
-			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Team member exists after add failed but could not be reconciled: %s", updateErr))
+			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Team member appeared after add failed but could not be reconciled: %s", updateErr))
 			return
 		}
 	}
 
 	data.ID = types.StringValue(fmt.Sprintf("%s:%s", data.TeamID.ValueString(), data.UserID.ValueString()))
 
-	if exists, err := r.readTeamMember(ctx, &data); err != nil {
-		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Team member was created but could not be read back: %s", err))
-	} else if !exists {
-		resp.Diagnostics.AddWarning("Read Error", "Team member was created but was not present in the immediate team read-back.")
+	exists, readErr := r.readTeamMember(ctx, &data)
+	if readErr != nil {
+		resp.Diagnostics.AddError("Team Member Read-Back Error", fmt.Sprintf("The membership may have been created, but it could not be verified: %s", readErr))
+		resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+		return
+	}
+	if !exists {
+		resp.Diagnostics.AddError("Team Member Missing After Create", "LiteLLM accepted the create request but the user is not present in the team's member roster.")
+		return
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
@@ -186,7 +204,7 @@ func (r *TeamMemberResource) readTeamMember(ctx context.Context, data *TeamMembe
 		return false, err
 	}
 
-	memberFound := false
+	rosterFound := false
 	teamInfo := result
 	if nested, ok := result["team_info"].(map[string]interface{}); ok {
 		teamInfo = nested
@@ -197,7 +215,7 @@ func (r *TeamMemberResource) readTeamMember(ctx context.Context, data *TeamMembe
 			if !ok || member["user_id"] != data.UserID.ValueString() {
 				continue
 			}
-			memberFound = true
+			rosterFound = true
 			if role, ok := member["role"].(string); ok && role != "" {
 				data.Role = types.StringValue(role)
 			}
@@ -215,12 +233,11 @@ func (r *TeamMemberResource) readTeamMember(ctx context.Context, data *TeamMembe
 			if !ok || membership["user_id"] != data.UserID.ValueString() {
 				continue
 			}
-			memberFound = true
 			budget, _ = membership["litellm_budget_table"].(map[string]interface{})
 			break
 		}
 	}
-	if !memberFound {
+	if !rosterFound {
 		return false, nil
 	}
 
@@ -292,10 +309,14 @@ func (r *TeamMemberResource) Update(ctx context.Context, req resource.UpdateRequ
 		return
 	}
 
-	if exists, err := r.readTeamMember(ctx, &data); err != nil {
-		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Team member was updated but could not be read back: %s", err))
-	} else if !exists {
-		resp.Diagnostics.AddWarning("Read Error", "Team member was updated but was not present in the immediate team read-back.")
+	exists, readErr := r.readTeamMember(ctx, &data)
+	if readErr != nil {
+		resp.Diagnostics.AddError("Team Member Read-Back Error", fmt.Sprintf("The membership was updated but could not be verified: %s", readErr))
+		return
+	}
+	if !exists {
+		resp.Diagnostics.AddError("Team Member Missing After Update", "LiteLLM accepted the update request but the user is not present in the team's member roster.")
+		return
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)

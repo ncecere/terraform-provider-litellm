@@ -124,6 +124,11 @@ func TestReadTeamMemberPreservesUnmanagedBudgetFields(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+			"team_info": map[string]interface{}{
+				"members_with_roles": []interface{}{
+					map[string]interface{}{"user_id": "user-1", "role": "user"},
+				},
+			},
 			"team_memberships": []interface{}{
 				map[string]interface{}{
 					"user_id": "user-1",
@@ -150,6 +155,39 @@ func TestReadTeamMemberPreservesUnmanagedBudgetFields(t *testing.T) {
 	}
 	if !data.MaxBudgetInTeam.IsNull() || !data.BudgetDuration.IsNull() {
 		t.Fatalf("unmanaged member budget was adopted: max=%v duration=%v", data.MaxBudgetInTeam, data.BudgetDuration)
+	}
+}
+
+func TestReadTeamMemberRejectsOrphanBudgetMembership(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+			"team_info": map[string]interface{}{
+				"members_with_roles": []interface{}{},
+			},
+			"team_memberships": []interface{}{
+				map[string]interface{}{
+					"user_id": "user-1",
+					"litellm_budget_table": map[string]interface{}{
+						"max_budget":      75.0,
+						"budget_duration": "7d",
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	teamMemberResource := &TeamMemberResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
+	data := TeamMemberResourceModel{TeamID: types.StringValue("team-1"), UserID: types.StringValue("user-1")}
+	exists, err := teamMemberResource.readTeamMember(context.Background(), &data)
+	if err != nil {
+		t.Fatalf("readTeamMember() error = %v", err)
+	}
+	if exists {
+		t.Fatal("budget membership without members_with_roles roster entry must not count as a team member")
 	}
 }
 
