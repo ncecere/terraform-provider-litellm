@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"sort"
 	"time"
 
@@ -177,6 +178,14 @@ func (r *UserResource) Create(ctx context.Context, req resource.CreateRequest, r
 
 	var result map[string]interface{}
 	if err := r.client.DoRequestWithResponse(ctx, "POST", "/user/new", userReq, &result); err != nil {
+		if IsAPIErrorStatus(err, 409) {
+			if adoptErr := r.adoptExistingUser(ctx, &data); adoptErr != nil {
+				resp.Diagnostics.AddError("User Adoption Error", fmt.Sprintf("LiteLLM reported that the user already exists, but the provider could not safely adopt an exact matching account: %s", adoptErr))
+				return
+			}
+			resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+			return
+		}
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to create user: %s", err))
 		return
 	}
@@ -290,6 +299,113 @@ func (r *UserResource) Delete(ctx context.Context, req resource.DeleteRequest, r
 func (r *UserResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("user_id"), req.ID)...)
+}
+
+type userListResponse struct {
+	Users      []map[string]interface{} `json:"users"`
+	TotalPages int                      `json:"total_pages"`
+}
+
+func (r *UserResource) findExistingUserByExactEmail(ctx context.Context, email string) (string, error) {
+	if email == "" {
+		return "", fmt.Errorf("user_email must be configured to adopt an existing user")
+	}
+
+	matches := make(map[string]struct{})
+	totalPages := 1
+	for page := 1; page <= totalPages; page++ {
+		if page > 100 {
+			return "", fmt.Errorf("user lookup exceeded 100 pages")
+		}
+		endpoint := fmt.Sprintf("/user/list?user_email=%s&page=%d&page_size=100", url.QueryEscape(email), page)
+		var response userListResponse
+		if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &response); err != nil {
+			return "", fmt.Errorf("unable to list users by email: %w", err)
+		}
+		if response.TotalPages > totalPages {
+			totalPages = response.TotalPages
+		}
+		if totalPages > 100 {
+			return "", fmt.Errorf("user lookup returned %d pages, exceeding the safe lookup limit", totalPages)
+		}
+		for _, user := range response.Users {
+			candidateEmail, emailOK := user["user_email"].(string)
+			candidateID, idOK := user["user_id"].(string)
+			if emailOK && candidateEmail == email && idOK && candidateID != "" {
+				matches[candidateID] = struct{}{}
+			}
+		}
+	}
+
+	if len(matches) == 0 {
+		return "", fmt.Errorf("no user with the exact email %q was returned by /user/list", email)
+	}
+	if len(matches) > 1 {
+		return "", fmt.Errorf("multiple user IDs matched the exact email %q", email)
+	}
+	for userID := range matches {
+		return userID, nil
+	}
+	return "", fmt.Errorf("exact user lookup returned no usable user ID")
+}
+
+func (r *UserResource) adoptExistingUser(ctx context.Context, data *UserResourceModel) error {
+	if data.UserEmail.IsNull() || data.UserEmail.IsUnknown() || data.UserEmail.ValueString() == "" {
+		return fmt.Errorf("user_email must be known and non-empty")
+	}
+	planned := *data
+	email := planned.UserEmail.ValueString()
+	userID, err := r.findExistingUserByExactEmail(ctx, email)
+	if err != nil {
+		return err
+	}
+	if !planned.UserID.IsNull() && !planned.UserID.IsUnknown() && planned.UserID.ValueString() != "" && planned.UserID.ValueString() != userID {
+		return fmt.Errorf("the exact email match has user_id %q, not the configured user_id %q", userID, planned.UserID.ValueString())
+	}
+
+	current := planned
+	current.ID = types.StringValue(userID)
+	current.UserID = types.StringValue(userID)
+	current.Key = types.StringNull()
+	if err := r.readUser(ctx, &current); err != nil {
+		return fmt.Errorf("unable to verify the existing user: %w", err)
+	}
+	if current.UserID.ValueString() != userID || current.UserEmail.ValueString() != email {
+		return fmt.Errorf("the user identity changed during verification")
+	}
+
+	updateRequest := r.buildUserRequest(ctx, &planned)
+	updateRequest["user_id"] = userID
+	delete(updateRequest, "teams")
+	// auto_create_key is a Create action. Do not generate an inaccessible new
+	// key while adopting an account whose existing raw keys cannot be read back.
+	delete(updateRequest, "auto_create_key")
+	if err := r.client.DoRequestWithResponse(ctx, "POST", "/user/update", updateRequest, nil); err != nil {
+		return fmt.Errorf("unable to converge the existing user: %w", err)
+	}
+
+	teamsChanged := userTeamMembershipsDiffer(current.Teams, planned.Teams)
+	if teamsChanged {
+		if err := r.reconcileUserTeams(ctx, userID, current.Teams, planned.Teams); err != nil {
+			return fmt.Errorf("unable to converge existing user team membership: %w", err)
+		}
+	}
+
+	*data = planned
+	data.ID = types.StringValue(userID)
+	data.UserID = types.StringValue(userID)
+	data.Key = types.StringNull()
+	if teamsChanged {
+		if err := r.readUserTeamsAfterUpdate(ctx, data, 8); err != nil {
+			return fmt.Errorf("existing user team membership did not converge: %w", err)
+		}
+	} else if err := r.readUser(ctx, data); err != nil {
+		return fmt.Errorf("unable to read the adopted user: %w", err)
+	}
+	if planned.UserAlias.IsNull() {
+		data.UserAlias = planned.UserAlias
+	}
+	return nil
 }
 
 func (r *UserResource) buildUserRequest(ctx context.Context, data *UserResourceModel) map[string]interface{} {

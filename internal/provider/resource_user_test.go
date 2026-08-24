@@ -16,6 +16,199 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
+func TestFindExistingUserByExactEmailPaginatesAndIgnoresPartialMatches(t *testing.T) {
+	t.Parallel()
+
+	const email = "exact+tag@example.com"
+	var pages atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/user/list" || request.URL.Query().Get("user_email") != email || request.URL.Query().Get("page_size") != "100" {
+			http.Error(writer, "unexpected request", http.StatusBadRequest)
+			return
+		}
+		page := request.URL.Query().Get("page")
+		pages.Add(1)
+		writer.Header().Set("Content-Type", "application/json")
+		if page == "1" {
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+				"users":       []interface{}{map[string]interface{}{"user_id": "partial", "user_email": "prefix-" + email}},
+				"total_pages": 2,
+			})
+			return
+		}
+		_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+			"users":       []interface{}{map[string]interface{}{"user_id": "exact-id", "user_email": email}},
+			"total_pages": 2,
+		})
+	}))
+	defer server.Close()
+
+	resource := &UserResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
+	userID, err := resource.findExistingUserByExactEmail(context.Background(), email)
+	if err != nil {
+		t.Fatalf("findExistingUserByExactEmail returned error: %v", err)
+	}
+	if userID != "exact-id" || pages.Load() != 2 {
+		t.Fatalf("user_id = %q, pages = %d", userID, pages.Load())
+	}
+}
+
+func TestFindExistingUserByExactEmailRejectsPartialOnly(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+			"users":       []interface{}{map[string]interface{}{"user_id": "partial", "user_email": "prefix-target@example.com"}},
+			"total_pages": 1,
+		})
+	}))
+	defer server.Close()
+
+	resource := &UserResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
+	if _, err := resource.findExistingUserByExactEmail(context.Background(), "target@example.com"); err == nil {
+		t.Fatal("partial-only email match was accepted")
+	}
+}
+
+func TestFindExistingUserByExactEmailRejectsAmbiguousMatches(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+			"users": []interface{}{
+				map[string]interface{}{"user_id": "user-a", "user_email": "same@example.com"},
+				map[string]interface{}{"user_id": "user-b", "user_email": "same@example.com"},
+			},
+			"total_pages": 1,
+		})
+	}))
+	defer server.Close()
+
+	resource := &UserResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
+	if _, err := resource.findExistingUserByExactEmail(context.Background(), "same@example.com"); err == nil {
+		t.Fatal("ambiguous exact matches were accepted")
+	}
+}
+
+func TestAdoptExistingUserVerifiesAndConvergesWithoutCreatingKey(t *testing.T) {
+	t.Parallel()
+
+	var updated atomic.Bool
+	var membershipUpdated atomic.Bool
+	var memberAdds atomic.Int32
+	var memberDeletes atomic.Int32
+	var updateBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/user/list":
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+				"users":       []interface{}{map[string]interface{}{"user_id": "existing-id", "user_email": "existing@example.com"}},
+				"total_pages": 1,
+			})
+		case request.Method == http.MethodGet && request.URL.Path == "/user/info":
+			alias := "old-alias"
+			role := "internal_user"
+			teams := []interface{}{"team-a"}
+			if updated.Load() {
+				alias = "managed-alias"
+				role = "internal_user_viewer"
+			}
+			if membershipUpdated.Load() {
+				teams = []interface{}{"team-b"}
+			}
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{"user_info": map[string]interface{}{
+				"user_id": "existing-id", "user_email": "existing@example.com", "user_alias": alias,
+				"user_role": role, "teams": teams, "models": []interface{}{}, "metadata": map[string]interface{}{},
+			}})
+		case request.Method == http.MethodPost && request.URL.Path == "/user/update":
+			if err := json.NewDecoder(request.Body).Decode(&updateBody); err != nil {
+				t.Errorf("decode update body: %v", err)
+			}
+			updated.Store(true)
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{"status": "ok"})
+		case request.Method == http.MethodPost && request.URL.Path == "/team/member_add":
+			memberAdds.Add(1)
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{"status": "ok"})
+		case request.Method == http.MethodPost && request.URL.Path == "/team/member_delete":
+			memberDeletes.Add(1)
+			membershipUpdated.Store(true)
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{"status": "ok"})
+		default:
+			http.Error(writer, "unexpected request", http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+
+	resource := &UserResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
+	data := UserResourceModel{
+		UserID:        types.StringUnknown(),
+		UserEmail:     types.StringValue("existing@example.com"),
+		UserAlias:     types.StringValue("managed-alias"),
+		UserRole:      types.StringValue("internal_user_viewer"),
+		AutoCreateKey: types.BoolValue(true),
+		Teams:         stringListValue("team-b"),
+		Models:        types.ListNull(types.StringType),
+		Metadata:      types.MapNull(types.StringType),
+		Key:           types.StringUnknown(),
+	}
+
+	if err := resource.adoptExistingUser(context.Background(), &data); err != nil {
+		t.Fatalf("adoptExistingUser returned error: %v", err)
+	}
+	if data.ID.ValueString() != "existing-id" || data.UserID.ValueString() != "existing-id" || data.UserAlias.ValueString() != "managed-alias" {
+		t.Fatalf("unexpected adopted state: %#v", data)
+	}
+	if !data.Key.IsNull() {
+		t.Fatalf("adoption exposed an unexpected key: %v", data.Key)
+	}
+	if updateBody["user_id"] != "existing-id" || updateBody["user_email"] != "existing@example.com" || updateBody["user_alias"] != "managed-alias" {
+		t.Fatalf("unexpected update request: %#v", updateBody)
+	}
+	if _, exists := updateBody["auto_create_key"]; exists {
+		t.Fatalf("adoption update requested an inaccessible key: %#v", updateBody)
+	}
+	if _, exists := updateBody["teams"]; exists {
+		t.Fatalf("adoption sent teams through /user/update: %#v", updateBody)
+	}
+	if memberAdds.Load() != 1 || memberDeletes.Load() != 1 || !userTeamMembershipEqual(data.Teams, []string{"team-b"}) {
+		t.Fatalf("team membership did not converge: adds=%d deletes=%d teams=%v", memberAdds.Load(), memberDeletes.Load(), data.Teams)
+	}
+}
+
+func TestAdoptExistingUserRequiresKnownEmail(t *testing.T) {
+	t.Parallel()
+
+	resource := &UserResource{}
+	for _, email := range []types.String{types.StringNull(), types.StringUnknown(), types.StringValue("")} {
+		data := UserResourceModel{UserEmail: email}
+		if err := resource.adoptExistingUser(context.Background(), &data); err == nil {
+			t.Fatalf("unsafe email %v was accepted for adoption", email)
+		}
+	}
+}
+
+func TestAdoptExistingUserRejectsConfiguredIDMismatch(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+			"users":       []interface{}{map[string]interface{}{"user_id": "existing-id", "user_email": "existing@example.com"}},
+			"total_pages": 1,
+		})
+	}))
+	defer server.Close()
+
+	resource := &UserResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
+	data := UserResourceModel{UserID: types.StringValue("different-id"), UserEmail: types.StringValue("existing@example.com")}
+	if err := resource.adoptExistingUser(context.Background(), &data); err == nil {
+		t.Fatal("configured user_id mismatch was accepted")
+	}
+}
+
 func TestReadUserDoesNotSetAPIInjectedDefaultsWhenUnconfigured(t *testing.T) {
 	t.Parallel()
 
