@@ -375,6 +375,7 @@ func (r *ModelResource) Update(ctx context.Context, req resource.UpdateRequest, 
 	}
 
 	data.ID = state.ID
+	plannedData := data
 
 	// Use PATCH endpoint for partial updates
 	if err := r.patchModel(ctx, &data); err != nil {
@@ -382,9 +383,9 @@ func (r *ModelResource) Update(ctx context.Context, req resource.UpdateRequest, 
 		return
 	}
 
-	if err := r.readModel(ctx, &data); err != nil {
-		finalizeModelComputedDefaults(&data)
-		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Model updated but failed to read back: %s", err))
+	if err := r.readModelAfterUpdate(ctx, &data, plannedData, state, 8); err != nil {
+		resp.Diagnostics.AddError("Model Update Not Yet Consistent", fmt.Sprintf("LiteLLM accepted the model update but did not return the planned values before the consistency timeout: %s", err))
+		return
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
@@ -864,6 +865,91 @@ func (r *ModelResource) readModelWithRetry(ctx context.Context, data *ModelResou
 	}
 
 	return err
+}
+
+func (r *ModelResource) readModelAfterUpdate(ctx context.Context, data *ModelResourceModel, planned, prior ModelResourceModel, maxRetries int) error {
+	if maxRetries < 1 {
+		return fmt.Errorf("maxRetries must be at least 1")
+	}
+
+	delay := 250 * time.Millisecond
+	maxDelay := 2 * time.Second
+	var lastErr error
+	var staleFields []string
+	changedFields := changedModelFieldsNotConverged(planned, prior, prior)
+	consecutiveMatches := 0
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		candidate := planned
+		lastErr = r.readModel(ctx, &candidate)
+		if lastErr == nil {
+			staleFields = changedModelFieldsNotConverged(planned, prior, candidate)
+			if len(staleFields) == 0 {
+				consecutiveMatches++
+				// LiteLLM's router cache can briefly return the new value and then
+				// regress to the old value during reload. Require two consecutive
+				// matching reads before publishing post-update state.
+				if consecutiveMatches >= 2 {
+					*data = candidate
+					return nil
+				}
+			} else {
+				consecutiveMatches = 0
+			}
+		} else if !IsNotFoundError(lastErr) {
+			return lastErr
+		} else {
+			consecutiveMatches = 0
+		}
+
+		if attempt == maxRetries-1 {
+			break
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+		delay *= 2
+		if delay > maxDelay {
+			delay = maxDelay
+		}
+	}
+
+	if lastErr != nil {
+		return lastErr
+	}
+	if len(staleFields) == 0 {
+		staleFields = changedFields
+	}
+	return fmt.Errorf("fields did not remain at their planned values after %d reads: %s", maxRetries, strings.Join(staleFields, ", "))
+}
+
+func changedModelFieldsNotConverged(planned, prior, observed ModelResourceModel) []string {
+	plannedValue := reflect.ValueOf(planned)
+	priorValue := reflect.ValueOf(prior)
+	observedValue := reflect.ValueOf(observed)
+	modelType := plannedValue.Type()
+
+	var stale []string
+	for i := 0; i < plannedValue.NumField(); i++ {
+		plannedAttr, plannedOK := plannedValue.Field(i).Interface().(attr.Value)
+		priorAttr, priorOK := priorValue.Field(i).Interface().(attr.Value)
+		observedAttr, observedOK := observedValue.Field(i).Interface().(attr.Value)
+		if !plannedOK || !priorOK || !observedOK || plannedAttr.IsUnknown() || plannedAttr.Equal(priorAttr) {
+			continue
+		}
+		if !plannedAttr.Equal(observedAttr) {
+			name := modelType.Field(i).Tag.Get("tfsdk")
+			if name == "" {
+				name = modelType.Field(i).Name
+			}
+			stale = append(stale, name)
+		}
+	}
+	return stale
 }
 
 // patchModel uses the PATCH /model/{model_id}/update endpoint for partial updates
