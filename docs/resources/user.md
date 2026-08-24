@@ -81,7 +81,7 @@ terraform import litellm_user.example <user-id>
 
 If `/user/new` returns HTTP 409, the provider can adopt an existing user when `user_email` is known and `/user/list` returns exactly one account with that exact email. If `user_id` is configured, it must also match the existing account. Partial, missing, ambiguous, or conflicting identity matches fail without updating the account.
 
-After identity verification, configured user fields and team memberships are reconciled. Adoption does not request another auto-created key because its raw value could not be recovered into Terraform state. Once adopted, Terraform owns the user: destroying the resource deletes the existing LiteLLM user.
+After identity verification, configured user fields and team memberships are reconciled. Adoption fails before mutation if configuration would require clearing a non-empty alias, models list, or metadata map because LiteLLM ignores empty values for those fields. Adoption does not request another auto-created key because its raw value could not be recovered into Terraform state. Removing an existing team membership calls LiteLLM's `/team/member_delete`, which also deletes that user's keys scoped to the removed team. Once adopted, Terraform owns the user: destroying the resource deletes the existing LiteLLM user.
 
 ## Notes
 

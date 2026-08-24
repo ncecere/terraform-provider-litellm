@@ -155,8 +155,12 @@ func TestAdoptExistingUserVerifiesAndConvergesWithoutCreatingKey(t *testing.T) {
 		Key:           types.StringUnknown(),
 	}
 
-	if err := resource.adoptExistingUser(context.Background(), &data); err != nil {
+	mutated, err := resource.adoptExistingUser(context.Background(), &data)
+	if err != nil {
 		t.Fatalf("adoptExistingUser returned error: %v", err)
+	}
+	if !mutated {
+		t.Fatal("successful adoption did not report mutation")
 	}
 	if data.ID.ValueString() != "existing-id" || data.UserID.ValueString() != "existing-id" || data.UserAlias.ValueString() != "managed-alias" {
 		t.Fatalf("unexpected adopted state: %#v", data)
@@ -178,13 +182,53 @@ func TestAdoptExistingUserVerifiesAndConvergesWithoutCreatingKey(t *testing.T) {
 	}
 }
 
+func TestAdoptExistingUserRejectsMissingVerifiedIdentity(t *testing.T) {
+	t.Parallel()
+
+	for _, omitted := range []string{"user_id", "user_email"} {
+		omitted := omitted
+		t.Run(omitted, func(t *testing.T) {
+			t.Parallel()
+			var updates atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				writer.Header().Set("Content-Type", "application/json")
+				if request.URL.Path == "/user/list" {
+					_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+						"users":       []interface{}{map[string]interface{}{"user_id": "existing-id", "user_email": "existing@example.com"}},
+						"total_pages": 1,
+					})
+					return
+				}
+				if request.URL.Path == "/user/info" {
+					identity := map[string]interface{}{"user_id": "existing-id", "user_email": "existing@example.com"}
+					delete(identity, omitted)
+					_ = json.NewEncoder(writer).Encode(map[string]interface{}{"user_info": identity})
+					return
+				}
+				updates.Add(1)
+				http.Error(writer, "unexpected mutation", http.StatusInternalServerError)
+			}))
+			defer server.Close()
+
+			resource := &UserResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
+			data := UserResourceModel{UserEmail: types.StringValue("existing@example.com")}
+			if mutated, err := resource.adoptExistingUser(context.Background(), &data); err == nil || mutated {
+				t.Fatalf("missing %s was accepted: mutated=%v err=%v", omitted, mutated, err)
+			}
+			if updates.Load() != 0 {
+				t.Fatalf("missing %s triggered mutation", omitted)
+			}
+		})
+	}
+}
+
 func TestAdoptExistingUserRequiresKnownEmail(t *testing.T) {
 	t.Parallel()
 
 	resource := &UserResource{}
 	for _, email := range []types.String{types.StringNull(), types.StringUnknown(), types.StringValue("")} {
 		data := UserResourceModel{UserEmail: email}
-		if err := resource.adoptExistingUser(context.Background(), &data); err == nil {
+		if mutated, err := resource.adoptExistingUser(context.Background(), &data); err == nil || mutated {
 			t.Fatalf("unsafe email %v was accepted for adoption", email)
 		}
 	}
@@ -204,8 +248,106 @@ func TestAdoptExistingUserRejectsConfiguredIDMismatch(t *testing.T) {
 
 	resource := &UserResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
 	data := UserResourceModel{UserID: types.StringValue("different-id"), UserEmail: types.StringValue("existing@example.com")}
-	if err := resource.adoptExistingUser(context.Background(), &data); err == nil {
+	if mutated, err := resource.adoptExistingUser(context.Background(), &data); err == nil || mutated {
 		t.Fatal("configured user_id mismatch was accepted")
+	}
+}
+
+func TestAdoptExistingUserRejectsUnsupportedEmptyClearsBeforeMutation(t *testing.T) {
+	t.Parallel()
+
+	var mutations atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		switch request.URL.Path {
+		case "/user/list":
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+				"users":       []interface{}{map[string]interface{}{"user_id": "existing-id", "user_email": "existing@example.com"}},
+				"total_pages": 1,
+			})
+		case "/user/info":
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{"user_info": map[string]interface{}{
+				"user_id": "existing-id", "user_email": "existing@example.com", "user_alias": "existing-alias",
+				"models": []interface{}{"legacy"}, "metadata": map[string]interface{}{"owner": "external"},
+			}})
+		default:
+			mutations.Add(1)
+			http.Error(writer, "unexpected mutation", http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+
+	resource := &UserResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
+	data := UserResourceModel{
+		UserEmail: types.StringValue("existing@example.com"),
+		Models:    stringListValue(),
+		Metadata:  types.MapValueMust(types.StringType, map[string]attr.Value{}),
+	}
+	mutated, err := resource.adoptExistingUser(context.Background(), &data)
+	if err == nil || mutated || mutations.Load() != 0 {
+		t.Fatalf("unsupported clear was not rejected safely: mutated=%v requests=%d err=%v", mutated, mutations.Load(), err)
+	}
+}
+
+func TestAdoptExistingUserFailureAfterMutationKeepsRecoverableState(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		switch request.URL.Path {
+		case "/user/list":
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+				"users":       []interface{}{map[string]interface{}{"user_id": "existing-id", "user_email": "existing@example.com"}},
+				"total_pages": 1,
+			})
+		case "/user/info":
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{"user_info": map[string]interface{}{
+				"user_id": "existing-id", "user_email": "existing@example.com", "teams": []interface{}{"team-a"},
+				"models": []interface{}{}, "metadata": map[string]interface{}{},
+			}})
+		case "/user/update":
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{"status": "ok"})
+		case "/team/member_add":
+			http.Error(writer, "injected membership failure", http.StatusInternalServerError)
+		default:
+			http.Error(writer, "unexpected request", http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+
+	resource := &UserResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
+	data := UserResourceModel{
+		UserEmail: types.StringValue("existing@example.com"),
+		Teams:     stringListValue("team-b"),
+		Models:    types.ListUnknown(types.StringType),
+		Metadata:  types.MapUnknown(types.StringType),
+		Key:       types.StringUnknown(),
+	}
+	mutated, err := resource.adoptExistingUser(context.Background(), &data)
+	if err == nil || !mutated {
+		t.Fatalf("post-mutation failure = mutated %v, error %v", mutated, err)
+	}
+	if data.ID.ValueString() != "existing-id" || data.UserID.ValueString() != "existing-id" || !data.Key.IsNull() {
+		t.Fatalf("failure did not retain recoverable identity state: %#v", data)
+	}
+	if data.Models.IsUnknown() || data.Metadata.IsUnknown() || data.Teams.IsUnknown() {
+		t.Fatalf("failure retained unknown state: %#v", data)
+	}
+}
+
+func TestBuildUserRequestIncludesExplicitEmptyCollections(t *testing.T) {
+	t.Parallel()
+
+	resource := &UserResource{}
+	data := UserResourceModel{
+		Models:   stringListValue(),
+		Metadata: types.MapValueMust(types.StringType, map[string]attr.Value{}),
+	}
+	request := resource.buildUserRequest(context.Background(), &data)
+	models, modelsOK := request["models"].([]string)
+	metadata, metadataOK := request["metadata"].(map[string]string)
+	if !modelsOK || len(models) != 0 || !metadataOK || len(metadata) != 0 {
+		t.Fatalf("explicit empty collections were omitted: %#v", request)
 	}
 }
 
@@ -254,6 +396,9 @@ func TestReadUserDoesNotSetAPIInjectedDefaultsWhenUnconfigured(t *testing.T) {
 		t.Fatalf("readUser returned error: %v", err)
 	}
 
+	if !data.UserAlias.IsNull() {
+		t.Fatalf("user_alias should remain null when unconfigured, got %q", data.UserAlias.ValueString())
+	}
 	if !data.UserRole.IsNull() {
 		t.Fatalf("user_role should remain null when unconfigured, got %q", data.UserRole.ValueString())
 	}
