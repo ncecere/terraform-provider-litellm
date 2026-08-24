@@ -329,7 +329,8 @@ func TestModelAdditionalInfoValidators(t *testing.T) {
 		wantError bool
 	}{
 		{"capability flag", map[string]attr.Value{"supports_vision": types.StringValue("true")}, false},
-		{"reserved key", map[string]attr.Value{"base_model": types.StringValue("other")}, true},
+		{"dedicated reserved key", map[string]attr.Value{"base_model": types.StringValue("other")}, true},
+		{"audit reserved key", map[string]attr.Value{"updated_by": types.StringValue("someone")}, true},
 		{"null value", map[string]attr.Value{"supports_vision": types.StringNull()}, true},
 	}
 	for _, test := range tests {

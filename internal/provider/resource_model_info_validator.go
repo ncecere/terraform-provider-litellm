@@ -9,12 +9,16 @@ import (
 var reservedAdditionalModelInfoKeys = []string{
 	"access_groups",
 	"base_model",
+	"created_at",
+	"created_by",
 	"db_model",
 	"id",
 	"mode",
 	"team_id",
 	"team_public_model_name",
 	"tier",
+	"updated_at",
+	"updated_by",
 }
 
 type modelInfoReservedKeysValidator struct{}
