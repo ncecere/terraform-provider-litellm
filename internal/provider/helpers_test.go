@@ -22,13 +22,21 @@ func TestIsNotFoundError(t *testing.T) {
 		{"404 status", errors.New("request failed with status 404"), true},
 		{"does not exist", errors.New("the key does not exist"), true},
 		{"typed 404", &APIError{StatusCode: 404, Body: "internal error"}, true},
-		{"typed 500 body says not found and 404", &APIError{StatusCode: 500, Body: "server not found after 404 lookup"}, false},
+		{"typed 500 body compatibility heuristic", &APIError{StatusCode: 500, Body: "server not found after 404 lookup"}, true},
 		{"unrelated", errors.New("internal server error"), false},
 	}
 	for _, tc := range cases {
 		if got := IsNotFoundError(tc.err); got != tc.want {
 			t.Errorf("%s: IsNotFoundError(%v) = %v, want %v", tc.name, tc.err, got, tc.want)
 		}
+	}
+
+	misleading := &APIError{StatusCode: 500, Body: "server not found after 404 lookup"}
+	if IsAPIErrorStatus(misleading, 404) {
+		t.Fatal("typed HTTP 500 was classified as exact 404")
+	}
+	if !IsAPIErrorStatus(&APIError{StatusCode: 404, Body: "anything"}, 404) {
+		t.Fatal("typed HTTP 404 was not classified as exact 404")
 	}
 }
 

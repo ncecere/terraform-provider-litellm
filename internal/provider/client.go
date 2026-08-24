@@ -89,14 +89,22 @@ func (c *Client) DoRequestWithResponse(ctx context.Context, method, path string,
 	return nil
 }
 
-// IsNotFoundError checks if the error message indicates a not found condition.
+// IsAPIErrorStatus reports whether an error came from an HTTP API response
+// with the exact status code. Callers that must distinguish absence from an
+// unexpected error should use this instead of response-body heuristics.
+func IsAPIErrorStatus(err error, statusCode int) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && apiErr.StatusCode == statusCode
+}
+
+// IsNotFoundError retains compatibility with LiteLLM endpoints that return
+// non-404 statuses (commonly 400) with a not-found message in the body.
 func IsNotFoundError(err error) bool {
 	if err == nil {
 		return false
 	}
-	var apiErr *APIError
-	if errors.As(err, &apiErr) {
-		return apiErr.StatusCode == http.StatusNotFound
+	if IsAPIErrorStatus(err, http.StatusNotFound) {
+		return true
 	}
 	errStr := err.Error()
 	return contains(errStr, "not found") ||

@@ -319,7 +319,7 @@ func (r *MCPServerResource) Read(ctx context.Context, req resource.ReadRequest, 
 	}
 
 	if err := r.readMCPServer(ctx, &data); err != nil {
-		if IsNotFoundError(err) {
+		if IsAPIErrorStatus(err, 404) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
@@ -381,7 +381,7 @@ func (r *MCPServerResource) Delete(ctx context.Context, req resource.DeleteReque
 
 	endpoint := fmt.Sprintf("/v1/mcp/server/%s", serverID)
 	if err := r.client.DoRequestWithResponse(ctx, "DELETE", endpoint, nil, nil); err != nil {
-		if !IsNotFoundError(err) {
+		if !IsAPIErrorStatus(err, 404) {
 			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to delete MCP server: %s", err))
 			return
 		}
@@ -694,7 +694,7 @@ func (r *MCPServerResource) getMCPServer(ctx context.Context, serverID string) (
 	endpoint := fmt.Sprintf("/v1/mcp/server/%s", serverID)
 	var result map[string]interface{}
 	individualErr := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result)
-	if individualErr == nil || IsNotFoundError(individualErr) {
+	if individualErr == nil || IsAPIErrorStatus(individualErr, 404) {
 		return result, individualErr
 	}
 
