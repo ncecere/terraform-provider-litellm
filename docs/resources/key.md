@@ -55,6 +55,27 @@ In write-only mode, `key` remains null and `id` contains only `sha256:<key-hash>
 
 > **Compatibility:** The optional write-only argument requires Terraform or OpenTofu 1.11+. Older clients can continue using the provider when `key_wo` is omitted, but reject configurations that set it.
 
+### Create a Key and Email Its User
+
+```hcl
+resource "litellm_user" "recipient" {
+  user_email      = "person@example.com"
+  auto_create_key = false
+}
+
+resource "litellm_key" "invited" {
+  user_id           = litellm_user.recipient.id
+  key_alias         = "emailed-key"
+  send_invite_email = true
+}
+```
+
+`send_invite_email` is a write-only, create-only action flag. Before creating the key, the provider verifies that `user_id` resolves to that exact LiteLLM user and a syntactically valid, non-empty email address. LiteLLM then queues email processing after successful key creation, but returns before delivery and provides no delivery acknowledgement. Configure a supported [LiteLLM email backend](https://docs.litellm.ai/docs/proxy/email) before enabling it. Service-account keys cannot use this action.
+
+LiteLLM v1.98.0's enterprise email implementation defaults `EMAIL_INCLUDE_API_KEY` to `true`, including raw generated or predefined `key_wo` values in email. Set `EMAIL_INCLUDE_API_KEY=false` unless email infrastructure and recipient mailboxes are approved secret-delivery channels.
+
+The action is requested once per successful LiteLLM Create request, not once for the lifetime of the HCL configuration. Resource replacement requests another email. If the create response is lost before Terraform persists state, retrying can create another key and request another email; inspect LiteLLM before retrying an ambiguous failure.
+
 ### Key with Budget and Rate Limits
 
 ```hcl
@@ -178,6 +199,8 @@ The following arguments are supported:
 * `key_wo` - (Optional, Sensitive, Write-only) Predefined key sent to LiteLLM but represented only by null in plan and state. Must be configured with `key_wo_version`. Use a cryptographically random, high-entropy value because its SHA256 management identifier is persisted. Requires Terraform or OpenTofu 1.11+.
 
 * `key_wo_version` - (Optional, ForceNew) Persisted version or nonce for `key_wo`. Change this whenever the write-only secret changes. It conflicts with configurations that omit `key_wo`.
+
+* `send_invite_email` - (Optional, Write-only) Requests an asynchronous email for each successful key Create request. Requires `user_id` for an exact existing user with a syntactically valid email address and cannot be used with `service_account_id`. It is never persisted, read back, imported, or sent during Update; a successful apply does not confirm email delivery. Replacement or an ambiguous Create retry can request another email. Requires Terraform or compatible OpenTofu 1.11+ when configured.
 
 * `key_alias` - (Optional) Human-readable alias for this key.
 

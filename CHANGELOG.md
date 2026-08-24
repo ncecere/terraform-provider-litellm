@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`litellm_key` / `litellm_user`**: Add create-only, write-only `send_invite_email` actions with recipient validation, no Update-time resends, and explicit existing-user adoption safety. ([#100](https://github.com/ncecere/terraform-provider-litellm/issues/100), [#101](https://github.com/ncecere/terraform-provider-litellm/pull/101)) — thanks @Kaago
 - **`litellm_key` resource and data source**: Add complete LiteLLM v1.98.0 `router_settings` support with ordered fallback JSON, retry policies, model-group aliases, routing groups, affinity, tag routing, whole-document ownership, and explicit removal semantics. Key data-source lookups now URL-escape raw tokens and expose only a SHA256 management ID instead of copying the token into a non-sensitive ID. ([#97](https://github.com/ncecere/terraform-provider-litellm/issues/97), [#98](https://github.com/ncecere/terraform-provider-litellm/pull/98), [#147](https://github.com/ncecere/terraform-provider-litellm/pull/147)) — thanks @orolega for #98 and @alexeishtakal for #147
 
 ### Changed
