@@ -647,9 +647,15 @@ func (r *ModelResource) readModel(ctx context.Context, data *ModelResourceModel)
 
 			switch v := rawValue.(type) {
 			case string:
-				// Normalize numeric strings to decimal notation so that
-				// "1.75e-07" (from API) matches "0.000000175" (from config).
-				if f, err := strconv.ParseFloat(v, 64); err == nil {
+				// LiteLLM masks sensitive scalar values such as azure_ad_token
+				// before returning them. Preserve the configured value when the API
+				// clearly returned a masking marker instead of exposing the masked
+				// value to Terraform's post-apply consistency check.
+				if prior, hasPrior := priorStrings[key]; hasPrior && isMaskedAPIString(v) {
+					additionalParams[key] = types.StringValue(prior)
+				} else if f, err := strconv.ParseFloat(v, 64); err == nil {
+					// Normalize numeric strings to decimal notation so that
+					// "1.75e-07" (from API) matches "0.000000175" (from config).
 					additionalParams[key] = types.StringValue(strconv.FormatFloat(f, 'f', -1, 64))
 				} else {
 					additionalParams[key] = types.StringValue(v)
@@ -665,16 +671,23 @@ func (r *ModelResource) readModel(ctx context.Context, data *ModelResourceModel)
 			default:
 				// Arrays, objects, and other complex types — serialize back to JSON string.
 				if jsonBytes, err := json.Marshal(v); err == nil {
-					// If the prior config/state value is JSON that is semantically
-					// equal to the API-returned value, preserve the prior string.
-					// json.Marshal emits compact, key-sorted JSON, so a config
-					// value like {"inputs": "{prompt}"} would otherwise round-trip
-					// to {"inputs":"{prompt}"} and fail the post-apply consistency
-					// check purely on formatting.
-					if prior, ok := priorStrings[key]; ok && jsonSemanticallyEqual(prior, string(jsonBytes)) {
+					apiJSON := string(jsonBytes)
+					prior, hasPrior := priorStrings[key]
+					switch {
+					// Preserve the prior string when it's semantically equal to
+					// the API value: json.Marshal emits compact, key-sorted JSON,
+					// so a config value like {"inputs": "{prompt}"} would
+					// otherwise round-trip to {"inputs":"{prompt}"} and fail the
+					// post-apply consistency check purely on formatting.
+					case hasPrior && jsonSemanticallyEqual(prior, apiJSON):
 						additionalParams[key] = types.StringValue(prior)
-					} else {
-						additionalParams[key] = types.StringValue(string(jsonBytes))
+					// Preserve same-shaped JSON only when the API value contains an
+					// explicit masking marker. Shape alone is insufficient because
+					// it would hide genuine out-of-band scalar drift.
+					case hasPrior && jsonSameShape(prior, apiJSON) && jsonContainsMaskedValue(apiJSON):
+						additionalParams[key] = types.StringValue(prior)
+					default:
+						additionalParams[key] = types.StringValue(apiJSON)
 					}
 				}
 			}
@@ -984,6 +997,97 @@ func jsonSemanticallyEqual(a, b string) bool {
 		return false
 	}
 	return reflect.DeepEqual(av, bv)
+}
+
+// jsonSameShape reports whether two JSON strings have the same structure --
+// same object keys (recursively) and same array lengths -- ignoring differences
+// in scalar (string/number/bool) leaf values. The read path combines this check
+// with jsonContainsMaskedValue before preserving prior state, so same-shaped
+// unmasked remote drift remains visible.
+func jsonSameShape(a, b string) bool {
+	var av, bv interface{}
+	if err := json.Unmarshal([]byte(a), &av); err != nil {
+		return false
+	}
+	if err := json.Unmarshal([]byte(b), &bv); err != nil {
+		return false
+	}
+	return sameShape(av, bv)
+}
+
+func sameShape(a, b interface{}) bool {
+	switch at := a.(type) {
+	case map[string]interface{}:
+		bt, ok := b.(map[string]interface{})
+		if !ok || len(at) != len(bt) {
+			return false
+		}
+		for k, av := range at {
+			bv, present := bt[k]
+			if !present || !sameShape(av, bv) {
+				return false
+			}
+		}
+		return true
+	case []interface{}:
+		bt, ok := b.([]interface{})
+		if !ok || len(at) != len(bt) {
+			return false
+		}
+		for i := range at {
+			if !sameShape(at[i], bt[i]) {
+				return false
+			}
+		}
+		return true
+	default:
+		// Scalars (string, float64, bool, nil): shape matches if both are
+		// scalars of a compatible kind. Differing scalar VALUES are treated as
+		// the same shape -- that's the masking case we want to tolerate.
+		return !isJSONContainer(b)
+	}
+}
+
+func isJSONContainer(v interface{}) bool {
+	switch v.(type) {
+	case map[string]interface{}, []interface{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func isMaskedAPIString(value string) bool {
+	upper := strings.ToUpper(value)
+	return strings.Contains(value, "****") || strings.Contains(upper, "REDACTED")
+}
+
+func jsonContainsMaskedValue(value string) bool {
+	var decoded interface{}
+	if err := json.Unmarshal([]byte(value), &decoded); err != nil {
+		return false
+	}
+	return containsMaskedValue(decoded)
+}
+
+func containsMaskedValue(value interface{}) bool {
+	switch typed := value.(type) {
+	case string:
+		return isMaskedAPIString(typed)
+	case map[string]interface{}:
+		for _, child := range typed {
+			if containsMaskedValue(child) {
+				return true
+			}
+		}
+	case []interface{}:
+		for _, child := range typed {
+			if containsMaskedValue(child) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // normalizeAdditionalParams returns a new MapValue where every numeric string

@@ -231,6 +231,58 @@ func TestJSONSemanticallyEqual(t *testing.T) {
 	}
 }
 
+func TestJSONSameShape(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		a    string
+		b    string
+		want bool
+	}{
+		// Masking case: same keys, a scalar value differs (secret masked on read).
+		{"masked scalar value", `{"x-api-key":"realsecret","X-Model-Id":"m"}`, `{"x-api-key":"sk-masked-abc","X-Model-Id":"m"}`, true},
+		{"identical", `{"x-api-key":"a"}`, `{"x-api-key":"a"}`, true},
+		{"nested masked", `{"h":{"k":"real"}}`, `{"h":{"k":"masked"}}`, true},
+		{"array same len differing scalars", `["a","b"]`, `["x","y"]`, true},
+		// Not the same shape -- real structural drift, should NOT be tolerated.
+		{"extra key", `{"a":"1"}`, `{"a":"1","b":"2"}`, false},
+		{"missing key", `{"a":"1","b":"2"}`, `{"a":"1"}`, false},
+		{"renamed key", `{"a":"1"}`, `{"b":"1"}`, false},
+		{"array length differs", `["a"]`, `["a","b"]`, false},
+		{"scalar vs object", `{"a":"1"}`, `"1"`, false},
+		{"a not json", `not json`, `{"a":"1"}`, false},
+	}
+
+	for _, tt := range tests {
+		if got := jsonSameShape(tt.a, tt.b); got != tt.want {
+			t.Errorf("%s: jsonSameShape(%q, %q) = %v, want %v", tt.name, tt.a, tt.b, got, tt.want)
+		}
+	}
+}
+
+func TestJSONContainsMaskedValue(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{"masked nested secret", `{"headers":{"x-api-key":"sk****99"}}`, true},
+		{"redacted marker", `{"token":"***REDACTED***"}`, true},
+		{"unmasked scalar drift", `{"headers":{"x-api-key":"changed-value"}}`, false},
+		{"asterisks below mask threshold", `{"value":"a***b"}`, false},
+		{"invalid JSON", `not json`, false},
+	}
+
+	for _, test := range tests {
+		if got := jsonContainsMaskedValue(test.value); got != test.want {
+			t.Errorf("%s: jsonContainsMaskedValue(%q) = %v, want %v", test.name, test.value, got, test.want)
+		}
+	}
+}
+
 func TestReadModelPreservesSemanticallyEqualJSONFormatting(t *testing.T) {
 	t.Parallel()
 
@@ -594,6 +646,110 @@ func TestReadModelExtractsAdditionalLiteLLMParams(t *testing.T) {
 	}
 	if got := additional["max_retries"]; got != "3" {
 		t.Fatalf("expected max_retries=3, got %q", got)
+	}
+}
+
+// TestReadModelPreservesMaskedAdditionalParams verifies both direct scalar
+// masking (the azure_ad_token case from #119) and a masked secret nested inside
+// a JSON-valued additional parameter.
+func TestReadModelPreservesMaskedAdditionalParams(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": []interface{}{
+				map[string]interface{}{
+					"model_name": "needs-attribution-classifier-xlab",
+					"litellm_params": map[string]interface{}{
+						"custom_llm_provider": "openai",
+						"model":               "openai/checkpoint-3400",
+						"azure_ad_token":      "_oidc*****ange_",
+						"extra_headers": map[string]interface{}{
+							"x-api-key":  "sk****99",
+							"X-Model-Id": "needs-attribution-classifier-xlab",
+						},
+					},
+					"model_info": map[string]interface{}{"base_model": "checkpoint-3400"},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	r := &ModelResource{
+		client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()},
+	}
+
+	priorHeaders := `{"x-api-key":"realsecret","X-Model-Id":"needs-attribution-classifier-xlab"}`
+	priorParams, _ := types.MapValue(types.StringType, map[string]attr.Value{
+		"azure_ad_token": types.StringValue("real-oidc-token"),
+		"extra_headers":  types.StringValue(priorHeaders),
+	})
+	data := ModelResourceModel{
+		ID:                      types.StringValue("model-xlab"),
+		AccessGroups:            types.ListUnknown(types.StringType),
+		AdditionalLiteLLMParams: priorParams,
+	}
+
+	if err := r.readModel(context.Background(), &data); err != nil {
+		t.Fatalf("readModel returned error: %v", err)
+	}
+
+	additional := map[string]string{}
+	if diags := data.AdditionalLiteLLMParams.ElementsAs(context.Background(), &additional, false); diags.HasError() {
+		t.Fatalf("failed to decode additional_litellm_params: %v", diags)
+	}
+	if got := additional["azure_ad_token"]; got != "real-oidc-token" {
+		t.Errorf("expected azure_ad_token preserved from prior state, got %q", got)
+	}
+	if got := additional["extra_headers"]; got != priorHeaders {
+		t.Errorf("expected extra_headers preserved from prior state %q, got %q", priorHeaders, got)
+	}
+}
+
+func TestReadModelDoesNotHideUnmaskedJSONDrift(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": []interface{}{
+				map[string]interface{}{
+					"model_name": "test-model",
+					"litellm_params": map[string]interface{}{
+						"custom_llm_provider": "openai",
+						"model":               "openai/test-model",
+						"extra_headers": map[string]interface{}{
+							"x-api-key": "changed-without-mask-marker",
+						},
+					},
+					"model_info": map[string]interface{}{"base_model": "test-model"},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	r := &ModelResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
+	prior, _ := types.MapValue(types.StringType, map[string]attr.Value{
+		"extra_headers": types.StringValue(`{"x-api-key":"original"}`),
+	})
+	data := ModelResourceModel{
+		ID:                      types.StringValue("model-123"),
+		AdditionalLiteLLMParams: prior,
+	}
+
+	if err := r.readModel(context.Background(), &data); err != nil {
+		t.Fatalf("readModel returned error: %v", err)
+	}
+	var additional map[string]string
+	if diags := data.AdditionalLiteLLMParams.ElementsAs(context.Background(), &additional, false); diags.HasError() {
+		t.Fatalf("decode additional_litellm_params: %v", diags)
+	}
+	want := `{"x-api-key":"changed-without-mask-marker"}`
+	if got := additional["extra_headers"]; got != want {
+		t.Errorf("extra_headers = %q, want API drift %q", got, want)
 	}
 }
 
