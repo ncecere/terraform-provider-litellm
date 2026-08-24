@@ -83,6 +83,38 @@ func TestReadModelAfterUpdateRequiresStableValues(t *testing.T) {
 	}
 }
 
+func TestReadModelAfterUpdateWaitsForStableCost(t *testing.T) {
+	t.Parallel()
+
+	var reads atomic.Int32
+	sequence := []float64{16, 15, 16, 16}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		index := int(reads.Add(1)) - 1
+		if index >= len(sequence) {
+			index = len(sequence) - 1
+		}
+		writeConsistencyModelResponseWithCost(w, "gpt-4o-mini", sequence[index])
+	}))
+	defer server.Close()
+
+	resource := &ModelResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
+	prior := consistencyTestModel("gpt-4o-mini", "free")
+	prior.OutputCostPerMillionTokens = types.Float64Value(15)
+	planned := prior
+	planned.OutputCostPerMillionTokens = types.Float64Value(16)
+	data := planned
+
+	if err := resource.readModelAfterUpdate(context.Background(), &data, planned, prior, 5); err != nil {
+		t.Fatalf("readModelAfterUpdate returned error: %v", err)
+	}
+	if got := reads.Load(); got != 4 {
+		t.Fatalf("read count = %d, want 4", got)
+	}
+	if got := data.OutputCostPerMillionTokens.ValueFloat64(); got != 16 {
+		t.Fatalf("output cost = %v, want 16", got)
+	}
+}
+
 func TestReadModelAfterUpdateReportsPersistentStaleValues(t *testing.T) {
 	t.Parallel()
 
@@ -145,15 +177,28 @@ func consistencyTestModel(baseModel, tier string) ModelResourceModel {
 }
 
 func writeConsistencyModelResponse(w http.ResponseWriter, baseModel string) {
+	writeConsistencyModelResponseBody(w, baseModel, nil)
+}
+
+func writeConsistencyModelResponseWithCost(w http.ResponseWriter, baseModel string, outputCostPerMillion float64) {
+	writeConsistencyModelResponseBody(w, baseModel, &outputCostPerMillion)
+}
+
+func writeConsistencyModelResponseBody(w http.ResponseWriter, baseModel string, outputCostPerMillion *float64) {
+	litellmParams := map[string]interface{}{
+		"custom_llm_provider": "openai",
+		"model":               "openai/" + baseModel,
+	}
+	if outputCostPerMillion != nil {
+		litellmParams["output_cost_per_token"] = *outputCostPerMillion / 1000000
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"data": []interface{}{
 			map[string]interface{}{
-				"model_name": "test-model",
-				"litellm_params": map[string]interface{}{
-					"custom_llm_provider": "openai",
-					"model":               "openai/" + baseModel,
-				},
+				"model_name":     "test-model",
+				"litellm_params": litellmParams,
 				"model_info": map[string]interface{}{
 					"base_model": baseModel,
 					"tier":       "free",

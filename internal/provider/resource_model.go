@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"reflect"
 	"strconv"
 	"strings"
@@ -308,11 +309,14 @@ func (r *ModelResource) Create(ctx context.Context, req resource.CreateRequest, 
 
 	data.ID = types.StringValue(modelID)
 
+	planned := data
+
 	// Read back to ensure consistency
 	if err := r.readModelWithRetry(ctx, &data, 8); err != nil {
 		finalizeModelComputedDefaults(&data)
 		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Model created but failed to read back: %s", err))
 	}
+	reassertPlannedCosts(&data, &planned)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -631,6 +635,17 @@ func (r *ModelResource) readModel(ctx context.Context, data *ModelResourceModel)
 		if credName, ok := litellmParams["litellm_credential_name"].(string); ok && credName != "" {
 			data.LiteLLMCredentialName = types.StringValue(credName)
 		}
+		// Read back cost attributes. The API stores costs per token while the
+		// resource exposes them per million tokens, so scale on the way back.
+		// Like tpm/rpm above, only update when the attribute is set in the
+		// config (!IsNull) — costs inferred by LiteLLM from its model cost map
+		// must not create drift for users who never configured them.
+		data.InputCostPerMillionTokens = readBackCost(data.InputCostPerMillionTokens, litellmParams["input_cost_per_token"], 1000000.0)
+		data.OutputCostPerMillionTokens = readBackCost(data.OutputCostPerMillionTokens, litellmParams["output_cost_per_token"], 1000000.0)
+		data.InputCostPerPixel = readBackCost(data.InputCostPerPixel, litellmParams["input_cost_per_pixel"], 1.0)
+		data.OutputCostPerPixel = readBackCost(data.OutputCostPerPixel, litellmParams["output_cost_per_pixel"], 1.0)
+		data.InputCostPerSecond = readBackCost(data.InputCostPerSecond, litellmParams["input_cost_per_second"], 1.0)
+		data.OutputCostPerSecond = readBackCost(data.OutputCostPerSecond, litellmParams["output_cost_per_second"], 1.0)
 		// NOTE: merge_reasoning_content_in_choices is intentionally NOT read into the
 		// top-level attribute here. It can be passed both as a top-level attribute and
 		// via additional_litellm_params. Since templates commonly use additional_litellm_params,
@@ -830,6 +845,56 @@ func (r *ModelResource) readModel(ctx context.Context, data *ModelResourceModel)
 	}
 
 	return nil
+}
+
+// reassertPlannedCosts restores planned cost values after Create's read-back.
+// LiteLLM's router can lag a just-created database row, while Terraform
+// requires these non-Computed attributes to equal the creation plan. Update
+// uses readModelAfterUpdate instead and verifies changed costs stabilize before
+// publishing state. Ordinary Read remains authoritative for out-of-band drift.
+func reassertPlannedCosts(data *ModelResourceModel, planned *ModelResourceModel) {
+	data.InputCostPerMillionTokens = planned.InputCostPerMillionTokens
+	data.OutputCostPerMillionTokens = planned.OutputCostPerMillionTokens
+	data.InputCostPerPixel = planned.InputCostPerPixel
+	data.OutputCostPerPixel = planned.OutputCostPerPixel
+	data.InputCostPerSecond = planned.InputCostPerSecond
+	data.OutputCostPerSecond = planned.OutputCostPerSecond
+}
+
+// readBackCost returns the refreshed value for a cost attribute from the raw
+// API value, scaled (per-token → per-million-tokens where applicable). The
+// state value is kept when:
+//   - the attribute is not set in state (null/unknown) — API-inferred costs
+//     must not surface as drift for users who never configured them;
+//   - the API value is missing or not numeric;
+//   - the scaled value matches the state within a small relative tolerance,
+//     so the per-token round-trip (x/1e6*1e6) doesn't churn the state.
+func readBackCost(current types.Float64, raw interface{}, scale float64) types.Float64 {
+	if current.IsNull() || current.IsUnknown() {
+		return current
+	}
+
+	var value float64
+	switch v := raw.(type) {
+	case float64:
+		value = v
+	case string:
+		parsed, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			return current
+		}
+		value = parsed
+	default:
+		return current
+	}
+
+	value *= scale
+	stateValue := current.ValueFloat64()
+	tolerance := 1e-9 * math.Max(math.Abs(stateValue), math.Abs(value))
+	if math.Abs(value-stateValue) <= tolerance {
+		return current
+	}
+	return types.Float64Value(value)
 }
 
 func finalizeModelComputedDefaults(data *ModelResourceModel) {

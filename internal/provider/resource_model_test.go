@@ -1310,3 +1310,249 @@ func TestReadModelImportReadsAllAdditionalParams(t *testing.T) {
 		t.Fatal("custom_flag missing after import")
 	}
 }
+
+func TestReadBackCost(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		current types.Float64
+		raw     interface{}
+		scale   float64
+		want    types.Float64
+	}{
+		{
+			name:    "null state stays null even when API returns a value",
+			current: types.Float64Null(),
+			raw:     2.5e-06,
+			scale:   1000000.0,
+			want:    types.Float64Null(),
+		},
+		{
+			name:    "changed API value updates state with scaling",
+			current: types.Float64Value(3.0),
+			raw:     2.5e-06,
+			scale:   1000000.0,
+			want:    types.Float64Value(2.5),
+		},
+		{
+			name:    "per-token round-trip within tolerance keeps state value",
+			current: types.Float64Value(3.0),
+			raw:     3.0 / 1000000.0,
+			scale:   1000000.0,
+			want:    types.Float64Value(3.0),
+		},
+		{
+			name:    "numeric string from API is parsed",
+			current: types.Float64Value(3.0),
+			raw:     "2.5e-06",
+			scale:   1000000.0,
+			want:    types.Float64Value(2.5),
+		},
+		{
+			name:    "missing API value keeps state",
+			current: types.Float64Value(3.0),
+			raw:     nil,
+			scale:   1000000.0,
+			want:    types.Float64Value(3.0),
+		},
+		{
+			name:    "non-numeric API value keeps state",
+			current: types.Float64Value(3.0),
+			raw:     "not-a-number",
+			scale:   1000000.0,
+			want:    types.Float64Value(3.0),
+		},
+		{
+			name:    "unscaled cost (per pixel) updates directly",
+			current: types.Float64Value(0.001),
+			raw:     0.002,
+			scale:   1.0,
+			want:    types.Float64Value(0.002),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := readBackCost(tc.current, tc.raw, tc.scale)
+			if !got.Equal(tc.want) {
+				t.Fatalf("readBackCost() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestReadModelReadsBackTokenCosts(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": []interface{}{
+				map[string]interface{}{
+					"model_name": "gpt-4o-mini",
+					"litellm_params": map[string]interface{}{
+						"custom_llm_provider":   "openai",
+						"model":                 "openai/gpt-4o-mini",
+						"input_cost_per_token":  2.5e-06,
+						"output_cost_per_token": 1e-05,
+						"input_cost_per_pixel":  0.002,
+					},
+					"model_info": map[string]interface{}{
+						"base_model": "gpt-4o-mini",
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	r := &ModelResource{
+		client: &Client{
+			APIBase:    server.URL,
+			APIKey:     "test-key",
+			HTTPClient: server.Client(),
+		},
+	}
+
+	data := ModelResourceModel{
+		ID: types.StringValue("model-789"),
+		// Costs were changed out-of-band (e.g. via the UI); state has the old values.
+		InputCostPerMillionTokens:  types.Float64Value(3.0),
+		OutputCostPerMillionTokens: types.Float64Value(15.0),
+		// input_cost_per_pixel was never configured — the API-returned value
+		// must not surface, otherwise apply would report an inconsistent result.
+		InputCostPerPixel: types.Float64Null(),
+		AccessGroups:      types.ListUnknown(types.StringType),
+	}
+	data.AdditionalLiteLLMParams, _ = types.MapValue(types.StringType, map[string]attr.Value{})
+
+	if err := r.readModel(context.Background(), &data); err != nil {
+		t.Fatalf("readModel returned error: %v", err)
+	}
+
+	if got := data.InputCostPerMillionTokens.ValueFloat64(); got != 2.5 {
+		t.Fatalf("expected input_cost_per_million_tokens=2.5, got %v", got)
+	}
+	if got := data.OutputCostPerMillionTokens.ValueFloat64(); got != 10.0 {
+		t.Fatalf("expected output_cost_per_million_tokens=10, got %v", got)
+	}
+	if !data.InputCostPerPixel.IsNull() {
+		t.Fatalf("expected input_cost_per_pixel to stay null, got %v", data.InputCostPerPixel)
+	}
+}
+
+func TestReadModelCostRoundTripCausesNoDrift(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": []interface{}{
+				map[string]interface{}{
+					"model_name": "claude-sonnet",
+					"litellm_params": map[string]interface{}{
+						"custom_llm_provider": "anthropic",
+						"model":               "anthropic/claude-sonnet",
+						// Exactly what createOrUpdateModel sends for a configured 3.0.
+						"input_cost_per_token":  3.0 / 1000000.0,
+						"output_cost_per_token": 15.0 / 1000000.0,
+					},
+					"model_info": map[string]interface{}{
+						"base_model": "claude-sonnet",
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	r := &ModelResource{
+		client: &Client{
+			APIBase:    server.URL,
+			APIKey:     "test-key",
+			HTTPClient: server.Client(),
+		},
+	}
+
+	inputCost := types.Float64Value(3.0)
+	outputCost := types.Float64Value(15.0)
+	data := ModelResourceModel{
+		ID:                         types.StringValue("model-round-trip"),
+		InputCostPerMillionTokens:  inputCost,
+		OutputCostPerMillionTokens: outputCost,
+		AccessGroups:               types.ListUnknown(types.StringType),
+	}
+	data.AdditionalLiteLLMParams, _ = types.MapValue(types.StringType, map[string]attr.Value{})
+
+	if err := r.readModel(context.Background(), &data); err != nil {
+		t.Fatalf("readModel returned error: %v", err)
+	}
+
+	// The read-back value must be bit-identical to the configured one so the
+	// framework does not report drift after the per-token round-trip.
+	if !data.InputCostPerMillionTokens.Equal(inputCost) {
+		t.Fatalf("input cost drifted after round-trip: %v", data.InputCostPerMillionTokens)
+	}
+	if !data.OutputCostPerMillionTokens.Equal(outputCost) {
+		t.Fatalf("output cost drifted after round-trip: %v", data.OutputCostPerMillionTokens)
+	}
+}
+
+func TestReassertPlannedCostsOverridesStaleReadBack(t *testing.T) {
+	t.Parallel()
+
+	// Simulate the post-apply consistency read hitting a stale router:
+	// the plan set output cost to 16, but /model/info still echoes 15.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": []interface{}{
+				map[string]interface{}{
+					"model_name": "gpt-4o-mini",
+					"litellm_params": map[string]interface{}{
+						"custom_llm_provider":   "openai",
+						"model":                 "openai/gpt-4o-mini",
+						"output_cost_per_token": 15.0 / 1000000.0, // stale
+					},
+					"model_info": map[string]interface{}{
+						"base_model": "gpt-4o-mini",
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	r := &ModelResource{
+		client: &Client{
+			APIBase:    server.URL,
+			APIKey:     "test-key",
+			HTTPClient: server.Client(),
+		},
+	}
+
+	data := ModelResourceModel{
+		ID:                         types.StringValue("model-stale"),
+		OutputCostPerMillionTokens: types.Float64Value(16.0),
+		AccessGroups:               types.ListUnknown(types.StringType),
+	}
+	data.AdditionalLiteLLMParams, _ = types.MapValue(types.StringType, map[string]attr.Value{})
+
+	planned := data
+
+	if err := r.readModel(context.Background(), &data); err != nil {
+		t.Fatalf("readModel returned error: %v", err)
+	}
+
+	// Without reassertion the stale echo would clobber the planned value…
+	if got := data.OutputCostPerMillionTokens.ValueFloat64(); got != 15.0 {
+		t.Fatalf("precondition failed: expected stale read-back 15, got %v", got)
+	}
+
+	// …which is exactly what reassertPlannedCosts prevents in Create/Update.
+	reassertPlannedCosts(&data, &planned)
+	if got := data.OutputCostPerMillionTokens.ValueFloat64(); got != 16.0 {
+		t.Fatalf("expected planned cost 16 after reassert, got %v", got)
+	}
+}
