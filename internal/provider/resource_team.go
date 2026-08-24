@@ -3,14 +3,17 @@ package provider
 import (
 	"context"
 	"fmt"
+	"net/url"
 
 	"github.com/google/uuid"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 )
@@ -28,6 +31,7 @@ type TeamResource struct {
 
 type TeamResourceModel struct {
 	ID                    types.String  `tfsdk:"id"`
+	TeamID                types.String  `tfsdk:"team_id"`
 	TeamAlias             types.String  `tfsdk:"team_alias"`
 	OrganizationID        types.String  `tfsdk:"organization_id"`
 	Metadata              types.Map     `tfsdk:"metadata"`
@@ -62,6 +66,13 @@ type FallbackEntryModel struct {
 	FallbackModels types.List   `tfsdk:"fallback_models"`
 }
 
+func teamIDForCreate(configured types.String) string {
+	if !configured.IsNull() && !configured.IsUnknown() && configured.ValueString() != "" {
+		return configured.ValueString()
+	}
+	return uuid.New().String()
+}
+
 var fallbackEntryAttrTypes = map[string]attr.Type{
 	"model":           types.StringType,
 	"fallback_models": types.ListType{ElemType: types.StringType},
@@ -85,6 +96,18 @@ func (r *TeamResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 				Computed:    true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"team_id": schema.StringAttribute{
+				Description: "The LiteLLM team ID. If not specified, the provider generates one. Changing it replaces the team.",
+				Optional:    true,
+				Computed:    true,
+				Validators: []validator.String{
+					stringvalidator.LengthAtLeast(1),
+				},
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+					stringplanmodifier.RequiresReplace(),
 				},
 			},
 			"team_alias": schema.StringAttribute{
@@ -261,7 +284,8 @@ func (r *TeamResource) Create(ctx context.Context, req resource.CreateRequest, r
 		return
 	}
 
-	teamID := uuid.New().String()
+	teamID := teamIDForCreate(data.TeamID)
+	data.TeamID = types.StringValue(teamID)
 	teamReq := r.buildTeamRequest(ctx, &data, teamID)
 
 	if err := r.client.DoRequestWithResponse(ctx, "POST", "/team/new", teamReq, nil); err != nil {
@@ -314,6 +338,10 @@ func (r *TeamResource) Update(ctx context.Context, req resource.UpdateRequest, r
 	}
 
 	data.ID = state.ID
+	data.TeamID = state.TeamID
+	if data.TeamID.IsNull() || data.TeamID.IsUnknown() {
+		data.TeamID = state.ID
+	}
 	teamReq := r.buildTeamRequest(ctx, &data, data.ID.ValueString())
 	applyTeamNullableClears(teamReq, &state, &data)
 
@@ -363,7 +391,8 @@ func (r *TeamResource) Delete(ctx context.Context, req resource.DeleteRequest, r
 }
 
 func (r *TeamResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("team_id"), req.ID)...)
 }
 
 func (r *TeamResource) buildTeamRequest(ctx context.Context, data *TeamResourceModel, teamID string) map[string]interface{} {
@@ -560,7 +589,7 @@ func fallbackEntriesToAPIFormat(ctx context.Context, list types.List) []map[stri
 }
 
 func (r *TeamResource) readTeam(ctx context.Context, data *TeamResourceModel) error {
-	endpoint := fmt.Sprintf("/team/info?team_id=%s", data.ID.ValueString())
+	endpoint := fmt.Sprintf("/team/info?team_id=%s", url.QueryEscape(data.ID.ValueString()))
 
 	var result map[string]interface{}
 	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
@@ -572,6 +601,13 @@ func (r *TeamResource) readTeam(ctx context.Context, data *TeamResourceModel) er
 	if nested, ok := result["team_info"].(map[string]interface{}); ok {
 		teamInfo = nested
 	}
+
+	// Keep the configurable team_id and Terraform id tied to the same remote
+	// identity. Imports and legacy state learn team_id from the resource ID.
+	if observedTeamID, ok := teamInfo["team_id"].(string); ok && observedTeamID != "" && observedTeamID != data.ID.ValueString() {
+		return fmt.Errorf("LiteLLM returned team_id %q while reading team %q", observedTeamID, data.ID.ValueString())
+	}
+	data.TeamID = data.ID
 
 	// Update fields from response
 	if teamAlias, ok := teamInfo["team_alias"].(string); ok && teamAlias != "" {
@@ -791,7 +827,7 @@ func (r *TeamResource) readTeam(ctx context.Context, data *TeamResourceModel) er
 	}
 
 	// Fetch permissions separately - preserve null when API returns empty and config didn't specify permissions
-	permEndpoint := fmt.Sprintf("/team/permissions_list?team_id=%s", data.ID.ValueString())
+	permEndpoint := fmt.Sprintf("/team/permissions_list?team_id=%s", url.QueryEscape(data.ID.ValueString()))
 	var permResult map[string]interface{}
 	if err := r.client.DoRequestWithResponse(ctx, "GET", permEndpoint, nil, &permResult); err == nil {
 		if perms, ok := permResult["team_member_permissions"].([]interface{}); ok && len(perms) > 0 {
