@@ -78,5 +78,10 @@ go.work
 # Log files
 *.log
 
-# Environment files
+# Local environment and credential files
 .env
+.env.*
+*.env
+*.env.*
+!.env.example
+!*.env.example
