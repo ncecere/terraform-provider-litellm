@@ -100,6 +100,7 @@ type KeyResourceModel struct {
 	Key                      types.String  `tfsdk:"key"`
 	KeyWO                    types.String  `tfsdk:"key_wo"`
 	KeyWOVersion             types.String  `tfsdk:"key_wo_version"`
+	SendInviteEmail          types.Bool    `tfsdk:"send_invite_email"`
 	Models                   types.List    `tfsdk:"models"`
 	AllowedRoutes            types.List    `tfsdk:"allowed_routes"`
 	AllowedPassthroughRoutes types.List    `tfsdk:"allowed_passthrough_routes"`
@@ -178,6 +179,11 @@ func (r *KeyResource) Schema(ctx context.Context, req resource.SchemaRequest, re
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
+			},
+			"send_invite_email": schema.BoolAttribute{
+				Description: "Create-only action flag that asks LiteLLM to asynchronously email the key's existing user. Requires user_id. It is write-only, is never sent during Update, and does not confirm delivery.",
+				Optional:    true,
+				WriteOnly:   true,
 			},
 			"models": schema.ListAttribute{
 				Description: "List of models this key can access.",
@@ -379,7 +385,9 @@ func (r *KeyResource) Create(ctx context.Context, req resource.CreateRequest, re
 	}
 
 	var writeOnlyKey types.String
+	var sendInviteEmail types.Bool
 	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("key_wo"), &writeOnlyKey)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("send_invite_email"), &sendInviteEmail)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -402,6 +410,11 @@ func (r *KeyResource) Create(ctx context.Context, req resource.CreateRequest, re
 		return
 	}
 
+	if err := r.validateKeyInviteRecipient(ctx, &data, sendInviteEmail); err != nil {
+		resp.Diagnostics.AddError("Invalid Key Invitation", err.Error())
+		return
+	}
+
 	keyReq, err := r.buildKeyRequest(ctx, &data)
 	if err != nil {
 		resp.Diagnostics.AddError("Invalid Key Request", err.Error())
@@ -409,6 +422,10 @@ func (r *KeyResource) Create(ctx context.Context, req resource.CreateRequest, re
 	}
 	if writeOnlyMode {
 		keyReq["key"] = writeOnlyKey.ValueString()
+	}
+	if err := addSendInviteEmailToCreateRequest(keyReq, sendInviteEmail); err != nil {
+		resp.Diagnostics.AddError("Invalid Key Invitation", err.Error())
+		return
 	}
 
 	endpoint := "/key/generate"

@@ -50,7 +50,7 @@ run_case budget resources budget_minimal.tf
 run_case credential resources credential_minimal.tf
 run_case fallback resources fallback_minimal.tf
 run_case guardrail resources guardrail_minimal.tf
-run_case key resources key_minimal.tf,key_router_settings.tf datasources key.tf
+run_case key resources key_minimal.tf,key_router_settings.tf,send_invite_email.tf datasources key.tf
 run_case key_block resources key_minimal.tf,key_block_minimal.tf
 run_case mcp_server resources mcp_server_minimal.tf
 run_case model resources model_minimal.tf

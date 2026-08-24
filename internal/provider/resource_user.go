@@ -32,20 +32,21 @@ type UserResource struct {
 }
 
 type UserResourceModel struct {
-	ID             types.String  `tfsdk:"id"`
-	UserID         types.String  `tfsdk:"user_id"`
-	UserAlias      types.String  `tfsdk:"user_alias"`
-	UserEmail      types.String  `tfsdk:"user_email"`
-	UserRole       types.String  `tfsdk:"user_role"`
-	Teams          types.List    `tfsdk:"teams"`
-	Models         types.List    `tfsdk:"models"`
-	MaxBudget      types.Float64 `tfsdk:"max_budget"`
-	BudgetDuration types.String  `tfsdk:"budget_duration"`
-	TPMLimit       types.Int64   `tfsdk:"tpm_limit"`
-	RPMLimit       types.Int64   `tfsdk:"rpm_limit"`
-	AutoCreateKey  types.Bool    `tfsdk:"auto_create_key"`
-	Metadata       types.Map     `tfsdk:"metadata"`
-	Key            types.String  `tfsdk:"key"`
+	ID              types.String  `tfsdk:"id"`
+	UserID          types.String  `tfsdk:"user_id"`
+	UserAlias       types.String  `tfsdk:"user_alias"`
+	UserEmail       types.String  `tfsdk:"user_email"`
+	UserRole        types.String  `tfsdk:"user_role"`
+	Teams           types.List    `tfsdk:"teams"`
+	Models          types.List    `tfsdk:"models"`
+	MaxBudget       types.Float64 `tfsdk:"max_budget"`
+	BudgetDuration  types.String  `tfsdk:"budget_duration"`
+	TPMLimit        types.Int64   `tfsdk:"tpm_limit"`
+	RPMLimit        types.Int64   `tfsdk:"rpm_limit"`
+	AutoCreateKey   types.Bool    `tfsdk:"auto_create_key"`
+	SendInviteEmail types.Bool    `tfsdk:"send_invite_email"`
+	Metadata        types.Map     `tfsdk:"metadata"`
+	Key             types.String  `tfsdk:"key"`
 }
 
 func (r *UserResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -131,6 +132,11 @@ func (r *UserResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 				Computed:    true,
 				Default:     booldefault.StaticBool(true),
 			},
+			"send_invite_email": schema.BoolAttribute{
+				Description: "Create-only action flag that asks LiteLLM to asynchronously email this user. Requires user_email. It is write-only, is never sent during Update, and does not confirm delivery.",
+				Optional:    true,
+				WriteOnly:   true,
+			},
 			"metadata": schema.MapAttribute{
 				Description: "Metadata for the user.",
 				Optional:    true,
@@ -174,11 +180,32 @@ func (r *UserResource) Create(ctx context.Context, req resource.CreateRequest, r
 		return
 	}
 
+	var sendInviteEmail types.Bool
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("send_invite_email"), &sendInviteEmail)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if err := validateUserSendInviteEmail(&data, sendInviteEmail); err != nil {
+		resp.Diagnostics.AddError("Invalid User Invitation", err.Error())
+		return
+	}
+
 	userReq := r.buildUserRequest(ctx, &data)
+	if err := addSendInviteEmailToCreateRequest(userReq, sendInviteEmail); err != nil {
+		resp.Diagnostics.AddError("Invalid User Invitation", err.Error())
+		return
+	}
 
 	var result map[string]interface{}
 	if err := r.client.DoRequestWithResponse(ctx, "POST", "/user/new", userReq, &result); err != nil {
 		if IsAPIErrorStatus(err, 409) {
+			if sendInviteEmailRequested(sendInviteEmail) {
+				resp.Diagnostics.AddError(
+					"Existing User Was Not Invited",
+					"LiteLLM reported that the user already exists, so no create-time invitation was sent and Terraform did not adopt the account. Import the exact existing user with send_invite_email omitted, or invite the user outside this resource.",
+				)
+				return
+			}
 			mutated, adoptErr := r.adoptExistingUser(ctx, &data)
 			if adoptErr != nil {
 				if mutated {

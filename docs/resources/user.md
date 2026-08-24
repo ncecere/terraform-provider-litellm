@@ -35,6 +35,21 @@ resource "litellm_user" "full" {
 }
 ```
 
+### Create and Invite a User
+
+```hcl
+resource "litellm_user" "invited" {
+  user_alias        = "Invited User"
+  user_email        = "person@example.com"
+  auto_create_key   = false
+  send_invite_email = true
+}
+```
+
+`send_invite_email` is a write-only, create-only action flag. It requires a syntactically valid `user_email`. LiteLLM queues email processing after `/user/new` succeeds, but its API returns before delivery and provides no delivery acknowledgement. Configure a supported [LiteLLM email backend](https://docs.litellm.ai/docs/proxy/email) before enabling it.
+
+The action is requested for each successful user Create request, including replacement. If a create response is lost and a retry finds the account already exists, the provider refuses adoption rather than claiming another invitation was sent. When `auto_create_key` remains true, LiteLLM also creates a raw API key that the provider stores in sensitive Terraform state; set `auto_create_key = false` if that is not intended.
+
 ## Argument Reference
 
 The following arguments are supported:
@@ -48,6 +63,7 @@ The following arguments are supported:
 * `tpm_limit` - (Optional) Tokens per minute limit for the user.
 * `rpm_limit` - (Optional) Requests per minute limit for the user.
 * `auto_create_key` - (Optional) Whether to automatically create an API key when the user is created. Defaults to `true`.
+* `send_invite_email` - (Optional, Write-only) Requests an asynchronous invitation for each successful user Create request. Requires a syntactically valid `user_email`. It is never persisted, read back, imported, or sent during Update; a successful apply does not confirm email delivery. Replacement can request another invitation. Requires Terraform or compatible OpenTofu 1.11+ when configured.
 * `teams` - (Optional) Unique team IDs the user belongs to. Membership order is not significant. Updates reconcile additions and removals through LiteLLM's team-member endpoints.
 * `models` - (Optional) List of model names the user is allowed to use.
 * `metadata` - (Optional) A map of key-value metadata pairs for the user.
@@ -81,10 +97,13 @@ terraform import litellm_user.example <user-id>
 
 If `/user/new` returns HTTP 409, the provider can adopt an existing user when `user_email` is known and `/user/list` returns exactly one account with that exact email. If `user_id` is configured, it must also match the existing account. Partial, missing, ambiguous, or conflicting identity matches fail without updating the account.
 
+When `send_invite_email = true`, a 409 conflict is not adopted because LiteLLM did not create the account and therefore sent no invitation. Import the exact existing user with the action omitted, or invite it outside this resource.
+
 After identity verification, configured user fields and team memberships are reconciled. Adoption fails before mutation if configuration would require clearing a non-empty alias, models list, or metadata map because LiteLLM ignores empty values for those fields. Adoption does not request another auto-created key because its raw value could not be recovered into Terraform state. Removing an existing team membership calls LiteLLM's `/team/member_delete`, which also deletes that user's keys scoped to the removed team. Once adopted, Terraform owns the user: destroying the resource deletes the existing LiteLLM user.
 
 ## Notes
 
-- The `user_email` attribute is **not** required for a new user, but it is required for safe automatic adoption after a conflict.
+- The `user_email` attribute is **not** required for an ordinary new user, but it is required for `send_invite_email = true` and for safe automatic adoption after a conflict.
+- Invitation delivery requires LiteLLM email/SMTP configuration. The action is asynchronous and cannot be verified from Terraform state.
 - The `user_id` attribute is ForceNew — changing it will destroy and recreate the resource.
 - When `auto_create_key` is `true` (the default), a `key` is generated and stored in state only when LiteLLM creates a new user.
