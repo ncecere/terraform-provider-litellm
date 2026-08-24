@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 )
@@ -90,6 +91,81 @@ func TestReadTeamResolvesUnknownOptionalComputedCollections(t *testing.T) {
 	}
 }
 
+func TestTeamBudgetInputsRemainOptionalOnly(t *testing.T) {
+	t.Parallel()
+
+	var resp resource.SchemaResponse
+	(&TeamResource{}).Schema(context.Background(), resource.SchemaRequest{}, &resp)
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("team schema returned diagnostics: %v", resp.Diagnostics)
+	}
+
+	for _, name := range []string{"max_budget", "budget_duration"} {
+		attribute, ok := resp.Schema.Attributes[name]
+		if !ok {
+			t.Fatalf("team schema missing %q", name)
+		}
+		if !attribute.IsOptional() {
+			t.Errorf("%s must remain Optional", name)
+		}
+		if attribute.IsComputed() {
+			t.Errorf("%s must not be Computed; Optional+Computed would prevent removal from clearing the API value", name)
+		}
+	}
+}
+
+func TestReadTeamIgnoresUnconfiguredServerBudgetDefaults(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		switch r.URL.Path {
+		case "/team/info":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"team_info": map[string]interface{}{
+					"team_id":         "team-defaults",
+					"team_alias":      "defaults-team",
+					"max_budget":      500.0,
+					"budget_duration": "30d",
+				},
+			})
+		case "/team/permissions_list":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"team_member_permissions": []string{},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	r := &TeamResource{
+		client: &Client{
+			APIBase:    server.URL,
+			APIKey:     "test-key",
+			HTTPClient: server.Client(),
+		},
+	}
+
+	data := TeamResourceModel{
+		ID:             types.StringValue("team-defaults"),
+		TeamAlias:      types.StringValue("defaults-team"),
+		MaxBudget:      types.Float64Null(),
+		BudgetDuration: types.StringNull(),
+	}
+
+	if err := r.readTeam(context.Background(), &data); err != nil {
+		t.Fatalf("readTeam returned error: %v", err)
+	}
+	if !data.MaxBudget.IsNull() {
+		t.Errorf("unconfigured max_budget should remain null, got %v", data.MaxBudget)
+	}
+	if !data.BudgetDuration.IsNull() {
+		t.Errorf("unconfigured budget_duration should remain null, got %v", data.BudgetDuration)
+	}
+}
+
 func TestReadTeamWithNestedTeamInfoResponse(t *testing.T) {
 	t.Parallel()
 
@@ -143,6 +219,8 @@ func TestReadTeamWithNestedTeamInfoResponse(t *testing.T) {
 	data := TeamResourceModel{
 		ID:                    types.StringValue("team-abc-123"),
 		TeamAlias:             types.StringValue("production-team"),
+		MaxBudget:             types.Float64Value(500),
+		BudgetDuration:        types.StringValue("monthly"),
 		Models:                types.ListUnknown(types.StringType),
 		Tags:                  types.ListUnknown(types.StringType),
 		Guardrails:            types.ListUnknown(types.StringType),

@@ -598,8 +598,14 @@ func (r *TeamResource) readTeam(ctx context.Context, data *TeamResourceModel) er
 	} else if data.RPMLimit.IsUnknown() {
 		data.RPMLimit = types.Int64Null()
 	}
+	// max_budget and budget_duration are Optional-only managed inputs. LiteLLM
+	// deployments can inject server-side defaults when these fields are omitted.
+	// Do not copy those defaults into null Terraform state: doing so changes an
+	// unconfigured planned value during Create and causes an inconsistent-result
+	// error. Configured values are still refreshed, and explicit API nulls still
+	// clear state so drift and user-requested removals are handled normally.
 	if v, exists := teamInfo["max_budget"]; exists {
-		if maxBudget, ok := v.(float64); ok {
+		if maxBudget, ok := v.(float64); ok && !data.MaxBudget.IsNull() {
 			data.MaxBudget = types.Float64Value(maxBudget)
 		} else if v == nil {
 			data.MaxBudget = types.Float64Null()
@@ -608,7 +614,7 @@ func (r *TeamResource) readTeam(ctx context.Context, data *TeamResourceModel) er
 		data.MaxBudget = types.Float64Null()
 	}
 	if v, exists := teamInfo["budget_duration"]; exists {
-		if budgetDuration, ok := v.(string); ok && budgetDuration != "" {
+		if budgetDuration, ok := v.(string); ok && budgetDuration != "" && !data.BudgetDuration.IsNull() {
 			data.BudgetDuration = types.StringValue(budgetDuration)
 		} else if v == nil {
 			data.BudgetDuration = types.StringNull()
