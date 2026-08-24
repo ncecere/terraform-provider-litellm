@@ -3,7 +3,10 @@ package provider
 import (
 	"context"
 	"fmt"
+	"sort"
+	"time"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -91,10 +94,13 @@ func (r *UserResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 				},
 			},
 			"teams": schema.ListAttribute{
-				Description: "List of team IDs the user belongs to.",
+				Description: "List of team IDs the user belongs to. Membership order is not significant.",
 				Optional:    true,
 				Computed:    true,
 				ElementType: types.StringType,
+				Validators: []validator.List{
+					listvalidator.UniqueValues(),
+				},
 			},
 			"models": schema.ListAttribute{
 				Description: "Model names the user is allowed to call. Set to ['no-default-models'] to block all model access.",
@@ -235,14 +241,26 @@ func (r *UserResource) Update(ctx context.Context, req resource.UpdateRequest, r
 
 	userReq := r.buildUserRequest(ctx, &data)
 	userReq["user_id"] = data.UserID.ValueString()
+	// LiteLLM v1.98 accepts teams on /user/update but does not reconcile team
+	// membership there. Manage membership through the dedicated team endpoints.
+	delete(userReq, "teams")
 
 	if err := r.client.DoRequestWithResponse(ctx, "POST", "/user/update", userReq, nil); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to update user: %s", err))
 		return
 	}
 
-	// Read back for full state
-	if err := r.readUser(ctx, &data); err != nil {
+	teamsChanged := userTeamMembershipsDiffer(state.Teams, data.Teams)
+	if teamsChanged {
+		if err := r.reconcileUserTeams(ctx, data.UserID.ValueString(), state.Teams, data.Teams); err != nil {
+			resp.Diagnostics.AddError("Team Membership Error", fmt.Sprintf("Unable to update user team membership: %s", err))
+			return
+		}
+		if err := r.readUserTeamsAfterUpdate(ctx, &data, 8); err != nil {
+			resp.Diagnostics.AddError("User Team Update Not Yet Consistent", fmt.Sprintf("LiteLLM accepted the team membership update but did not return the planned membership before the consistency timeout: %s", err))
+			return
+		}
+	} else if err := r.readUser(ctx, &data); err != nil {
 		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("User updated but failed to read back: %s", err))
 	}
 
@@ -388,18 +406,12 @@ func (r *UserResource) readUser(ctx context.Context, data *UserResourceModel) er
 		data.RPMLimit = types.Int64Value(int64(rpmLimit))
 	}
 
-	// Handle teams list - preserve null when API returns empty and config didn't specify teams
-	if teams, ok := userInfo["teams"].([]interface{}); ok && len(teams) > 0 {
-		teamsList := make([]attr.Value, len(teams))
-		for i, t := range teams {
-			if str, ok := t.(string); ok {
-				teamsList[i] = types.StringValue(str)
-			}
-		}
-		data.Teams, _ = types.ListValue(types.StringType, teamsList)
-	} else if !data.Teams.IsNull() {
-		// User specified teams in config but API returned empty — set to empty list
-		data.Teams, _ = types.ListValue(types.StringType, []attr.Value{})
+	// Team membership is unordered in LiteLLM. Preserve Terraform's current
+	// ordering when the API returns the same members in a different order; when
+	// membership truly changes, use a stable canonical order so drift remains
+	// visible without positional churn.
+	if teams, ok := userInfo["teams"].([]interface{}); ok {
+		data.Teams = reconcileUnorderedUserTeams(data.Teams, teams)
 	}
 
 	// Handle models list - preserve null when API returns empty and config didn't specify models
@@ -431,4 +443,170 @@ func (r *UserResource) readUser(ctx context.Context, data *UserResourceModel) er
 	}
 
 	return nil
+}
+
+func reconcileUnorderedUserTeams(current types.List, rawTeams []interface{}) types.List {
+	remoteTeams := make([]string, 0, len(rawTeams))
+	for _, rawTeam := range rawTeams {
+		if team, ok := rawTeam.(string); ok {
+			remoteTeams = append(remoteTeams, team)
+		}
+	}
+
+	if len(remoteTeams) == 0 {
+		if current.IsNull() {
+			return current
+		}
+		return types.ListValueMust(types.StringType, []attr.Value{})
+	}
+	if userTeamMembershipEqual(current, remoteTeams) {
+		return current
+	}
+
+	sort.Strings(remoteTeams)
+	values := make([]attr.Value, len(remoteTeams))
+	for i, team := range remoteTeams {
+		values[i] = types.StringValue(team)
+	}
+	return types.ListValueMust(types.StringType, values)
+}
+
+func userTeamMembershipEqual(current types.List, remoteTeams []string) bool {
+	if current.IsNull() || current.IsUnknown() || len(current.Elements()) != len(remoteTeams) {
+		return false
+	}
+
+	counts := make(map[string]int, len(remoteTeams))
+	for _, team := range remoteTeams {
+		counts[team]++
+	}
+	for _, element := range current.Elements() {
+		team, ok := element.(types.String)
+		if !ok || team.IsNull() || team.IsUnknown() || counts[team.ValueString()] == 0 {
+			return false
+		}
+		counts[team.ValueString()]--
+	}
+	return true
+}
+
+func userTeamIDs(value types.List) ([]string, bool) {
+	if value.IsNull() || value.IsUnknown() {
+		return nil, false
+	}
+	ids := make([]string, 0, len(value.Elements()))
+	for _, element := range value.Elements() {
+		team, ok := element.(types.String)
+		if !ok || team.IsNull() || team.IsUnknown() {
+			return nil, false
+		}
+		ids = append(ids, team.ValueString())
+	}
+	return ids, true
+}
+
+func userTeamMembershipsDiffer(current, planned types.List) bool {
+	plannedIDs, managed := userTeamIDs(planned)
+	if !managed {
+		return false
+	}
+	return !userTeamMembershipEqual(current, plannedIDs)
+}
+
+func (r *UserResource) reconcileUserTeams(ctx context.Context, userID string, current, planned types.List) error {
+	desiredIDs, managed := userTeamIDs(planned)
+	if !managed {
+		return nil
+	}
+	currentIDs, _ := userTeamIDs(current)
+
+	desired := make(map[string]struct{}, len(desiredIDs))
+	for _, teamID := range desiredIDs {
+		desired[teamID] = struct{}{}
+	}
+	existing := make(map[string]struct{}, len(currentIDs))
+	for _, teamID := range currentIDs {
+		existing[teamID] = struct{}{}
+	}
+
+	removals := make([]string, 0)
+	for teamID := range existing {
+		if _, keep := desired[teamID]; !keep {
+			removals = append(removals, teamID)
+		}
+	}
+	additions := make([]string, 0)
+	for teamID := range desired {
+		if _, present := existing[teamID]; !present {
+			additions = append(additions, teamID)
+		}
+	}
+	sort.Strings(removals)
+	sort.Strings(additions)
+
+	for _, teamID := range removals {
+		request := map[string]interface{}{"team_id": teamID, "user_id": userID}
+		if err := r.client.DoRequestWithResponse(ctx, "POST", "/team/member_delete", request, nil); err != nil {
+			return fmt.Errorf("remove user from team %s: %w", teamID, err)
+		}
+	}
+	for _, teamID := range additions {
+		request := map[string]interface{}{
+			"team_id": teamID,
+			"member": map[string]interface{}{
+				"role":    "user",
+				"user_id": userID,
+			},
+		}
+		if err := r.client.DoRequestWithResponse(ctx, "POST", "/team/member_add", request, nil); err != nil {
+			return fmt.Errorf("add user to team %s: %w", teamID, err)
+		}
+	}
+	return nil
+}
+
+func (r *UserResource) readUserTeamsAfterUpdate(ctx context.Context, data *UserResourceModel, maxRetries int) error {
+	if maxRetries < 1 {
+		return fmt.Errorf("maxRetries must be at least 1")
+	}
+
+	expected := data.Teams
+	delay := 250 * time.Millisecond
+	maxDelay := 2 * time.Second
+	consecutiveMatches := 0
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		candidate := *data
+		err := r.readUser(ctx, &candidate)
+		if err == nil {
+			if !userTeamMembershipsDiffer(candidate.Teams, expected) {
+				consecutiveMatches++
+				if consecutiveMatches >= 2 {
+					*data = candidate
+					return nil
+				}
+			} else {
+				consecutiveMatches = 0
+			}
+		} else if !IsNotFoundError(err) {
+			return err
+		} else {
+			consecutiveMatches = 0
+		}
+
+		if attempt == maxRetries-1 {
+			break
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+		delay *= 2
+		if delay > maxDelay {
+			delay = maxDelay
+		}
+	}
+	return fmt.Errorf("team membership did not remain at its planned value after %d reads", maxRetries)
 }

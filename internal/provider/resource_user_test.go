@@ -5,9 +5,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	resourceschema "github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -252,6 +257,188 @@ func TestNullMapPreservation(t *testing.T) {
 // Before the fix, readUser would unconditionally set teams to [] from the API
 // response even when the user didn't specify teams, causing:
 // "Provider produced inconsistent result after apply: .teams: was null, but now cty.ListValEmpty(cty.String)"
+func TestReconcileUnorderedUserTeams(t *testing.T) {
+	t.Parallel()
+
+	configured := types.ListValueMust(types.StringType, []attr.Value{
+		types.StringValue("team-b"),
+		types.StringValue("team-a"),
+	})
+
+	tests := []struct {
+		name    string
+		current types.List
+		remote  []interface{}
+		want    types.List
+	}{
+		{
+			name:    "reordered API membership preserves configured order",
+			current: configured,
+			remote:  []interface{}{"team-a", "team-b"},
+			want:    configured,
+		},
+		{
+			name:    "actual membership drift is sorted canonically",
+			current: configured,
+			remote:  []interface{}{"team-c", "team-a"},
+			want: types.ListValueMust(types.StringType, []attr.Value{
+				types.StringValue("team-a"),
+				types.StringValue("team-c"),
+			}),
+		},
+		{
+			name:    "unconfigured empty membership remains null",
+			current: types.ListNull(types.StringType),
+			remote:  []interface{}{},
+			want:    types.ListNull(types.StringType),
+		},
+		{
+			name:    "configured membership cleared remotely becomes empty",
+			current: configured,
+			remote:  []interface{}{},
+			want:    types.ListValueMust(types.StringType, []attr.Value{}),
+		},
+		{
+			name:    "unknown import state adopts canonical API order",
+			current: types.ListUnknown(types.StringType),
+			remote:  []interface{}{"team-b", "team-a"},
+			want: types.ListValueMust(types.StringType, []attr.Value{
+				types.StringValue("team-a"),
+				types.StringValue("team-b"),
+			}),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			got := reconcileUnorderedUserTeams(test.current, test.remote)
+			if !got.Equal(test.want) {
+				t.Fatalf("teams = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestReconcileUserTeamsUsesDedicatedEndpoints(t *testing.T) {
+	t.Parallel()
+
+	type capturedRequest struct {
+		path string
+		body map[string]interface{}
+	}
+	var requests []capturedRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		var body map[string]interface{}
+		_ = json.NewDecoder(request.Body).Decode(&body)
+		requests = append(requests, capturedRequest{path: request.URL.Path, body: body})
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	resource := &UserResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
+	current := types.ListValueMust(types.StringType, []attr.Value{
+		types.StringValue("team-b"),
+		types.StringValue("team-a"),
+	})
+	planned := types.ListValueMust(types.StringType, []attr.Value{
+		types.StringValue("team-c"),
+		types.StringValue("team-a"),
+	})
+
+	if err := resource.reconcileUserTeams(context.Background(), "user-1", current, planned); err != nil {
+		t.Fatalf("reconcileUserTeams returned error: %v", err)
+	}
+	if len(requests) != 2 {
+		t.Fatalf("request count = %d, want 2", len(requests))
+	}
+	if requests[0].path != "/team/member_delete" || requests[0].body["team_id"] != "team-b" || requests[0].body["user_id"] != "user-1" {
+		t.Fatalf("unexpected delete request: %#v", requests[0])
+	}
+	member, ok := requests[1].body["member"].(map[string]interface{})
+	if requests[1].path != "/team/member_add" || requests[1].body["team_id"] != "team-c" || !ok || member["user_id"] != "user-1" || member["role"] != "user" {
+		t.Fatalf("unexpected add request: %#v", requests[1])
+	}
+}
+
+func TestReadUserTeamsAfterUpdateRequiresStableMembership(t *testing.T) {
+	t.Parallel()
+
+	var reads atomic.Int32
+	sequence := [][]interface{}{
+		{"team-c", "team-a"},
+		{"team-b", "team-a"},
+		{"team-a", "team-c"},
+		{"team-c", "team-a"},
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		index := int(reads.Add(1)) - 1
+		if index >= len(sequence) {
+			index = len(sequence) - 1
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"user_info": map[string]interface{}{
+				"user_id": "user-1",
+				"teams":   sequence[index],
+			},
+		})
+	}))
+	defer server.Close()
+
+	resource := &UserResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
+	data := UserResourceModel{
+		ID:     types.StringValue("user-1"),
+		UserID: types.StringValue("user-1"),
+		Teams: types.ListValueMust(types.StringType, []attr.Value{
+			types.StringValue("team-c"),
+			types.StringValue("team-a"),
+		}),
+	}
+
+	if err := resource.readUserTeamsAfterUpdate(context.Background(), &data, 5); err != nil {
+		t.Fatalf("readUserTeamsAfterUpdate returned error: %v", err)
+	}
+	if got := reads.Load(); got != 4 {
+		t.Fatalf("read count = %d, want 4", got)
+	}
+	want := types.ListValueMust(types.StringType, []attr.Value{
+		types.StringValue("team-c"),
+		types.StringValue("team-a"),
+	})
+	if !data.Teams.Equal(want) {
+		t.Fatalf("teams = %v, want planned order %v", data.Teams, want)
+	}
+}
+
+func TestUserTeamsRejectDuplicateMemberships(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	var schemaResp resource.SchemaResponse
+	(&UserResource{}).Schema(ctx, resource.SchemaRequest{}, &schemaResp)
+	attribute, ok := schemaResp.Schema.Attributes["teams"].(resourceschema.ListAttribute)
+	if !ok {
+		t.Fatal("teams is not a list attribute")
+	}
+
+	var validationResp validator.ListResponse
+	request := validator.ListRequest{
+		Path: path.Root("teams"),
+		ConfigValue: types.ListValueMust(types.StringType, []attr.Value{
+			types.StringValue("team-a"),
+			types.StringValue("team-a"),
+		}),
+	}
+	for _, listValidator := range attribute.Validators {
+		listValidator.ValidateList(ctx, request, &validationResp)
+	}
+	if !validationResp.Diagnostics.HasError() {
+		t.Fatal("duplicate team membership did not produce a validation error")
+	}
+}
+
 func TestOldBehaviorWouldFail(t *testing.T) {
 	t.Run("OLD behavior: null teams overwritten to empty list (the bug)", func(t *testing.T) {
 		// Simulate old readUser behavior:

@@ -48,7 +48,7 @@ The following arguments are supported:
 * `tpm_limit` - (Optional) Tokens per minute limit for the user.
 * `rpm_limit` - (Optional) Requests per minute limit for the user.
 * `auto_create_key` - (Optional) Whether to automatically create an API key when the user is created. Defaults to `true`.
-* `teams` - (Optional) List of team IDs the user belongs to.
+* `teams` - (Optional) Unique team IDs the user belongs to. Membership order is not significant. Updates reconcile additions and removals through LiteLLM's team-member endpoints.
 * `models` - (Optional) List of model names the user is allowed to use.
 * `metadata` - (Optional) A map of key-value metadata pairs for the user.
 
