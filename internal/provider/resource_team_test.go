@@ -288,6 +288,39 @@ func TestReadTeamResolvesUnknownOptionalComputedCollections(t *testing.T) {
 	}
 }
 
+func TestTeamDefaultMemberBudgetDurationSchema(t *testing.T) {
+	t.Parallel()
+
+	var response resource.SchemaResponse
+	(&TeamResource{}).Schema(context.Background(), resource.SchemaRequest{}, &response)
+	if response.Diagnostics.HasError() {
+		t.Fatalf("schema diagnostics: %v", response.Diagnostics)
+	}
+	attribute, ok := response.Schema.Attributes["team_member_budget_duration"].(resourceschema.StringAttribute)
+	if !ok {
+		t.Fatalf("team_member_budget_duration schema type = %T", response.Schema.Attributes["team_member_budget_duration"])
+	}
+	if !attribute.Optional || attribute.Computed || attribute.Required {
+		t.Fatalf("team_member_budget_duration must be Optional-only: %#v", attribute)
+	}
+	if len(attribute.Validators) != 1 {
+		t.Fatalf("team_member_budget_duration validators = %d, want duration format validator", len(attribute.Validators))
+	}
+}
+
+func TestBuildTeamRequestIncludesMemberBudgetDuration(t *testing.T) {
+	t.Parallel()
+
+	request := (&TeamResource{}).buildTeamRequest(context.Background(), &TeamResourceModel{
+		TeamAlias:            types.StringValue("budget-team"),
+		TeamMemberBudget:     types.Float64Value(50),
+		MemberBudgetDuration: types.StringValue("30d"),
+	}, "team-1")
+	if got := request["team_member_budget_duration"]; got != "30d" {
+		t.Fatalf("team_member_budget_duration = %#v, want 30d", got)
+	}
+}
+
 func TestTeamBudgetInputsRemainOptionalOnly(t *testing.T) {
 	t.Parallel()
 
@@ -326,6 +359,12 @@ func TestReadTeamIgnoresUnconfiguredServerBudgetDefaults(t *testing.T) {
 					"max_budget":       500.0,
 					"budget_duration":  "30d",
 					"access_group_ids": []interface{}{"externally-managed"},
+					"team_member_budget_table": map[string]interface{}{
+						"max_budget":      25.0,
+						"budget_duration": "30d",
+						"rpm_limit":       10.0,
+						"tpm_limit":       1000.0,
+					},
 				},
 			})
 		case "/team/permissions_list":
@@ -347,11 +386,15 @@ func TestReadTeamIgnoresUnconfiguredServerBudgetDefaults(t *testing.T) {
 	}
 
 	data := TeamResourceModel{
-		ID:             types.StringValue("team-defaults"),
-		TeamAlias:      types.StringValue("defaults-team"),
-		MaxBudget:      types.Float64Null(),
-		BudgetDuration: types.StringNull(),
-		AccessGroupIDs: types.SetNull(types.StringType),
+		ID:                   types.StringValue("team-defaults"),
+		TeamAlias:            types.StringValue("defaults-team"),
+		MaxBudget:            types.Float64Null(),
+		BudgetDuration:       types.StringNull(),
+		AccessGroupIDs:       types.SetNull(types.StringType),
+		TeamMemberBudget:     types.Float64Null(),
+		MemberBudgetDuration: types.StringNull(),
+		TeamMemberRPMLimit:   types.Int64Null(),
+		TeamMemberTPMLimit:   types.Int64Null(),
 	}
 
 	if err := r.readTeam(context.Background(), &data); err != nil {
@@ -362,6 +405,9 @@ func TestReadTeamIgnoresUnconfiguredServerBudgetDefaults(t *testing.T) {
 	}
 	if !data.BudgetDuration.IsNull() {
 		t.Errorf("unconfigured budget_duration should remain null, got %v", data.BudgetDuration)
+	}
+	if !data.TeamMemberBudget.IsNull() || !data.MemberBudgetDuration.IsNull() || !data.TeamMemberRPMLimit.IsNull() || !data.TeamMemberTPMLimit.IsNull() {
+		t.Errorf("unconfigured team member defaults should remain null: budget=%v duration=%v rpm=%v tpm=%v", data.TeamMemberBudget, data.MemberBudgetDuration, data.TeamMemberRPMLimit, data.TeamMemberTPMLimit)
 	}
 	expectedAccessGroups := types.SetValueMust(types.StringType, []attr.Value{types.StringValue("externally-managed")})
 	if !data.AccessGroupIDs.Equal(expectedAccessGroups) {
@@ -380,25 +426,28 @@ func TestReadTeamWithNestedTeamInfoResponse(t *testing.T) {
 		case "/team/info":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"team_info": map[string]interface{}{
-					"team_id":            "team-abc-123",
-					"team_alias":         "production-team",
-					"organization_id":    "org-1",
-					"max_budget":         500.0,
-					"tpm_limit":          10000.0,
-					"rpm_limit":          1000.0,
-					"budget_duration":    "monthly",
-					"blocked":            false,
-					"tpm_limit_type":     "team",
-					"rpm_limit_type":     "team",
-					"models":             []interface{}{"gpt-4", "claude-3"},
-					"tags":               []interface{}{"prod", "high-priority"},
-					"guardrails":         []interface{}{"content-filter"},
-					"prompts":            []interface{}{},
-					"metadata":           map[string]interface{}{"env": "production"},
-					"model_aliases":      map[string]interface{}{"fast": "gpt-3.5-turbo"},
-					"model_rpm_limit":    map[string]interface{}{"gpt-4": 100.0},
-					"model_tpm_limit":    map[string]interface{}{"gpt-4": 5000.0},
-					"team_member_budget": 50.0,
+					"team_id":         "team-abc-123",
+					"team_alias":      "production-team",
+					"organization_id": "org-1",
+					"max_budget":      500.0,
+					"tpm_limit":       10000.0,
+					"rpm_limit":       1000.0,
+					"budget_duration": "monthly",
+					"blocked":         false,
+					"tpm_limit_type":  "team",
+					"rpm_limit_type":  "team",
+					"models":          []interface{}{"gpt-4", "claude-3"},
+					"tags":            []interface{}{"prod", "high-priority"},
+					"guardrails":      []interface{}{"content-filter"},
+					"prompts":         []interface{}{},
+					"metadata":        map[string]interface{}{"env": "production"},
+					"model_aliases":   map[string]interface{}{"fast": "gpt-3.5-turbo"},
+					"model_rpm_limit": map[string]interface{}{"gpt-4": 100.0},
+					"model_tpm_limit": map[string]interface{}{"gpt-4": 5000.0},
+					"team_member_budget_table": map[string]interface{}{
+						"max_budget":      50.0,
+						"budget_duration": "30d",
+					},
 				},
 			})
 		case "/team/permissions_list":
@@ -424,6 +473,8 @@ func TestReadTeamWithNestedTeamInfoResponse(t *testing.T) {
 		TeamAlias:             types.StringValue("production-team"),
 		MaxBudget:             types.Float64Value(500),
 		BudgetDuration:        types.StringValue("monthly"),
+		TeamMemberBudget:      types.Float64Value(50),
+		MemberBudgetDuration:  types.StringValue("30d"),
 		Models:                types.ListUnknown(types.StringType),
 		Tags:                  types.ListUnknown(types.StringType),
 		Guardrails:            types.ListUnknown(types.StringType),
@@ -460,6 +511,9 @@ func TestReadTeamWithNestedTeamInfoResponse(t *testing.T) {
 	}
 	if data.TeamMemberBudget.ValueFloat64() != 50.0 {
 		t.Fatalf("expected team_member_budget 50.0, got %f", data.TeamMemberBudget.ValueFloat64())
+	}
+	if data.MemberBudgetDuration.ValueString() != "30d" {
+		t.Fatalf("expected team_member_budget_duration 30d, got %q", data.MemberBudgetDuration.ValueString())
 	}
 
 	// Verify lists were populated from nested response
@@ -795,22 +849,24 @@ func TestApplyTeamNullableClears_AllTransitionsEmitNull(t *testing.T) {
 	t.Parallel()
 
 	state := &TeamResourceModel{
-		MaxBudget:          types.Float64Value(100),
-		BudgetDuration:     types.StringValue("30d"),
-		TPMLimit:           types.Int64Value(1000),
-		RPMLimit:           types.Int64Value(60),
-		TeamMemberBudget:   types.Float64Value(50),
-		TeamMemberRPMLimit: types.Int64Value(10),
-		TeamMemberTPMLimit: types.Int64Value(500),
+		MaxBudget:            types.Float64Value(100),
+		BudgetDuration:       types.StringValue("30d"),
+		TPMLimit:             types.Int64Value(1000),
+		RPMLimit:             types.Int64Value(60),
+		TeamMemberBudget:     types.Float64Value(50),
+		MemberBudgetDuration: types.StringValue("30d"),
+		TeamMemberRPMLimit:   types.Int64Value(10),
+		TeamMemberTPMLimit:   types.Int64Value(500),
 	}
 	plan := &TeamResourceModel{
-		MaxBudget:          types.Float64Null(),
-		BudgetDuration:     types.StringNull(),
-		TPMLimit:           types.Int64Null(),
-		RPMLimit:           types.Int64Null(),
-		TeamMemberBudget:   types.Float64Null(),
-		TeamMemberRPMLimit: types.Int64Null(),
-		TeamMemberTPMLimit: types.Int64Null(),
+		MaxBudget:            types.Float64Null(),
+		BudgetDuration:       types.StringNull(),
+		TPMLimit:             types.Int64Null(),
+		RPMLimit:             types.Int64Null(),
+		TeamMemberBudget:     types.Float64Null(),
+		MemberBudgetDuration: types.StringNull(),
+		TeamMemberRPMLimit:   types.Int64Null(),
+		TeamMemberTPMLimit:   types.Int64Null(),
 	}
 
 	teamReq := map[string]interface{}{"team_id": "team-123"}
@@ -818,7 +874,7 @@ func TestApplyTeamNullableClears_AllTransitionsEmitNull(t *testing.T) {
 
 	expectedNullKeys := []string{
 		"max_budget", "budget_duration", "tpm_limit", "rpm_limit",
-		"team_member_budget", "team_member_rpm_limit", "team_member_tpm_limit",
+		"team_member_budget", "team_member_budget_duration", "team_member_rpm_limit", "team_member_tpm_limit",
 	}
 	for _, k := range expectedNullKeys {
 		v, ok := teamReq[k]
@@ -840,6 +896,24 @@ func TestApplyTeamNullableClears_AllTransitionsEmitNull(t *testing.T) {
 		needle := `"` + k + `":null`
 		if !strings.Contains(bodyStr, needle) {
 			t.Errorf("request body missing %s; got %s", needle, bodyStr)
+		}
+	}
+
+	clearReq := extractTeamMemberBudgetClears(teamReq, "team-123")
+	if clearReq == nil || clearReq["team_id"] != "team-123" {
+		t.Fatalf("team member budget clear request = %#v", clearReq)
+	}
+	for _, key := range []string{
+		"team_member_budget",
+		"team_member_budget_duration",
+		"team_member_rpm_limit",
+		"team_member_tpm_limit",
+	} {
+		if value, exists := clearReq[key]; !exists || value != nil {
+			t.Errorf("clearReq[%q] = %#v, want explicit nil", key, value)
+		}
+		if _, exists := teamReq[key]; exists {
+			t.Errorf("main team request retained extracted clear %q", key)
 		}
 	}
 }
@@ -880,5 +954,8 @@ func TestApplyTeamNullableClears_NoTransition_NoOp(t *testing.T) {
 
 	if v := teamReq["max_budget"]; v != float64(200) {
 		t.Errorf("helper overwrote stable max_budget; got %v, want 200", v)
+	}
+	if clearReq := extractTeamMemberBudgetClears(teamReq, "team-123"); clearReq != nil {
+		t.Errorf("unexpected team member budget clear request: %#v", clearReq)
 	}
 }

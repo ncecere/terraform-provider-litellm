@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`litellm_key`**: Add `key_wo` with a persisted replacement trigger and hash-only lifecycle/import support so predefined keys can remain absent from Terraform plan, state, and private state. ([#86](https://github.com/ncecere/terraform-provider-litellm/issues/86)) — thanks @ripiomatiascalvo
 - **`litellm_team`**: Allow a stable custom `team_id` for external identity and JWT group mapping while preserving generated IDs by default. ([#122](https://github.com/ncecere/terraform-provider-litellm/issues/122)) — thanks @TheCodingSheikh
 - **`litellm_team`**: Add unordered `access_group_ids` management and expose team access groups through the data source. ([#149](https://github.com/ncecere/terraform-provider-litellm/issues/149))
+- **`litellm_team_member` / `litellm_team`**: Add recurring member budget durations through LiteLLM v1.98.0's native member and team APIs. ([#112](https://github.com/ncecere/terraform-provider-litellm/issues/112)) — thanks @obervinov
 
 ## [2.0.1] - 2026-06-12
 
