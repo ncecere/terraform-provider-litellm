@@ -134,7 +134,7 @@ The following arguments are supported:
 
 * `max_parallel_requests` - (Optional) Maximum number of parallel requests allowed.
 
-* `metadata` - (Optional) Map of metadata associated with this key. Values are strings; use `jsonencode()` for complex values (objects, arrays) such as logging configuration — they will be sent as native JSON to the API.
+* `metadata` - (Optional, Sensitive) Map of metadata associated with this key. Values are strings; use `jsonencode()` for complex values (objects, arrays) such as logging configuration — they will be sent as native JSON to the API. The entire map is marked sensitive because metadata commonly contains credentials; Terraform redacts it from normal CLI output while retaining it in state. When LiteLLM returns nested credentials as `litellm_enc::` or another recognized redaction marker, the provider retains the corresponding configured leaf while continuing to refresh unmasked metadata values for drift.
 
 * `tpm_limit` - (Optional) Tokens per minute limit.
 

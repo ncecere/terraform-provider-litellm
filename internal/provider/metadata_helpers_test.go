@@ -179,6 +179,39 @@ func TestMetadataValueToString_Bool(t *testing.T) {
 
 // TestMetadataRoundTrip verifies the full cycle:
 // Terraform map(string) → convertMetadataToNative → API → metadataValueToString → map(string)
+func TestMetadataValueToStringPreservingMasked(t *testing.T) {
+	t.Parallel()
+
+	configured := `[{"callback_name":"langfuse_otel","callback_vars":{"host":"https://configured.example","public_key":"pk-original","secret_key":"sk-original"}}]`
+	apiValue := []interface{}{
+		map[string]interface{}{
+			"callback_name": "langfuse_otel",
+			"callback_vars": map[string]interface{}{
+				"host":       "https://changed.example",
+				"public_key": "litellm_enc::public",
+				"secret_key": "litellm_enc::secret",
+			},
+		},
+	}
+
+	got := metadataValueToStringPreservingMasked(apiValue, configured)
+	want := `[{"callback_name":"langfuse_otel","callback_vars":{"host":"https://changed.example","public_key":"pk-original","secret_key":"sk-original"}}]`
+	if got != want {
+		t.Fatalf("preserved metadata = %s, want %s", got, want)
+	}
+}
+
+func TestMetadataValueToStringPreservingMaskedScalar(t *testing.T) {
+	t.Parallel()
+
+	if got := metadataValueToStringPreservingMasked("litellm_enc::opaque", "configured-secret"); got != "configured-secret" {
+		t.Fatalf("masked scalar = %q, want configured value", got)
+	}
+	if got := metadataValueToStringPreservingMasked("changed", "configured"); got != "changed" {
+		t.Fatalf("unmasked scalar = %q, want API value", got)
+	}
+}
+
 func TestMetadataRoundTrip(t *testing.T) {
 	t.Parallel()
 
