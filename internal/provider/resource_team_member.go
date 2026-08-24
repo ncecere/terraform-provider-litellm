@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
@@ -33,6 +34,7 @@ type TeamMemberResourceModel struct {
 	UserEmail       types.String  `tfsdk:"user_email"`
 	Role            types.String  `tfsdk:"role"`
 	MaxBudgetInTeam types.Float64 `tfsdk:"max_budget_in_team"`
+	BudgetDuration  types.String  `tfsdk:"budget_duration"`
 }
 
 func (r *TeamMemberResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -73,6 +75,16 @@ func (r *TeamMemberResource) Schema(ctx context.Context, req resource.SchemaRequ
 				Description: "Maximum budget for this member in the team.",
 				Optional:    true,
 			},
+			"budget_duration": schema.StringAttribute{
+				Description: "Recurring reset interval for this member's budget (for example, 30d or 24h). It may be configured without an explicit max to override an inherited/default interval. LiteLLM manages the reset schedule.",
+				Optional:    true,
+				Validators: []validator.String{
+					stringvalidator.RegexMatches(
+						budgetDurationPattern,
+						`must be hourly, daily, weekly, monthly, 1mo, or a positive integer with unit s, m, h, d, or w`,
+					),
+				},
+			},
 		},
 	}
 }
@@ -94,14 +106,7 @@ func (r *TeamMemberResource) Configure(ctx context.Context, req resource.Configu
 	r.client = client
 }
 
-func (r *TeamMemberResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
-	var data TeamMemberResourceModel
-
-	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
+func buildTeamMemberAddRequest(data *TeamMemberResourceModel) map[string]interface{} {
 	memberReq := map[string]interface{}{
 		"member": []map[string]interface{}{
 			{
@@ -112,21 +117,129 @@ func (r *TeamMemberResource) Create(ctx context.Context, req resource.CreateRequ
 		},
 		"team_id": data.TeamID.ValueString(),
 	}
-
 	if !data.MaxBudgetInTeam.IsNull() && !data.MaxBudgetInTeam.IsUnknown() {
 		memberReq["max_budget_in_team"] = data.MaxBudgetInTeam.ValueFloat64()
 	}
+	if !data.BudgetDuration.IsNull() && !data.BudgetDuration.IsUnknown() {
+		memberReq["budget_duration"] = data.BudgetDuration.ValueString()
+	}
+	return memberReq
+}
+
+func buildTeamMemberUpdateRequest(data *TeamMemberResourceModel) map[string]interface{} {
+	updateReq := map[string]interface{}{
+		"user_id":    data.UserID.ValueString(),
+		"user_email": data.UserEmail.ValueString(),
+		"team_id":    data.TeamID.ValueString(),
+		"role":       data.Role.ValueString(),
+	}
+	if !data.MaxBudgetInTeam.IsNull() && !data.MaxBudgetInTeam.IsUnknown() {
+		updateReq["max_budget_in_team"] = data.MaxBudgetInTeam.ValueFloat64()
+	}
+	if !data.BudgetDuration.IsNull() && !data.BudgetDuration.IsUnknown() {
+		updateReq["budget_duration"] = data.BudgetDuration.ValueString()
+	}
+	return updateReq
+}
+
+func (r *TeamMemberResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	var data TeamMemberResourceModel
+
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	memberReq := buildTeamMemberAddRequest(&data)
 
 	if err := r.client.DoRequestWithResponse(ctx, "POST", "/team/member_add", memberReq, nil); err != nil {
-		if !isTeamMemberAlreadyInTeamError(err) {
+		// LiteLLM can report duplicate/partially-created memberships through
+		// several status/body shapes. Verify the exact team+user identity before
+		// deciding whether Create can safely continue as reconciliation.
+		observed := data
+		exists, verifyErr := r.readTeamMember(ctx, &observed)
+		if verifyErr != nil || !exists {
 			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to add team member: %s", err))
+			return
+		}
+		if updateErr := r.client.DoRequestWithResponse(ctx, "POST", "/team/member_update", buildTeamMemberUpdateRequest(&data), nil); updateErr != nil {
+			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Team member exists after add failed but could not be reconciled: %s", updateErr))
 			return
 		}
 	}
 
 	data.ID = types.StringValue(fmt.Sprintf("%s:%s", data.TeamID.ValueString(), data.UserID.ValueString()))
 
+	if exists, err := r.readTeamMember(ctx, &data); err != nil {
+		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Team member was created but could not be read back: %s", err))
+	} else if !exists {
+		resp.Diagnostics.AddWarning("Read Error", "Team member was created but was not present in the immediate team read-back.")
+	}
+
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+}
+
+func (r *TeamMemberResource) readTeamMember(ctx context.Context, data *TeamMemberResourceModel) (bool, error) {
+	endpoint := fmt.Sprintf("/team/info?team_id=%s", url.QueryEscape(data.TeamID.ValueString()))
+	var result map[string]interface{}
+	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
+		return false, err
+	}
+
+	memberFound := false
+	teamInfo := result
+	if nested, ok := result["team_info"].(map[string]interface{}); ok {
+		teamInfo = nested
+	}
+	if members, ok := teamInfo["members_with_roles"].([]interface{}); ok {
+		for _, rawMember := range members {
+			member, ok := rawMember.(map[string]interface{})
+			if !ok || member["user_id"] != data.UserID.ValueString() {
+				continue
+			}
+			memberFound = true
+			if role, ok := member["role"].(string); ok && role != "" {
+				data.Role = types.StringValue(role)
+			}
+			if email, ok := member["user_email"].(string); ok && email != "" {
+				data.UserEmail = types.StringValue(email)
+			}
+			break
+		}
+	}
+
+	var budget map[string]interface{}
+	if memberships, ok := result["team_memberships"].([]interface{}); ok {
+		for _, rawMembership := range memberships {
+			membership, ok := rawMembership.(map[string]interface{})
+			if !ok || membership["user_id"] != data.UserID.ValueString() {
+				continue
+			}
+			memberFound = true
+			budget, _ = membership["litellm_budget_table"].(map[string]interface{})
+			break
+		}
+	}
+	if !memberFound {
+		return false, nil
+	}
+
+	if !data.MaxBudgetInTeam.IsNull() || data.MaxBudgetInTeam.IsUnknown() {
+		if value, ok := budget["max_budget"].(float64); ok {
+			data.MaxBudgetInTeam = types.Float64Value(value)
+		} else {
+			data.MaxBudgetInTeam = types.Float64Null()
+		}
+	}
+	if !data.BudgetDuration.IsNull() || data.BudgetDuration.IsUnknown() {
+		if value, ok := budget["budget_duration"].(string); ok && value != "" {
+			data.BudgetDuration = types.StringValue(value)
+		} else {
+			data.BudgetDuration = types.StringNull()
+		}
+	}
+
+	return true, nil
 }
 
 func (r *TeamMemberResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -137,8 +250,20 @@ func (r *TeamMemberResource) Read(ctx context.Context, req resource.ReadRequest,
 		return
 	}
 
-	// No specific endpoint to read a single team member
-	// Maintain state as-is
+	exists, err := r.readTeamMember(ctx, &data)
+	if err != nil {
+		if IsNotFoundError(err) {
+			resp.State.RemoveResource(ctx)
+			return
+		}
+		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read team member: %s", err))
+		return
+	}
+	if !exists {
+		resp.State.RemoveResource(ctx)
+		return
+	}
+
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
@@ -158,21 +283,19 @@ func (r *TeamMemberResource) Update(ctx context.Context, req resource.UpdateRequ
 
 	data.ID = state.ID
 
-	updateReq := map[string]interface{}{
-		"user_id":    data.UserID.ValueString(),
-		"user_email": data.UserEmail.ValueString(),
-		"team_id":    data.TeamID.ValueString(),
-	}
-
-	if !data.MaxBudgetInTeam.IsNull() && !data.MaxBudgetInTeam.IsUnknown() {
-		updateReq["max_budget_in_team"] = data.MaxBudgetInTeam.ValueFloat64()
-	}
+	updateReq := buildTeamMemberUpdateRequest(&data)
 
 	applyTeamMemberNullableClears(updateReq, &state, &data)
 
 	if err := r.client.DoRequestWithResponse(ctx, "POST", "/team/member_update", updateReq, nil); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to update team member: %s", err))
 		return
+	}
+
+	if exists, err := r.readTeamMember(ctx, &data); err != nil {
+		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Team member was updated but could not be read back: %s", err))
+	} else if !exists {
+		resp.Diagnostics.AddWarning("Read Error", "Team member was updated but was not present in the immediate team read-back.")
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
@@ -220,12 +343,7 @@ func applyTeamMemberNullableClears(updateReq map[string]interface{}, state, plan
 	if !state.MaxBudgetInTeam.IsNull() && plan.MaxBudgetInTeam.IsNull() {
 		updateReq["max_budget_in_team"] = nil
 	}
-}
-
-func isTeamMemberAlreadyInTeamError(err error) bool {
-	if err == nil {
-		return false
+	if !state.BudgetDuration.IsNull() && plan.BudgetDuration.IsNull() {
+		updateReq["budget_duration"] = nil
 	}
-	errStr := err.Error()
-	return contains(errStr, "status 400") && contains(errStr, "team_member_already_in_team")
 }

@@ -7,6 +7,7 @@ resource "litellm_team_member" "full" {
   user_email         = "teammemberfull@example.com"
   role               = "admin"
   max_budget_in_team = 100.0
+  budget_duration    = "30d"
 }
 
 output "team_member_full_id" {
