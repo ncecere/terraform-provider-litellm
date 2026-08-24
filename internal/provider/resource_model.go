@@ -647,9 +647,15 @@ func (r *ModelResource) readModel(ctx context.Context, data *ModelResourceModel)
 
 			switch v := rawValue.(type) {
 			case string:
-				// Normalize numeric strings to decimal notation so that
-				// "1.75e-07" (from API) matches "0.000000175" (from config).
-				if f, err := strconv.ParseFloat(v, 64); err == nil {
+				// LiteLLM masks sensitive scalar values such as azure_ad_token
+				// before returning them. Preserve the configured value when the API
+				// clearly returned a masking marker instead of exposing the masked
+				// value to Terraform's post-apply consistency check.
+				if prior, hasPrior := priorStrings[key]; hasPrior && isMaskedAPIString(v) {
+					additionalParams[key] = types.StringValue(prior)
+				} else if f, err := strconv.ParseFloat(v, 64); err == nil {
+					// Normalize numeric strings to decimal notation so that
+					// "1.75e-07" (from API) matches "0.000000175" (from config).
 					additionalParams[key] = types.StringValue(strconv.FormatFloat(f, 'f', -1, 64))
 				} else {
 					additionalParams[key] = types.StringValue(v)
@@ -675,13 +681,10 @@ func (r *ModelResource) readModel(ctx context.Context, data *ModelResourceModel)
 					// post-apply consistency check purely on formatting.
 					case hasPrior && jsonSemanticallyEqual(prior, apiJSON):
 						additionalParams[key] = types.StringValue(prior)
-					// Also preserve it when the value has the same SHAPE but
-					// differing scalar leaves -- LiteLLM masks/encrypts secret
-					// values (e.g. an x-api-key inside extra_headers) on read, so
-					// the API value never matches what was sent. We can't
-					// distinguish masking from real drift, so we carry forward the
-					// prior value, mirroring how model_api_key/aws_* are handled.
-					case hasPrior && jsonSameShape(prior, apiJSON):
+					// Preserve same-shaped JSON only when the API value contains an
+					// explicit masking marker. Shape alone is insufficient because
+					// it would hide genuine out-of-band scalar drift.
+					case hasPrior && jsonSameShape(prior, apiJSON) && jsonContainsMaskedValue(apiJSON):
 						additionalParams[key] = types.StringValue(prior)
 					default:
 						additionalParams[key] = types.StringValue(apiJSON)
@@ -998,14 +1001,9 @@ func jsonSemanticallyEqual(a, b string) bool {
 
 // jsonSameShape reports whether two JSON strings have the same structure --
 // same object keys (recursively) and same array lengths -- ignoring differences
-// in scalar (string/number/bool) leaf values. It's used to detect the case
-// where LiteLLM returns a value whose secret leaves have been masked/encrypted
-// on read (e.g. an x-api-key inside extra_headers): the shape is identical but
-// a scalar differs. In that case we can't tell a masked value from a genuinely
-// changed one, so the caller preserves the prior state value rather than fail
-// the post-apply consistency check on what is almost always just masking.
-// (This mirrors how model_api_key and the aws_* secret fields are already
-// carried forward from state rather than trusted from the API response.)
+// in scalar (string/number/bool) leaf values. The read path combines this check
+// with jsonContainsMaskedValue before preserving prior state, so same-shaped
+// unmasked remote drift remains visible.
 func jsonSameShape(a, b string) bool {
 	var av, bv interface{}
 	if err := json.Unmarshal([]byte(a), &av); err != nil {
@@ -1057,6 +1055,39 @@ func isJSONContainer(v interface{}) bool {
 	default:
 		return false
 	}
+}
+
+func isMaskedAPIString(value string) bool {
+	upper := strings.ToUpper(value)
+	return strings.Contains(value, "****") || strings.Contains(upper, "REDACTED")
+}
+
+func jsonContainsMaskedValue(value string) bool {
+	var decoded interface{}
+	if err := json.Unmarshal([]byte(value), &decoded); err != nil {
+		return false
+	}
+	return containsMaskedValue(decoded)
+}
+
+func containsMaskedValue(value interface{}) bool {
+	switch typed := value.(type) {
+	case string:
+		return isMaskedAPIString(typed)
+	case map[string]interface{}:
+		for _, child := range typed {
+			if containsMaskedValue(child) {
+				return true
+			}
+		}
+	case []interface{}:
+		for _, child := range typed {
+			if containsMaskedValue(child) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // normalizeAdditionalParams returns a new MapValue where every numeric string
