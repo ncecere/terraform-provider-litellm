@@ -166,19 +166,20 @@ func (r *TeamMemberResource) Create(ctx context.Context, req resource.CreateRequ
 
 	memberReq := buildTeamMemberAddRequest(&data)
 	if err := r.client.DoRequestWithResponse(ctx, "POST", "/team/member_add", memberReq, nil); err != nil {
-		// If the exact roster entry appeared after a preflight that proved it was
-		// absent, recover a partially successful/ambiguous add through the native
-		// update endpoint. Budget rows alone are not membership proof.
+		// A roster entry that appears after preflight might be a partial success or
+		// a concurrent external add. Without backend operation identity, ownership
+		// is ambiguous: never mutate or silently adopt it.
 		postAdd := data
 		exists, verifyErr := r.readTeamMember(ctx, &postAdd)
-		if verifyErr != nil || !exists {
-			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to add team member: %s", err))
+		if verifyErr == nil && exists {
+			resp.Diagnostics.AddError(
+				"Ambiguous Team Member Creation",
+				"The add request failed, but the user is now present in the team roster. The provider cannot prove who created it and did not reconcile or adopt it. Import the membership after verifying ownership.",
+			)
 			return
 		}
-		if updateErr := r.client.DoRequestWithResponse(ctx, "POST", "/team/member_update", buildTeamMemberUpdateRequest(&data), nil); updateErr != nil {
-			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Team member appeared after add failed but could not be reconciled: %s", updateErr))
-			return
-		}
+		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to add team member: %s", err))
+		return
 	}
 
 	data.ID = types.StringValue(fmt.Sprintf("%s:%s", data.TeamID.ValueString(), data.UserID.ValueString()))
