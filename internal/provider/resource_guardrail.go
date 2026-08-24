@@ -278,6 +278,39 @@ func (r *GuardrailResource) buildGuardrailRequest(ctx context.Context, data *Gua
 	}
 }
 
+func removeUnconfiguredGuardrailNulls(apiValue, configuredValue interface{}) interface{} {
+	switch apiValue := apiValue.(type) {
+	case map[string]interface{}:
+		configuredObject, _ := configuredValue.(map[string]interface{})
+		filtered := make(map[string]interface{}, len(apiValue))
+		for key, value := range apiValue {
+			configuredChild, configured := configuredObject[key]
+			if !configured && value == nil {
+				continue
+			}
+			if configured {
+				filtered[key] = removeUnconfiguredGuardrailNulls(value, configuredChild)
+			} else {
+				filtered[key] = value
+			}
+		}
+		return filtered
+	case []interface{}:
+		configuredArray, _ := configuredValue.([]interface{})
+		filtered := make([]interface{}, len(apiValue))
+		for index, value := range apiValue {
+			if index < len(configuredArray) {
+				filtered[index] = removeUnconfiguredGuardrailNulls(value, configuredArray[index])
+			} else {
+				filtered[index] = value
+			}
+		}
+		return filtered
+	default:
+		return apiValue
+	}
+}
+
 func (r *GuardrailResource) readGuardrail(ctx context.Context, data *GuardrailResourceModel) error {
 	guardrailID := data.GuardrailID.ValueString()
 	if guardrailID == "" {
@@ -325,18 +358,18 @@ func (r *GuardrailResource) readGuardrail(ctx context.Context, data *GuardrailRe
 
 		// Store other litellm_params as JSON (excluding guardrail, mode, default_on).
 		// Only update if the user originally configured litellm_params to avoid
-		// adopting the API's massive default parameter set.
-		// Additionally, only preserve the keys the user originally configured to
-		// prevent the API's expanded defaults from being stored in state.
+		// adopting the API's massive default parameter set. Top-level API defaults
+		// remain excluded. Within configured structures, remove only null object
+		// fields that the user omitted; retain explicit nulls and non-null additions
+		// so real server-side drift remains visible.
 		if !data.LitellmParams.IsNull() && !data.LitellmParams.IsUnknown() {
-			// Parse the user's original litellm_params to get configured keys
 			var userParams map[string]interface{}
 			if err := json.Unmarshal([]byte(data.LitellmParams.ValueString()), &userParams); err == nil {
 				otherParams := make(map[string]interface{})
-				for k := range userParams {
+				for k, configuredValue := range userParams {
 					if k != "guardrail" && k != "mode" && k != "default_on" {
-						if v, exists := litellmParams[k]; exists {
-							otherParams[k] = v
+						if apiValue, exists := litellmParams[k]; exists {
+							otherParams[k] = removeUnconfiguredGuardrailNulls(apiValue, configuredValue)
 						}
 					}
 				}
