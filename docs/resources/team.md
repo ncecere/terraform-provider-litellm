@@ -28,6 +28,26 @@ resource "litellm_team" "identity_group" {
 
 If omitted, the provider generates a UUID as before. Changing `team_id` replaces the team.
 
+### With Access Groups
+
+Associate access groups with a team to grant their grouped model access:
+
+```hcl
+resource "litellm_access_group" "engineering" {
+  access_group = "engineering-models"
+  model_names  = ["gpt-4o", "gpt-4o-mini"]
+}
+
+resource "litellm_team" "engineering" {
+  team_alias = "Engineering"
+  access_group_ids = [
+    litellm_access_group.engineering.id,
+  ]
+}
+```
+
+`access_group_ids` is unordered. Set it to `[]` to detach all access groups; omitting it allows the provider to read the current API associations.
+
 ### Full
 
 ```hcl
@@ -105,6 +125,7 @@ The following arguments are supported:
 * `team_alias` - (Required) A human-readable alias for the team.
 * `team_id` - (Optional, Computed, Forces replacement) Stable LiteLLM team identifier. Supply a predetermined value for external identity or JWT group mapping, or omit it to let the provider generate a UUID.
 * `organization_id` - (Optional) The ID of the organization this team belongs to.
+* `access_group_ids` - (Optional, Computed) Unordered set of access group IDs associated with the team. Use `[]` to detach all groups.
 * `max_budget` - (Optional) Maximum budget allocated to the team.
 * `budget_duration` - (Optional) Duration for the budget cycle (e.g., `"30d"`, `"7d"`, `"1h"`).
 * `tpm_limit` - (Optional) Tokens per minute limit for the team.
@@ -140,6 +161,7 @@ In addition to the arguments above, the following attributes are exported:
 The following attributes are both Optional and Computed (they are read back from the API if not explicitly set):
 
 * `metadata`
+* `access_group_ids`
 * `models`
 * `model_aliases`
 * `model_rpm_limit`

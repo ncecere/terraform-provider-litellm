@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"net/url"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
@@ -25,6 +26,7 @@ type TeamDataSourceModel struct {
 	TeamID                types.String  `tfsdk:"team_id"`
 	TeamAlias             types.String  `tfsdk:"team_alias"`
 	OrganizationID        types.String  `tfsdk:"organization_id"`
+	AccessGroupIDs        types.Set     `tfsdk:"access_group_ids"`
 	Models                types.List    `tfsdk:"models"`
 	MaxBudget             types.Float64 `tfsdk:"max_budget"`
 	Spend                 types.Float64 `tfsdk:"spend"`
@@ -59,6 +61,11 @@ func (d *TeamDataSource) Schema(ctx context.Context, req datasource.SchemaReques
 			"organization_id": schema.StringAttribute{
 				Description: "Organization ID for the team.",
 				Computed:    true,
+			},
+			"access_group_ids": schema.SetAttribute{
+				Description: "Access group IDs associated with this team.",
+				Computed:    true,
+				ElementType: types.StringType,
 			},
 			"models": schema.ListAttribute{
 				Description: "List of models the team can access.",
@@ -129,7 +136,7 @@ func (d *TeamDataSource) Read(ctx context.Context, req datasource.ReadRequest, r
 	}
 
 	teamID := data.TeamID.ValueString()
-	endpoint := fmt.Sprintf("/team/info?team_id=%s", teamID)
+	endpoint := fmt.Sprintf("/team/info?team_id=%s", url.QueryEscape(teamID))
 
 	var result map[string]interface{}
 	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
@@ -191,6 +198,13 @@ func (d *TeamDataSource) Read(ctx context.Context, req datasource.ReadRequest, r
 		data.Models, _ = types.ListValue(types.StringType, []attr.Value{})
 	}
 
+	accessGroupIDs, err := stringSetFromAPI(ctx, teamInfo["access_group_ids"])
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Team Response", fmt.Sprintf("Unable to decode access_group_ids for team '%s': %s", teamID, err))
+		return
+	}
+	data.AccessGroupIDs = accessGroupIDs
+
 	// Handle metadata map
 	if metadata, ok := teamInfo["metadata"].(map[string]interface{}); ok {
 		metaMap := make(map[string]attr.Value)
@@ -205,7 +219,7 @@ func (d *TeamDataSource) Read(ctx context.Context, req datasource.ReadRequest, r
 	}
 
 	// Fetch permissions separately
-	permEndpoint := fmt.Sprintf("/team/permissions_list?team_id=%s", teamID)
+	permEndpoint := fmt.Sprintf("/team/permissions_list?team_id=%s", url.QueryEscape(teamID))
 	var permResult map[string]interface{}
 	if err := d.client.DoRequestWithResponse(ctx, "GET", permEndpoint, nil, &permResult); err == nil {
 		if perms, ok := permResult["team_member_permissions"].([]interface{}); ok {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -68,6 +69,53 @@ func TestTeamImportMirrorsIDAndTeamID(t *testing.T) {
 	}
 }
 
+func TestTeamAccessGroupIDsSchemaIsOptionalUnordered(t *testing.T) {
+	t.Parallel()
+
+	var response resource.SchemaResponse
+	(&TeamResource{}).Schema(context.Background(), resource.SchemaRequest{}, &response)
+	if response.Diagnostics.HasError() {
+		t.Fatalf("schema diagnostics: %v", response.Diagnostics)
+	}
+	attribute, ok := response.Schema.Attributes["access_group_ids"].(resourceschema.SetAttribute)
+	if !ok {
+		t.Fatalf("access_group_ids schema type = %T, want schema.SetAttribute", response.Schema.Attributes["access_group_ids"])
+	}
+	if !attribute.Optional || !attribute.Computed || attribute.Required {
+		t.Fatalf("access_group_ids must be Optional+Computed: %#v", attribute)
+	}
+	if len(attribute.Validators) != 1 {
+		t.Fatalf("access_group_ids validators = %d, want 1", len(attribute.Validators))
+	}
+}
+
+func TestBuildTeamRequestIncludesManagedAccessGroupIDs(t *testing.T) {
+	t.Parallel()
+
+	data := &TeamResourceModel{
+		TeamAlias: types.StringValue("access-group-team"),
+		AccessGroupIDs: types.SetValueMust(types.StringType, []attr.Value{
+			types.StringValue("group-b"),
+			types.StringValue("group-a"),
+		}),
+	}
+	request := (&TeamResource{}).buildTeamRequest(context.Background(), data, "team-123")
+	got, ok := request["access_group_ids"].([]string)
+	if !ok {
+		t.Fatalf("access_group_ids request type = %T, want []string", request["access_group_ids"])
+	}
+	if len(got) != 2 || !slices.Contains(got, "group-a") || !slices.Contains(got, "group-b") {
+		t.Fatalf("access_group_ids request = %v", got)
+	}
+
+	data.AccessGroupIDs = types.SetValueMust(types.StringType, []attr.Value{})
+	request = (&TeamResource{}).buildTeamRequest(context.Background(), data, "team-123")
+	got, ok = request["access_group_ids"].([]string)
+	if !ok || len(got) != 0 {
+		t.Fatalf("empty access_group_ids request = %#v, want []string{}", request["access_group_ids"])
+	}
+}
+
 func TestTeamIDForCreatePreservesCustomOrGeneratesUUID(t *testing.T) {
 	t.Parallel()
 
@@ -101,8 +149,9 @@ func TestReadTeamCustomIDIsEscapedAndMirrored(t *testing.T) {
 		case "/team/info":
 			_ = json.NewEncoder(writer).Encode(map[string]interface{}{
 				"team_info": map[string]interface{}{
-					"team_id":    teamID,
-					"team_alias": "Engineering Platform",
+					"team_id":          teamID,
+					"team_alias":       "Engineering Platform",
+					"access_group_ids": []interface{}{"group-b", "group-a"},
 				},
 			})
 		case "/team/permissions_list":
@@ -117,9 +166,13 @@ func TestReadTeamCustomIDIsEscapedAndMirrored(t *testing.T) {
 
 	teamResource := &TeamResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
 	data := TeamResourceModel{
-		ID:                    types.StringValue(teamID),
-		TeamID:                types.StringNull(),
-		TeamAlias:             types.StringValue("Engineering Platform"),
+		ID:        types.StringValue(teamID),
+		TeamID:    types.StringNull(),
+		TeamAlias: types.StringValue("Engineering Platform"),
+		AccessGroupIDs: types.SetValueMust(types.StringType, []attr.Value{
+			types.StringValue("group-a"),
+			types.StringValue("group-b"),
+		}),
 		TeamMemberPermissions: types.ListUnknown(types.StringType),
 	}
 	if err := teamResource.readTeam(context.Background(), &data); err != nil {
@@ -127,6 +180,13 @@ func TestReadTeamCustomIDIsEscapedAndMirrored(t *testing.T) {
 	}
 	if data.TeamID.ValueString() != teamID || data.ID.ValueString() != teamID {
 		t.Fatalf("team identity not mirrored: id=%q team_id=%q", data.ID.ValueString(), data.TeamID.ValueString())
+	}
+	expectedGroups := types.SetValueMust(types.StringType, []attr.Value{
+		types.StringValue("group-a"),
+		types.StringValue("group-b"),
+	})
+	if !data.AccessGroupIDs.Equal(expectedGroups) {
+		t.Fatalf("access_group_ids = %v, want %v", data.AccessGroupIDs, expectedGroups)
 	}
 }
 
@@ -261,10 +321,11 @@ func TestReadTeamIgnoresUnconfiguredServerBudgetDefaults(t *testing.T) {
 		case "/team/info":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"team_info": map[string]interface{}{
-					"team_id":         "team-defaults",
-					"team_alias":      "defaults-team",
-					"max_budget":      500.0,
-					"budget_duration": "30d",
+					"team_id":          "team-defaults",
+					"team_alias":       "defaults-team",
+					"max_budget":       500.0,
+					"budget_duration":  "30d",
+					"access_group_ids": []interface{}{"externally-managed"},
 				},
 			})
 		case "/team/permissions_list":
@@ -290,6 +351,7 @@ func TestReadTeamIgnoresUnconfiguredServerBudgetDefaults(t *testing.T) {
 		TeamAlias:      types.StringValue("defaults-team"),
 		MaxBudget:      types.Float64Null(),
 		BudgetDuration: types.StringNull(),
+		AccessGroupIDs: types.SetNull(types.StringType),
 	}
 
 	if err := r.readTeam(context.Background(), &data); err != nil {
@@ -300,6 +362,10 @@ func TestReadTeamIgnoresUnconfiguredServerBudgetDefaults(t *testing.T) {
 	}
 	if !data.BudgetDuration.IsNull() {
 		t.Errorf("unconfigured budget_duration should remain null, got %v", data.BudgetDuration)
+	}
+	expectedAccessGroups := types.SetValueMust(types.StringType, []attr.Value{types.StringValue("externally-managed")})
+	if !data.AccessGroupIDs.Equal(expectedAccessGroups) {
+		t.Errorf("access_group_ids = %v, want API value %v", data.AccessGroupIDs, expectedAccessGroups)
 	}
 }
 

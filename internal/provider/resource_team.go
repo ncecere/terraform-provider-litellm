@@ -6,6 +6,7 @@ import (
 	"net/url"
 
 	"github.com/google/uuid"
+	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -34,6 +35,7 @@ type TeamResourceModel struct {
 	TeamID                types.String  `tfsdk:"team_id"`
 	TeamAlias             types.String  `tfsdk:"team_alias"`
 	OrganizationID        types.String  `tfsdk:"organization_id"`
+	AccessGroupIDs        types.Set     `tfsdk:"access_group_ids"`
 	Metadata              types.Map     `tfsdk:"metadata"`
 	TPMLimit              types.Int64   `tfsdk:"tpm_limit"`
 	RPMLimit              types.Int64   `tfsdk:"rpm_limit"`
@@ -71,6 +73,32 @@ func teamIDForCreate(configured types.String) string {
 		return configured.ValueString()
 	}
 	return uuid.New().String()
+}
+
+func stringSetFromAPI(ctx context.Context, value interface{}) (types.Set, error) {
+	values := []string{}
+	switch typed := value.(type) {
+	case nil:
+	case []string:
+		values = typed
+	case []interface{}:
+		values = make([]string, 0, len(typed))
+		for _, item := range typed {
+			stringValue, ok := item.(string)
+			if !ok {
+				return types.SetNull(types.StringType), fmt.Errorf("expected a string, got %T", item)
+			}
+			values = append(values, stringValue)
+		}
+	default:
+		return types.SetNull(types.StringType), fmt.Errorf("expected a list of strings, got %T", value)
+	}
+
+	set, diagnostics := types.SetValueFrom(ctx, types.StringType, values)
+	if diagnostics.HasError() {
+		return types.SetNull(types.StringType), fmt.Errorf("failed to convert string set: %v", diagnostics.Errors())
+	}
+	return set, nil
 }
 
 var fallbackEntryAttrTypes = map[string]attr.Type{
@@ -117,6 +145,15 @@ func (r *TeamResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 			"organization_id": schema.StringAttribute{
 				Description: "Organization ID for the team.",
 				Optional:    true,
+			},
+			"access_group_ids": schema.SetAttribute{
+				Description: "Access group IDs associated with this team. Order is ignored. Set an empty collection to detach all access groups.",
+				Optional:    true,
+				Computed:    true,
+				ElementType: types.StringType,
+				Validators: []validator.Set{
+					setvalidator.ValueStringsAre(stringvalidator.LengthAtLeast(1)),
+				},
 			},
 			"metadata": schema.MapAttribute{
 				Description: "Arbitrary metadata for the team.",
@@ -415,6 +452,12 @@ func (r *TeamResource) buildTeamRequest(ctx context.Context, data *TeamResourceM
 		teamReq["budget_duration"] = data.BudgetDuration.ValueString()
 	}
 
+	if !data.AccessGroupIDs.IsNull() && !data.AccessGroupIDs.IsUnknown() {
+		var accessGroupIDs []string
+		data.AccessGroupIDs.ElementsAs(ctx, &accessGroupIDs, false)
+		teamReq["access_group_ids"] = accessGroupIDs
+	}
+
 	// Numeric fields - check IsNull and IsUnknown
 	if !data.TPMLimit.IsNull() && !data.TPMLimit.IsUnknown() {
 		teamReq["tpm_limit"] = data.TPMLimit.ValueInt64()
@@ -616,6 +659,11 @@ func (r *TeamResource) readTeam(ctx context.Context, data *TeamResourceModel) er
 	if orgID, ok := teamInfo["organization_id"].(string); ok && orgID != "" {
 		data.OrganizationID = types.StringValue(orgID)
 	}
+	accessGroupIDs, err := stringSetFromAPI(ctx, teamInfo["access_group_ids"])
+	if err != nil {
+		return fmt.Errorf("invalid access_group_ids in team response: %w", err)
+	}
+	data.AccessGroupIDs = accessGroupIDs
 	if v, exists := teamInfo["tpm_limit"]; exists {
 		if tpm, ok := v.(float64); ok {
 			data.TPMLimit = types.Int64Value(int64(tpm))
