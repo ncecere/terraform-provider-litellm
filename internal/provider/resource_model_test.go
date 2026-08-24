@@ -430,7 +430,7 @@ func TestPatchModelSendsTeamPublicModelNameWhenTeamIDSet(t *testing.T) {
 		TeamID:            types.StringValue(wantTeamID),
 		Tier:              types.StringNull(),
 		Mode:              types.StringNull(),
-		AccessGroups:     types.ListNull(types.StringType),
+		AccessGroups:      types.ListNull(types.StringType),
 	}
 
 	err := r.patchModel(context.Background(), data)
@@ -510,6 +510,66 @@ func TestReadModelExtractsAdditionalLiteLLMParams(t *testing.T) {
 	}
 	if got := additional["max_retries"]; got != "3" {
 		t.Fatalf("expected max_retries=3, got %q", got)
+	}
+}
+
+func TestReadModelCarriesForwardConfiguredParamsOmittedByAPI(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": []interface{}{
+				map[string]interface{}{
+					"model_name": "gpt-4o-mini",
+					"litellm_params": map[string]interface{}{
+						"custom_llm_provider": "openai",
+						"model":               "openai/gpt-4o-mini",
+					},
+					"model_info": map[string]interface{}{"base_model": "gpt-4o-mini"},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	r := &ModelResource{client: &Client{
+		APIBase:    server.URL,
+		APIKey:     "test-key",
+		HTTPClient: server.Client(),
+	}}
+	prior, _ := types.MapValue(types.StringType, map[string]attr.Value{
+		"tags":           types.StringValue(`["production"]`),
+		"max_retries":    types.StringValue("3"),
+		"timeout":        types.StringValue("30"),
+		"stream_timeout": types.StringValue("60"),
+	})
+	data := ModelResourceModel{
+		ID:                      types.StringValue("model-123"),
+		AdditionalLiteLLMParams: prior,
+	}
+
+	if err := r.readModel(context.Background(), &data); err != nil {
+		t.Fatalf("readModel returned error: %v", err)
+	}
+
+	var got map[string]string
+	if diags := data.AdditionalLiteLLMParams.ElementsAs(context.Background(), &got, false); diags.HasError() {
+		t.Fatalf("decode additional_litellm_params: %v", diags)
+	}
+	want := map[string]string{
+		"tags":           `["production"]`,
+		"max_retries":    "3",
+		"timeout":        "30",
+		"stream_timeout": "60",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("additional_litellm_params = %v, want %v", got, want)
+	}
+	for key, value := range want {
+		if got[key] != value {
+			t.Errorf("additional_litellm_params[%q] = %q, want %q", key, got[key], value)
+		}
 	}
 }
 
