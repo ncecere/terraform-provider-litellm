@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -41,8 +42,10 @@ func (r *KeyResource) ConfigValidators(ctx context.Context) []resource.ConfigVal
 	}
 }
 
-// hashKeyForID produces a non-sensitive identifier from a raw API key.
-// Format: "sha256:<hex digest>" so it is self-documenting and non-reversible.
+// hashKeyForID produces the non-sensitive management identifier used by this
+// provider. Because an unsalted digest permits offline guesses, callers should
+// use cryptographically random, high-entropy predefined keys.
+// Format: "sha256:<hex digest>".
 func hashKeyForID(rawKey string) string {
 	h := sha256.Sum256([]byte(rawKey))
 	return fmt.Sprintf("sha256:%x", h)
@@ -72,6 +75,14 @@ func keyLookupIdentifier(data *KeyResourceModel) (string, error) {
 		return "", fmt.Errorf("key value is empty, cannot identify the LiteLLM key")
 	}
 	return key, nil
+}
+
+func writeOnlyKeyCreateError(err error) string {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return fmt.Sprintf("LiteLLM returned HTTP %d while creating the write-only key. The response body was omitted because it may contain the submitted secret.", apiErr.StatusCode)
+	}
+	return "The write-only key request failed. Error details were omitted because an intermediary may include the submitted secret."
 }
 
 func NewKeyResource() resource.Resource {
@@ -147,7 +158,7 @@ func (r *KeyResource) Schema(ctx context.Context, req resource.SchemaRequest, re
 				},
 			},
 			"key_wo": schema.StringAttribute{
-				Description: "Write-only predefined API key value. Terraform sends this value to LiteLLM but does not store it in plan or state artifacts. Requires Terraform 1.11 or compatible OpenTofu support.",
+				Description: "Write-only predefined API key value. Terraform sends this value to LiteLLM but does not store it in plan or state artifacts. Use a cryptographically random, high-entropy key because its persisted SHA256 management identifier permits offline guesses of weak values. Requires Terraform 1.11 or compatible OpenTofu support.",
 				Optional:    true,
 				Sensitive:   true,
 				WriteOnly:   true,
@@ -399,7 +410,11 @@ func (r *KeyResource) Create(ctx context.Context, req resource.CreateRequest, re
 
 	var result map[string]interface{}
 	if err := r.client.DoRequestWithResponse(ctx, "POST", endpoint, keyReq, &result); err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to create key: %s", err))
+		if writeOnlyMode {
+			resp.Diagnostics.AddError("Write-Only Key Creation Error", writeOnlyKeyCreateError(err))
+		} else {
+			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to create key: %s", err))
+		}
 		return
 	}
 

@@ -51,6 +51,8 @@ resource "litellm_key" "write_only" {
 
 In write-only mode, `key` remains null and `id` contains only `sha256:<key-hash>`. The provider uses this hash for Read, Update, and Delete; plaintext is not stored in Terraform private state.
 
+> **Key entropy:** Use a cryptographically random key with at least 128 bits of entropy. The unsalted SHA256 management identifier does not authenticate to LiteLLM, but it is visible in ordinary Terraform output and lets an observer verify offline guesses of a weak or patterned predefined key.
+
 > **Compatibility:** The optional write-only argument requires Terraform or OpenTofu 1.11+. Older clients can continue using the provider when `key_wo` is omitted, but reject configurations that set it.
 
 ### Key with Budget and Rate Limits
@@ -135,7 +137,7 @@ The following arguments are supported:
 
 * `key` - (Optional) User-defined key value. If not set, LiteLLM generates a 16-digit unique `sk-` key automatically. The key is stored as a sensitive value in state. Conflicts with `key_wo`.
 
-* `key_wo` - (Optional, Sensitive, Write-only) Predefined key sent to LiteLLM but represented only by null in plan and state. Must be configured with `key_wo_version`. Requires Terraform or OpenTofu 1.11+.
+* `key_wo` - (Optional, Sensitive, Write-only) Predefined key sent to LiteLLM but represented only by null in plan and state. Must be configured with `key_wo_version`. Use a cryptographically random, high-entropy value because its SHA256 management identifier is persisted. Requires Terraform or OpenTofu 1.11+.
 
 * `key_wo_version` - (Optional, ForceNew) Persisted version or nonce for `key_wo`. Change this whenever the write-only secret changes. It conflicts with configurations that omit `key_wo`.
 
@@ -207,7 +209,7 @@ The following arguments are supported:
 
 In addition to all arguments above, the following attributes are exported:
 
-* `id` - Non-sensitive unique identifier for this key (SHA256 hash of the key value). This is safe to appear in logs and CI/CD output.
+* `id` - Non-sensitive unique management identifier for this key (SHA256 hash of the key value). LiteLLM prevents this digest from authenticating as a virtual key. It is displayed in logs and CI/CD output, so low-entropy predefined keys remain susceptible to offline guessing.
 
 * `key` - The API key token (sensitive). This is the actual secret used for authentication for generated or stateful predefined keys. It remains null in write-only mode.
 

@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -78,6 +79,40 @@ func TestKeyLookupIdentifier(t *testing.T) {
 				t.Fatalf("keyLookupIdentifier() = %q, %v; want %q", got, err, test.want)
 			}
 		})
+	}
+}
+
+func TestWriteOnlyKeyCreateErrorOmitsEchoedSecret(t *testing.T) {
+	t.Parallel()
+
+	secret := `sk-write-only-echoed-"secret"`
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+		}
+		writer.WriteHeader(http.StatusBadRequest)
+		_, _ = writer.Write(body)
+	}))
+	defer server.Close()
+
+	client := &Client{APIBase: server.URL, APIKey: "admin-key", HTTPClient: server.Client()}
+	err := client.DoRequestWithResponse(
+		context.Background(),
+		http.MethodPost,
+		"/key/generate",
+		map[string]interface{}{"key": secret},
+		nil,
+	)
+	if err == nil {
+		t.Fatal("expected echoed API error")
+	}
+	message := writeOnlyKeyCreateError(err)
+	if strings.Contains(message, secret) || strings.Contains(message, `\\\"secret\\\"`) {
+		t.Fatalf("safe diagnostic exposed write-only key: %q", message)
+	}
+	if !strings.Contains(message, "HTTP 400") || !strings.Contains(message, "response body was omitted") {
+		t.Fatalf("safe diagnostic = %q, want status without response body", message)
 	}
 }
 
