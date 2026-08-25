@@ -72,6 +72,16 @@ func emptyCredentialOwnership() *credentialOwnership {
 	return &credentialOwnership{Object: true, Children: map[string]*credentialOwnership{}}
 }
 
+func unownedCredentialPrivateMetadata() credentialPrivateMetadata {
+	return credentialPrivateMetadata{
+		Version:      1,
+		LegacyInfo:   emptyCredentialOwnership(),
+		JSONInfo:     emptyCredentialOwnership(),
+		LegacyValues: emptyCredentialOwnership(),
+		JSONValues:   emptyCredentialOwnership(),
+	}
+}
+
 func credentialOwnershipForObject(value map[string]interface{}) *credentialOwnership {
 	root := emptyCredentialOwnership()
 	for key, child := range value {
@@ -331,6 +341,12 @@ func credentialMetadataOwnership(metadata credentialPrivateMetadata, values bool
 
 func encodeCredentialPrivateMetadata(metadata credentialPrivateMetadata) ([]byte, error) {
 	metadata.Version = 1
+	for _, ownership := range []*credentialOwnership{metadata.LegacyInfo, metadata.JSONInfo, metadata.LegacyValues, metadata.JSONValues} {
+		normalizeCredentialOwnership(ownership)
+	}
+	if !validCredentialPrivateMetadata(metadata) {
+		return nil, errors.New("credential ownership metadata is invalid")
+	}
 	encoded, err := json.Marshal(metadata)
 	if err != nil {
 		return nil, errors.New("credential ownership metadata could not be encoded")
@@ -399,7 +415,14 @@ func validCredentialPrivateMetadata(metadata credentialPrivateMetadata) bool {
 		len(metadata.LegacyValues.Children) != 0 || len(metadata.JSONValues.Children) != 0) {
 		return false
 	}
-	return !metadata.UncertainOwnership || !metadata.AllRemoteOwned
+	if metadata.UncertainOwnership && (metadata.AllRemoteOwned ||
+		metadata.LegacyInfoConfigured || metadata.JSONInfoConfigured ||
+		metadata.LegacyValuesConfigured || metadata.JSONValuesConfigured ||
+		len(metadata.LegacyInfo.Children) != 0 || len(metadata.JSONInfo.Children) != 0 ||
+		len(metadata.LegacyValues.Children) != 0 || len(metadata.JSONValues.Children) != 0) {
+		return false
+	}
+	return true
 }
 
 func validCredentialOwnership(ownership *credentialOwnership, root bool) bool {
@@ -451,7 +474,7 @@ type canonicalCredentialJSONPlanModifier struct{}
 var _ planmodifier.String = canonicalCredentialJSONPlanModifier{}
 
 func (canonicalCredentialJSONPlanModifier) Description(context.Context) string {
-	return "Stores JSON objects in deterministic compact form without rounding numbers."
+	return "Stores JSON objects in deterministic compact form while preserving configured number lexemes provider-side."
 }
 
 func (m canonicalCredentialJSONPlanModifier) MarkdownDescription(ctx context.Context) string {
@@ -496,14 +519,19 @@ const (
 )
 
 func credentialChildMasking(active bool, key string, value interface{}) credentialMaskMode {
-	if !active || !isLiteLLMSensitiveCredentialKey(key) {
+	if !active {
 		return credentialMaskNone
 	}
+	// Keep walking every object on a credential-values surface. LiteLLM masks
+	// sensitive leaves recursively even when their parent key (for example
+	// "oauth") is not itself sensitive.
 	if _, ok := value.(map[string]interface{}); ok {
 		return credentialMaskObject
 	}
-	if _, ok := value.(string); ok {
-		return credentialMaskScalar
+	if isLiteLLMSensitiveCredentialKey(key) {
+		if _, ok := value.(string); ok {
+			return credentialMaskScalar
+		}
 	}
 	return credentialMaskNone
 }

@@ -3,53 +3,59 @@
 
 set -eu
 
-if [ "${TF_ACC:-}" != "1" ]; then
-  echo "Refusing destructive acceptance tests: set TF_ACC=1." >&2
-  exit 1
-fi
-if [ "${LITELLM_ACCEPTANCE_CONFIRM:-}" != "local-v1.98.0" ]; then
-  echo "Set LITELLM_ACCEPTANCE_CONFIRM=local-v1.98.0 to confirm use of the disposable local backend." >&2
-  exit 1
-fi
-
+ASSEMBLY_ONLY=${LITELLM_ACCEPTANCE_ASSEMBLY_ONLY:-0}
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 API_BASE=http://localhost:4000
 
-if ! command -v curl >/dev/null 2>&1; then
-  echo "curl is required for the acceptance preflight." >&2
-  exit 1
-fi
-if ! command -v python3 >/dev/null 2>&1; then
-  echo "python3 is required for the acceptance preflight." >&2
-  exit 1
-fi
-case "$API_BASE" in
-  http://localhost:*|http://127.0.0.1:*) ;;
-  *) echo "Acceptance tests are restricted to a loopback backend." >&2; exit 1 ;;
-esac
+if [ "$ASSEMBLY_ONLY" != "1" ]; then
+  if [ "${TF_ACC:-}" != "1" ]; then
+    echo "Refusing destructive acceptance tests: set TF_ACC=1." >&2
+    exit 1
+  fi
+  if [ "${LITELLM_ACCEPTANCE_CONFIRM:-}" != "local-v1.98.0" ]; then
+    echo "Set LITELLM_ACCEPTANCE_CONFIRM=local-v1.98.0 to confirm use of the disposable local backend." >&2
+    exit 1
+  fi
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "curl is required for the acceptance preflight." >&2
+    exit 1
+  fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "python3 is required for the acceptance preflight." >&2
+    exit 1
+  fi
+  case "$API_BASE" in
+    http://localhost:*|http://127.0.0.1:*) ;;
+    *) echo "Acceptance tests are restricted to a loopback backend." >&2; exit 1 ;;
+  esac
 
-version=$(curl --fail --silent --show-error "$API_BASE/openapi.json" |
-  python3 -c 'import json, sys; print(json.load(sys.stdin).get("info", {}).get("version", ""))')
-if [ "$version" != "1.98.0" ]; then
-  echo "Expected disposable LiteLLM v1.98.0 at $API_BASE, found ${version:-unknown}." >&2
-  exit 1
+  version=$(curl --fail --silent --show-error "$API_BASE/openapi.json" |
+    python3 -c 'import json, sys; print(json.load(sys.stdin).get("info", {}).get("version", ""))')
+  if [ "$version" != "1.98.0" ]; then
+    echo "Expected disposable LiteLLM v1.98.0 at $API_BASE, found ${version:-unknown}." >&2
+    exit 1
+  fi
 fi
 
 run_case() {
   label=$1
   shift
   printf '\n===== ACCEPTANCE: %s =====\n' "$label"
-  sh "$REPO_ROOT/internal_testing/smoke.sh" "$REPO_ROOT" "$@"
+  if [ "$ASSEMBLY_ONLY" = "1" ]; then
+    SMOKE_ASSEMBLY_ONLY=1 sh "$REPO_ROOT/internal_testing/smoke.sh" "$REPO_ROOT" "$@"
+  else
+    sh "$REPO_ROOT/internal_testing/smoke.sh" "$REPO_ROOT" "$@"
+  fi
 }
 
 run_credential_update_case() {
   printf '\n===== ACCEPTANCE: credential_update =====\n'
-  SMOKE_CREDENTIAL_UPDATE=1 sh "$REPO_ROOT/internal_testing/smoke.sh" "$REPO_ROOT" resources credential_update.tf
+  SMOKE_ASSEMBLY_ONLY=$ASSEMBLY_ONLY SMOKE_CREDENTIAL_UPDATE=1 sh "$REPO_ROOT/internal_testing/smoke.sh" "$REPO_ROOT" resources credential_update.tf
 }
 
 run_credential_import_case() {
   printf '\n===== ACCEPTANCE: credential_import =====\n'
-  SMOKE_CREDENTIAL_IMPORT=1 sh "$REPO_ROOT/internal_testing/smoke.sh" "$REPO_ROOT" resources credential_import.tf
+  SMOKE_ASSEMBLY_ONLY=$ASSEMBLY_ONLY SMOKE_CREDENTIAL_IMPORT=1 sh "$REPO_ROOT/internal_testing/smoke.sh" "$REPO_ROOT" resources credential_import.tf
 }
 
 # Explicit coverage table. litellm_project is enterprise-only and intentionally
@@ -80,4 +86,8 @@ run_case unified_access_group resources unified_access_group_minimal.tf datasour
 run_case user resources user_minimal.tf
 run_case vector_store resources vector_store_minimal.tf
 
-printf '\nAcceptance passed: 22/23 resources (project is enterprise-only).\n'
+if [ "$ASSEMBLY_ONLY" = "1" ]; then
+  printf '\nAcceptance assembly passed: every matrix case produced collision-free, parseable HCL.\n'
+else
+  printf '\nAcceptance passed: 22/23 resources (project is enterprise-only).\n'
+fi

@@ -35,7 +35,7 @@ LiteLLM's by-model response synthesizes `credential_name`. Terraform preserves t
 
 * `id` - Configured stable `credential_name`.
 * `credential_info` - Existing computed `map(string)` projection. Only top-level string values appear, preserving the original Terraform type.
-* `credential_info_json` - Additive canonical full JSON object. It includes nested objects, arrays, booleans, nulls, and exact JSON numbers.
+* `credential_info_json` - Additive canonical full JSON object. It includes nested objects, arrays, booleans, nulls, and the exact number lexemes returned by LiteLLM. This does not recover pre-LiteLLM fractional precision: Python normally parses JSON fractions as binary `float`, so use strings when a decimal must remain textually exact. Python integers remain arbitrary precision.
 
 ## Security
 

@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	datasourceschema "github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -321,6 +323,7 @@ func TestCredentialProtocolCreateSourcePlanningMatrix(t *testing.T) {
 func TestCredentialCreateBothKeepsValuesInactiveAndPostflights(t *testing.T) {
 	t.Parallel()
 	var requests []string
+	created := false
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
 		requests = append(requests, request.Method+" "+request.RequestURI)
@@ -331,8 +334,13 @@ func TestCredentialCreateBothKeepsValuesInactiveAndPostflights(t *testing.T) {
 			if body["model_id"] != "provider/model" || body["credential_values"].(map[string]interface{})["api_key"] != "inactive-secret" {
 				t.Errorf("POST body = %#v", body)
 			}
+			created = true
 			_, _ = writer.Write([]byte(`{"success":true,"message":"Credential created successfully"}`))
 		case http.MethodGet:
+			if !created {
+				http.NotFound(writer, request)
+				return
+			}
 			_, _ = writer.Write([]byte(`{"credential_name":"both","credential_info":{},"credential_values":{"api_key":"mo****et"}}`))
 		default:
 			http.NotFound(writer, request)
@@ -354,7 +362,11 @@ func TestCredentialCreateBothKeepsValuesInactiveAndPostflights(t *testing.T) {
 	if response.Diagnostics.HasError() {
 		t.Fatalf("create diagnostics: %v", response.Diagnostics)
 	}
-	if len(requests) != 2 || !strings.HasPrefix(requests[1], "GET /credentials/by_name/both") {
+	if !reflect.DeepEqual(requests, []string{
+		"GET /credentials/by_name/both",
+		"POST /credentials",
+		"GET /credentials/by_name/both",
+	}) {
 		t.Fatalf("requests = %#v", requests)
 	}
 	var state CredentialResourceModel
@@ -373,13 +385,19 @@ func TestCredentialCreateBothKeepsValuesInactiveAndPostflights(t *testing.T) {
 
 func TestCredentialMalformedCreateResponseRetainsRecoveryIdentity(t *testing.T) {
 	t.Parallel()
+	created := false
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
 		if request.Method == http.MethodPost {
+			created = true
 			_, _ = writer.Write([]byte(`{"status_code":500,"detail":"serialized exception"}`))
 			return
 		}
-		_, _ = writer.Write([]byte(`{"credential_name":"recover","credential_info":{},"credential_values":{}}`))
+		if !created {
+			http.NotFound(writer, request)
+			return
+		}
+		_, _ = writer.Write([]byte(`{"credential_name":"recover","credential_info":{},"credential_values":{"api_key":"re****et"}}`))
 	}))
 	defer server.Close()
 	schema := credentialTestSchema(t)
@@ -601,20 +619,21 @@ func TestCredentialProtocolReplacementDeleteRefusesAtomicObjectShapeDrift(t *tes
 
 func TestCredentialTopLevelRemovalPlansSafeErrorNotReplacement(t *testing.T) {
 	t.Parallel()
-	schema := credentialTestSchema(t)
 	stateModel := credentialTestModel("remove", map[string]string{"keep": "yes", "remove": "owned"}, map[string]string{"api_key": "secret"})
-	state := credentialTestState(t, schema, stateModel)
-	configModel := credentialTestModel("remove", map[string]string{"keep": "yes"}, map[string]string{"api_key": "secret"})
-	plan := credentialTestPlan(t, schema, configModel)
-	response := &resource.ModifyPlanResponse{Plan: plan}
-	(&CredentialResource{}).ModifyPlan(context.Background(), resource.ModifyPlanRequest{
-		State: state, Plan: plan, Config: credentialTestConfig(t, schema, configModel),
-	}, response)
-	if !response.Diagnostics.HasError() {
-		t.Fatal("top-level removal did not fail safely")
+	prior, err := inferCredentialPrivateMetadata(context.Background(), stateModel)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if len(response.RequiresReplace) != 0 {
-		t.Fatalf("top-level removal requested destructive replacement: %v", response.RequiresReplace)
+	configModel := credentialTestModel("remove", map[string]string{"keep": "yes"}, map[string]string{"api_key": "secret"})
+	desired, err := buildCredentialConfiguredObject(context.Background(), configModel.CredentialInfo, configModel.CredentialInfoJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !credentialTopLevelKeyRemoved(credentialMetadataOwnership(prior, false), desired.UnionOwnership) {
+		t.Fatal("top-level removal was not classified as unsafe")
+	}
+	if len(credentialReplacementPaths(stateModel, configModel)) != 0 {
+		t.Fatal("top-level content removal was incorrectly classified as replacement")
 	}
 }
 
@@ -1042,5 +1061,348 @@ func TestCredentialDataSourcePreservesMapAndAddsFullJSON(t *testing.T) {
 	}
 	if !strings.Contains(state.CredentialInfoJSON.ValueString(), "9007199254740993123456789") || !strings.Contains(state.CredentialInfoJSON.ValueString(), `"enabled":true`) {
 		t.Fatalf("full JSON lost heterogeneous values: %s", state.CredentialInfoJSON.ValueString())
+	}
+}
+
+type credentialPrivateReaderStub struct {
+	encoded []byte
+	diags   diag.Diagnostics
+}
+
+func (s credentialPrivateReaderStub) GetKey(context.Context, string) ([]byte, diag.Diagnostics) {
+	return s.encoded, s.diags
+}
+
+func TestCredentialCreatePreflightRefusesCollisionAndFailure(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{"exact collision", http.StatusOK, `{"credential_name":"preflight","credential_info":{},"credential_values":{}}`},
+		{"unavailable preflight", http.StatusInternalServerError, `{"detail":"unavailable"}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			posts := 0
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				writer.Header().Set("Content-Type", "application/json")
+				if request.Method == http.MethodPost {
+					posts++
+				}
+				writer.WriteHeader(test.status)
+				_, _ = writer.Write([]byte(test.body))
+			}))
+			defer server.Close()
+			schema := credentialTestSchema(t)
+			model := credentialTestModel("preflight", nil, map[string]string{"api_key": "secret"})
+			model.ID = types.StringUnknown()
+			plan := credentialTestPlan(t, schema, model)
+			response := &resource.CreateResponse{State: tfsdk.State{Raw: plan.Raw, Schema: schema}}
+			(&CredentialResource{client: &Client{APIBase: server.URL, APIKey: "admin", HTTPClient: server.Client()}}).Create(context.Background(), resource.CreateRequest{Plan: plan}, response)
+			if !response.Diagnostics.HasError() || posts != 0 {
+				t.Fatalf("preflight diagnostics=%v posts=%d", response.Diagnostics, posts)
+			}
+		})
+	}
+}
+
+func TestCredentialAmbiguousCreateRecoveryIsBoundedAndRetainsPartialIdentity(t *testing.T) {
+	// The retry backoff is intentionally exercised, so do not run this in parallel.
+	gets := 0
+	posts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		if request.Method == http.MethodPost {
+			posts++
+			_, _ = writer.Write([]byte(`{"accepted":true}`))
+			return
+		}
+		gets++
+		http.NotFound(writer, request)
+	}))
+	defer server.Close()
+	schema := credentialTestSchema(t)
+	model := credentialTestModel("bounded", nil, map[string]string{"api_key": "secret"})
+	model.ID = types.StringUnknown()
+	plan := credentialTestPlan(t, schema, model)
+	response := &resource.CreateResponse{State: tfsdk.State{Raw: plan.Raw, Schema: schema}}
+	(&CredentialResource{client: &Client{APIBase: server.URL, APIKey: "admin", HTTPClient: server.Client()}}).Create(context.Background(), resource.CreateRequest{Plan: plan}, response)
+	if !response.Diagnostics.HasError() || posts != 1 || gets != 1+credentialPostflightAttempts {
+		t.Fatalf("bounded recovery diagnostics=%v posts=%d gets=%d", response.Diagnostics, posts, gets)
+	}
+	var partial CredentialResourceModel
+	if diagnostics := response.State.Get(context.Background(), &partial); diagnostics.HasError() {
+		t.Fatal(diagnostics)
+	}
+	if partial.ID.ValueString() != "bounded" || partial.CredentialName.ValueString() != "bounded" {
+		t.Fatalf("partial identity = %#v", partial)
+	}
+}
+
+func TestCredentialAmbiguousCreateClassification(t *testing.T) {
+	t.Parallel()
+	for name, test := range map[string]struct {
+		accepted bool
+		err      error
+		want     bool
+	}{
+		"unusable success":        {accepted: true, want: true},
+		"request timeout":         {err: &APIError{StatusCode: http.StatusRequestTimeout}, want: true},
+		"server error":            {err: &APIError{StatusCode: http.StatusBadGateway}, want: true},
+		"definite bad request":    {err: &APIError{StatusCode: http.StatusBadRequest}},
+		"local transport failure": {err: &safeTransportError{kind: "LiteLLM HTTP transport request failed"}},
+		"dispatched transport":    {err: &safeTransportError{kind: "LiteLLM HTTP transport request failed", dispatched: true}, want: true},
+		"terminal TLS":            {err: &safeTransportError{kind: "LiteLLM TLS verification failed", dispatched: true}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := shouldRecoverCredentialCreate(test.accepted, test.err); got != test.want {
+				t.Fatalf("classification=%t want=%t", got, test.want)
+			}
+		})
+	}
+}
+
+func TestCredentialProtocolAmbiguousCreateMarksUncertainAndBlocksMutations(t *testing.T) {
+	// Stateful handler; do not run in parallel.
+	created := false
+	patches := 0
+	deletes := 0
+	api := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		switch request.Method {
+		case http.MethodGet:
+			if !created {
+				http.NotFound(writer, request)
+				return
+			}
+			_, _ = writer.Write([]byte(`{"credential_name":"uncertain","credential_info":{"owner":"terraform"},"credential_values":{"api_key":"se****et"}}`))
+		case http.MethodPost:
+			created = true
+			_, _ = writer.Write([]byte(`{"success":`))
+		case http.MethodPatch:
+			patches++
+		case http.MethodDelete:
+			deletes++
+		}
+	}))
+	defer api.Close()
+	server, resourceType := credentialProtocolServer(t, api.URL)
+	ctx := context.Background()
+	values := credentialProtocolStringMap(map[string]string{"api_key": "secret"})
+	info := credentialProtocolStringMap(map[string]string{"owner": "terraform"})
+	config := credentialProtocolDynamicValue(t, resourceType, credentialProtocolValue(resourceType, "uncertain", nil, nil, info, values, nil, nil, nil, nil))
+	proposed := credentialProtocolDynamicValue(t, resourceType, credentialProtocolValue(resourceType, "uncertain", tftypes.UnknownValue, nil, info, values, tftypes.UnknownValue, tftypes.UnknownValue, tftypes.UnknownValue, tftypes.UnknownValue))
+	nullState := credentialProtocolDynamicValue(t, resourceType, tftypes.NewValue(resourceType, nil))
+	plan, err := server.PlanResourceChange(ctx, &tfprotov6.PlanResourceChangeRequest{TypeName: "litellm_credential", Config: config, PriorState: nullState, ProposedNewState: proposed})
+	if err != nil || accessGroupProtocolDiagnosticsHaveError(plan.Diagnostics) {
+		t.Fatalf("plan: err=%v diagnostics=%v", err, plan.Diagnostics)
+	}
+	apply, err := server.ApplyResourceChange(ctx, &tfprotov6.ApplyResourceChangeRequest{TypeName: "litellm_credential", Config: config, PriorState: nullState, PlannedState: plan.PlannedState, PlannedPrivate: plan.PlannedPrivate})
+	if err != nil || !accessGroupProtocolDiagnosticsHaveError(apply.Diagnostics) || apply.NewState == nil {
+		t.Fatalf("ambiguous apply: err=%v diagnostics=%v state=%v", err, apply.Diagnostics, apply.NewState)
+	}
+	var privateEnvelope map[string]string
+	if err := json.Unmarshal(apply.Private, &privateEnvelope); err != nil {
+		t.Fatalf("decode private envelope: %v", err)
+	}
+	encodedMarker, err := base64.StdEncoding.DecodeString(privateEnvelope[credentialPrivateMetadataKey])
+	if err != nil {
+		t.Fatalf("decode private marker: %v", err)
+	}
+	privateMetadata, ok := decodeCredentialPrivateMetadata(encodedMarker)
+	if !ok || !privateMetadata.UncertainOwnership || privateMetadata.AllRemoteOwned || len(credentialMetadataOwnership(privateMetadata, false).Children) != 0 || len(credentialMetadataOwnership(privateMetadata, true).Children) != 0 {
+		t.Fatalf("uncertain marker invalid: %#v raw=%q", privateMetadata, apply.Private)
+	}
+	value, err := apply.NewState.Unmarshal(resourceType)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var attributes map[string]tftypes.Value
+	if err := value.As(&attributes); err != nil {
+		t.Fatal(err)
+	}
+	var id string
+	if err := attributes["id"].As(&id); err != nil || id != "uncertain" {
+		t.Fatalf("partial id=%q err=%v", id, err)
+	}
+
+	updatedConfig := credentialProtocolReplace(t, resourceType, config, map[string]tftypes.Value{"credential_info": credentialProtocolStringMap(map[string]string{"owner": "changed"})})
+	updatedProposed := credentialProtocolReplace(t, resourceType, apply.NewState, map[string]tftypes.Value{"credential_info": credentialProtocolStringMap(map[string]string{"owner": "changed"})})
+	blockedPlan, err := server.PlanResourceChange(ctx, &tfprotov6.PlanResourceChangeRequest{TypeName: "litellm_credential", Config: updatedConfig, PriorState: apply.NewState, ProposedNewState: updatedProposed, PriorPrivate: apply.Private})
+	if err != nil || !accessGroupProtocolDiagnosticsHaveError(blockedPlan.Diagnostics) || patches != 0 {
+		t.Fatalf("blocked update plan: err=%v diagnostics=%v patches=%d", err, blockedPlan.Diagnostics, patches)
+	}
+	destroy, err := server.ApplyResourceChange(ctx, &tfprotov6.ApplyResourceChangeRequest{TypeName: "litellm_credential", Config: nullState, PriorState: apply.NewState, PlannedState: nullState, PlannedPrivate: apply.Private})
+	if err != nil || !accessGroupProtocolDiagnosticsHaveError(destroy.Diagnostics) || deletes != 0 {
+		t.Fatalf("blocked destroy: err=%v diagnostics=%v deletes=%d", err, destroy.Diagnostics, deletes)
+	}
+}
+
+func TestCredentialOwnedAtomicPreflightIsRecursiveForMaskedAndReadableLeaves(t *testing.T) {
+	t.Parallel()
+	prior := map[string]interface{}{
+		"oauth": map[string]interface{}{
+			"nested": map[string]interface{}{"client_secret": "nested-secret", "region": "us-east-1"},
+		},
+		"endpoint": "https://example.invalid",
+	}
+	ownership := credentialOwnershipForObject(prior)
+	remote := map[string]interface{}{
+		"oauth": map[string]interface{}{
+			"nested": map[string]interface{}{"client_secret": "ne****et", "region": "us-east-1"},
+		},
+		"endpoint": "https://example.invalid",
+	}
+	if err := validateCredentialOwnedAtomicPreconditions(remote, prior, ownership, true); err != nil {
+		t.Fatalf("valid recursive preflight: %v", err)
+	}
+	remote["oauth"].(map[string]interface{})["nested"].(map[string]interface{})["region"] = "out-of-band"
+	if err := validateCredentialOwnedAtomicPreconditions(remote, prior, ownership, true); err == nil {
+		t.Fatal("readable nested drift was accepted")
+	}
+	remote["oauth"].(map[string]interface{})["nested"].(map[string]interface{})["region"] = "us-east-1"
+	remote["oauth"].(map[string]interface{})["nested"].(map[string]interface{})["client_secret"] = "ot****er"
+	if err := validateCredentialOwnedAtomicPreconditions(remote, prior, ownership, true); err == nil {
+		t.Fatal("non-corresponding nested mask was accepted")
+	}
+	remote["oauth"].(map[string]interface{})["nested"].(map[string]interface{})["client_secret"] = "ne****et"
+	remote["endpoint"] = "https://changed.invalid"
+	if _, err := hydrateCredentialPatch(remote, prior, map[string]interface{}{"oauth": prior["oauth"], "endpoint": "https://planned.invalid"}, ownership, ownership, true); err == nil {
+		t.Fatal("planned overwrite bypassed prior-value compare-and-set")
+	}
+}
+
+func TestCredentialSchemaZeroOwnershipUsesConfigOnlyAndInvalidPrivateFailsClosed(t *testing.T) {
+	t.Parallel()
+	config := credentialTestModel("schema-zero", map[string]string{"owned": "configured"}, map[string]string{"api_key": "secret"})
+	fromConfig, diagnostics := readCredentialPrivateMetadata(context.Background(), credentialPrivateReaderStub{}, &config)
+	if diagnostics.HasError() || len(credentialMetadataOwnership(fromConfig, false).Children) != 1 || len(credentialMetadataOwnership(fromConfig, true).Children) != 1 {
+		t.Fatalf("config inference metadata=%#v diagnostics=%v", fromConfig, diagnostics)
+	}
+	withoutConfig, diagnostics := readCredentialPrivateMetadata(context.Background(), credentialPrivateReaderStub{}, nil)
+	if diagnostics.HasError() || !withoutConfig.noPrivateFallback || len(credentialMetadataOwnership(withoutConfig, false).Children) != 0 || len(credentialMetadataOwnership(withoutConfig, true).Children) != 0 {
+		t.Fatalf("state-only fallback metadata=%#v diagnostics=%v", withoutConfig, diagnostics)
+	}
+	invalid := []byte(`{"version":1,"legacy_info_configured":true,"legacy_info":{"object":true,"children":{"owned":{"object":true,"atomic":true}}}}`)
+	blocked, diagnostics := readCredentialPrivateMetadata(context.Background(), credentialPrivateReaderStub{encoded: invalid}, &config)
+	if !diagnostics.HasError() || len(credentialMetadataOwnership(blocked, false).Children) != 0 {
+		t.Fatalf("invalid private was inferred: metadata=%#v diagnostics=%v", blocked, diagnostics)
+	}
+}
+
+func TestCredentialSchemaZeroReadPreservesValuesWithoutPersistingOwnership(t *testing.T) {
+	t.Parallel()
+	api := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"credential_name":"schema-zero","credential_info":{"remote":"current","nested":{"enabled":true}},"credential_values":{"api_key":"se****et"}}`))
+	}))
+	defer api.Close()
+	server, resourceType := credentialProtocolServer(t, api.URL)
+	current := credentialProtocolDynamicValue(t, resourceType, credentialProtocolValue(
+		resourceType,
+		"schema-zero",
+		"schema-zero",
+		nil,
+		credentialProtocolStringMap(map[string]string{"remote": "old"}),
+		credentialProtocolStringMap(map[string]string{"api_key": "secret"}),
+		nil,
+		nil,
+		true,
+		"credential_values",
+	))
+	read, err := server.ReadResource(context.Background(), &tfprotov6.ReadResourceRequest{TypeName: "litellm_credential", CurrentState: current})
+	if err != nil || accessGroupProtocolDiagnosticsHaveError(read.Diagnostics) {
+		t.Fatalf("schema-zero read: err=%v diagnostics=%v", err, read.Diagnostics)
+	}
+	value, err := read.NewState.Unmarshal(resourceType)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var attributes map[string]tftypes.Value
+	if err := value.As(&attributes); err != nil {
+		t.Fatal(err)
+	}
+	var values map[string]tftypes.Value
+	if err := attributes["credential_values"].As(&values); err != nil {
+		t.Fatal(err)
+	}
+	var secret string
+	if err := values["api_key"].As(&secret); err != nil || secret != "secret" {
+		t.Fatalf("schema-zero secret=%q err=%v", secret, err)
+	}
+	if strings.Contains(string(read.Private), credentialPrivateMetadataKey) {
+		t.Fatalf("read inferred private ownership from state: %q", read.Private)
+	}
+}
+
+func TestCredentialProtocolReplacementMarkerPrecedesUnknownReturn(t *testing.T) {
+	// Stateful handler; do not run in parallel.
+	created := false
+	remoteInfo := map[string]interface{}{"owned": "value"}
+	deleteCalls := 0
+	api := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		switch request.Method {
+		case http.MethodGet:
+			if !created {
+				http.NotFound(writer, request)
+				return
+			}
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{"credential_name": "unknown-replace", "credential_info": remoteInfo, "credential_values": map[string]interface{}{"api_key": "se****et"}})
+		case http.MethodPost:
+			created = true
+			_, _ = writer.Write([]byte(`{"success":true,"message":"created"}`))
+		case http.MethodDelete:
+			deleteCalls++
+			_, _ = writer.Write([]byte(`{"success":true,"message":"deleted"}`))
+		}
+	}))
+	defer api.Close()
+	server, resourceType := credentialProtocolServer(t, api.URL)
+	ctx := context.Background()
+	config := credentialProtocolDynamicValue(t, resourceType, credentialProtocolValue(resourceType, "unknown-replace", nil, nil, credentialProtocolStringMap(map[string]string{"owned": "value"}), credentialProtocolStringMap(map[string]string{"api_key": "secret"}), nil, nil, nil, nil))
+	proposed := credentialProtocolDynamicValue(t, resourceType, credentialProtocolValue(resourceType, "unknown-replace", tftypes.UnknownValue, nil, credentialProtocolStringMap(map[string]string{"owned": "value"}), credentialProtocolStringMap(map[string]string{"api_key": "secret"}), tftypes.UnknownValue, tftypes.UnknownValue, tftypes.UnknownValue, tftypes.UnknownValue))
+	nullState := credentialProtocolDynamicValue(t, resourceType, tftypes.NewValue(resourceType, nil))
+	createPlan, err := server.PlanResourceChange(ctx, &tfprotov6.PlanResourceChangeRequest{TypeName: "litellm_credential", Config: config, PriorState: nullState, ProposedNewState: proposed})
+	if err != nil || accessGroupProtocolDiagnosticsHaveError(createPlan.Diagnostics) {
+		t.Fatalf("create plan: err=%v diagnostics=%v", err, createPlan.Diagnostics)
+	}
+	create, err := server.ApplyResourceChange(ctx, &tfprotov6.ApplyResourceChangeRequest{TypeName: "litellm_credential", Config: config, PriorState: nullState, PlannedState: createPlan.PlannedState, PlannedPrivate: createPlan.PlannedPrivate})
+	if err != nil || accessGroupProtocolDiagnosticsHaveError(create.Diagnostics) {
+		t.Fatalf("create: err=%v diagnostics=%v", err, create.Diagnostics)
+	}
+	unknownConfig := credentialProtocolReplace(t, resourceType, config, map[string]tftypes.Value{
+		"model_id":             tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
+		"credential_info_json": tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
+	})
+	unknownProposed := credentialProtocolReplace(t, resourceType, create.NewState, map[string]tftypes.Value{
+		"model_id":             tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
+		"credential_info_json": tftypes.NewValue(tftypes.String, tftypes.UnknownValue),
+	})
+	replacementPlan, err := server.PlanResourceChange(ctx, &tfprotov6.PlanResourceChangeRequest{TypeName: "litellm_credential", Config: unknownConfig, PriorState: create.NewState, ProposedNewState: unknownProposed, PriorPrivate: create.Private})
+	if err != nil || accessGroupProtocolDiagnosticsHaveError(replacementPlan.Diagnostics) || len(replacementPlan.RequiresReplace) == 0 {
+		t.Fatalf("unknown replacement plan: err=%v diagnostics=%v replace=%v", err, replacementPlan.Diagnostics, replacementPlan.RequiresReplace)
+	}
+	remoteInfo = map[string]interface{}{"owned": "value", "external": "must-preserve"}
+	destroy, err := server.ApplyResourceChange(ctx, &tfprotov6.ApplyResourceChangeRequest{TypeName: "litellm_credential", Config: unknownConfig, PriorState: create.NewState, PlannedState: nullState, PlannedPrivate: replacementPlan.PlannedPrivate})
+	if err != nil || !accessGroupProtocolDiagnosticsHaveError(destroy.Diagnostics) || deleteCalls != 0 {
+		t.Fatalf("guarded delete: err=%v diagnostics=%v deletes=%d", err, destroy.Diagnostics, deleteCalls)
+	}
+}
+
+func TestCredentialCanonicalJSONPreservesProviderSideFractionLexeme(t *testing.T) {
+	t.Parallel()
+	const input = `{"fraction":0.123456789012345678901234567890123456789}`
+	object, err := decodeCredentialJSONObjectString(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := canonicalCredentialJSON(object)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if canonical != input {
+		t.Fatalf("provider-side fraction lexeme changed: %s", canonical)
 	}
 }

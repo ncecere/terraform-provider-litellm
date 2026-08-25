@@ -64,7 +64,7 @@ func (d *CredentialDataSource) Schema(ctx context.Context, req datasource.Schema
 				ElementType: types.StringType,
 			},
 			"credential_info_json": schema.StringAttribute{
-				Description: "Canonical full JSON metadata object, including heterogeneous nested values and exact numbers.",
+				Description: "Canonical full JSON metadata object, including heterogeneous nested values and the number lexemes returned by LiteLLM.",
 				Computed:    true,
 			},
 		},

@@ -6,7 +6,7 @@ Manages a LiteLLM credential while preserving the provider's original string-map
 
 `credential_info` and `credential_values` remain `map(string)`. Existing references, outputs, and state therefore keep their original Terraform types. There is no state-version migration. `credential_values` is now optional, an additive loosening that permits model-only configuration and source-free metadata-only imports.
 
-LiteLLM v1.98 also accepts nested objects, arrays, booleans, nulls, and exact JSON numbers. Use the additive JSON-string attributes for those values:
+LiteLLM v1.98 also accepts nested objects, arrays, booleans, nulls, and JSON numbers. Use the additive JSON-string attributes for those values:
 
 ```hcl
 resource "litellm_credential" "full" {
@@ -32,7 +32,9 @@ resource "litellm_credential" "full" {
 }
 ```
 
-The JSON strings are validated as non-null objects and stored in deterministic compact form. Numbers are decoded with exact-number semantics rather than through `float64`.
+The JSON strings are validated as non-null objects and stored in deterministic compact form. The provider preserves each configured JSON number lexeme while validating, merging, and encoding it instead of first converting it through Go `float64`.
+
+That guarantee is provider-side, not arbitrary-precision end to end. LiteLLM is a Python service: JSON integers are decoded as arbitrary-precision Python integers, but fractional and exponent values normally become binary Python `float` values and may be rounded before LiteLLM stores or returns them. Use string values for decimal identifiers or fractions that must remain textually exact. Authoritative read-back can reject a mutation when LiteLLM's rounded fractional value no longer equals the configured JSON number.
 
 Legacy and JSON objects are merged recursively by key ownership. Disjoint keys are combined. An overlapping key is accepted only when both surfaces encode exactly the same value; conflicting overlap fails before any request. To migrate an existing key without changing its Terraform type:
 
@@ -102,7 +104,9 @@ PATCH in LiteLLM v1.98 shallow-merges the two top-level dictionaries:
 
 Because top-level removal cannot be proved safe, the provider reports a plan error instead of deleting and recreating the credential. Create-only replacement is allowed only when private ownership metadata and an authoritative delete preflight prove every remote key is Terraform-owned and reconstructable. This prevents replacement from destroying operator-added secrets.
 
-PATCH and DELETE response bodies must contain LiteLLM's explicit `success: true` result. This matters because affected handlers can serialize an exception with HTTP 200. Every mutation also receives an authoritative exact-name postflight GET: updates verify owned values, masks, and removals; deletes verify exact 404 absence. An accepted create with a malformed response or failed read-back retains exact-name recovery state so it cannot become an orphan.
+PATCH and DELETE response bodies must contain LiteLLM's explicit `success: true` result. This matters because affected handlers can serialize an exception with HTTP 200. Every mutation also receives an authoritative exact-name postflight GET: updates verify owned values, masks, and removals; deletes verify exact 404 absence.
+
+Create first proves that the exact name is absent and refuses to overwrite or adopt a collision. Unusable HTTP success, dispatched transport failures, request timeouts, and server errors receive a bounded exact-name recovery window. Because an identical concurrent create cannot be distinguished from the provider's commit, every ambiguous outcome retains only caller-known partial state plus an uncertain-ownership private marker—even when exact configuration appears during recovery. That marker blocks refresh adoption, update, replacement, and deletion until an operator verifies ownership and imports the object or deliberately removes retained state.
 
 ## Import
 

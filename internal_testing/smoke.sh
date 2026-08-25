@@ -11,8 +11,9 @@ INTERNAL_TESTING="$REPO_ROOT/internal_testing"
 RESOURCES="$INTERNAL_TESTING/resources"
 DATASOURCES="$INTERNAL_TESTING/datasources"
 PROVIDER_DIR=${PROVIDER_DIR:-$REPO_ROOT}
+SMOKE_ASSEMBLY_ONLY=${SMOKE_ASSEMBLY_ONLY:-0}
 
-if [ ! -f "$PROVIDER_DIR/terraform-provider-litellm" ]; then
+if [ "$SMOKE_ASSEMBLY_ONLY" != "1" ] && [ ! -f "$PROVIDER_DIR/terraform-provider-litellm" ]; then
   echo "Provider binary not found at $PROVIDER_DIR/terraform-provider-litellm; run 'make build'." >&2
   exit 1
 fi
@@ -108,11 +109,16 @@ while [ "$#" -gt 0 ]; do
       for file in $(expand_arg "$1"); do
         if [ -n "$DIR" ] && [ -f "$DIR/$file" ]; then
           name=$(basename "$file")
-          if [ -e "$SMOKE_DIR/$name" ]; then
-            echo "Duplicate smoke filename: $name" >&3
+          if [ "$DIR" = "$RESOURCES" ]; then
+            assembled_name="resource_$name"
+          else
+            assembled_name="datasource_$name"
+          fi
+          if [ -e "$SMOKE_DIR/$assembled_name" ]; then
+            echo "Duplicate smoke fixture: $assembled_name" >&3
             exit 1
           fi
-          cp "$DIR/$file" "$SMOKE_DIR/$name"
+          cp "$DIR/$file" "$SMOKE_DIR/$assembled_name"
           FOUND=1
           if [ "$DIR" = "$RESOURCES" ]; then
             RESOURCE_NAMES="$RESOURCE_NAMES $name"
@@ -145,6 +151,15 @@ printf '\n========== Isolated smoke test ==========\n'
 [ -n "$DATASOURCE_NAMES" ] && echo "Datasources:$DATASOURCE_NAMES"
 
 cd "$SMOKE_DIR"
+if [ "$SMOKE_ASSEMBLY_ONLY" = "1" ]; then
+  echo '=== ASSEMBLY FORMAT CHECK ==='
+  terraform fmt -check -diff .
+  SUCCESS=1
+  printf '\nSmoke assembly passed: fixture names are collision-free and all assembled HCL parses and is formatted.\n' >&3
+  echo "Results written to $SMOKE_LOG" >&3
+  exit 0
+fi
+
 echo '=== PLAN ==='
 terraform plan -out=tfplan
 

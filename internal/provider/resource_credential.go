@@ -213,24 +213,23 @@ func (r *CredentialResource) ModifyPlan(ctx context.Context, req resource.Modify
 	metadata, diagnostics := readCredentialPrivateMetadata(ctx, req.Private, &config)
 	resp.Diagnostics.Append(diagnostics...)
 	if resp.Diagnostics.HasError() {
-		// Even malformed or unavailable legacy ownership cannot let an identity
-		// replacement reach an unguarded Delete. Persist a fail-closed marker
-		// before returning; it owns no surface and cannot broaden ownership.
+		// Even invalid private bytes cannot let an identity replacement reach an
+		// unguarded Delete. Replace them only with an explicitly unowned marker;
+		// the diagnostic still fails the plan closed.
 		if replacementPending && resp.Private != nil {
 			blocked := unownedCredentialPrivateMetadata()
 			blocked.ReplacementPending = true
-			blocked.UncertainOwnership = true
 			resp.Diagnostics.Append(writeCredentialPrivateMetadata(ctx, resp.Private, blocked)...)
 		}
 		return
 	}
-	if replacementPending {
-		metadata.ReplacementPending = true
-		if resp.Private != nil {
-			resp.Diagnostics.Append(writeCredentialPrivateMetadata(ctx, resp.Private, metadata)...)
-			if resp.Diagnostics.HasError() {
-				return
-			}
+	metadata.ReplacementPending = replacementPending
+	if replacementPending && resp.Private != nil {
+		// Persist this before every unknown-value return below. A caller that
+		// bypasses the deferred plan still reaches the guarded Delete path.
+		resp.Diagnostics.Append(writeCredentialPrivateMetadata(ctx, resp.Private, metadata)...)
+		if resp.Diagnostics.HasError() {
+			return
 		}
 	}
 	if metadata.UncertainOwnership {
@@ -267,7 +266,7 @@ func (r *CredentialResource) ModifyPlan(ctx context.Context, req resource.Modify
 		)
 		return
 	}
-	if !replacementPending && resp.Private != nil {
+	if !replacementPending && resp.Private != nil && !metadata.noPrivateFallback {
 		resp.Diagnostics.Append(writeCredentialPrivateMetadata(ctx, resp.Private, metadata)...)
 	}
 }
@@ -303,27 +302,20 @@ func (r *CredentialResource) Create(ctx context.Context, req resource.CreateRequ
 		)
 	}
 
-	finalizeCredentialRecoveryState(&plan, config, metadata)
-	plan.ID = plan.CredentialName
-	if resp.Private != nil {
-		resp.Diagnostics.Append(writeCredentialPrivateMetadata(ctx, resp.Private, metadata)...)
-		if resp.Diagnostics.HasError() {
-			return
+	name := config.CredentialName.ValueString()
+	if existing, preflightErr := r.fetchCredentialByName(ctx, name); preflightErr == nil {
+		if existing.name == name {
+			resp.Diagnostics.AddError("Credential Already Exists", "A credential with this exact name already exists. Terraform did not adopt or mutate it; import it only after verifying ownership.")
+		} else {
+			resp.Diagnostics.AddError("Credential Create Preflight Failed", "The exact by-name route returned a different credential identity, so Terraform did not send the create request.")
 		}
-	}
-
-	var mutation credentialMutationResponse
-	accepted, mutationErr := r.client.doRequestWithResponse(ctx, http.MethodPost, "/credentials", createRequest, &mutation)
-	if !accepted {
-		resp.Diagnostics.AddError("Credential Create Error", "LiteLLM did not accept the credential create request.")
+		return
+	} else if !IsAPIErrorStatus(preflightErr, http.StatusNotFound) {
+		resp.Diagnostics.AddError("Credential Create Preflight Failed", "Terraform could not prove exact-name absence before create, so it did not send the request.")
 		return
 	}
-	bodyErr := validateCredentialMutationResponse(mutation)
-	if mutationErr != nil {
-		bodyErr = mutationErr
-	}
 
-	remote, postflightErr := r.confirmCredentialMutation(ctx, config.CredentialName.ValueString(), func(remote credentialRemote) error {
+	verifyCreate := func(remote credentialRemote) error {
 		if err := verifyCredentialPostflight(remote.info, map[string]interface{}{}, info.Object, emptyCredentialOwnership(), info.UnionOwnership, false); err != nil {
 			return err
 		}
@@ -331,23 +323,87 @@ func (r *CredentialResource) Create(ctx context.Context, req resource.CreateRequ
 			return nil
 		}
 		return verifyCredentialPostflight(remote.values, map[string]interface{}{}, values.Object, emptyCredentialOwnership(), values.UnionOwnership, true)
-	})
-	if postflightErr == nil {
-		metadata.AllRemoteOwned = credentialRemoteFullyOwned(remote.info, info.Object, info.UnionOwnership, false) &&
-			credentialRemoteFullyOwned(remote.values, values.Object, credentialMetadataOwnership(metadata, true), true)
-		if err := reconcileCredentialState(ctx, &plan, remote, info.Object, values.Object, metadata); err != nil {
-			postflightErr = err
+	}
+
+	var mutation credentialMutationResponse
+	accepted, mutationErr := r.client.doRequestWithResponse(ctx, http.MethodPost, "/credentials", createRequest, &mutation)
+	responseErr := mutationErr
+	if responseErr == nil {
+		responseErr = validateCredentialMutationResponse(mutation)
+	}
+	if responseErr != nil {
+		if !shouldRecoverCredentialCreate(accepted, mutationErr) {
+			resp.Diagnostics.AddError("Credential Create Error", "LiteLLM definitively rejected or locally failed the credential create request. No resource state was retained.")
+			return
 		}
+		_, recoveryErr := r.confirmCredentialMutation(ctx, name, verifyCreate)
+		setCredentialUncertainCreateState(ctx, resp, &plan, config)
+		if recoveryErr == nil {
+			resp.Diagnostics.AddError("Credential Create Recovered With Uncertain Ownership", "A unique exact-name, exact-configuration credential appeared during bounded recovery and was retained in partial state. The create response was unusable, so Terraform cannot distinguish its operation from a concurrent identical create; inspect ownership before importing or removing the retained state.")
+		} else {
+			resp.Diagnostics.AddError("Credential Create Outcome Uncertain", "The create may have committed, but bounded exact-name recovery could not prove the requested owned result. Caller-known identity was retained in partial state with no remote ownership; inspect LiteLLM before importing or removing that state.")
+		}
+		return
+	}
+
+	remote, postflightErr := r.confirmCredentialMutation(ctx, name, verifyCreate)
+	if postflightErr != nil {
+		setCredentialUncertainCreateState(ctx, resp, &plan, config)
+		resp.Diagnostics.AddError("Credential Create Postflight Failed", "LiteLLM reported create success, but bounded exact-name recovery could not prove the complete owned result. Caller-known identity was retained in partial state with no remote ownership.")
+		return
+	}
+	metadata.AllRemoteOwned = credentialRemoteFullyOwned(remote.info, info.Object, info.UnionOwnership, false) &&
+		credentialRemoteFullyOwned(remote.values, values.Object, credentialMetadataOwnership(metadata, true), true)
+	if err := reconcileCredentialState(ctx, &plan, remote, info.Object, values.Object, metadata); err != nil {
+		setCredentialUncertainCreateState(ctx, resp, &plan, config)
+		resp.Diagnostics.AddError("Credential Create State Reconciliation Failed", "LiteLLM reported create success, but the authoritative result could not be represented safely. Caller-known identity was retained in partial state with no remote ownership.")
+		return
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 	if resp.Private != nil {
 		resp.Diagnostics.Append(writeCredentialPrivateMetadata(ctx, resp.Private, metadata)...)
 	}
-	if bodyErr != nil {
-		resp.Diagnostics.AddError("Malformed Credential Create Response", "LiteLLM accepted the create request, but its response did not contain the required success result. Exact-name recovery state was retained so the credential cannot be orphaned.")
+}
+
+func isAmbiguousCredentialCreateStatus(statusCode int) bool {
+	return statusCode == http.StatusRequestTimeout || (statusCode >= http.StatusInternalServerError && statusCode < 600)
+}
+
+func shouldRecoverCredentialCreate(accepted bool, mutationErr error) bool {
+	if accepted {
+		return true
 	}
-	if postflightErr != nil {
-		resp.Diagnostics.AddError("Credential Create Postflight Failed", "LiteLLM accepted the create request, but the provider could not confirm the owned result through the authoritative by-name route. Exact-name recovery state was retained so a later refresh or destroy can recover it.")
+	if mutationErr == nil {
+		return false
+	}
+	var apiErr *APIError
+	if errors.As(mutationErr, &apiErr) {
+		return isAmbiguousCredentialCreateStatus(apiErr.StatusCode)
+	}
+	var responseErr *safeResponseError
+	if errors.As(mutationErr, &responseErr) {
+		return isAmbiguousCredentialCreateStatus(responseErr.statusCode)
+	}
+	var transportErr *safeTransportError
+	if errors.As(mutationErr, &transportErr) {
+		if !transportErr.dispatched {
+			return false
+		}
+		return transportErr.Timeout() || transportErr.Temporary() ||
+			transportErr.kind == "LiteLLM HTTP transport request failed" ||
+			errors.Is(transportErr, context.Canceled)
+	}
+	return false
+}
+
+func setCredentialUncertainCreateState(ctx context.Context, resp *resource.CreateResponse, plan *CredentialResourceModel, config CredentialResourceModel) {
+	metadata := unownedCredentialPrivateMetadata()
+	metadata.ModelDominant = credentialKnownModelSource(config.ModelID)
+	metadata.UncertainOwnership = true
+	finalizeCredentialRecoveryState(plan, config, metadata)
+	resp.Diagnostics.Append(resp.State.Set(ctx, plan)...)
+	if resp.Private != nil {
+		resp.Diagnostics.Append(writeCredentialPrivateMetadata(ctx, resp.Private, metadata)...)
 	}
 }
 
@@ -393,9 +449,13 @@ func (r *CredentialResource) Read(ctx context.Context, req resource.ReadRequest,
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	metadata, diagnostics := readCredentialPrivateMetadata(ctx, req.Private, data)
+	metadata, diagnostics := readCredentialPrivateMetadata(ctx, req.Private, nil)
 	resp.Diagnostics.Append(diagnostics...)
 	if resp.Diagnostics.HasError() {
+		return
+	}
+	if metadata.UncertainOwnership {
+		resp.Diagnostics.AddError("Uncertain Credential Ownership", "A prior create outcome remains ambiguous. Refresh retained caller-known state without adopting, removing, or mutating the exact-name credential; inspect LiteLLM and resolve ownership explicitly.")
 		return
 	}
 	priorInfo, err := credentialOwnedObjectFromSurfaces(ctx, data.CredentialInfo, data.CredentialInfoJSON, metadata.LegacyInfo, metadata.JSONInfo)
@@ -424,6 +484,14 @@ func (r *CredentialResource) Read(ctx context.Context, req resource.ReadRequest,
 	}
 	if remote.name != name {
 		resp.Diagnostics.AddError("Credential Read Error", "LiteLLM returned a credential identity that did not match the exact requested name.")
+		return
+	}
+	if metadata.noPrivateFallback {
+		if err := reconcileSchemaZeroCredentialState(&data, remote); err != nil {
+			resp.Diagnostics.AddError("Credential Read Safety Error", formatCredentialSafetyError(err))
+			return
+		}
+		resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 		return
 	}
 	metadata.AllRemoteOwned = credentialRemoteFullyOwned(remote.info, priorInfo, credentialMetadataOwnership(metadata, false), false) &&
@@ -458,9 +526,14 @@ func (r *CredentialResource) Update(ctx context.Context, req resource.UpdateRequ
 	}
 	plan.ID = state.ID
 
-	priorMetadata, diagnostics := readCredentialPrivateMetadata(ctx, req.Private, state)
+	priorMetadata, diagnostics := readCredentialPrivateMetadata(ctx, req.Private, &config)
 	resp.Diagnostics.Append(diagnostics...)
 	if resp.Diagnostics.HasError() {
+		return
+	}
+	if priorMetadata.UncertainOwnership {
+		resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+		resp.Diagnostics.AddError("Uncertain Credential Ownership", "A prior create outcome remains ambiguous, so Terraform refused to PATCH a possibly concurrent credential.")
 		return
 	}
 	metadata, err := inferCredentialPrivateMetadata(ctx, config)
@@ -574,9 +647,13 @@ func (r *CredentialResource) Delete(ctx context.Context, req resource.DeleteRequ
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	metadata, diagnostics := readCredentialPrivateMetadata(ctx, req.Private, data)
+	metadata, diagnostics := readCredentialPrivateMetadata(ctx, req.Private, nil)
 	resp.Diagnostics.Append(diagnostics...)
 	if resp.Diagnostics.HasError() {
+		return
+	}
+	if metadata.UncertainOwnership {
+		resp.Diagnostics.AddError("Uncertain Credential Ownership", "A prior create outcome remains ambiguous, so Terraform refused to DELETE a possibly concurrent credential. Resolve ownership in LiteLLM, then import the verified object or remove retained Terraform state deliberately.")
 		return
 	}
 	if metadata.ReplacementPending {
@@ -644,20 +721,43 @@ func (r *CredentialResource) ImportState(ctx context.Context, req resource.Impor
 	}
 }
 
-func readCredentialPrivateMetadata(ctx context.Context, private credentialPrivateReader, data CredentialResourceModel) (credentialPrivateMetadata, diag.Diagnostics) {
+func readCredentialPrivateMetadata(ctx context.Context, private credentialPrivateReader, config *CredentialResourceModel) (credentialPrivateMetadata, diag.Diagnostics) {
 	var diagnostics diag.Diagnostics
-	encoded, privateDiagnostics := private.GetKey(ctx, credentialPrivateMetadataKey)
-	diagnostics.Append(privateDiagnostics...)
-	if diagnostics.HasError() {
+	var encoded []byte
+	if private != nil {
+		privateEncoded, privateDiagnostics := private.GetKey(ctx, credentialPrivateMetadataKey)
+		diagnostics.Append(privateDiagnostics...)
+		if diagnostics.HasError() {
+			return credentialPrivateMetadata{}, diagnostics
+		}
+		encoded = privateEncoded
+	}
+	if len(encoded) != 0 {
+		if metadata, ok := decodeCredentialPrivateMetadata(encoded); ok {
+			return metadata, diagnostics
+		}
+		// Invalid private data must never be confused with an old state that has
+		// no private data. Re-inferring here could broaden corrupt ownership.
+		diagnostics.AddError("Credential Ownership Metadata Error", "Credential private ownership metadata is invalid; the operation was blocked without inferring ownership from public state.")
 		return credentialPrivateMetadata{}, diagnostics
 	}
-	if metadata, ok := decodeCredentialPrivateMetadata(encoded); ok {
-		return metadata, diagnostics
+	if config != nil {
+		metadata, err := inferCredentialPrivateMetadata(ctx, *config)
+		if err == nil {
+			return metadata, diagnostics
+		}
+		if !errors.Is(err, errCredentialUnknown) {
+			diagnostics.AddError("Credential Ownership Metadata Error", "Schema-v0 credential ownership could not be inferred from configuration safely.")
+			return credentialPrivateMetadata{}, diagnostics
+		}
 	}
-	metadata, err := inferCredentialPrivateMetadata(ctx, data)
-	if err != nil {
-		diagnostics.AddError("Credential Ownership Metadata Error", "Legacy credential ownership could not be inferred without changing its public state types.")
-	}
+
+	// Read and Delete do not receive Terraform configuration. An old schema-v0
+	// state may retain compatibility values, but Optional+Computed state is not
+	// evidence that those values were configured. Keep ownership empty and do
+	// not persist this process-local fallback.
+	metadata := unownedCredentialPrivateMetadata()
+	metadata.noPrivateFallback = true
 	return metadata, diagnostics
 }
 
@@ -780,6 +880,47 @@ func reconcileCredentialState(ctx context.Context, data *CredentialResourceModel
 	return nil
 }
 
+// reconcileSchemaZeroCredentialState refreshes public compatibility output
+// without deriving recursive ownership from Optional+Computed state. Existing
+// cleartext value surfaces are retained verbatim; only a later operation with
+// Terraform Config may establish private ownership.
+func reconcileSchemaZeroCredentialState(data *CredentialResourceModel, remote credentialRemote) error {
+	if remote.name == "" {
+		return errors.New("credential identity is empty")
+	}
+	data.ID = types.StringValue(remote.name)
+	data.CredentialName = types.StringValue(remote.name)
+
+	info, err := stringMapValueFromObject(remote.info)
+	if err != nil {
+		return err
+	}
+	data.CredentialInfo = info
+	canonicalInfo, err := canonicalCredentialJSON(remote.info)
+	if err != nil {
+		return err
+	}
+	data.CredentialInfoJSON = types.StringValue(canonicalInfo)
+
+	if data.CredentialValues.IsUnknown() {
+		data.CredentialValues = types.MapNull(types.StringType)
+	}
+	if data.CredentialValuesJSON.IsUnknown() {
+		data.CredentialValuesJSON = types.StringNull()
+	}
+	if credentialKnownModelSource(data.ModelID) {
+		data.CredentialValuesActive = types.BoolValue(false)
+		data.CredentialSource = types.StringValue("model_id")
+	} else if !data.CredentialValues.IsNull() || !data.CredentialValuesJSON.IsNull() {
+		data.CredentialValuesActive = types.BoolValue(true)
+		data.CredentialSource = types.StringValue("credential_values")
+	} else {
+		data.CredentialValuesActive = types.BoolValue(false)
+		data.CredentialSource = types.StringValue("imported")
+	}
+	return nil
+}
+
 func validateCredentialMutationResponse(response credentialMutationResponse) error {
 	if response.Success == nil || !*response.Success || response.Message == "" {
 		return errors.New("LiteLLM mutation response did not report success")
@@ -820,11 +961,13 @@ func (r *CredentialResource) confirmCredentialMutation(ctx context.Context, name
 			} else if err := verify(remote); err == nil {
 				return remote, nil
 			} else {
+				// A matching exact-name row can still be propagating nested values.
+				// Keep verification bounded rather than adopting a partial result.
 				lastErr = err
 			}
 		} else {
 			lastErr = err
-			if !IsAPIErrorStatus(err, http.StatusNotFound) {
+			if !shouldRetryCredentialRecoveryRead(err) {
 				return credentialRemote{}, err
 			}
 		}
@@ -835,6 +978,28 @@ func (r *CredentialResource) confirmCredentialMutation(ctx context.Context, name
 		}
 	}
 	return credentialRemote{}, lastErr
+}
+
+func shouldRetryCredentialRecoveryRead(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return false
+	}
+	if IsAPIErrorStatus(err, http.StatusNotFound) {
+		return true
+	}
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.StatusCode == http.StatusRequestTimeout || apiErr.StatusCode == http.StatusTooManyRequests || apiErr.StatusCode >= 500
+	}
+	var transportErr *safeTransportError
+	if errors.As(err, &transportErr) {
+		return transportErr.Retryable()
+	}
+	var responseErr *safeResponseError
+	if errors.As(err, &responseErr) {
+		return responseErr.retryable
+	}
+	return false
 }
 
 func (r *CredentialResource) confirmCredentialAbsence(ctx context.Context, name string) error {

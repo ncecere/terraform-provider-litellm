@@ -169,7 +169,9 @@ internal_testing/
 ## Automated Smoke and Acceptance Tests
 
 `make smoke` builds the provider and runs selected configurations in a fresh,
-isolated workspace. It requires the local Compose backend and performs
+isolated workspace. Resource and data-source files receive distinct assembly
+prefixes, so same-basename pairs such as both `credential_full.tf` fixtures do
+not overwrite each other. It requires the local Compose backend and performs
 `plan -> apply -> no-drift plan -> destroy`. Successful workspaces are removed;
 on failure, state and logs are retained under `internal_testing/.smoke.*` and
 `internal_testing/.smoke-logs/` for diagnosis and cleanup.
@@ -189,12 +191,20 @@ identity. Protocol tests additionally prove that imported masked values remain
 absent and unowned and that adding an unproven values or model source fails
 before PATCH, deletion, or replacement.
 
-The matrix is restricted to a disposable loopback LiteLLM v1.98.0 backend and requires two
-opt-in values before it performs destructive lifecycle tests:
+The matrix is restricted to a disposable loopback LiteLLM v1.98.0 backend and
+requires two opt-in values before it performs destructive lifecycle tests:
 
 ```bash
 make local
 TF_ACC=1 LITELLM_ACCEPTANCE_CONFIRM=local-v1.98.0 make testacc
+```
+
+The non-destructive assembly mode runs the same matrix without a provider
+binary or backend. It verifies collision-free copying plus parseable, formatted
+HCL and is suitable for CI or fixture review:
+
+```bash
+LITELLM_ACCEPTANCE_ASSEMBLY_ONLY=1 sh internal_testing/acceptance.sh
 ```
 
 ## Testing a Subset Manually
