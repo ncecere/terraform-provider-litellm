@@ -49,7 +49,7 @@ resource "litellm_team_member" "lead" {
 
 `team_id` and canonical `user_id` are immutable membership identity. Terraform plans replacement when either known configured value changes. Adding these replacement rules does not replace unchanged historical state, and email-only HCL keeps the canonical computed `user_id` from state during planning.
 
-A case-only email edit does not replace the membership. Another spelling returned by LiteLLM for the same canonical user can also be retained safely. If a changed email resolves to a different user or cannot be proved to resolve to the stored canonical ID, update stops before mutation. Change `user_id` to the new canonical user, or use an explicit `-replace`, rather than allowing an email edit to retarget an existing resource silently.
+A case-only email edit does not replace the membership. When `user_email` is configured, refresh preserves its configured spelling and case only while it case-insensitively matches the email on the same canonical roster entry. A different remote alias is reported as an identity mismatch and is not adopted. If a changed configured email resolves to a different user or cannot be proved to resolve to the stored canonical ID, update stops before mutation. Change `user_id` to the new canonical user, or use an explicit `-replace`, rather than allowing an email edit to retarget an existing resource silently.
 
 Refresh, update, delete, and partial recovery always use `team_id` and canonical `user_id` from stored state. A newly planned identity is never used to mutate or delete the old membership.
 
@@ -115,7 +115,7 @@ terraform import litellm_team_member.example \
 
 This decodes to team `team:with:colon` and user `user:with:colon`. Terraform still stores the historical natural composite `team_id:user_id` value in `id`; lifecycle operations use the separate stored attributes and never parse that stored value. Historical team IDs beginning with `v1.` remain accepted when the import uses colon grammar.
 
-Import identifies membership only by canonical `user_id`. Refresh hydrates `user_email`, role, and configured/computed state that LiteLLM returns without adopting unrelated members.
+Import identifies membership only by canonical `user_id`. An ID-only import leaves the Optional-only `user_email` null through refresh; the roster email remains unmanaged unless it is explicitly represented in configuration. Refresh reconciles role and managed budget state without adopting that remote email.
 
 ## Attribute reference
 
@@ -123,6 +123,6 @@ Import identifies membership only by canonical `user_id`. Refresh hydrates `user
 
 ## State and diagnostic security
 
-Canonical IDs and `user_email` are stored in ordinary Terraform state for compatibility and identity recovery; they are not secret attributes. Protect state as identity/PII-bearing data and restrict state backend access accordingly. If email must not be stored, configure only `user_id`.
+Canonical IDs and any configured `user_email` are stored in ordinary Terraform state for compatibility and identity recovery; they are not secret attributes. Protect state as identity/PII-bearing data and restrict state backend access accordingly. Configuring only `user_id` leaves `user_email` null instead of copying it from LiteLLM.
 
 The provider does not include request payloads, request URLs, raw response bodies, email addresses from failed HTTP bodies, API keys, or raw transport causes in team-member diagnostics. Safe remote errors are reduced to exact HTTP status and bounded validated request metadata. Debug logs and external proxies remain outside Terraform state controls and should follow your organization's logging policy.

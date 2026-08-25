@@ -350,10 +350,11 @@ func observeTeamMember(snapshot *teamMemberAddSnapshot, data *TeamMemberResource
 			if emailErr != nil {
 				return teamMemberObservation{}, emailErr
 			}
-			// An email alias may be absent from members_with_roles while the durable
-			// canonical ID still proves ownership. It must never identify a peer.
 			if emailIndex >= 0 && emailIndex != rosterIndex {
 				return teamMemberObservation{}, fmt.Errorf("stored user_id and user_email identify different team roster entries")
+			}
+			if rosterIndex >= 0 && emailIndex != rosterIndex {
+				return teamMemberObservation{}, fmt.Errorf("configured user_email no longer case-insensitively matches the stored canonical user's team roster email")
 			}
 		}
 	} else {
@@ -411,7 +412,7 @@ func applyTeamMemberObservation(data *TeamMemberResourceModel, observation teamM
 	data.ID = types.StringValue(fmt.Sprintf("%s:%s", data.TeamID.ValueString(), observation.CanonicalUserID))
 	if observation.Roster != nil {
 		data.Role = types.StringValue(observation.Roster.Role)
-		if (data.UserEmail.IsNull() || data.UserEmail.IsUnknown()) && observation.Roster.UserEmail != "" {
+		if data.UserEmail.IsUnknown() && observation.Roster.UserEmail != "" {
 			data.UserEmail = types.StringValue(observation.Roster.UserEmail)
 		}
 	} else {
@@ -1042,7 +1043,9 @@ func (r *TeamMemberResource) Update(ctx context.Context, req resource.UpdateRequ
 		resp.Diagnostics.AddError("Team Member Update Preflight Error", fmt.Sprintf("Unable to read the authoritative membership before update: %s", teamMemberDiagnosticError(err)))
 		return
 	}
-	observation, err := observeTeamMember(before, &state)
+	observationIdentity := state
+	observationIdentity.UserEmail = plannedEmail
+	observation, err := observeTeamMember(before, &observationIdentity)
 	if err != nil {
 		resp.Diagnostics.AddError("Team Member Update Identity Error", err.Error())
 		return

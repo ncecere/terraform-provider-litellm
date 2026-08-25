@@ -235,7 +235,7 @@ func TestTeamMemberReadUsesCanonicalIDPreservesEmailCaseAndReadsNativeBudget(t *
 	}
 }
 
-func TestTeamMemberReadHydratesHistoricalEmailAndRejectsConflictingBothIdentity(t *testing.T) {
+func TestTeamMemberReadResolvesHistoricalEmailIdentityAndRejectsConflicts(t *testing.T) {
 	t.Parallel()
 	t.Run("email-only historical state", func(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -274,6 +274,27 @@ func TestTeamMemberReadHydratesHistoricalEmailAndRejectsConflictingBothIdentity(
 		(&TeamMemberResource{client: teamMemberClient(server)}).Read(context.Background(), resource.ReadRequest{State: state}, response)
 		if !response.Diagnostics.HasError() || response.State.Raw.IsNull() {
 			t.Fatalf("conflicting identity diagnostics=%v null=%t", response.Diagnostics, response.State.Raw.IsNull())
+		}
+	})
+
+	t.Run("configured email no longer matches canonical roster alias", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			writeTeamMemberSnapshot(writer, "team-1", []teamMemberTestRoster{{ID: "user-a", Email: "new-alias@example.com", Role: "user"}}, []teamMemberTestMembership{{ID: "user-a"}}, "")
+		}))
+		defer server.Close()
+		schema := teamMemberTestSchema(t)
+		state := teamMemberTestState(t, schema, TeamMemberResourceModel{
+			ID: types.StringValue("team-1:user-a"), TeamID: types.StringValue("team-1"), UserID: types.StringValue("user-a"), UserEmail: types.StringValue("configured@example.com"),
+			Role: types.StringValue("user"), MaxBudgetInTeam: types.Float64Null(), BudgetDuration: types.StringNull(),
+		})
+		response := &resource.ReadResponse{State: state}
+		(&TeamMemberResource{client: teamMemberClient(server)}).Read(context.Background(), resource.ReadRequest{State: state}, response)
+		if !response.Diagnostics.HasError() || response.State.Raw.IsNull() {
+			t.Fatalf("changed alias diagnostics=%v null=%t", response.Diagnostics, response.State.Raw.IsNull())
+		}
+		retained := decodeTeamMemberState(t, response.State)
+		if retained.UserEmail.ValueString() != "configured@example.com" {
+			t.Fatalf("changed remote alias was adopted: %#v", retained)
 		}
 	})
 }
@@ -497,7 +518,7 @@ func TestTeamMemberBudgetlessImportAndExpectedMembershipRules(t *testing.T) {
 			t.Fatalf("import read diagnostics: %v", response.Diagnostics)
 		}
 		observed := decodeTeamMemberState(t, response.State)
-		if observed.UserEmail.ValueString() != "member@example.com" || observed.Role.ValueString() != "admin" || !observed.MaxBudgetInTeam.IsNull() || !observed.BudgetDuration.IsNull() {
+		if !observed.UserEmail.IsNull() || observed.Role.ValueString() != "admin" || !observed.MaxBudgetInTeam.IsNull() || !observed.BudgetDuration.IsNull() {
 			t.Fatalf("imported budgetless state = %#v", observed)
 		}
 	})
@@ -1146,6 +1167,162 @@ func teamMemberProtocolDynamicValue(t *testing.T, schemaType tftypes.Type, value
 		t.Fatalf("dynamic value: %v", err)
 	}
 	return &dynamic
+}
+
+func TestTeamMemberIDOnlyProtocolLifecycleKeepsEmailUnmanaged(t *testing.T) {
+	// Stateful protocol lifecycle; do not run in parallel.
+	const teamID = "team-id-only"
+	const userID = "user-id-only"
+	var created atomic.Bool
+	var addCalls atomic.Int32
+	var addSentEmail atomic.Bool
+	var updateCalls atomic.Int32
+	var remoteEmail atomic.Value
+	remoteEmail.Store("initial@example.com")
+
+	api := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/team/info":
+			if !created.Load() {
+				writeTeamMemberSnapshot(writer, teamID, nil, nil, "")
+				return
+			}
+			writeTeamMemberSnapshot(writer, teamID, []teamMemberTestRoster{{ID: userID, Email: remoteEmail.Load().(string), Role: "user"}}, nil, "")
+		case request.Method == http.MethodPost && request.URL.Path == "/team/member_add":
+			addCalls.Add(1)
+			var body map[string]interface{}
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+				http.Error(writer, "invalid request", http.StatusBadRequest)
+				return
+			}
+			if members, ok := body["member"].([]interface{}); ok && len(members) == 1 {
+				if member, ok := members[0].(map[string]interface{}); ok {
+					_, sent := member["user_email"]
+					addSentEmail.Store(sent)
+				}
+			}
+			created.Store(true)
+			writer.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+				"team_id": teamID,
+				"members_with_roles": []interface{}{
+					map[string]interface{}{"user_id": userID, "user_email": remoteEmail.Load().(string), "role": "user"},
+				},
+				"updated_users":            []interface{}{map[string]interface{}{"user_id": userID, "user_email": remoteEmail.Load().(string)}},
+				"updated_team_memberships": []interface{}{},
+			})
+		case request.Method == http.MethodPost && request.URL.Path == "/team/member_update":
+			updateCalls.Add(1)
+			writer.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{"team_id": teamID, "user_id": userID})
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer api.Close()
+
+	ctx := context.Background()
+	protocolServer := providerserver.NewProtocol6(New("test")())()
+	schemaResponse, err := protocolServer.GetProviderSchema(ctx, &tfprotov6.GetProviderSchemaRequest{})
+	if err != nil || accessGroupProtocolDiagnosticsHaveError(schemaResponse.Diagnostics) {
+		t.Fatalf("get provider schema: err=%v diagnostics=%v", err, schemaResponse.Diagnostics)
+	}
+	providerType := schemaResponse.Provider.ValueType()
+	providerConfig := tftypes.NewValue(providerType, map[string]tftypes.Value{
+		"api_base": tftypes.NewValue(tftypes.String, api.URL), "api_key": tftypes.NewValue(tftypes.String, "admin"),
+		"insecure_skip_verify": tftypes.NewValue(tftypes.Bool, false), "litellm_changed_by": tftypes.NewValue(tftypes.String, nil),
+	})
+	configured, err := protocolServer.ConfigureProvider(ctx, &tfprotov6.ConfigureProviderRequest{
+		TerraformVersion: "test", Config: teamMemberProtocolDynamicValue(t, providerType, providerConfig),
+	})
+	if err != nil || accessGroupProtocolDiagnosticsHaveError(configured.Diagnostics) {
+		t.Fatalf("configure provider: err=%v diagnostics=%v", err, configured.Diagnostics)
+	}
+	resourceSchema := schemaResponse.ResourceSchemas["litellm_team_member"]
+	if resourceSchema == nil || resourceSchema.Version != 0 {
+		t.Fatalf("historical resource schema = %#v", resourceSchema)
+	}
+	resourceType := resourceSchema.ValueType()
+	nullState := teamMemberProtocolDynamicValue(t, resourceType, tftypes.NewValue(resourceType, nil))
+	config := teamMemberProtocolDynamicValue(t, resourceType, teamMemberProtocolValue(resourceType, nil, teamID, userID, nil))
+	proposed := teamMemberProtocolDynamicValue(t, resourceType, teamMemberProtocolValue(resourceType, tftypes.UnknownValue, teamID, userID, nil))
+
+	assertNullEmail := func(label string, dynamic *tfprotov6.DynamicValue) map[string]tftypes.Value {
+		t.Helper()
+		if dynamic == nil {
+			t.Fatalf("%s state is nil", label)
+		}
+		value, decodeErr := dynamic.Unmarshal(resourceType)
+		if decodeErr != nil {
+			t.Fatalf("decode %s state: %v", label, decodeErr)
+		}
+		var fields map[string]tftypes.Value
+		if decodeErr := value.As(&fields); decodeErr != nil {
+			t.Fatalf("decode %s fields: %v", label, decodeErr)
+		}
+		if email := fields["user_email"]; !email.IsKnown() || !email.IsNull() {
+			t.Fatalf("%s user_email = %s, want known null", label, email)
+		}
+		return fields
+	}
+
+	createPlan, err := protocolServer.PlanResourceChange(ctx, &tfprotov6.PlanResourceChangeRequest{
+		TypeName: "litellm_team_member", Config: config, PriorState: nullState, ProposedNewState: proposed,
+	})
+	if err != nil || accessGroupProtocolDiagnosticsHaveError(createPlan.Diagnostics) {
+		t.Fatalf("plan ID-only create: err=%v diagnostics=%v", err, createPlan.Diagnostics)
+	}
+	assertNullEmail("create plan", createPlan.PlannedState)
+	createdState, err := protocolServer.ApplyResourceChange(ctx, &tfprotov6.ApplyResourceChangeRequest{
+		TypeName: "litellm_team_member", Config: config, PriorState: nullState,
+		PlannedState: createPlan.PlannedState, PlannedPrivate: createPlan.PlannedPrivate,
+	})
+	if err != nil || accessGroupProtocolDiagnosticsHaveError(createdState.Diagnostics) {
+		t.Fatalf("apply ID-only create: err=%v diagnostics=%v", err, createdState.Diagnostics)
+	}
+	createdFields := assertNullEmail("created", createdState.NewState)
+	var createdID string
+	if err := createdFields["id"].As(&createdID); err != nil || createdID != teamID+":"+userID {
+		t.Fatalf("created ID = %q, err=%v", createdID, err)
+	}
+
+	// The account/roster email changes outside Terraform. ID-only state must not
+	// adopt it or attempt to manage it.
+	remoteEmail.Store("mutated@example.com")
+	refreshed, err := protocolServer.ReadResource(ctx, &tfprotov6.ReadResourceRequest{
+		TypeName: "litellm_team_member", CurrentState: createdState.NewState, Private: createdState.Private,
+	})
+	if err != nil || accessGroupProtocolDiagnosticsHaveError(refreshed.Diagnostics) {
+		t.Fatalf("read after remote email mutation: err=%v diagnostics=%v", err, refreshed.Diagnostics)
+	}
+	assertNullEmail("refreshed", refreshed.NewState)
+
+	noDrift, err := protocolServer.PlanResourceChange(ctx, &tfprotov6.PlanResourceChangeRequest{
+		TypeName: "litellm_team_member", Config: config, PriorState: refreshed.NewState,
+		ProposedNewState: refreshed.NewState, PriorPrivate: refreshed.Private,
+	})
+	if err != nil || accessGroupProtocolDiagnosticsHaveError(noDrift.Diagnostics) || len(noDrift.RequiresReplace) != 0 {
+		t.Fatalf("plan after remote email mutation: err=%v diagnostics=%v replace=%v", err, noDrift.Diagnostics, noDrift.RequiresReplace)
+	}
+	assertNullEmail("no-drift plan", noDrift.PlannedState)
+
+	imported, err := protocolServer.ImportResourceState(ctx, &tfprotov6.ImportResourceStateRequest{
+		TypeName: "litellm_team_member", ID: teamID + ":" + userID,
+	})
+	if err != nil || accessGroupProtocolDiagnosticsHaveError(imported.Diagnostics) || len(imported.ImportedResources) != 1 {
+		t.Fatalf("import ID-only member: err=%v diagnostics=%v resources=%d", err, imported.Diagnostics, len(imported.ImportedResources))
+	}
+	assertNullEmail("imported", imported.ImportedResources[0].State)
+	importRead, err := protocolServer.ReadResource(ctx, &tfprotov6.ReadResourceRequest{
+		TypeName: "litellm_team_member", CurrentState: imported.ImportedResources[0].State, Private: imported.ImportedResources[0].Private,
+	})
+	if err != nil || accessGroupProtocolDiagnosticsHaveError(importRead.Diagnostics) {
+		t.Fatalf("read ID-only import: err=%v diagnostics=%v", err, importRead.Diagnostics)
+	}
+	assertNullEmail("import refresh", importRead.NewState)
+	if addCalls.Load() != 1 || addSentEmail.Load() || updateCalls.Load() != 0 {
+		t.Fatalf("remote mutations: add=%d add_sent_email=%t update=%d", addCalls.Load(), addSentEmail.Load(), updateCalls.Load())
+	}
 }
 
 func TestTeamMemberV0BothIdentityRefreshConvergesFromBudgetlessRoster(t *testing.T) {
