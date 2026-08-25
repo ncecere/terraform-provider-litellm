@@ -74,10 +74,11 @@ type clientRequestOptions struct {
 }
 
 // executeRequestWithOptions keeps fresh-connection behavior deliberately narrow.
-// Credential cache probes set request.Close and, for the *http.Transport used by
-// the provider, use a cloned transport with an empty connection pool. request.Close
-// also makes Go's HTTP/2 transport allocate a single-use connection. The cloned
-// transport is closed after the response body is consumed by the caller.
+// Credential cache probes require the provider's cloneable *http.Transport, then
+// set request.Close and use a cloned transport with an empty connection pool.
+// request.Close also makes Go's HTTP/2 transport allocate a single-use connection.
+// An arbitrary custom RoundTripper fails closed because connection freshness cannot
+// be proved. The cloned transport is closed after the response body is consumed.
 func (c *Client) executeRequestWithOptions(request *http.Request, options clientRequestOptions) (*http.Response, error) {
 	httpClient := c.HTTPClient
 	if httpClient == nil {
@@ -85,22 +86,27 @@ func (c *Client) executeRequestWithOptions(request *http.Request, options client
 	}
 	cleanup := func() {}
 	if options.freshConnection {
-		request.Close = true
 		transport := httpClient.Transport
 		if transport == nil {
 			transport = http.DefaultTransport
 		}
-		if baseTransport, ok := transport.(*http.Transport); ok {
-			freshTransport := baseTransport.Clone()
-			freshTransport.DisableKeepAlives = true
-			httpClient = &http.Client{
-				Transport:     freshTransport,
-				CheckRedirect: httpClient.CheckRedirect,
-				Jar:           httpClient.Jar,
-				Timeout:       httpClient.Timeout,
-			}
-			cleanup = freshTransport.CloseIdleConnections
+		baseTransport, ok := transport.(*http.Transport)
+		if !ok {
+			// request.Close is only a hint to an arbitrary RoundTripper. Worker
+			// sampling and PATCH fan-out must not claim independent connections
+			// unless the provider can clone and isolate the transport explicitly.
+			return nil, &safeTransportError{kind: "fresh LiteLLM connection is unavailable for the configured HTTP transport"}
 		}
+		request.Close = true
+		freshTransport := baseTransport.Clone()
+		freshTransport.DisableKeepAlives = true
+		httpClient = &http.Client{
+			Transport:     freshTransport,
+			CheckRedirect: httpClient.CheckRedirect,
+			Jar:           httpClient.Jar,
+			Timeout:       httpClient.Timeout,
+		}
+		cleanup = freshTransport.CloseIdleConnections
 	}
 	response, err := httpClient.Do(request)
 	if err != nil {

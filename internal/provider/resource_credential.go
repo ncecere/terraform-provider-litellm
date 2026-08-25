@@ -32,6 +32,11 @@ const (
 	credentialProbeSampleSize  = 4
 	credentialProbeMaxAttempts = 8
 
+	// LiteLLM v1.98 PATCH is semantically idempotent for one identical,
+	// fully-hydrated body. Use the same bounded fresh-connection budget as the
+	// conclusive probe sample to update more than one process-local cache.
+	credentialPatchFanoutSize = credentialProbeSampleSize
+
 	// Retained aliases keep focused lifecycle tests source-compatible.
 	credentialPostflightAttempts = credentialProbeSampleSize
 	credentialReadAttempts       = credentialProbeMaxAttempts
@@ -381,7 +386,7 @@ func (r *CredentialResource) Create(ctx context.Context, req resource.CreateRequ
 			resp.Diagnostics.AddError("Credential Create Error", "LiteLLM definitively rejected or locally failed the credential create request. No resource state was retained.")
 			return
 		}
-		_, _, recoveryErr := r.confirmCredentialMutation(ctx, name, verifyCreate)
+		_, _, recoveryErr := r.confirmCredentialCreate(ctx, name, verifyCreate)
 		setCredentialUncertainCreateState(ctx, resp, &plan, config)
 		if recoveryErr == nil {
 			resp.Diagnostics.AddError("Credential Create Recovered With Uncertain Ownership", "A unique exact-name, exact-configuration credential appeared during bounded recovery and was retained in partial state. The create response was unusable, so Terraform cannot distinguish its operation from a concurrent identical create; inspect ownership before importing or removing the retained state.")
@@ -391,7 +396,7 @@ func (r *CredentialResource) Create(ctx context.Context, req resource.CreateRequ
 		return
 	}
 
-	remote, postflightSample, postflightErr := r.confirmCredentialMutation(ctx, name, verifyCreate)
+	remote, postflightSample, postflightErr := r.confirmCredentialCreate(ctx, name, verifyCreate)
 	if postflightErr != nil {
 		setCredentialUncertainCreateState(ctx, resp, &plan, config)
 		resp.Diagnostics.AddError("Credential Create Postflight Failed", "LiteLLM reported create success, but bounded exact-name recovery could not prove the complete owned result. Caller-known identity was retained in partial state with no remote ownership.")
@@ -409,10 +414,10 @@ func (r *CredentialResource) Create(ctx context.Context, req resource.CreateRequ
 	if resp.Private != nil {
 		resp.Diagnostics.Append(writeCredentialPrivateMetadata(ctx, resp.Private, metadata)...)
 	}
-	if postflightSample.convergenceUncertain() {
+	if postflightSample.absent != 0 {
 		resp.Diagnostics.AddWarning(
 			"Credential Worker Convergence Uncertain",
-			"Create was confirmed with matching state on at least one fresh-connection worker probe, but LiteLLM v1.98 workers returned mixed presence or different cached versions. Terraform retained the credential identity but does not claim cluster-wide convergence. Reload or restart workers as appropriate, verify their process-local credential caches, and retry refresh.",
+			"Create was confirmed from an exact matching credential on at least one fresh-connection probe, while another LiteLLM v1.98 worker returned exact 404. The credential is durably stored in LiteLLM's database, but this lookup is served from each worker's process-local credential_list. Terraform retained the verified identity without claiming worker-cache or cluster-wide convergence.",
 		)
 	}
 }
@@ -542,12 +547,33 @@ func (r *CredentialResource) Read(ctx context.Context, req resource.ReadRequest,
 			return
 		}
 		resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
-		resp.Diagnostics.AddError("Credential Read Sampling Inconclusive", "Terraform retained the credential in state because bounded fresh-connection probes did not establish either a consistent present credential or four consecutive exact 404 responses. Retry transient failures or reconcile LiteLLM v1.98 process-local worker caches before retrying.")
+		resp.Diagnostics.AddError("Credential Read Sampling Inconclusive", "Terraform retained the credential in state because bounded fresh-connection probes did not establish either a usable present credential or four consecutive exact 404 responses. Retry transient failures or reconcile LiteLLM v1.98 process-local worker caches before retrying.")
 		return
 	}
-	if probeErr != nil || sample.convergenceUncertain() {
+	if probeErr != nil {
 		resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
-		resp.Diagnostics.AddError("Credential Worker Convergence Uncertain", "Terraform retained the prior credential state because fresh-connection probes observed mixed presence, different cached credential versions, or an incomplete sample across LiteLLM v1.98 workers. Reload or restart workers as appropriate, verify their process-local credential caches are consistent, and retry. Terraform will not treat one worker's exact 404 as remote deletion.")
+		resp.Diagnostics.AddError("Credential Read Sampling Inconclusive", "Terraform retained the credential in state because the bounded fresh-connection sample was incomplete. A transient or terminal API result is not evidence of durable deletion; retry after checking LiteLLM worker health.")
+		return
+	}
+
+	// A mixed cache sample is not remote drift when at least one exact-name
+	// worker still serves the previously owned semantic version. Keeping the
+	// prior state makes apply -> immediate plan stable without adopting an
+	// arbitrary stale worker. Conflicting versions with no prior match remain a
+	// hard error, and only a complete consecutive-404 sample removes state.
+	if sample.absent != 0 || !sample.versionsMatch() {
+		matchingPrior := credentialMatchingRemotes(sample.present, func(remote credentialRemote) bool {
+			return credentialRemoteMatchesOwnedState(remote, priorInfo, priorValues, metadata)
+		})
+		resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+		if len(matchingPrior) != len(sample.present) {
+			resp.Diagnostics.AddError("Credential Worker Versions Conflict", "Fresh LiteLLM v1.98 workers returned mixed presence or conflicting cached credential versions, and at least one present version did not semantically match the prior Terraform-owned state. Terraform retained prior state and did not adopt arbitrary data. Verify the durable database record and reconcile each worker's process-local credential_list before retrying.")
+			return
+		}
+		resp.Diagnostics.AddWarning(
+			"Credential Worker Convergence Uncertain",
+			"At least one fresh LiteLLM v1.98 worker returned the exact identity and prior Terraform-owned semantic version while another returned exact 404 or a different cached version. Terraform retained the previously verified state. LiteLLM stores the durable record in its database but serves this lookup from each worker's process-local credential_list, so this warning does not claim worker-cache or cluster-wide convergence.",
+		)
 		return
 	}
 	remote := sample.present[0]
@@ -641,12 +667,20 @@ func (r *CredentialResource) Update(ctx context.Context, req resource.UpdateRequ
 
 	name := state.CredentialName.ValueString()
 	preflight, preflightErr := probeCredentialEndpoint(ctx, r.client, credentialByNamePath(name), name)
-	if preflightErr != nil || !preflight.hasPresence() || preflight.convergenceUncertain() {
+	if preflightErr != nil || !preflight.hasPresence() {
 		resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
-		resp.Diagnostics.AddError("Credential Update Preflight Failed", "The exact credential was not consistently present with one version across bounded fresh-connection worker probes, so no PATCH was sent. Terraform retained prior state; reconcile LiteLLM v1.98 process-local credential caches and retry.")
+		resp.Diagnostics.AddError("Credential Update Preflight Failed", "Bounded fresh-connection probes did not return a usable exact-name credential, so no PATCH was sent. Terraform retained prior state; verify the durable LiteLLM database record and worker health before retrying.")
 		return
 	}
-	remoteBefore := preflight.present[0]
+	matchingPrior := credentialMatchingRemotes(preflight.present, func(remote credentialRemote) bool {
+		return credentialRemoteMatchesOwnedState(remote, priorInfo, priorValues, priorMetadata)
+	})
+	if len(matchingPrior) == 0 || !preflight.versionsMatch() {
+		resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+		resp.Diagnostics.AddError("Credential Update Preflight Failed", "No single present worker version both matched the prior Terraform-owned state and was consistent with every other present version, so no PATCH was sent. Exact 404 workers may have an empty process-local cache, but conflicting present data could be durable and is never overwritten arbitrarily.")
+		return
+	}
+	remoteBefore := matchingPrior[0]
 	priorInfoOwnership := credentialMetadataOwnership(priorMetadata, false)
 	infoPatch, err := hydrateCredentialPatch(remoteBefore.info, priorInfo, desiredInfo.Object, priorInfoOwnership, desiredInfo.UnionOwnership, false)
 	if err == nil {
@@ -667,22 +701,36 @@ func (r *CredentialResource) Update(ctx context.Context, req resource.UpdateRequ
 		"credential_values": valuesPatch,
 	}
 
-	var mutation credentialMutationResponse
-	accepted, mutationErr := r.client.doRequestWithResponse(ctx, http.MethodPatch, credentialMutationPath(plan.CredentialName.ValueString()), patch, &mutation)
-	bodyErr := validateCredentialMutationResponse(mutation)
-	if mutationErr != nil {
-		bodyErr = mutationErr
+	// LiteLLM v1.98 PATCH merges the same hydrated full dictionaries into the
+	// durable row and then updates only the handling worker's credential_list.
+	// Repeating this exact body is semantically idempotent, so a bounded fan-out
+	// over fresh connections safely reaches more than one process-local cache.
+	patchFanout := r.patchCredentialFanout(ctx, plan.CredentialName.ValueString(), patch)
+
+	postflightSample, postflightProbeErr := probeCredentialEndpoint(ctx, r.client, credentialByNamePath(plan.CredentialName.ValueString()), plan.CredentialName.ValueString())
+	var remoteAfter credentialRemote
+	var postflightErr error
+	matchingDesired := make([]credentialRemote, 0, len(postflightSample.present))
+	matchingOld := make([]credentialRemote, 0, len(postflightSample.present))
+	conflictingVersions := 0
+	for _, remote := range postflightSample.present {
+		switch {
+		case credentialRemoteMatchesVersion(remote, infoPatch, valuesPatch):
+			matchingDesired = append(matchingDesired, remote)
+		case credentialRemoteMatchesVersion(remote, remoteBefore.info, remoteBefore.values):
+			matchingOld = append(matchingOld, remote)
+		default:
+			conflictingVersions++
+		}
 	}
-	remoteAfter, postflightSample, postflightErr := r.confirmCredentialMutation(ctx, plan.CredentialName.ValueString(), func(remote credentialRemote) error {
-		if err := verifyCredentialOwnedObject(remote.info, infoPatch, credentialOwnershipForObject(infoPatch), false); err != nil {
-			return err
-		}
-		if err := verifyCredentialNestedRemovals(remote.info, priorInfoOwnership, desiredInfo.UnionOwnership, true); err != nil {
-			return err
-		}
-		return verifyCredentialPostflight(remote.values, priorValues, desiredValues.Object, credentialMetadataOwnership(priorMetadata, true), desiredValues.UnionOwnership, true)
-	})
-	if postflightErr == nil {
+	if postflightProbeErr != nil {
+		postflightErr = postflightProbeErr
+	} else if len(matchingDesired) == 0 {
+		postflightErr = errors.New("no sampled worker returned the desired credential version")
+	} else if conflictingVersions != 0 {
+		postflightErr = errors.New("a sampled worker returned a conflicting credential version")
+	} else {
+		remoteAfter = matchingDesired[0]
 		metadata.AllRemoteOwned = credentialRemoteFullyOwned(remoteAfter.info, desiredInfo.Object, desiredInfo.UnionOwnership, false) &&
 			credentialRemoteFullyOwned(remoteAfter.values, desiredValues.Object, desiredValues.UnionOwnership, true)
 		if err := reconcileCredentialState(ctx, &plan, remoteAfter, desiredInfo.Object, desiredValues.Object, metadata); err != nil {
@@ -699,17 +747,18 @@ func (r *CredentialResource) Update(ctx context.Context, req resource.UpdateRequ
 		// prior state explicitly so an unconfirmed PATCH is never claimed.
 		resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 	}
-	if !accepted {
-		resp.Diagnostics.AddError("Credential Update Error", "LiteLLM did not accept the credential PATCH. The authoritative postflight read was still performed.")
-	} else if bodyErr != nil {
-		resp.Diagnostics.AddError("Malformed Credential Update Response", "LiteLLM accepted the PATCH status, but its body did not contain the required success result. The authoritative postflight read was still performed.")
+	if patchFanout.requestFailures != 0 {
+		resp.Diagnostics.AddError("Credential Update Fan-out Failed", "At least one bounded fresh-connection PATCH was not accepted by LiteLLM. The exact hydrated request was not retried beyond the fixed worker fan-out budget, and postflight sampling was still performed.")
+	}
+	if patchFanout.invalidBodies != 0 {
+		resp.Diagnostics.AddError("Malformed Credential Update Response", "At least one accepted PATCH returned a body without the required success result. Every 2xx mutation body is validated; postflight sampling was still performed.")
 	}
 	if postflightErr != nil {
-		resp.Diagnostics.AddError("Credential Update Postflight Failed", "The provider could not confirm every owned value, mask, and nested removal on any worker in the bounded fresh-connection sample, so it did not claim the planned update in state.")
-	} else if postflightSample.convergenceUncertain() {
+		resp.Diagnostics.AddError("Credential Update Postflight Failed", "The provider did not find a desired matching version without an additional conflicting version in the bounded fresh-connection sample, so it retained prior state and did not claim the planned update.")
+	} else if postflightSample.absent != 0 || len(matchingOld) != 0 {
 		resp.Diagnostics.AddWarning(
 			"Credential Worker Convergence Uncertain",
-			"Update was confirmed with matching state on at least one fresh-connection worker probe, but LiteLLM v1.98 workers returned mixed presence or different cached versions. Terraform recorded the matching result but does not claim cluster-wide convergence. Reload or restart workers as appropriate, verify their process-local credential caches, and retry refresh.",
+			"Update was verified from at least one desired matching worker, while another LiteLLM v1.98 worker returned exact 404 or the exact old cached version. Terraform recorded the verified desired state, but the durable database write and each process-local credential_list can become visible at different times; this warning does not claim worker-cache or cluster-wide convergence.",
 		)
 	}
 }
@@ -746,31 +795,64 @@ func (r *CredentialResource) Delete(ctx context.Context, req resource.DeleteRequ
 				resp.Diagnostics.AddError("Unsafe Credential Replacement", "Replacement deletion was blocked because the current remote credential contains data that is not proven Terraform-owned and reconstructable.")
 				return
 			}
+		} else if preflight.authoritativeAbsence() {
+			// A prior replacement DELETE can remove the durable row while stale
+			// workers keep the first attempt from completing. Once every sampled
+			// worker is absent, finish without sending an unsafe repeated DELETE.
+			return
 		}
 	}
 
+	// LiteLLM v1.98 deletes the durable row before evicting the handling
+	// worker's credential_list. A second DELETE after the row is gone fails
+	// before local eviction, so DELETE fan-out cannot safely clear stale workers.
+	// Send exactly one mutation and validate its 2xx body; exact 404 means the
+	// durable row is already absent. Replacement and terminal destroy then have
+	// deliberately different postflight contracts below.
 	var mutation credentialMutationResponse
 	accepted, mutationErr := r.client.doRequestWithResponse(ctx, http.MethodDelete, credentialMutationPath(data.CredentialName.ValueString()), nil, &mutation)
-	bodyErr := validateCredentialMutationResponse(mutation)
-	if mutationErr != nil {
-		bodyErr = mutationErr
-	}
+	validatedDelete := accepted && mutationErr == nil && validateCredentialMutationResponse(mutation) == nil
+	alreadyAbsent := !accepted && IsAPIErrorStatus(mutationErr, http.StatusNotFound)
 	absenceSample, absenceErr := r.confirmCredentialAbsence(ctx, data.CredentialName.ValueString())
-	if !accepted && IsAPIErrorStatus(mutationErr, http.StatusNotFound) && absenceErr == nil {
+
+	if metadata.ReplacementPending {
+		if !validatedDelete && !alreadyAbsent {
+			if accepted {
+				resp.Diagnostics.AddError("Malformed Credential Delete Response", "LiteLLM accepted the replacement DELETE status, but its body did not contain the required success result. Terraform retained state and will not recreate or adopt a credential after an unverified deletion.")
+			} else {
+				resp.Diagnostics.AddError("Credential Delete Error", "LiteLLM did not accept the replacement DELETE. Terraform retained state and will not recreate or adopt a credential after an unverified deletion.")
+			}
+			return
+		}
+		if absenceErr != nil {
+			detail := "Replacement deletion requires four consecutive exact 404 responses after the exact-name DELETE. Terraform retained state and blocked recreation/adoption because absence was not proven."
+			if absenceSample.hasPresence() {
+				detail += " At least one LiteLLM v1.98 worker still serves the old credential from its process-local credential_list; reload or restart workers before retrying replacement."
+			}
+			resp.Diagnostics.AddError("Credential Delete Postflight Failed", detail)
+		}
 		return
 	}
-	if !accepted {
-		resp.Diagnostics.AddError("Credential Delete Error", "LiteLLM did not accept the credential DELETE. Exact absence was still checked through the authoritative by-name route.")
-	} else if bodyErr != nil {
-		resp.Diagnostics.AddError("Malformed Credential Delete Response", "LiteLLM accepted the DELETE status, but its body did not contain the required success result. Exact absence was still checked through the authoritative by-name route.")
-	}
-	if absenceErr != nil {
-		detail := "The provider could not confirm four consecutive exact 404 responses across bounded fresh-connection probes, so Terraform must retain the resource in state."
-		if absenceSample.hasPresence() {
-			detail += " At least one sampled LiteLLM v1.98 worker still serves the credential from its process-local cache; reload or restart workers as appropriate, verify cache convergence, and retry destroy."
+
+	if !validatedDelete && !alreadyAbsent {
+		if accepted {
+			resp.Diagnostics.AddError("Malformed Credential Delete Response", "LiteLLM accepted the DELETE status, but its body did not contain the required success result. Terraform retained state because durable database deletion was not validated.")
+		} else {
+			resp.Diagnostics.AddError("Credential Delete Error", "LiteLLM did not accept the credential DELETE. Terraform retained state because durable database deletion was not validated.")
 		}
-		resp.Diagnostics.AddError("Credential Delete Postflight Failed", detail)
+		return
 	}
+	detail := "LiteLLM confirmed the durable database credential is deleted or already absent, so terminal destroy removed Terraform state."
+	switch {
+	case absenceSample.hasPresence():
+		detail += " At least one sampled v1.98 worker still serves a process-local cached copy, including masked or usable secret material."
+	case absenceErr != nil:
+		detail += " Bounded worker-cache probes were inconclusive."
+	default:
+		detail += " The bounded sample returned four consecutive 404 responses, but the provider cannot enumerate every worker behind the load balancer."
+	}
+	detail += " Terraform does not claim credential revocation; reload or restart every stale worker or unsampled worker before relying on the credential being unusable."
+	resp.Diagnostics.AddWarning("Credential Deleted From Durable Database With Stale Worker Risk", detail)
 }
 
 func (r *CredentialResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
@@ -1026,6 +1108,80 @@ func validateCredentialMutationResponse(response credentialMutationResponse) err
 	return nil
 }
 
+type credentialMutationFanoutResult struct {
+	requestFailures int
+	invalidBodies   int
+}
+
+func (r *CredentialResource) patchCredentialFanout(ctx context.Context, name string, patch map[string]interface{}) credentialMutationFanoutResult {
+	var result credentialMutationFanoutResult
+	for range credentialPatchFanoutSize {
+		var mutation credentialMutationResponse
+		accepted, err := r.client.doRequestWithResponseOptions(
+			ctx,
+			http.MethodPatch,
+			credentialMutationPath(name),
+			patch,
+			&mutation,
+			clientRequestOptions{freshConnection: true},
+		)
+		if err != nil {
+			if accepted {
+				result.invalidBodies++
+			} else {
+				result.requestFailures++
+			}
+			continue
+		}
+		if !accepted {
+			result.requestFailures++
+			continue
+		}
+		if validateCredentialMutationResponse(mutation) != nil {
+			result.invalidBodies++
+		}
+	}
+	return result
+}
+
+func credentialMatchingRemotes(remotes []credentialRemote, matches func(credentialRemote) bool) []credentialRemote {
+	result := make([]credentialRemote, 0, len(remotes))
+	for _, remote := range remotes {
+		if matches(remote) {
+			result = append(result, remote)
+		}
+	}
+	return result
+}
+
+// credentialRemoteMatchesOwnedState compares only recursively owned state.
+// Worker-local absence or unowned server metadata must not manufacture drift,
+// while readable owned values and exact LiteLLM masks remain compare-and-set
+// preconditions.
+func credentialRemoteMatchesOwnedState(remote credentialRemote, priorInfo, priorValues map[string]interface{}, metadata credentialPrivateMetadata) bool {
+	if validateCredentialOwnedAtomicPreconditions(remote.info, priorInfo, credentialMetadataOwnership(metadata, false), false) != nil {
+		return false
+	}
+	if metadata.ModelDominant || metadata.Imported {
+		return true
+	}
+	return validateCredentialOwnedAtomicPreconditions(remote.values, priorValues, credentialMetadataOwnership(metadata, true), true) == nil
+}
+
+// credentialRemoteMatchesVersion requires a complete semantic representation:
+// no expected key may be missing, no additional key may appear, and secret
+// leaves may differ only by LiteLLM's exact deterministic mask.
+func credentialRemoteMatchesVersion(remote credentialRemote, info, values map[string]interface{}) bool {
+	infoOwnership := credentialOwnershipForObject(info)
+	if verifyCredentialOwnedObject(remote.info, info, infoOwnership, false) != nil ||
+		!credentialRemoteFullyOwned(remote.info, info, infoOwnership, false) {
+		return false
+	}
+	valuesOwnership := credentialOwnershipForObject(values)
+	return verifyCredentialOwnedObject(remote.values, values, valuesOwnership, true) == nil &&
+		credentialRemoteFullyOwned(remote.values, values, valuesOwnership, true)
+}
+
 func (r *CredentialResource) fetchCredentialByName(ctx context.Context, name string) (credentialRemote, error) {
 	var result credentialAPIResponse
 	if err := r.client.doFreshRequestWithResponse(ctx, http.MethodGet, credentialByNamePath(name), nil, &result); err != nil {
@@ -1098,6 +1254,25 @@ func probeCredentialEndpoint(ctx context.Context, client *Client, endpoint, expe
 		}
 	}
 	return sample, errCredentialProbeIncomplete
+}
+
+func (r *CredentialResource) confirmCredentialCreate(ctx context.Context, name string, verify func(credentialRemote) error) (credentialRemote, credentialProbeSample, error) {
+	remote, sample, err := r.confirmCredentialMutation(ctx, name, verify)
+	if err != nil {
+		return credentialRemote{}, sample, err
+	}
+	// A create may legitimately be visible in only some process-local caches,
+	// but every present representation must be the one just verified. Never
+	// select a desired-looking worker while another serves conflicting data.
+	for _, candidate := range sample.present {
+		if verifyErr := verify(candidate); verifyErr != nil {
+			return credentialRemote{}, sample, verifyErr
+		}
+	}
+	if !sample.versionsMatch() {
+		return credentialRemote{}, sample, errors.New("sampled workers returned conflicting credential versions after create")
+	}
+	return remote, sample, nil
 }
 
 func (r *CredentialResource) confirmCredentialMutation(ctx context.Context, name string, verify func(credentialRemote) error) (credentialRemote, credentialProbeSample, error) {

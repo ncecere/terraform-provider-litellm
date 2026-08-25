@@ -125,10 +125,10 @@ func (d *CredentialDataSource) Read(ctx context.Context, req datasource.ReadRequ
 	data.CredentialInfo = infoMap
 	data.CredentialInfoJSON = types.StringValue(infoJSON)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
-	if sample.convergenceUncertain() {
+	if sample.absent != 0 {
 		resp.Diagnostics.AddWarning(
 			"Credential Worker Convergence Uncertain",
-			"At least one fresh-connection probe returned the credential while another LiteLLM v1.98 worker returned exact 404. The data source used the matching representation but does not claim cluster-wide convergence. Reload or restart workers as appropriate, verify their process-local credential caches, and retry.",
+			"At least one fresh-connection probe returned one consistent credential version while another LiteLLM v1.98 worker returned exact 404. The data source returned that version. LiteLLM stores the durable record in its database but serves this lookup from each worker's process-local credential_list, so Terraform does not claim worker-cache or cluster-wide convergence.",
 		)
 	}
 }

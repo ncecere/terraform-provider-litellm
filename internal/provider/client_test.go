@@ -214,6 +214,23 @@ func TestClientFreshCredentialProbePreservesRedaction(t *testing.T) {
 	}
 }
 
+func TestClientFreshCredentialProbeRejectsUnverifiableCustomTransport(t *testing.T) {
+	t.Parallel()
+	calls := 0
+	client := &Client{
+		APIBase: "https://example.invalid",
+		APIKey:  "admin",
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			calls++
+			return nil, errors.New("must not execute")
+		})},
+	}
+	err := client.doFreshRequestWithResponse(context.Background(), http.MethodGet, "/credentials/by_name/test", nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "fresh LiteLLM connection is unavailable") || calls != 0 {
+		t.Fatalf("custom transport freshness did not fail closed: calls=%d error=%v", calls, err)
+	}
+}
+
 func TestSanitizeDiagnosticStringRedactsCompleteKnownSecretBeforePatterns(t *testing.T) {
 	t.Parallel()
 

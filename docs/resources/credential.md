@@ -104,7 +104,7 @@ PATCH in LiteLLM v1.98 shallow-merges the two top-level dictionaries:
 
 Because top-level removal cannot be proved safe, the provider reports a plan error instead of deleting and recreating the credential. Create-only replacement is allowed only when private ownership metadata and an authoritative delete preflight prove every remote key is Terraform-owned and reconstructable. This prevents replacement from destroying operator-added secrets.
 
-PATCH and DELETE response bodies must contain LiteLLM's explicit `success: true` result. This matters because affected handlers can serialize an exception with HTTP 200. Every mutation also receives bounded exact-name postflight sampling: updates verify owned values, masks, and removals; deletes require sampled exact 404 absence.
+PATCH and DELETE 2xx response bodies must contain LiteLLM's explicit `success: true` result. This matters because affected handlers can serialize an exception with HTTP 200. PATCH postflight verifies the complete hydrated version rather than treating a successful status as convergence. DELETE has separate terminal-destroy and replacement contracts, described below.
 
 ### LiteLLM v1.98 worker-cache limitation
 
@@ -112,12 +112,17 @@ LiteLLM v1.98 serves `GET /credentials/by_name/{credential_name}` from the proce
 
 The provider uses an API-only fail-safe; it cannot enumerate workers or force the load balancer to select each one:
 
-* Each lifecycle lookup samples four conclusive GET responses over fresh HTTP connections so keepalive does not pin every probe to one worker. A load balancer can still route multiple fresh connections to the same worker.
+* Each lifecycle lookup samples four conclusive GET responses over fresh HTTP connections so keepalive does not pin every probe to one worker. Production uses an isolated clone of Go's `*http.Transport`; a custom transport whose connection freshness cannot be proved fails closed. A load balancer can still route multiple fresh connections to the same worker.
 * Transient transport failures, request timeouts, HTTP 429, and HTTP 5xx responses are retried within a maximum of eight total probes. They do not count as absence and reset the consecutive-absence sequence.
-* Absence is accepted only after four consecutive fresh-connection probes all return exact HTTP 404. Presence on any probe retains Terraform identity and blocks duplicate create.
-* Mixed present/404 results or different credential versions retain state and produce a worker-convergence diagnostic. They are never converted into remote deletion or recreate drift.
-* Create and update postflight must find the exact requested owned result on at least one sampled worker. A mixed sample produces a warning and does not claim cluster-wide convergence.
-* Delete does not complete while any sampled worker still serves the credential. With v1.98, an operator may need to reload or restart workers and then retry destroy.
+* Resource-read absence is accepted only after four consecutive fresh-connection probes all return exact HTTP 404. Create preflight blocks on any presence and sends POST only after the same authoritative absence result. POST is never fanned out or repeated.
+* A mixed resource read produces a warning and retains the previously verified state only when every present exact-name version semantically reconciles the prior Terraform-owned state. Any third/conflicting present version is an error and is never adopted. This makes apply followed by immediate plan usable when some workers return the prior exact version and others return 404.
+* Create postflight accepts one consistent requested version plus worker 404s with a warning. A conflicting present version fails closed.
+* Update preflight accepts one consistent prior-exact present version plus 404 workers. The provider builds one fully hydrated PATCH body and repeats that identical, semantically idempotent v1.98 PATCH over a bounded set of fresh connections. Postflight requires at least one desired-exact version and permits only desired-exact, known-prior-exact, or 404 results; any third version is an error. Warnings report cache uncertainty and never claim cluster convergence.
+
+LiteLLM v1.98 DELETE cannot use the same fan-out strategy: the handler deletes the database row before evicting its local `credential_list`, and a later DELETE fails on the missing row before evicting another worker. The provider therefore sends exactly one DELETE:
+
+* Ordinary terminal destroy may remove Terraform state after one validated `success: true` durable database deletion, or exact already-absent result. Destroy always warns that cached secret material can remain usable until every stale or unsampled worker is reloaded or restarted, even when the bounded postflight sample returns only 404. The warning does **not** claim credential revocation.
+* Replacement deletion remains strict. It first requires complete Terraform ownership, and after DELETE it requires four consecutive exact 404 responses. If any worker still serves the old credential, Terraform retains state and blocks recreation/adoption until worker caches are reloaded or restarted.
 
 This policy is bounded safety sampling, not a fixed convergence interval or proof that every worker agrees. There is no promised wait time after which v1.98 caches become consistent.
 
