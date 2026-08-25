@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -555,6 +556,205 @@ func TestProjectAcceptedButIgnoredBudgetClearRetainsPriorState(t *testing.T) {
 	}
 	if retained.MaxBudget.ValueFloat64() != 100 {
 		t.Fatalf("ignored clear published planned state: %#v", retained.MaxBudget)
+	}
+}
+
+func TestProjectNonNullBudgetChangesUseValidatedProjectRoute(t *testing.T) {
+	t.Parallel()
+	var routes []string
+	var projectPayload map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		routes = append(routes, request.Method+" "+request.URL.Path)
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/project/info" && len(routes) == 1:
+			_, _ = w.Write([]byte(`{"project_id":"project-1","team_id":"team-1","budget_id":"budget-1","litellm_budget_table":{"budget_id":"budget-1","max_budget":100,"tpm_limit":1000}}`))
+		case request.Method == http.MethodPost && request.URL.Path == "/project/update":
+			body, _ := io.ReadAll(request.Body)
+			if err := decodeJSONUseNumber(body, &projectPayload); err != nil {
+				t.Fatal(err)
+			}
+			_, _ = w.Write([]byte(`{"project_id":"project-1","team_id":"team-1","budget_id":"budget-1","litellm_budget_table":{"budget_id":"budget-1","max_budget":150,"tpm_limit":2000}}`))
+		case request.Method == http.MethodGet && request.URL.Path == "/project/info":
+			_, _ = w.Write([]byte(`{"project_id":"project-1","team_id":"team-1","budget_id":"budget-1","litellm_budget_table":{"budget_id":"budget-1","max_budget":150,"tpm_limit":2000}}`))
+		case request.URL.Path == "/budget/update":
+			t.Fatal("non-null budget change bypassed project validation through /budget/update")
+		default:
+			http.NotFound(w, request)
+		}
+	}))
+	defer server.Close()
+
+	prior := typedProjectBudgetModel()
+	prior.BudgetID, prior.MaxBudget, prior.TPMLimit = types.StringValue("budget-1"), types.Float64Value(100), types.Int64Value(1000)
+	planned := prior
+	planned.MaxBudget, planned.TPMLimit = types.Float64Value(150), types.Int64Value(2000)
+	schema := projectBudgetTestSchema(t)
+	state, plan := projectBudgetTestState(t, schema, prior), projectBudgetTestPlan(t, schema, planned)
+	response := &resource.UpdateResponse{State: state}
+	(&ProjectResource{client: &Client{APIBase: server.URL, APIKey: "test", HTTPClient: server.Client()}}).Update(context.Background(), resource.UpdateRequest{State: state, Plan: plan}, response)
+	if response.Diagnostics.HasError() {
+		t.Fatal(response.Diagnostics)
+	}
+	wantRoutes := []string{"GET /project/info", "POST /project/update", "GET /project/info"}
+	if len(routes) != len(wantRoutes) {
+		t.Fatalf("routes = %v, want %v", routes, wantRoutes)
+	}
+	for index := range wantRoutes {
+		if routes[index] != wantRoutes[index] {
+			t.Fatalf("routes = %v, want %v", routes, wantRoutes)
+		}
+	}
+	if fmt.Sprint(projectPayload["max_budget"]) != "150" || fmt.Sprint(projectPayload["tpm_limit"]) != "2000" || projectPayload["project_id"] != "project-1" {
+		t.Fatalf("validated project payload = %#v", projectPayload)
+	}
+	if _, sent := projectPayload["budget_id"]; sent {
+		t.Fatalf("project update attempted budget reassociation: %#v", projectPayload)
+	}
+}
+
+func TestProjectMixedBudgetSetAndClearUsesValidatedOrderAndResetPatch(t *testing.T) {
+	t.Parallel()
+	var routes []string
+	var projectPayload, budgetPayload map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		routes = append(routes, request.Method+" "+request.URL.Path)
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/project/info" && len(routes) == 1:
+			_, _ = w.Write([]byte(`{"project_id":"project-1","team_id":"team-1","budget_id":"budget-1","litellm_budget_table":{"budget_id":"budget-1","max_budget":100,"soft_budget":80,"budget_duration":"30d"}}`))
+		case request.Method == http.MethodPost && request.URL.Path == "/project/update":
+			body, _ := io.ReadAll(request.Body)
+			if err := decodeJSONUseNumber(body, &projectPayload); err != nil {
+				t.Fatal(err)
+			}
+			_, _ = w.Write([]byte(`{"project_id":"project-1","team_id":"team-1","budget_id":"budget-1","litellm_budget_table":{"budget_id":"budget-1","max_budget":150,"soft_budget":80,"budget_duration":"7d"}}`))
+		case request.Method == http.MethodPost && request.URL.Path == "/budget/update":
+			body, _ := io.ReadAll(request.Body)
+			if err := decodeJSONUseNumber(body, &budgetPayload); err != nil {
+				t.Fatal(err)
+			}
+			_, _ = w.Write([]byte(`{"budget_id":"budget-1","max_budget":150,"soft_budget":null,"budget_duration":"7d"}`))
+		case request.Method == http.MethodGet && request.URL.Path == "/project/info":
+			_, _ = w.Write([]byte(`{"project_id":"project-1","team_id":"team-1","budget_id":"budget-1","litellm_budget_table":{"budget_id":"budget-1","max_budget":150,"soft_budget":null,"budget_duration":"7d"}}`))
+		default:
+			http.NotFound(w, request)
+		}
+	}))
+	defer server.Close()
+
+	prior := typedProjectBudgetModel()
+	prior.BudgetID, prior.MaxBudget, prior.SoftBudget, prior.BudgetDuration = types.StringValue("budget-1"), types.Float64Value(100), types.Float64Value(80), types.StringValue("30d")
+	planned := prior
+	planned.MaxBudget, planned.SoftBudget, planned.BudgetDuration = types.Float64Value(150), types.Float64Null(), types.StringValue("7d")
+	schema := projectBudgetTestSchema(t)
+	state, plan := projectBudgetTestState(t, schema, prior), projectBudgetTestPlan(t, schema, planned)
+	response := &resource.UpdateResponse{State: state}
+	(&ProjectResource{client: &Client{APIBase: server.URL, APIKey: "test", HTTPClient: server.Client()}}).Update(context.Background(), resource.UpdateRequest{State: state, Plan: plan}, response)
+	if response.Diagnostics.HasError() {
+		t.Fatal(response.Diagnostics)
+	}
+	wantRoutes := []string{"GET /project/info", "POST /project/update", "POST /budget/update", "GET /project/info"}
+	if fmt.Sprint(routes) != fmt.Sprint(wantRoutes) {
+		t.Fatalf("routes = %v, want %v", routes, wantRoutes)
+	}
+	if fmt.Sprint(projectPayload["max_budget"]) != "150" || projectPayload["budget_duration"] != "7d" {
+		t.Fatalf("project validation payload = %#v", projectPayload)
+	}
+	if _, sent := projectPayload["soft_budget"]; sent {
+		t.Fatalf("null clear leaked into exclude_none project route: %#v", projectPayload)
+	}
+	if value, sent := budgetPayload["soft_budget"]; !sent || value != nil || budgetPayload["budget_duration"] != "7d" || budgetPayload["budget_id"] != "budget-1" {
+		t.Fatalf("reset/clear payload = %#v", budgetPayload)
+	}
+	if _, sent := budgetPayload["max_budget"]; sent {
+		t.Fatalf("validated max_budget was resent through direct budget route: %#v", budgetPayload)
+	}
+}
+
+func TestProjectPartialResetClearFailureRetainsStateAndRetriesInOrder(t *testing.T) {
+	t.Parallel()
+	var routes []string
+	budgetAttempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		routes = append(routes, request.Method+" "+request.URL.Path)
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/project/info" && (len(routes) == 1 || len(routes) == 4):
+			_, _ = w.Write([]byte(`{"project_id":"project-1","team_id":"team-1","budget_id":"budget-1","litellm_budget_table":{"budget_id":"budget-1","max_budget":100,"soft_budget":80}}`))
+		case request.Method == http.MethodPost && request.URL.Path == "/project/update":
+			_, _ = w.Write([]byte(`{"project_id":"project-1","team_id":"team-1","budget_id":"budget-1","litellm_budget_table":{"budget_id":"budget-1","max_budget":150,"soft_budget":80}}`))
+		case request.Method == http.MethodPost && request.URL.Path == "/budget/update":
+			budgetAttempts++
+			if budgetAttempts == 1 {
+				http.Error(w, `{"error":"retry"}`, http.StatusInternalServerError)
+				return
+			}
+			_, _ = w.Write([]byte(`{"budget_id":"budget-1","soft_budget":null}`))
+		case request.Method == http.MethodGet && request.URL.Path == "/project/info":
+			_, _ = w.Write([]byte(`{"project_id":"project-1","team_id":"team-1","budget_id":"budget-1","litellm_budget_table":{"budget_id":"budget-1","max_budget":150,"soft_budget":null}}`))
+		default:
+			http.NotFound(w, request)
+		}
+	}))
+	defer server.Close()
+
+	prior := typedProjectBudgetModel()
+	prior.BudgetID, prior.MaxBudget, prior.SoftBudget = types.StringValue("budget-1"), types.Float64Value(100), types.Float64Value(80)
+	planned := prior
+	planned.MaxBudget, planned.SoftBudget = types.Float64Value(150), types.Float64Null()
+	schema := projectBudgetTestSchema(t)
+	state, plan := projectBudgetTestState(t, schema, prior), projectBudgetTestPlan(t, schema, planned)
+	client := &Client{APIBase: server.URL, APIKey: "test", HTTPClient: server.Client()}
+	failed := &resource.UpdateResponse{State: state}
+	(&ProjectResource{client: client}).Update(context.Background(), resource.UpdateRequest{State: state, Plan: plan}, failed)
+	if !failed.Diagnostics.HasError() {
+		t.Fatal("partial reset/clear failure was accepted")
+	}
+	var retained ProjectResourceModel
+	if diagnostics := failed.State.Get(context.Background(), &retained); diagnostics.HasError() || retained.MaxBudget.ValueFloat64() != 100 || retained.SoftBudget.ValueFloat64() != 80 {
+		t.Fatalf("failed partial update state = %#v diagnostics=%v", retained, diagnostics)
+	}
+
+	retried := &resource.UpdateResponse{State: state}
+	(&ProjectResource{client: client}).Update(context.Background(), resource.UpdateRequest{State: state, Plan: plan}, retried)
+	if retried.Diagnostics.HasError() {
+		t.Fatal(retried.Diagnostics)
+	}
+	wantRoutes := []string{"GET /project/info", "POST /project/update", "POST /budget/update", "GET /project/info", "POST /project/update", "POST /budget/update", "GET /project/info"}
+	if fmt.Sprint(routes) != fmt.Sprint(wantRoutes) {
+		t.Fatalf("partial retry routes = %v, want %v", routes, wantRoutes)
+	}
+}
+
+func TestProjectMalformedValidatedUpdateResponseStopsLaterBudgetPatch(t *testing.T) {
+	t.Parallel()
+	var budgetCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch request.URL.Path {
+		case "/project/info":
+			_, _ = w.Write([]byte(`{"project_id":"project-1","team_id":"team-1","budget_id":"budget-1","litellm_budget_table":{"budget_id":"budget-1","max_budget":100,"soft_budget":80}}`))
+		case "/project/update":
+			_, _ = w.Write([]byte(`{"project_id":"wrong-project"}`))
+		case "/budget/update":
+			budgetCalls++
+			_, _ = w.Write([]byte(`{"budget_id":"budget-1"}`))
+		default:
+			http.NotFound(w, request)
+		}
+	}))
+	defer server.Close()
+	prior := typedProjectBudgetModel()
+	prior.BudgetID, prior.MaxBudget, prior.SoftBudget = types.StringValue("budget-1"), types.Float64Value(100), types.Float64Value(80)
+	planned := prior
+	planned.MaxBudget, planned.SoftBudget = types.Float64Value(150), types.Float64Null()
+	schema := projectBudgetTestSchema(t)
+	state, plan := projectBudgetTestState(t, schema, prior), projectBudgetTestPlan(t, schema, planned)
+	response := &resource.UpdateResponse{State: state}
+	(&ProjectResource{client: &Client{APIBase: server.URL, APIKey: "test", HTTPClient: server.Client()}}).Update(context.Background(), resource.UpdateRequest{State: state, Plan: plan}, response)
+	if !response.Diagnostics.HasError() || budgetCalls != 0 {
+		t.Fatalf("malformed project response continued: diagnostics=%v budget_calls=%d", response.Diagnostics, budgetCalls)
 	}
 }
 

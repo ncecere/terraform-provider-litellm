@@ -87,7 +87,7 @@ Do not configure `blocked = true` or non-empty `tags`. LiteLLM v1.98 has no orga
 terraform import litellm_organization.example <organization-id>
 ```
 
-The first authoritative import read adopts visible nested budget values, including `budget_id` and exact integer limits above `2^53`. The imported `budget_id` may remain omitted from configuration without producing a plan. Normal lifecycle reads do not adopt unconfigured API defaults.
+The first authoritative import read adopts visible nested budget values, including `budget_id` and exact integer limits above `2^53`. The imported `budget_id` may remain omitted from configuration without producing a plan. After it is explicitly configured and successfully applied, even to the same value, its import omission permission is consumed and later omission is rejected as an unsupported configured removal. Normal lifecycle reads do not adopt unconfigured API defaults.
 
 ## Budget and Drift Semantics
 

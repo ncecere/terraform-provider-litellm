@@ -20,7 +20,16 @@ var _ resource.Resource = &ProjectResource{}
 var _ resource.ResourceWithImportState = &ProjectResource{}
 var _ resource.ResourceWithModifyPlan = &ProjectResource{}
 
-const projectImportedOptionalStringsPrivateKey = "project_imported_optional_strings_v1"
+const (
+	// projectImportedOptionalStringsPrivateKey is the pre-per-field marker read
+	// only to migrate retained private state from provider builds before #188's
+	// final ownership fix.
+	projectImportedOptionalStringsPrivateKey     = "project_imported_optional_strings_v1"
+	projectImportedAliasPrivateKey               = "project_imported_project_alias_v1"
+	projectImportedDescriptionPrivateKey         = "project_imported_description_v1"
+	projectAliasOwnershipPendingPrivateKey       = "project_alias_ownership_pending_v1"
+	projectDescriptionOwnershipPendingPrivateKey = "project_description_ownership_pending_v1"
+)
 
 func NewProjectResource() resource.Resource { return &ProjectResource{} }
 
@@ -120,25 +129,33 @@ func (r *ProjectResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	importedBudget, importedOptionalStrings := false, false
+	importedBudget, importedAlias, importedDescription, legacyImportedStrings := false, false, false, false
 	if req.Private != nil {
 		budgetMarker, diagnostics := req.Private.GetKey(ctx, organizationProjectImportedBudgetPrivateKey)
 		resp.Diagnostics.Append(diagnostics...)
 		importedBudget = string(budgetMarker) == "true"
-		stringMarker, diagnostics := req.Private.GetKey(ctx, projectImportedOptionalStringsPrivateKey)
+		aliasMarker, diagnostics := req.Private.GetKey(ctx, projectImportedAliasPrivateKey)
 		resp.Diagnostics.Append(diagnostics...)
-		importedOptionalStrings = string(stringMarker) == "true"
+		descriptionMarker, diagnostics := req.Private.GetKey(ctx, projectImportedDescriptionPrivateKey)
+		resp.Diagnostics.Append(diagnostics...)
+		legacyMarker, diagnostics := req.Private.GetKey(ctx, projectImportedOptionalStringsPrivateKey)
+		resp.Diagnostics.Append(diagnostics...)
+		legacyImportedStrings = string(legacyMarker) == "true"
+		importedAlias = string(aliasMarker) == "true" || legacyImportedStrings
+		importedDescription = string(descriptionMarker) == "true" || legacyImportedStrings
 	}
 	preserveOrganizationProjectBudgetID(ctx, "Project", state.BudgetID, config.BudgetID, plan.BudgetID, importedBudget, resp)
+
 	for _, field := range []struct {
 		name                string
 		state, plan, config types.String
+		imported            bool
 	}{
-		{"project_alias", state.ProjectAlias, plan.ProjectAlias, config.ProjectAlias},
-		{"description", state.Description, plan.Description, config.Description},
+		{"project_alias", state.ProjectAlias, plan.ProjectAlias, config.ProjectAlias, importedAlias},
+		{"description", state.Description, plan.Description, config.Description, importedDescription},
 	} {
 		switch {
-		case field.config.IsNull() && importedOptionalStrings:
+		case field.config.IsNull() && field.imported:
 			resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root(field.name), field.state)...)
 		case knownString(field.state) && field.config.IsNull():
 			resp.Diagnostics.AddAttributeError(path.Root(field.name), "Unsupported Project String Clear", fmt.Sprintf("LiteLLM v1.98's /project/update excludes null %s values, so removing this configured value cannot converge. Keep it configured or set an explicit non-null replacement.", field.name))
@@ -153,6 +170,22 @@ func (r *ProjectResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 	} else if config.ModelMaxBudget.IsUnknown() || (knownMap(config.ModelMaxBudget) && len(config.ModelMaxBudget.Elements()) > 0 && !config.ModelMaxBudget.Equal(state.ModelMaxBudget)) {
 		resp.Diagnostics.AddAttributeError(path.Root("model_max_budget"), "Unsupported Structured Project Model Budget", "LiteLLM v1.98 requires GenericBudgetConfig objects for model_max_budget, but this resource's legacy schema is map(float64). Non-empty additions, changes, or unknown transitions are rejected until a migration-safe structured representation is available.")
 	}
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// Split the historical shared alias/description marker only in a valid
+	// plan. Retain both individual permissions until Update proves any pending
+	// explicit configuration succeeded; this is safe even if apply persists
+	// partial private state after an error.
+	if legacyImportedStrings && resp.Private != nil {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, projectImportedOptionalStringsPrivateKey, nil)...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, projectImportedAliasPrivateKey, []byte("true"))...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, projectImportedDescriptionPrivateKey, []byte("true"))...)
+	}
+	planImportedOmissionOwnership(ctx, organizationProjectBudgetOwnershipPendingPrivateKey, importedBudget, !config.BudgetID.IsNull(), resp)
+	planImportedOmissionOwnership(ctx, projectAliasOwnershipPendingPrivateKey, importedAlias, !config.ProjectAlias.IsNull(), resp)
+	planImportedOmissionOwnership(ctx, projectDescriptionOwnershipPendingPrivateKey, importedDescription, !config.Description.IsNull(), resp)
 }
 
 func (r *ProjectResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -258,13 +291,18 @@ func (r *ProjectResource) Update(ctx context.Context, req resource.UpdateRequest
 		resp.Diagnostics.AddError("Unsafe Project Budget Reassociation", "The project budget_id changed or remained unknown despite the plan safety check; no API call was made.")
 		return
 	}
-	importedOptionalStrings := false
+	importedAlias, importedDescription := false, false
 	if req.Private != nil {
-		marker, diagnostics := req.Private.GetKey(ctx, projectImportedOptionalStringsPrivateKey)
+		aliasMarker, diagnostics := req.Private.GetKey(ctx, projectImportedAliasPrivateKey)
 		resp.Diagnostics.Append(diagnostics...)
-		importedOptionalStrings = string(marker) == "true"
+		descriptionMarker, diagnostics := req.Private.GetKey(ctx, projectImportedDescriptionPrivateKey)
+		resp.Diagnostics.Append(diagnostics...)
+		legacyMarker, diagnostics := req.Private.GetKey(ctx, projectImportedOptionalStringsPrivateKey)
+		resp.Diagnostics.Append(diagnostics...)
+		importedAlias = string(aliasMarker) == "true" || string(legacyMarker) == "true"
+		importedDescription = string(descriptionMarker) == "true" || string(legacyMarker) == "true"
 	}
-	if !importedOptionalStrings && ((knownString(state.ProjectAlias) && config.ProjectAlias.IsNull()) || (knownString(state.Description) && config.Description.IsNull())) {
+	if (!importedAlias && knownString(state.ProjectAlias) && config.ProjectAlias.IsNull()) || (!importedDescription && knownString(state.Description) && config.Description.IsNull()) {
 		resp.Diagnostics.AddError("Unsupported Project String Clear", "project_alias or description was removed despite the plan safety check; LiteLLM v1.98 ignores this null clear and no API call was made.")
 		return
 	}
@@ -272,7 +310,7 @@ func (r *ProjectResource) Update(ctx context.Context, req resource.UpdateRequest
 		resp.Diagnostics.AddError("Unsupported Structured Project Model Budget", "The model_max_budget was unknown or changed despite the plan safety check; no API call was made.")
 		return
 	}
-	projectRequest, projectChanged, err := buildProjectRowUpdateRequest(ctx, &plan, &state)
+	projectRequest, rowChanged, err := buildProjectRowUpdateRequest(ctx, &plan, &state)
 	if err != nil {
 		resp.Diagnostics.AddError("Invalid Project Request", err.Error())
 		return
@@ -282,6 +320,12 @@ func (r *ProjectResource) Update(ctx context.Context, req resource.UpdateRequest
 		resp.Diagnostics.AddError("Invalid Project Budget Request", err.Error())
 		return
 	}
+	projectBudgetSets, directBudgetPatch := splitProjectBudgetUpdateRequest(budgetRequest)
+	for field, value := range projectBudgetSets {
+		projectRequest[field] = value
+	}
+	projectChanged := rowChanged || len(projectBudgetSets) > 0
+
 	var budgetID string
 	if budgetChanged {
 		budgetID, err = r.lookupProjectBudgetID(ctx, state.ID.ValueString(), state.BudgetID)
@@ -289,11 +333,17 @@ func (r *ProjectResource) Update(ctx context.Context, req resource.UpdateRequest
 			resp.Diagnostics.AddError("Project Budget Lookup Error", err.Error())
 			return
 		}
-		budgetRequest["budget_id"] = budgetID
+		if len(directBudgetPatch) > 0 {
+			directBudgetPatch["budget_id"] = budgetID
+		}
 	}
 	if projectChanged {
 		projectRequest["project_id"] = state.ID.ValueString()
 		var result map[string]interface{}
+		// LiteLLM v1.98's exact /project/update handler invokes
+		// _check_team_project_limits before writing its related budget row. All
+		// non-null project budget changes must pass through this route; using
+		// /budget/update directly would bypass parent-team max/TPM/RPM checks.
 		if err := r.client.DoRequestWithResponse(ctx, "POST", "/project/update", projectRequest, &result); err != nil {
 			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to update project: %s", err))
 			return
@@ -308,15 +358,19 @@ func (r *ProjectResource) Update(ctx context.Context, req resource.UpdateRequest
 			return
 		}
 	}
-	if budgetChanged {
+	if len(directBudgetPatch) > 0 {
 		var result map[string]interface{}
-		if err := r.client.DoRequestWithResponse(ctx, "POST", "/budget/update", budgetRequest, &result); err != nil {
-			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("LiteLLM accepted any preceding project-row update, but the budget update failed; prior Terraform state was retained: %s", err))
+		// v1.98 serializes /project/update with exclude_none=True, so explicit
+		// clears cannot reach the budget table there. Its handler also does not
+		// recompute budget_reset_at. Only those null clears and an already-
+		// validated duration replay use /budget/update, after /project/update.
+		if err := r.client.DoRequestWithResponse(ctx, "POST", "/budget/update", directBudgetPatch, &result); err != nil {
+			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("LiteLLM accepted any preceding project update, but the reset/clear budget update failed; prior Terraform state was retained: %s", err))
 			return
 		}
 		confirmedID, ok := result["budget_id"].(string)
 		if !ok || confirmedID != budgetID {
-			resp.Diagnostics.AddError("Invalid API Response", "LiteLLM accepted the budget update but did not return the matching budget_id; prior Terraform state was retained.")
+			resp.Diagnostics.AddError("Invalid API Response", "LiteLLM accepted the reset/clear budget update but did not return the matching budget_id; prior Terraform state was retained.")
 			return
 		}
 	}
@@ -331,6 +385,31 @@ func (r *ProjectResource) Update(ctx context.Context, req resource.UpdateRequest
 		return
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+	if !resp.Diagnostics.HasError() && resp.Private != nil {
+		transitions := []struct {
+			importKey, pendingKey string
+			pending               bool
+		}{
+			{importKey: organizationProjectImportedBudgetPrivateKey, pendingKey: organizationProjectBudgetOwnershipPendingPrivateKey},
+			{importKey: projectImportedAliasPrivateKey, pendingKey: projectAliasOwnershipPendingPrivateKey},
+			{importKey: projectImportedDescriptionPrivateKey, pendingKey: projectDescriptionOwnershipPendingPrivateKey},
+		}
+		for index := range transitions {
+			marker, diagnostics := resp.Private.GetKey(ctx, transitions[index].pendingKey)
+			resp.Diagnostics.Append(diagnostics...)
+			transitions[index].pending = string(marker) == "true"
+		}
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		for _, transition := range transitions {
+			if !transition.pending {
+				continue
+			}
+			resp.Diagnostics.Append(resp.Private.SetKey(ctx, transition.importKey, nil)...)
+			resp.Diagnostics.Append(resp.Private.SetKey(ctx, transition.pendingKey, nil)...)
+		}
+	}
 }
 
 func (r *ProjectResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
@@ -349,7 +428,8 @@ func (r *ProjectResource) ImportState(ctx context.Context, req resource.ImportSt
 	if resp.Private != nil {
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, []byte("true"))...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, organizationProjectImportedBudgetPrivateKey, []byte("true"))...)
-		resp.Diagnostics.Append(resp.Private.SetKey(ctx, projectImportedOptionalStringsPrivateKey, []byte("true"))...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, projectImportedAliasPrivateKey, []byte("true"))...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, projectImportedDescriptionPrivateKey, []byte("true"))...)
 	}
 }
 
@@ -479,6 +559,28 @@ func buildProjectBudgetUpdateRequest(plan, state *ProjectResourceModel) (map[str
 		}
 	}
 	return request, len(request) > 0, nil
+}
+
+// splitProjectBudgetUpdateRequest follows the exact v1.98 endpoint contracts:
+// /project/update validates non-null project limits against the parent team but
+// drops nulls with exclude_none=True; /budget/update preserves explicitly sent
+// nulls with exclude_unset=True and recomputes the reset timestamp for a sent
+// duration. A duration therefore goes through the validating route first and is
+// replayed only to initialize its reset schedule.
+func splitProjectBudgetUpdateRequest(request map[string]interface{}) (map[string]interface{}, map[string]interface{}) {
+	projectSets := map[string]interface{}{}
+	directPatch := map[string]interface{}{}
+	for field, value := range request {
+		if value == nil {
+			directPatch[field] = nil
+			continue
+		}
+		projectSets[field] = value
+		if field == "budget_duration" {
+			directPatch[field] = value
+		}
+	}
+	return projectSets, directPatch
 }
 
 func projectMetadataPayload(ctx context.Context, data *ProjectResourceModel) (map[string]interface{}, bool, error) {

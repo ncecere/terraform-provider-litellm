@@ -9,7 +9,10 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
-const organizationProjectImportedBudgetPrivateKey = "organization_project_imported_budget_v1"
+const (
+	organizationProjectImportedBudgetPrivateKey         = "organization_project_imported_budget_v1"
+	organizationProjectBudgetOwnershipPendingPrivateKey = "organization_project_budget_ownership_pending_v1"
+)
 
 // organizationProjectPlanIsDestroy recognizes both the protocol's canonical
 // null destroy plan and the fully-null plan/config shape produced by some
@@ -26,7 +29,7 @@ func organizationProjectPlanIsDestroy(req resource.ModifyPlanRequest) bool {
 }
 
 // preserveOrganizationProjectBudgetID enforces v1.98's immutable budget
-// association for an existing resource. A persistent import marker identifies
+// association for an existing resource. A per-field import marker identifies
 // authoritative Optional+Computed omission; without it, removing a known ID is
 // an explicit configured-ownership transition and is rejected.
 func preserveOrganizationProjectBudgetID(ctx context.Context, resourceName string, state, config, plan types.String, imported bool, resp *resource.ModifyPlanResponse) {
@@ -55,4 +58,20 @@ func preserveOrganizationProjectBudgetID(ctx context.Context, resourceName strin
 	if !state.Equal(config) || !state.Equal(plan) {
 		resp.Diagnostics.AddAttributeError(path.Root("budget_id"), fmt.Sprintf("Unsafe %s Budget Reassociation", resourceName), fmt.Sprintf("LiteLLM v1.98 does not provide a safe %s budget reassociation lifecycle. Keep the existing budget_id; an imported Optional+Computed budget_id may remain omitted but cannot be changed.", resourceName))
 	}
+}
+
+// planImportedOmissionOwnership records an explicit HCL ownership transition
+// as pending in planned private state while retaining the import permission.
+// Apply can persist partial private state on failure, so only a successful,
+// authoritative Update may remove the permission. Omission cancels a pending
+// transition retained from an earlier failed apply.
+func planImportedOmissionOwnership(ctx context.Context, pendingKey string, imported bool, configured bool, resp *resource.ModifyPlanResponse) {
+	if resp.Private == nil {
+		return
+	}
+	if imported && configured {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, pendingKey, []byte("true"))...)
+		return
+	}
+	resp.Diagnostics.Append(resp.Private.SetKey(ctx, pendingKey, nil)...)
 }

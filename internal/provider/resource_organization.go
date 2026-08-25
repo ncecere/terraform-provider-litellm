@@ -99,6 +99,7 @@ func (r *OrganizationResource) ModifyPlan(ctx context.Context, req resource.Modi
 	}
 	var state OrganizationResourceModel
 	hasState := !req.State.Raw.IsNull()
+	importedBudget := false
 	if !hasState && !config.BudgetID.IsNull() && organizationBudgetControlsPresentInConfig(&config) {
 		resp.Diagnostics.AddAttributeError(path.Root("budget_id"), "Unsafe Shared Organization Budget Controls", "budget_id cannot be combined with organization budget controls during creation because LiteLLM v1.98 ignores or strips those controls for an existing shared budget.")
 	}
@@ -107,7 +108,6 @@ func (r *OrganizationResource) ModifyPlan(ctx context.Context, req resource.Modi
 		if resp.Diagnostics.HasError() {
 			return
 		}
-		importedBudget := false
 		if req.Private != nil {
 			marker, diagnostics := req.Private.GetKey(ctx, organizationProjectImportedBudgetPrivateKey)
 			resp.Diagnostics.Append(diagnostics...)
@@ -131,6 +131,9 @@ func (r *OrganizationResource) ModifyPlan(ctx context.Context, req resource.Modi
 		} else {
 			resp.Diagnostics.AddAttributeWarning(path.Root("tags"), "Deprecated Organization Compatibility Field", "LiteLLM v1.98 does not persist organization tags. This value is retained only for compatibility and is never sent to LiteLLM.")
 		}
+	}
+	if hasState && !resp.Diagnostics.HasError() {
+		planImportedOmissionOwnership(ctx, organizationProjectBudgetOwnershipPendingPrivateKey, importedBudget, !config.BudgetID.IsNull(), resp)
 	}
 }
 
@@ -270,6 +273,14 @@ func (r *OrganizationResource) Update(ctx context.Context, req resource.UpdateRe
 		return
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+	if !resp.Diagnostics.HasError() && resp.Private != nil {
+		pending, diagnostics := resp.Private.GetKey(ctx, organizationProjectBudgetOwnershipPendingPrivateKey)
+		resp.Diagnostics.Append(diagnostics...)
+		if !resp.Diagnostics.HasError() && string(pending) == "true" {
+			resp.Diagnostics.Append(resp.Private.SetKey(ctx, organizationProjectImportedBudgetPrivateKey, nil)...)
+			resp.Diagnostics.Append(resp.Private.SetKey(ctx, organizationProjectBudgetOwnershipPendingPrivateKey, nil)...)
+		}
+	}
 }
 
 func (r *OrganizationResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
