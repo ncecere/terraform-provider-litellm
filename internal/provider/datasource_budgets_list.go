@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sort"
 
@@ -177,10 +176,9 @@ func (d *BudgetsListDataSource) Read(ctx context.Context, req datasource.ReadReq
 		if budgetDuration, ok := result["budget_duration"].(string); ok {
 			budget.BudgetDuration = types.StringValue(budgetDuration)
 		}
-		if modelMaxBudget, ok := result["model_max_budget"].(map[string]interface{}); ok && len(modelMaxBudget) > 0 {
-			if jsonBytes, err := json.Marshal(modelMaxBudget); err == nil {
-				budget.ModelMaxBudget = types.StringValue(string(jsonBytes))
-			}
+		if err := updateModelBudgetStringState(&budget.ModelMaxBudget, result, "model_max_budget", true); err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", err.Error())
+			return
 		}
 		if value, ok := result["budget_reset_at"].(string); ok {
 			budget.BudgetResetAt = types.StringValue(value)

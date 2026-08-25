@@ -39,9 +39,9 @@ This data source has no required arguments.
   * `guardrail_id` - The unique identifier.
   * `guardrail_name` - Human-readable name for the guardrail.
   * `guardrail` - The guardrail integration type.
-  * `mode` - When to apply the guardrail.
+  * `mode` - When to apply the guardrail: a mode string, canonical JSON string array, or canonical JSON `Mode` object with tag-specific routing.
   * `default_on` - Whether the guardrail is enabled by default.
-  * `litellm_params` - Sensitive JSON string of provider-specific configuration. Credential-bearing values are LiteLLM-masked inventory values, not plaintext credentials.
+  * `litellm_params` - Sensitive canonical JSON object string of provider-specific configuration; empty additional parameters are `{}` rather than null. Credential-bearing values are LiteLLM-masked inventory values, not plaintext credentials.
   * `created_at` - Creation timestamp.
   * `updated_at` - Last update timestamp.
 

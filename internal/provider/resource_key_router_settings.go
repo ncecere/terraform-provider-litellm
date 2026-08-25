@@ -154,7 +154,7 @@ func (v jsonShapeStringValidator) ValidateString(ctx context.Context, req valida
 	}
 	var decoded interface{}
 	if err := decodeJSONUseNumber([]byte(req.ConfigValue.ValueString()), &decoded); err != nil {
-		resp.Diagnostics.AddAttributeError(req.Path, "Invalid JSON", fmt.Sprintf("Value must be valid JSON: %s", err))
+		resp.Diagnostics.AddAttributeError(req.Path, "Invalid JSON", v.Description(ctx))
 		return
 	}
 	valid := false

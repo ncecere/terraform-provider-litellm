@@ -11,8 +11,10 @@ import (
 )
 
 type tagModelBudgetValidator struct{}
+type budgetModelBudgetValidator struct{}
 
 var _ validator.String = tagModelBudgetValidator{}
+var _ validator.String = budgetModelBudgetValidator{}
 
 func (tagModelBudgetValidator) Description(context.Context) string {
 	return "Value must be a nonempty JSON object whose model values use LiteLLM GenericBudgetConfig objects."
@@ -28,7 +30,7 @@ func (v tagModelBudgetValidator) ValidateString(ctx context.Context, req validat
 	}
 	var decoded interface{}
 	if err := decodeJSONUseNumber([]byte(req.ConfigValue.ValueString()), &decoded); err != nil {
-		resp.Diagnostics.AddAttributeError(req.Path, "Invalid Tag Model Budget JSON", fmt.Sprintf("Value must be valid JSON: %s", err))
+		resp.Diagnostics.AddAttributeError(req.Path, "Invalid Tag Model Budget JSON", v.Description(ctx))
 		return
 	}
 	object, ok := decoded.(map[string]interface{})
@@ -50,25 +52,57 @@ func (v tagModelBudgetValidator) ValidateString(ctx context.Context, req validat
 	}
 }
 
+func (budgetModelBudgetValidator) Description(context.Context) string {
+	return "Value must be a JSON object whose model values use LiteLLM BudgetConfig objects."
+}
+
+func (v budgetModelBudgetValidator) MarkdownDescription(ctx context.Context) string {
+	return v.Description(ctx)
+}
+
+func (v budgetModelBudgetValidator) ValidateString(ctx context.Context, req validator.StringRequest, resp *validator.StringResponse) {
+	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		return
+	}
+	var decoded interface{}
+	if decodeJSONUseNumber([]byte(req.ConfigValue.ValueString()), &decoded) != nil {
+		resp.Diagnostics.AddAttributeError(req.Path, "Invalid Budget Model JSON", v.Description(ctx))
+		return
+	}
+	object, ok := decoded.(map[string]interface{})
+	if !ok {
+		resp.Diagnostics.AddAttributeError(req.Path, "Invalid Budget Model JSON", v.Description(ctx))
+		return
+	}
+	legacy, err := validateTagModelBudgetObject(object)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(req.Path, "Invalid Budget Model JSON", err.Error())
+		return
+	}
+	if legacy {
+		resp.Diagnostics.AddAttributeWarning(req.Path, "Legacy Scalar Budget Model", "Finite scalar model budgets are accepted only for unchanged historical configuration. LiteLLM v1.98 requires BudgetConfig objects for new or changed values.")
+	}
+}
+
 func validateTagModelBudgetObject(object map[string]interface{}) (bool, error) {
 	legacy := false
-	for model, raw := range object {
+	for _, raw := range object {
 		config, structured := raw.(map[string]interface{})
 		if !structured {
 			if _, err := float64FromAPI(raw); err != nil {
-				return false, fmt.Errorf("model_max_budget[%q] must be a GenericBudgetConfig object or a finite legacy numeric scalar", model)
+				return false, fmt.Errorf("each model_max_budget value must be a GenericBudgetConfig object or a finite legacy numeric scalar")
 			}
 			legacy = true
 			continue
 		}
 		if _, canonical := config["max_budget"]; canonical {
 			if _, alias := config["budget_limit"]; alias {
-				return false, fmt.Errorf("model_max_budget[%q] cannot contain both max_budget and budget_limit", model)
+				return false, fmt.Errorf("a model_max_budget entry cannot contain both max_budget and budget_limit")
 			}
 		}
 		if _, canonical := config["budget_duration"]; canonical {
 			if _, alias := config["time_period"]; alias {
-				return false, fmt.Errorf("model_max_budget[%q] cannot contain both budget_duration and time_period", model)
+				return false, fmt.Errorf("a model_max_budget entry cannot contain both budget_duration and time_period")
 			}
 		}
 		for field, value := range config {
@@ -78,18 +112,18 @@ func validateTagModelBudgetObject(object map[string]interface{}) (bool, error) {
 			switch field {
 			case "max_budget", "budget_limit":
 				if _, err := float64FromAPI(value); err != nil {
-					return false, fmt.Errorf("model_max_budget[%q].%s must be a finite number or null", model, field)
+					return false, fmt.Errorf("model_max_budget numeric limits must be finite numbers or null")
 				}
 			case "budget_duration", "time_period":
 				if _, ok := value.(string); !ok {
-					return false, fmt.Errorf("model_max_budget[%q].%s must be a string or null", model, field)
+					return false, fmt.Errorf("model_max_budget durations must be strings or null")
 				}
 			case "tpm_limit", "rpm_limit":
 				if _, err := exactInt64FromAPI(value); err != nil {
-					return false, fmt.Errorf("model_max_budget[%q].%s must be an exact integer or null", model, field)
+					return false, fmt.Errorf("model_max_budget rate limits must be exact integers or null")
 				}
 			default:
-				return false, fmt.Errorf("model_max_budget[%q] contains unsupported field %q; LiteLLM v1.98 silently ignores unknown BudgetConfig fields", model, field)
+				return false, fmt.Errorf("model_max_budget contains an unsupported BudgetConfig field; LiteLLM v1.98 silently ignores unknown fields")
 			}
 		}
 	}
@@ -257,7 +291,7 @@ func authoritativeTagBudgetID(owner map[string]interface{}, table budgetTableSta
 	return budgetID, apiValuePresent, nil
 }
 
-func configuredTagModelBudgetIsLegacy(value types.String) (bool, error) {
+func configuredModelBudgetIsLegacy(value types.String) (bool, error) {
 	if !knownString(value) {
 		return false, nil
 	}
@@ -301,7 +335,7 @@ func updateTagModelMaxBudget(target *types.String, table budgetTableState, adopt
 		}
 		return nil
 	}
-	if knownString(*target) && jsonSemanticallyEqual(target.ValueString(), observed) {
+	if knownString(*target) && modelBudgetSemanticallyEqual(target.ValueString(), observed) {
 		return nil
 	}
 	*target = types.StringValue(observed)

@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -16,6 +15,7 @@ import (
 
 var _ resource.Resource = &BudgetResource{}
 var _ resource.ResourceWithImportState = &BudgetResource{}
+var _ resource.ResourceWithModifyPlan = &BudgetResource{}
 
 func NewBudgetResource() resource.Resource {
 	return &BudgetResource{}
@@ -86,9 +86,9 @@ func (r *BudgetResource) Schema(ctx context.Context, req resource.SchemaRequest,
 				Optional:    true,
 			},
 			"model_max_budget": schema.StringAttribute{
-				Description: "JSON string for per-model budget configuration (e.g., '{\"gpt-4o\": {\"max_budget\": 0.01, \"budget_duration\": \"1d\"}}').",
+				Description: "JSON object mapping model names to validated LiteLLM BudgetConfig objects. Supports canonical max_budget/budget_duration and budget_limit/time_period aliases.",
 				Optional:    true,
-				Validators:  []validator.String{jsonShapeStringValidator{shape: '{'}},
+				Validators:  []validator.String{budgetModelBudgetValidator{}},
 			},
 		},
 	}
@@ -109,6 +109,33 @@ func (r *BudgetResource) Configure(ctx context.Context, req resource.ConfigureRe
 	}
 
 	r.client = client
+}
+
+func (r *BudgetResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	if req.Plan.Raw.IsNull() {
+		return
+	}
+	var config BudgetResourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+	if resp.Diagnostics.HasError() || config.ModelMaxBudget.IsNull() || config.ModelMaxBudget.IsUnknown() {
+		return
+	}
+	legacy, err := configuredModelBudgetIsLegacy(config.ModelMaxBudget)
+	if err != nil || !legacy {
+		return
+	}
+	if req.State.Raw.IsNull() {
+		resp.Diagnostics.AddAttributeError(path.Root("model_max_budget"), "Unsupported Legacy Scalar Budget Configuration", "Finite scalar model budgets remain accepted only when unchanged from prior Terraform state. New budgets must use LiteLLM BudgetConfig objects.")
+		return
+	}
+	var state BudgetResourceModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if state.ModelMaxBudget.IsNull() || state.ModelMaxBudget.IsUnknown() || !modelBudgetSemanticallyEqual(config.ModelMaxBudget.ValueString(), state.ModelMaxBudget.ValueString()) {
+		resp.Diagnostics.AddAttributeError(path.Root("model_max_budget"), "Unsupported Legacy Scalar Budget Update", "Finite scalar model budgets remain readable for compatibility, but LiteLLM v1.98 requires BudgetConfig objects for new or changed values. Keep the existing scalar unchanged or migrate every model value to an object.")
+	}
 }
 
 func (r *BudgetResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -132,14 +159,24 @@ func (r *BudgetResource) Create(ctx context.Context, req resource.CreateRequest,
 	}
 
 	// Extract budget_id from response
-	if budgetID, ok := result["budget_id"].(string); ok {
+	if budgetID, ok := result["budget_id"].(string); ok && budgetID != "" {
 		data.BudgetID = types.StringValue(budgetID)
 		data.ID = types.StringValue(budgetID)
+	} else if !data.BudgetID.IsNull() && !data.BudgetID.IsUnknown() && data.BudgetID.ValueString() != "" {
+		// A caller-supplied ID is deterministic even if the response omits its echo.
+		data.ID = data.BudgetID
+	} else {
+		resp.Diagnostics.AddError("Invalid API Response", "LiteLLM accepted the budget create but did not return a recoverable budget_id.")
+		return
 	}
 
-	// Read back for full state
+	// Read back for full state. Preserve the recovered identity on failure, but
+	// never publish an unconfirmed planned JSON value as successful state.
 	if err := r.readBudget(ctx, &data); err != nil {
-		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Budget created but failed to read back: %s", err))
+		recovery := BudgetResourceModel{ID: data.ID, BudgetID: data.BudgetID}
+		resp.Diagnostics.Append(resp.State.Set(ctx, &recovery)...)
+		resp.Diagnostics.AddError("Budget Create Not Confirmed", fmt.Sprintf("Budget created but authoritative read-back failed: %s", err))
+		return
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
@@ -194,6 +231,11 @@ func (r *BudgetResource) Update(ctx context.Context, req resource.UpdateRequest,
 		resp.Diagnostics.AddError("Invalid Budget JSON", err.Error())
 		return
 	}
+	if legacy, _ := configuredModelBudgetIsLegacy(data.ModelMaxBudget); legacy && knownString(state.ModelMaxBudget) && modelBudgetSemanticallyEqual(data.ModelMaxBudget.ValueString(), state.ModelMaxBudget.ValueString()) {
+		// v1.98 rejects legacy scalar model budgets on typed update. Preserve
+		// unchanged historical configuration by omitting it from unrelated writes.
+		delete(budgetReq, "model_max_budget")
+	}
 	budgetReq["budget_id"] = data.BudgetID.ValueString()
 
 	if err := r.client.DoRequestWithResponse(ctx, "POST", "/budget/update", budgetReq, nil); err != nil {
@@ -201,9 +243,10 @@ func (r *BudgetResource) Update(ctx context.Context, req resource.UpdateRequest,
 		return
 	}
 
-	// Read back for full state
+	// Retain prior state if authoritative read-back cannot confirm the update.
 	if err := r.readBudget(ctx, &data); err != nil {
-		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Budget updated but failed to read back: %s", err))
+		resp.Diagnostics.AddError("Budget Update Not Confirmed", fmt.Sprintf("Budget updated but authoritative read-back failed: %s", err))
+		return
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
@@ -295,19 +338,23 @@ func (r *BudgetResource) readBudgetWithNumericOwnership(ctx context.Context, dat
 		return err
 	}
 
-	if len(results) == 0 {
+	if len(results) != 1 {
 		if imported {
 			return fmt.Errorf("budget import read response did not contain exactly one budget")
 		}
-		return fmt.Errorf("budget not found: %s", budgetID)
-	}
-	if imported && len(results) != 1 {
-		return fmt.Errorf("budget import read response did not contain exactly one budget")
+		if len(results) == 0 {
+			return fmt.Errorf("budget not found: %s", budgetID)
+		}
+		return fmt.Errorf("budget read response did not contain exactly one budget")
 	}
 
 	result := results[0]
-	if err := validateImportedObjectIdentity(imported, "budget", result, "budget_id", budgetID); err != nil {
-		return err
+	actualBudgetID, ok := result["budget_id"].(string)
+	if !ok || actualBudgetID == "" {
+		return fmt.Errorf("budget response omitted required budget_id")
+	}
+	if actualBudgetID != budgetID {
+		return fmt.Errorf("budget response identity did not match the requested budget")
 	}
 
 	// Update fields from response
@@ -344,23 +391,10 @@ func (r *BudgetResource) readBudgetWithNumericOwnership(ctx context.Context, dat
 		data.BudgetDuration = types.StringValue(budgetDuration)
 	}
 	modelBudgetOwned := imported || (!data.ModelMaxBudget.IsNull() && !data.ModelMaxBudget.IsUnknown())
-	if modelMaxBudget, presence, err := apiValueAt(result, "model_max_budget"); err != nil {
+	if err := updateModelBudgetStringState(&data.ModelMaxBudget, result, "model_max_budget", modelBudgetOwned); err != nil {
 		return err
-	} else if presence == apiValuePresent {
-		object, ok := modelMaxBudget.(map[string]interface{})
-		if !ok {
-			return fmt.Errorf("invalid response field %q: expected an object", "model_max_budget")
-		}
-		if modelBudgetOwned {
-			jsonBytes, err := json.Marshal(object)
-			if err != nil {
-				return fmt.Errorf("invalid response field %q: cannot encode JSON", "model_max_budget")
-			}
-			data.ModelMaxBudget = types.StringValue(string(jsonBytes))
-		} else if data.ModelMaxBudget.IsUnknown() {
-			data.ModelMaxBudget = types.StringNull()
-		}
-	} else if modelBudgetOwned || data.ModelMaxBudget.IsUnknown() {
+	}
+	if !modelBudgetOwned && data.ModelMaxBudget.IsUnknown() {
 		data.ModelMaxBudget = types.StringNull()
 	}
 

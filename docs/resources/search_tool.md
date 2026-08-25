@@ -41,7 +41,7 @@ The following arguments are supported:
 - `api_base` - (Optional) The base URL for the search provider API.
 - `timeout` - (Optional) Request timeout in seconds for search requests.
 - `max_retries` - (Optional) Maximum number of retry attempts for failed search requests.
-- `search_tool_info` - (Optional) A JSON string containing additional search tool configuration. Use `jsonencode()` to construct this value. The provider automatically parses it into a JSON object when sending to the API.
+- `search_tool_info` - (Optional) A JSON object string containing additional search tool configuration. Use `jsonencode()` to construct this value. Invalid syntax, JSON `null`, arrays, and scalar roots are rejected before mutation. Authoritative object read-back preserves semantically equivalent configured key order, whitespace, and exact number notation. Empty `{}` is an explicit owned empty object; omission relinquishes Terraform ownership rather than promising a remote clear. Imports initially adopt the authoritative object, which can then be kept configured or deliberately omitted.
 
 ## Attribute Reference
 
