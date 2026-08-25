@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/url"
-	"strings"
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -235,12 +234,7 @@ func (r *FallbackResource) writeFallbackWithRetry(ctx context.Context, fallbackR
 }
 
 func shouldRetryFallbackWriteError(err error) bool {
-	if IsNotFoundError(err) {
-		return true
-	}
-	errStr := err.Error()
-	return strings.Contains(errStr, "Invalid fallback models") ||
-		strings.Contains(errStr, "not found in router")
+	return IsNotFoundError(err) || isFallbackNotReadyError(err)
 }
 
 func (r *FallbackResource) readFallbackWithRetry(ctx context.Context, data *FallbackResourceModel, maxAttempts int) error {

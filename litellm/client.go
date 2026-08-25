@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"net/http"
 )
@@ -271,17 +270,17 @@ func (c *Client) sendRequest(method, path string, body interface{}) (map[string]
 	if body != nil {
 		jsonBody, err := json.Marshal(body)
 		if err != nil {
-			return nil, fmt.Errorf("error marshaling request body: %v", err)
+			return nil, fmt.Errorf("error marshaling LiteLLM request body")
 		}
-		log.Printf("Making %s request to %s with body:\n%s", method, url, string(jsonBody))
+		log.Printf("Making %s LiteLLM request (body omitted)", method)
 		req, err = http.NewRequest(method, url, bytes.NewBuffer(jsonBody))
 	} else {
-		log.Printf("Making %s request to %s", method, url)
+		log.Printf("Making %s LiteLLM request", method)
 		req, err = http.NewRequest(method, url, nil)
 	}
 
 	if err != nil {
-		return nil, fmt.Errorf("error creating request: %v", err)
+		return nil, fmt.Errorf("error creating LiteLLM request")
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -290,20 +289,19 @@ func (c *Client) sendRequest(method, path string, body interface{}) (map[string]
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("error making request: %v", err)
+		return nil, fmt.Errorf("LiteLLM HTTP request failed")
 	}
 	defer resp.Body.Close()
 
-	bodyBytes, err := ioutil.ReadAll(resp.Body)
+	bodyBytes, err := readLegacyResponseBody(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("error reading response body: %v", err)
+		return nil, err
 	}
 
-	log.Printf("Response status: %d", resp.StatusCode)
-	log.Printf("Response body: %s", string(bodyBytes))
+	log.Printf("LiteLLM response status: %d (body omitted)", resp.StatusCode)
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API request failed with status code %d: %s", resp.StatusCode, string(bodyBytes))
+		return nil, fmt.Errorf("API request failed with status code %d", resp.StatusCode)
 	}
 
 	var result map[string]interface{}
@@ -311,7 +309,7 @@ func (c *Client) sendRequest(method, path string, body interface{}) (map[string]
 		if method == "POST" && (len(bodyBytes) == 0 || string(bodyBytes) == "null") {
 			return make(map[string]interface{}), nil
 		}
-		return nil, fmt.Errorf("error parsing response JSON: %v\nResponse body: %s", err, string(bodyBytes))
+		return nil, fmt.Errorf("error parsing LiteLLM response JSON")
 	}
 
 	return result, nil

@@ -86,7 +86,7 @@ func resourceLiteLLMTeamMemberAddCreate(d *schema.ResourceData, m interface{}) e
 		memberData["max_budget_in_team"] = maxBudget
 	}
 
-	log.Printf("[DEBUG] Create team members request payload: %+v", memberData)
+	log.Printf("[DEBUG] Creating team members (request payload omitted)")
 
 	resp, err := MakeRequest(client, "POST", "/team/member_add", memberData)
 	if err != nil {
@@ -170,7 +170,7 @@ func resourceLiteLLMTeamMemberAddUpdate(d *schema.ResourceData, m interface{}) e
 					updateData["user_email"] = userEmail
 				}
 
-				log.Printf("[DEBUG] Update team member budget request payload: %+v", updateData)
+				log.Printf("[DEBUG] Updating team member budget (request payload omitted)")
 
 				resp, err := MakeRequest(client, "POST", "/team/member_update", updateData)
 				if err != nil {
@@ -201,7 +201,7 @@ func resourceLiteLLMTeamMemberAddUpdate(d *schema.ResourceData, m interface{}) e
 				deleteData["user_email"] = userEmail
 			}
 
-			log.Printf("[DEBUG] Delete team member request payload: %+v", deleteData)
+			log.Printf("[DEBUG] Deleting team member (request payload omitted)")
 
 			resp, err := MakeRequest(client, "POST", "/team/member_delete", deleteData)
 			if err != nil {
@@ -238,7 +238,7 @@ func resourceLiteLLMTeamMemberAddUpdate(d *schema.ResourceData, m interface{}) e
 					updateData["user_email"] = userEmail
 				}
 
-				log.Printf("[DEBUG] Update team member request payload: %+v", updateData)
+				log.Printf("[DEBUG] Updating team member (request payload omitted)")
 
 				resp, err := MakeRequest(client, "POST", "/team/member_update", updateData)
 				if err != nil {
@@ -277,7 +277,7 @@ func resourceLiteLLMTeamMemberAddUpdate(d *schema.ResourceData, m interface{}) e
 			"max_budget_in_team": maxBudget,
 		}
 
-		log.Printf("[DEBUG] Adding new team members request payload: %+v", memberData)
+		log.Printf("[DEBUG] Adding team members (request payload omitted)")
 
 		resp, err := MakeRequest(client, "POST", "/team/member_add", memberData)
 		if err != nil {

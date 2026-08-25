@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"net/http"
 	"strings"
 )
@@ -34,10 +33,10 @@ func isModelNotFoundError(errResp ErrorResponse) bool {
 	return false
 }
 
-func handleAPIResponse(resp *http.Response, reqBody interface{}) (*ModelResponse, error) {
-	bodyBytes, err := ioutil.ReadAll(resp.Body)
+func handleAPIResponse(resp *http.Response, _ interface{}) (*ModelResponse, error) {
+	bodyBytes, err := readLegacyResponseBody(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %v", err)
+		return nil, err
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -47,14 +46,12 @@ func handleAPIResponse(resp *http.Response, reqBody interface{}) (*ModelResponse
 				return nil, fmt.Errorf("model_not_found")
 			}
 		}
-		reqBodyBytes, _ := json.Marshal(reqBody)
-		return nil, fmt.Errorf("API request failed: Status: %s, Response: %s, Request: %s",
-			resp.Status, string(bodyBytes), string(reqBodyBytes))
+		return nil, fmt.Errorf("API request failed: HTTP %d", resp.StatusCode)
 	}
 
 	var modelResp ModelResponse
 	if err := json.Unmarshal(bodyBytes, &modelResp); err != nil {
-		return nil, fmt.Errorf("failed to parse response: %v", err)
+		return nil, fmt.Errorf("failed to parse LiteLLM response")
 	}
 
 	return &modelResp, nil
@@ -68,7 +65,7 @@ func MakeRequest(client *Client, method, endpoint string, body interface{}) (*ht
 	if body != nil {
 		jsonData, err := json.Marshal(body)
 		if err != nil {
-			return nil, fmt.Errorf("failed to marshal request body: %w", err)
+			return nil, fmt.Errorf("failed to marshal LiteLLM request body")
 		}
 		req, err = http.NewRequest(method, fmt.Sprintf("%s%s", client.APIBase, endpoint), bytes.NewBuffer(jsonData))
 	} else {
@@ -76,13 +73,17 @@ func MakeRequest(client *Client, method, endpoint string, body interface{}) (*ht
 	}
 
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		return nil, fmt.Errorf("failed to create LiteLLM request")
 	}
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", client.APIKey)
 
-	return client.httpClient.Do(req)
+	response, err := client.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("LiteLLM HTTP request failed")
+	}
+	return response, nil
 }
 
 // Helper functions to handle potential nil values from the API response
@@ -113,9 +114,9 @@ func GetBoolValue(apiValue, defaultValue bool) bool {
 
 // handleMCPAPIResponse handles API responses specifically for MCP server operations
 func handleMCPAPIResponse(resp *http.Response, result interface{}) error {
-	bodyBytes, err := ioutil.ReadAll(resp.Body)
+	bodyBytes, err := readLegacyResponseBody(resp.Body)
 	if err != nil {
-		return fmt.Errorf("failed to read response body: %v", err)
+		return err
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -125,12 +126,11 @@ func handleMCPAPIResponse(resp *http.Response, result interface{}) error {
 				return fmt.Errorf("mcp_server_not_found")
 			}
 		}
-		return fmt.Errorf("API request failed: Status: %s, Response: %s",
-			resp.Status, string(bodyBytes))
+		return fmt.Errorf("API request failed: HTTP %d", resp.StatusCode)
 	}
 
 	if err := json.Unmarshal(bodyBytes, result); err != nil {
-		return fmt.Errorf("failed to parse response: %v", err)
+		return fmt.Errorf("failed to parse LiteLLM response")
 	}
 
 	return nil
@@ -190,9 +190,9 @@ func isCredentialNotFoundError(errResp ErrorResponse) bool {
 
 // handleCredentialAPIResponse handles API responses specifically for credential operations
 func handleCredentialAPIResponse(resp *http.Response, result interface{}) error {
-	bodyBytes, err := ioutil.ReadAll(resp.Body)
+	bodyBytes, err := readLegacyResponseBody(resp.Body)
 	if err != nil {
-		return fmt.Errorf("failed to read response body: %v", err)
+		return err
 	}
 
 	if resp.StatusCode == http.StatusNotFound {
@@ -206,8 +206,7 @@ func handleCredentialAPIResponse(resp *http.Response, result interface{}) error 
 				return fmt.Errorf("credential_not_found")
 			}
 		}
-		return fmt.Errorf("API request failed: Status: %s, Response: %s",
-			resp.Status, string(bodyBytes))
+		return fmt.Errorf("API request failed: HTTP %d", resp.StatusCode)
 	}
 
 	// For credential operations, we might get a simple string response or a credential object
@@ -249,9 +248,9 @@ func isVectorStoreNotFoundError(errResp ErrorResponse) bool {
 
 // handleVectorStoreAPIResponse handles API responses specifically for vector store operations
 func handleVectorStoreAPIResponse(resp *http.Response, result interface{}) error {
-	bodyBytes, err := ioutil.ReadAll(resp.Body)
+	bodyBytes, err := readLegacyResponseBody(resp.Body)
 	if err != nil {
-		return fmt.Errorf("failed to read response body: %v", err)
+		return err
 	}
 
 	if resp.StatusCode == http.StatusNotFound {
@@ -265,13 +264,12 @@ func handleVectorStoreAPIResponse(resp *http.Response, result interface{}) error
 				return fmt.Errorf("vector_store_not_found")
 			}
 		}
-		return fmt.Errorf("API request failed: Status: %s, Response: %s",
-			resp.Status, string(bodyBytes))
+		return fmt.Errorf("API request failed: HTTP %d", resp.StatusCode)
 	}
 
 	if result != nil {
 		if err := json.Unmarshal(bodyBytes, result); err != nil {
-			return fmt.Errorf("failed to parse response: %v", err)
+			return fmt.Errorf("failed to parse LiteLLM response")
 		}
 	}
 

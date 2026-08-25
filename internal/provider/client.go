@@ -6,86 +6,150 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
+	"strings"
 )
 
+// APIError represents a non-2xx LiteLLM response without retaining the raw
+// response body. Body is retained for source compatibility but contains only
+// the same bounded, sanitized content as Detail.
 type APIError struct {
 	StatusCode int
-	Body       string
+	Body       string // Deprecated: use Detail. Raw response bodies are never stored.
+	RequestID  string
+	Detail     string
+
+	DetailOmitted bool
+	BodyTruncated bool
+
+	notFound         bool
+	fallbackNotReady bool
 }
 
 func (e *APIError) Error() string {
-	return fmt.Sprintf("API request failed with status %d: %s", e.StatusCode, e.Body)
+	message := fmt.Sprintf("API request failed with status %d", e.StatusCode)
+	if e.RequestID != "" {
+		message += fmt.Sprintf(" (request ID %q)", e.RequestID)
+	}
+	if e.Detail != "" {
+		message += ": " + e.Detail
+	} else if e.DetailOmitted || e.BodyTruncated {
+		message += "; response detail omitted"
+	}
+	return message
 }
 
-// DoRequest performs an HTTP request with context and standard headers.
-func (c *Client) DoRequest(ctx context.Context, method, path string, body interface{}) (*http.Response, error) {
-	url := c.APIBase + path
-
-	var req *http.Request
-	var err error
-
+func (c *Client) prepareRequest(ctx context.Context, method, requestPath string, body interface{}) (*http.Request, requestSafety, error) {
+	var jsonBody []byte
 	if body != nil {
-		jsonBody, err := json.Marshal(body)
+		encoded, err := json.Marshal(body)
 		if err != nil {
-			return nil, fmt.Errorf("failed to marshal request body: %w", err)
+			return nil, requestSafety{}, &safeResponseError{kind: "failed to encode LiteLLM request", identity: safeErrorIdentity(err)}
 		}
-		req, err = http.NewRequestWithContext(ctx, method, url, bytes.NewBuffer(jsonBody))
-		if err != nil {
-			return nil, fmt.Errorf("failed to create request: %w", err)
-		}
-	} else {
-		req, err = http.NewRequestWithContext(ctx, method, url, nil)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create request: %w", err)
-		}
+		jsonBody = encoded
 	}
 
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("x-api-key", c.APIKey)
-	req.Header.Set("Authorization", "Bearer "+c.APIKey)
-
+	request, err := http.NewRequestWithContext(ctx, method, c.APIBase+requestPath, bytes.NewReader(jsonBody))
+	if err != nil {
+		return nil, requestSafety{}, safeTransportFailure(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("x-api-key", c.APIKey)
+	request.Header.Set("Authorization", "Bearer "+c.APIKey)
 	if c.LiteLLMChangedBy != "" {
-		req.Header.Set("litellm-changed-by", c.LiteLLMChangedBy)
+		request.Header.Set("litellm-changed-by", c.LiteLLMChangedBy)
 	}
 
-	return c.HTTPClient.Do(req)
+	return request, classifyRequestSafety(request, requestPath, jsonBody, c.APIKey), nil
+}
+
+func (c *Client) executeRequest(request *http.Request) (*http.Response, error) {
+	response, err := c.HTTPClient.Do(request)
+	if err != nil {
+		if response != nil && response.Body != nil {
+			_ = response.Body.Close()
+		}
+		return nil, safeTransportFailure(err)
+	}
+	return response, nil
+}
+
+// DoRequest performs an HTTP request with context and standard headers. Any
+// transport error returned by this method deliberately omits the request URL.
+func (c *Client) DoRequest(ctx context.Context, method, requestPath string, body interface{}) (*http.Response, error) {
+	request, _, err := c.prepareRequest(ctx, method, requestPath, body)
+	if err != nil {
+		return nil, err
+	}
+	return c.executeRequest(request)
 }
 
 // DoRequestWithResponse performs an HTTP request and decodes the JSON response.
-func (c *Client) DoRequestWithResponse(ctx context.Context, method, path string, body interface{}, result interface{}) error {
-	resp, err := c.DoRequest(ctx, method, path, body)
+// Response reads are bounded and every returned error is safe to include in a
+// Terraform diagnostic.
+func (c *Client) DoRequestWithResponse(ctx context.Context, method, requestPath string, body interface{}, result interface{}) error {
+	request, safety, err := c.prepareRequest(ctx, method, requestPath, body)
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
-
-	bodyBytes, err := io.ReadAll(resp.Body)
+	response, err := c.executeRequest(request)
 	if err != nil {
-		return fmt.Errorf("failed to read response body: %w", err)
+		return err
+	}
+	defer response.Body.Close()
+
+	requestID := safeRequestID(response.Header, safety)
+	limit := maxSuccessResponseBody
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		limit = maxErrorResponseBody
+	}
+	if response.ContentLength > limit {
+		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+			return &APIError{
+				StatusCode:    response.StatusCode,
+				RequestID:     requestID,
+				DetailOmitted: true,
+				BodyTruncated: true,
+			}
+		}
+		return &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "LiteLLM response exceeded the provider safety limit"}
+	}
+	bodyBytes, truncated, readErr := readBoundedBody(response.Body, limit)
+
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		if readErr != nil {
+			return &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "failed to read LiteLLM error response", identity: safeErrorIdentity(readErr)}
+		}
+		notFound, fallbackNotReady := classifyRawErrorBody(bodyBytes)
+		detail, detailOmitted := "", true
+		if !truncated {
+			detail, detailOmitted = safeResponseDetail(bodyBytes, response.Header.Get("Content-Type"), safety)
+		}
+		return &APIError{
+			StatusCode:       response.StatusCode,
+			Body:             detail,
+			RequestID:        requestID,
+			Detail:           detail,
+			DetailOmitted:    detailOmitted,
+			BodyTruncated:    truncated,
+			notFound:         notFound,
+			fallbackNotReady: fallbackNotReady,
+		}
 	}
 
-	// Handle non-2xx status codes
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return &APIError{StatusCode: resp.StatusCode, Body: string(bodyBytes)}
+	if readErr != nil {
+		return &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "failed to read LiteLLM response", identity: safeErrorIdentity(readErr)}
 	}
-
-	// If no result expected, return early
-	if result == nil {
+	if truncated {
+		return &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "LiteLLM response exceeded the provider safety limit"}
+	}
+	if result == nil || len(bodyBytes) == 0 || string(bodyBytes) == "null" {
 		return nil
 	}
-
-	// Parse response
 	if err := json.Unmarshal(bodyBytes, result); err != nil {
-		// For empty responses, this is acceptable
-		if len(bodyBytes) == 0 || string(bodyBytes) == "null" {
-			return nil
-		}
-		return fmt.Errorf("failed to parse response: %w", err)
+		return &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "failed to decode LiteLLM response as JSON", identity: safeErrorIdentity(err)}
 	}
-
 	return nil
 }
 
@@ -98,7 +162,8 @@ func IsAPIErrorStatus(err error, statusCode int) bool {
 }
 
 // IsNotFoundError retains compatibility with LiteLLM endpoints that return
-// non-404 statuses (commonly 400) with a not-found message in the body.
+// non-404 statuses (commonly 400) with a not-found message. Client-generated
+// API errors carry a private classification so their raw body can be discarded.
 func IsNotFoundError(err error) bool {
 	if err == nil {
 		return false
@@ -106,21 +171,33 @@ func IsNotFoundError(err error) bool {
 	if IsAPIErrorStatus(err, http.StatusNotFound) {
 		return true
 	}
-	errStr := err.Error()
-	return contains(errStr, "not found") ||
-		contains(errStr, "404") ||
-		contains(errStr, "does not exist")
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsImpl(s, substr))
-}
-
-func containsImpl(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		if apiErr.notFound {
 			return true
 		}
+		// Compatibility for synthetic APIError values in callers and tests.
+		text := strings.ToLower(apiErr.Detail + " " + apiErr.Body)
+		return strings.Contains(text, "not found") || strings.Contains(text, "does not exist") || strings.Contains(text, "404")
 	}
-	return false
+	var responseErr *safeResponseError
+	var transportErr *safeTransportError
+	if errors.As(err, &responseErr) || errors.As(err, &transportErr) {
+		return false
+	}
+	errText := strings.ToLower(err.Error())
+	return strings.Contains(errText, "not found") || strings.Contains(errText, "404") || strings.Contains(errText, "does not exist")
+}
+
+func isFallbackNotReadyError(err error) bool {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		if apiErr.fallbackNotReady {
+			return true
+		}
+		text := strings.ToLower(apiErr.Detail + " " + apiErr.Body)
+		return strings.Contains(text, "invalid fallback models") || strings.Contains(text, "not found in router")
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "invalid fallback models") || strings.Contains(text, "not found in router")
 }
