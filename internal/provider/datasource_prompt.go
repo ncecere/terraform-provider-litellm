@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -31,6 +34,10 @@ type PromptDataSourceModel struct {
 	IgnorePromptManagerOptionalParams types.Bool   `tfsdk:"ignore_prompt_manager_optional_params"`
 	DotpromptContent                  types.String `tfsdk:"dotprompt_content"`
 	PromptType                        types.String `tfsdk:"prompt_type"`
+	Environment                       types.String `tfsdk:"environment"`
+	Version                           types.Int64  `tfsdk:"version"`
+	CreatedAt                         types.String `tfsdk:"created_at"`
+	UpdatedAt                         types.String `tfsdk:"updated_at"`
 }
 
 func (d *PromptDataSource) Metadata(ctx context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
@@ -46,8 +53,24 @@ func (d *PromptDataSource) Schema(ctx context.Context, req datasource.SchemaRequ
 				Computed:    true,
 			},
 			"prompt_id": schema.StringAttribute{
-				Description: "The prompt ID to look up.",
+				Description: "The base prompt ID to look up.",
 				Required:    true,
+			},
+			"environment": schema.StringAttribute{
+				Description: "Prompt environment. Defaults to development.",
+				Optional:    true,
+				Computed:    true,
+				Validators: []validator.String{
+					stringvalidator.LengthAtLeast(1),
+				},
+			},
+			"version": schema.Int64Attribute{
+				Description: "Specific prompt version. When omitted, the latest version in the environment is selected.",
+				Optional:    true,
+				Computed:    true,
+				Validators: []validator.Int64{
+					int64validator.AtLeast(1),
+				},
 			},
 			"prompt_integration": schema.StringAttribute{
 				Description: "The prompt integration provider.",
@@ -75,6 +98,14 @@ func (d *PromptDataSource) Schema(ctx context.Context, req datasource.SchemaRequ
 			},
 			"prompt_type": schema.StringAttribute{
 				Description: "Type of prompt: 'config' or 'db'.",
+				Computed:    true,
+			},
+			"created_at": schema.StringAttribute{
+				Description: "Creation timestamp of the selected version.",
+				Computed:    true,
+			},
+			"updated_at": schema.StringAttribute{
+				Description: "Last-update timestamp of the selected version.",
 				Computed:    true,
 			},
 		},
@@ -107,47 +138,93 @@ func (d *PromptDataSource) Read(ctx context.Context, req datasource.ReadRequest,
 	}
 
 	promptID := data.PromptID.ValueString()
-	endpoint := fmt.Sprintf("/prompts/%s", promptID)
+	environment := promptEnvironment(data.Environment.ValueString())
+	var requestedVersion *int64
+	if !data.Version.IsNull() && !data.Version.IsUnknown() {
+		value := data.Version.ValueInt64()
+		if value <= 0 {
+			resp.Diagnostics.AddError("Invalid Prompt Version", "version must be a positive integer")
+			return
+		}
+		requestedVersion = &value
+	}
+	endpoint := promptEndpoint(promptID, environment, requestedVersion)
 
 	var rawResult map[string]interface{}
 	if err := readPromptDataSourceWithRetry(ctx, d.client, endpoint, &rawResult, 8); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read prompt: %s", err))
 		return
 	}
-	result := parsePromptResult(rawResult)
-
-	// Populate the data model
-	data.ID = types.StringValue(promptID)
-
-	// Handle litellm_params
-	if litellmParams, ok := result["litellm_params"].(map[string]interface{}); ok {
-		if integration, ok := litellmParams["prompt_integration"].(string); ok {
-			data.PromptIntegration = types.StringValue(integration)
-		}
-		if apiBase, ok := litellmParams["api_base"].(string); ok {
-			data.APIBase = types.StringValue(apiBase)
-		}
-		if ignoreModel, ok := litellmParams["ignore_prompt_manager_model"].(bool); ok {
-			data.IgnorePromptManagerModel = types.BoolValue(ignoreModel)
-		}
-		if ignoreParams, ok := litellmParams["ignore_prompt_manager_optional_params"].(bool); ok {
-			data.IgnorePromptManagerOptionalParams = types.BoolValue(ignoreParams)
-		}
-		if dotprompt, ok := litellmParams["dotprompt_content"].(string); ok {
-			data.DotpromptContent = types.StringValue(dotprompt)
-		}
-		if providerParams, ok := litellmParams["provider_specific_query_params"].(map[string]interface{}); ok {
-			if jsonBytes, err := json.Marshal(providerParams); err == nil {
-				data.ProviderSpecificQueryParams = types.StringValue(string(jsonBytes))
-			}
-		}
+	observed, err := promptObject(rawResult, true, promptID, environment)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+	if !observed.HasVersion || (requestedVersion != nil && observed.Version != *requestedVersion) {
+		resp.Diagnostics.AddError("Invalid API Response", "Prompt response omitted or mismatched the selected version")
+		return
+	}
+	integration, ok := observed.Params["prompt_integration"].(string)
+	if !ok || integration == "" {
+		resp.Diagnostics.AddError("Invalid API Response", "Prompt response omitted required litellm_params.prompt_integration")
+		return
 	}
 
-	// Handle prompt_info
-	if promptInfo, ok := result["prompt_info"].(map[string]interface{}); ok {
-		if promptType, ok := promptInfo["prompt_type"].(string); ok {
-			data.PromptType = types.StringValue(promptType)
+	data.ID = types.StringValue(observed.PromptID)
+	data.PromptID = types.StringValue(observed.PromptID)
+	data.Environment = types.StringValue(observed.Environment)
+	data.Version = types.Int64Value(observed.Version)
+	data.PromptIntegration = types.StringValue(integration)
+	data.APIBase, err = promptStringFromAPI(observed.Params, "api_base")
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+	data.DotpromptContent, err = promptStringFromAPI(observed.Params, "dotprompt_content")
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+	data.IgnorePromptManagerModel, err = promptBoolFromAPI(observed.Params, "ignore_prompt_manager_model")
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+	data.IgnorePromptManagerOptionalParams, err = promptBoolFromAPI(observed.Params, "ignore_prompt_manager_optional_params")
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+	data.ProviderSpecificQueryParams = types.StringNull()
+	if value, exists := observed.Params["provider_specific_query_params"]; exists && value != nil {
+		object, valid := value.(map[string]interface{})
+		if !valid {
+			resp.Diagnostics.AddError("Invalid API Response", "Prompt response returned invalid provider_specific_query_params")
+			return
 		}
+		encoded, marshalErr := json.Marshal(object)
+		if marshalErr != nil {
+			resp.Diagnostics.AddError("Invalid API Response", "Prompt response provider_specific_query_params could not be encoded")
+			return
+		}
+		data.ProviderSpecificQueryParams = types.StringValue(string(encoded))
+	}
+	data.PromptType = types.StringNull()
+	if value, exists := observed.Info["prompt_type"]; exists && value != nil {
+		promptType, valid := value.(string)
+		if !valid {
+			resp.Diagnostics.AddError("Invalid API Response", "Prompt response returned invalid prompt_info.prompt_type")
+			return
+		}
+		data.PromptType = types.StringValue(promptType)
+	}
+	data.CreatedAt = types.StringNull()
+	data.UpdatedAt = types.StringNull()
+	if observed.CreatedAt != nil {
+		data.CreatedAt = types.StringValue(*observed.CreatedAt)
+	}
+	if observed.UpdatedAt != nil {
+		data.UpdatedAt = types.StringValue(*observed.UpdatedAt)
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
@@ -164,7 +241,7 @@ func readPromptDataSourceWithRetry(ctx context.Context, client *Client, endpoint
 			return nil
 		}
 
-		if !IsNotFoundError(err) {
+		if !isPromptAbsentError(err) {
 			return err
 		}
 

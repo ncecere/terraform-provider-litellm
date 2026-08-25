@@ -234,8 +234,10 @@ resource "litellm_tag" "cost_center_rd" {
 # =============================================================================
 
 resource "litellm_prompt" "support_agent" {
-  prompt_id   = "customer-support-agent"
-  prompt_type = "db"
+  prompt_id          = "customer-support-agent"
+  environment        = "production"
+  prompt_integration = "dotprompt"
+  prompt_type        = "db"
 
   dotprompt_content = <<-EOT
     You are a helpful customer support agent for Enterprise Corp.
@@ -251,8 +253,10 @@ resource "litellm_prompt" "support_agent" {
 }
 
 resource "litellm_prompt" "code_assistant" {
-  prompt_id   = "code-assistant"
-  prompt_type = "db"
+  prompt_id          = "code-assistant"
+  environment        = "production"
+  prompt_integration = "dotprompt"
+  prompt_type        = "db"
 
   dotprompt_content = <<-EOT
     You are an expert software developer assistant.
