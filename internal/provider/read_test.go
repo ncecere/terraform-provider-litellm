@@ -627,7 +627,7 @@ func TestReadVectorStore(t *testing.T) {
 
 	r := &VectorStoreResource{client: client}
 	data := &VectorStoreResourceModel{VectorStoreID: types.StringValue("vs-1")}
-	if err := r.readVectorStore(context.Background(), data); err != nil {
+	if err := r.readVectorStore(context.Background(), data, false, false); err != nil {
 		t.Fatalf("readVectorStore: %v", err)
 	}
 

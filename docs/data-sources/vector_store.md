@@ -107,7 +107,7 @@ In addition to all arguments above, the following attributes are exported:
 * `vector_store_description` - Description of the vector store.
 * `vector_store_metadata` - Map of metadata associated with the vector store.
 * `litellm_credential_name` - Name of the LiteLLM credential used.
-* `litellm_params` - Map of additional LiteLLM parameters.
+* `litellm_params` - Sensitive map of additional LiteLLM parameters. LiteLLM redacts credential-bearing leaves; nested values are represented as canonical JSON strings.
 * `created_at` - Timestamp when the vector store was created.
 * `updated_at` - Timestamp when the vector store was last updated.
 
@@ -213,5 +213,7 @@ output "compliance_report" {
 
 * Vector store IDs are unique identifiers assigned by the LiteLLM system.
 * The data source will fail if the specified vector store ID does not exist.
-* All computed attributes reflect the current state of the vector store in the LiteLLM system.
+* The data source strictly reads LiteLLM v1.98's nested `vector_store` response and rejects missing or mismatched identity.
+* Vector-store management is protected by LiteLLM's `vector_stores` feature gate and may require an applicable license and role.
+* Sensitive values remain redacted by LiteLLM and the `litellm_params` attribute is marked sensitive in Terraform.
 * Use this data source to integrate with existing vector stores or to reference stores created outside of Terraform.
