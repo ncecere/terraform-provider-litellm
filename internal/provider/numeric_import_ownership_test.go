@@ -18,7 +18,7 @@ func TestNumericImportOwnershipAdoptsOptionalResourceValues(t *testing.T) {
 		case "/project/info":
 			_, _ = writer.Write([]byte(`{"project_id":"project-1","team_id":"team-owner","litellm_budget_table":{"max_budget":10.5,"tpm_limit":9007199254740993,"rpm_limit":60,"model_max_budget":{"gpt":1.25}},"metadata":{"model_rpm_limit":{"gpt":9007199254740993},"model_tpm_limit":{}}}`))
 		case "/tag/info":
-			_, _ = writer.Write([]byte(`{"tag-1":{"name":"tag-1","litellm_budget_table":{"max_budget":20.5,"tpm_limit":9007199254740993,"rpm_limit":70,"model_max_budget":{"gpt":9007199254740993}}}}`))
+			_, _ = writer.Write([]byte(`{"tag-1":{"name":"tag-1","litellm_budget_table":{"budget_id":"tag-budget","max_budget":20.5,"tpm_limit":9007199254740993,"rpm_limit":70,"model_max_budget":{"gpt":9007199254740993}}}}`))
 		case "/team/info":
 			_, _ = writer.Write([]byte(`{"team_info":{"team_id":"team-1","team_alias":"team","max_budget":30.5,"tpm_limit":9007199254740993,"rpm_limit":80,"metadata":{"model_rpm_limit":{"gpt":9007199254740993},"model_tpm_limit":{}}}}`))
 		case "/team/permissions_list":

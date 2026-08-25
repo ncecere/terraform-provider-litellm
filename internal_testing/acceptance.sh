@@ -77,7 +77,8 @@ run_case organization resources organization_minimal.tf
 run_case organization_member resources organization_minimal.tf,organization_member_minimal.tf
 run_case prompt resources prompt_minimal.tf
 run_case search_tool resources search_tool_minimal.tf
-run_case tag resources tag_minimal.tf
+run_case tag resources tag_minimal.tf datasources tag.tf,tags_list.tf
+run_case tag_full resources tag_full.tf
 run_case team resources team_minimal.tf
 run_case team_block resources team_minimal.tf,team_block_minimal.tf
 run_case team_member resources team_minimal.tf,team_member_minimal.tf
