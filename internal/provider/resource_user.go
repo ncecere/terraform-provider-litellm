@@ -242,11 +242,14 @@ func (r *UserResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 	var data UserResourceModel
 
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
+	importedMarker, privateDiags := req.Private.GetKey(ctx, numericImportedPrivateKey)
+	resp.Diagnostics.Append(privateDiags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	imported := string(importedMarker) == "true"
 
-	if err := r.readUser(ctx, &data); err != nil {
+	if err := r.readUserWithNumericOwnership(ctx, &data, imported); err != nil {
 		if IsNotFoundError(err) {
 			resp.State.RemoveResource(ctx)
 			return
@@ -256,6 +259,9 @@ func (r *UserResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	if !resp.Diagnostics.HasError() && imported {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, nil)...)
+	}
 }
 
 func (r *UserResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
@@ -328,6 +334,9 @@ func (r *UserResource) Delete(ctx context.Context, req resource.DeleteRequest, r
 func (r *UserResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("user_id"), req.ID)...)
+	if resp.Private != nil {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, []byte("true"))...)
+	}
 }
 
 type userListResponse struct {
@@ -532,6 +541,10 @@ func (r *UserResource) buildUserRequest(ctx context.Context, data *UserResourceM
 }
 
 func (r *UserResource) readUser(ctx context.Context, data *UserResourceModel) error {
+	return r.readUserWithNumericOwnership(ctx, data, false)
+}
+
+func (r *UserResource) readUserWithNumericOwnership(ctx context.Context, data *UserResourceModel, imported bool) error {
 	userID := data.UserID.ValueString()
 	if userID == "" {
 		userID = data.ID.ValueString()
@@ -544,10 +557,20 @@ func (r *UserResource) readUser(ctx context.Context, data *UserResourceModel) er
 		return err
 	}
 
-	// The /user/info endpoint returns user_info nested
+	// The /user/info endpoint returns user_info nested.
 	userInfo := result
 	if ui, ok := result["user_info"].(map[string]interface{}); ok {
 		userInfo = ui
+	}
+	if imported {
+		validated, err := requireImportedObjectField(true, "user", result, "user_info")
+		if err != nil {
+			return err
+		}
+		userInfo = validated
+	}
+	if err := validateImportedObjectIdentity(imported, "user", userInfo, "user_id", userID); err != nil {
+		return err
 	}
 
 	// Update fields from response
@@ -568,16 +591,20 @@ func (r *UserResource) readUser(ctx context.Context, data *UserResourceModel) er
 		data.BudgetDuration = types.StringValue(budgetDuration)
 	}
 
-	// Numeric fields. These are Optional-only, so avoid writing API-injected
-	// defaults into state when the user did not configure them.
-	if maxBudget, ok := userInfo["max_budget"].(float64); ok && !data.MaxBudget.IsNull() {
-		data.MaxBudget = types.Float64Value(maxBudget)
+	// Numeric fields are Optional-only: validate every present API value, but
+	// do not adopt server defaults for unconfigured attributes. Null/omission
+	// clears configured state so out-of-band removals remain visible.
+	maxBudgetOwned := imported || (!data.MaxBudget.IsNull() && !data.MaxBudget.IsUnknown())
+	if err := updateFloat64FromAPI(&data.MaxBudget, userInfo, maxBudgetOwned, maxBudgetOwned, "max_budget"); err != nil {
+		return err
 	}
-	if tpmLimit, ok := userInfo["tpm_limit"].(float64); ok && !data.TPMLimit.IsNull() {
-		data.TPMLimit = types.Int64Value(int64(tpmLimit))
+	tpmOwned := imported || (!data.TPMLimit.IsNull() && !data.TPMLimit.IsUnknown())
+	if err := updateInt64FromAPI(&data.TPMLimit, userInfo, tpmOwned, tpmOwned, "tpm_limit"); err != nil {
+		return err
 	}
-	if rpmLimit, ok := userInfo["rpm_limit"].(float64); ok && !data.RPMLimit.IsNull() {
-		data.RPMLimit = types.Int64Value(int64(rpmLimit))
+	rpmOwned := imported || (!data.RPMLimit.IsNull() && !data.RPMLimit.IsUnknown())
+	if err := updateInt64FromAPI(&data.RPMLimit, userInfo, rpmOwned, rpmOwned, "rpm_limit"); err != nil {
+		return err
 	}
 
 	// Team membership is unordered in LiteLLM. Preserve Terraform's current

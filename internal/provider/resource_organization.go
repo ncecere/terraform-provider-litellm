@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/mapvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -93,16 +95,24 @@ func (r *OrganizationResource) Schema(ctx context.Context, req resource.SchemaRe
 				Optional:    true,
 			},
 			"model_rpm_limit": schema.MapAttribute{
-				Description: "The RPM (Requests Per Minute) limit per model for this organization.",
+				Description: "The RPM (Requests Per Minute) limit per model for this organization. LiteLLM v1.98 merges this metadata map; removing an owned key is blocked because replacement would cascade destructively.",
 				Optional:    true,
 				Computed:    true,
 				ElementType: types.Int64Type,
+				Validators:  []validator.Map{mapvalidator.NoNullValues()},
+				PlanModifiers: []planmodifier.Map{
+					organizationNumericMapRemovalModifier{privateKey: organizationModelRPMOwnedPrivateKey},
+				},
 			},
 			"model_tpm_limit": schema.MapAttribute{
-				Description: "The TPM (Tokens Per Minute) limit per model for this organization.",
+				Description: "The TPM (Tokens Per Minute) limit per model for this organization. LiteLLM v1.98 merges this metadata map; removing an owned key is blocked because replacement would cascade destructively.",
 				Optional:    true,
 				Computed:    true,
 				ElementType: types.Int64Type,
+				Validators:  []validator.Map{mapvalidator.NoNullValues()},
+				PlanModifiers: []planmodifier.Map{
+					organizationNumericMapRemovalModifier{privateKey: organizationModelTPMOwnedPrivateKey},
+				},
 			},
 			"budget_duration": schema.StringAttribute{
 				Description: "Frequency of resetting org budget (e.g., '30d', '1mo').",
@@ -161,7 +171,11 @@ func (r *OrganizationResource) Create(ctx context.Context, req resource.CreateRe
 		return
 	}
 
-	orgReq := r.buildOrganizationRequest(ctx, &data)
+	orgReq, err := r.buildOrganizationRequest(ctx, &data)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Organization Numeric Map", err.Error())
+		return
+	}
 
 	var result map[string]interface{}
 	if err := r.client.DoRequestWithResponse(ctx, "POST", "/organization/new", orgReq, &result); err != nil {
@@ -187,11 +201,14 @@ func (r *OrganizationResource) Read(ctx context.Context, req resource.ReadReques
 	var data OrganizationResourceModel
 
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
+	importedMarker, privateDiags := req.Private.GetKey(ctx, numericImportedPrivateKey)
+	resp.Diagnostics.Append(privateDiags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	imported := string(importedMarker) == "true"
 
-	if err := r.readOrganization(ctx, &data); err != nil {
+	if err := r.readOrganizationWithNumericOwnership(ctx, &data, imported); err != nil {
 		if IsNotFoundError(err) {
 			resp.State.RemoveResource(ctx)
 			return
@@ -201,6 +218,9 @@ func (r *OrganizationResource) Read(ctx context.Context, req resource.ReadReques
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	if !resp.Diagnostics.HasError() && imported {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, nil)...)
+	}
 }
 
 func (r *OrganizationResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
@@ -221,7 +241,11 @@ func (r *OrganizationResource) Update(ctx context.Context, req resource.UpdateRe
 	data.ID = state.ID
 	data.OrganizationID = state.OrganizationID
 
-	orgReq := r.buildOrganizationRequest(ctx, &data)
+	orgReq, err := r.buildOrganizationRequest(ctx, &data)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Organization Numeric Map", err.Error())
+		return
+	}
 	orgReq["organization_id"] = data.OrganizationID.ValueString()
 
 	if err := r.client.DoRequestWithResponse(ctx, "PATCH", "/organization/update", orgReq, nil); err != nil {
@@ -260,9 +284,12 @@ func (r *OrganizationResource) Delete(ctx context.Context, req resource.DeleteRe
 func (r *OrganizationResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("organization_id"), req.ID)...)
+	if resp.Private != nil {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, []byte("true"))...)
+	}
 }
 
-func (r *OrganizationResource) buildOrganizationRequest(ctx context.Context, data *OrganizationResourceModel) map[string]interface{} {
+func (r *OrganizationResource) buildOrganizationRequest(ctx context.Context, data *OrganizationResourceModel) (map[string]interface{}, error) {
 	orgReq := map[string]interface{}{
 		"organization_alias": data.OrganizationAlias.ValueString(),
 	}
@@ -311,35 +338,46 @@ func (r *OrganizationResource) buildOrganizationRequest(ctx context.Context, dat
 		}
 	}
 
-	// Map fields - check IsNull, IsUnknown, and len > 0
+	// Map fields. LiteLLM v1.98 merges these reserved metadata objects. Known
+	// empty maps are still sent for fidelity, but are a remote no-op; the plan
+	// modifier blocks any known owned-key removal before an update can run.
 	if !data.ModelRPMLimit.IsNull() && !data.ModelRPMLimit.IsUnknown() {
-		var modelRPM map[string]int64
-		data.ModelRPMLimit.ElementsAs(ctx, &modelRPM, false)
-		if len(modelRPM) > 0 {
-			orgReq["model_rpm_limit"] = modelRPM
+		modelRPM, err := int64RequestMap(data.ModelRPMLimit, "model_rpm_limit")
+		if err != nil {
+			return nil, err
 		}
+		orgReq["model_rpm_limit"] = modelRPM
 	}
 
 	if !data.ModelTPMLimit.IsNull() && !data.ModelTPMLimit.IsUnknown() {
-		var modelTPM map[string]int64
-		data.ModelTPMLimit.ElementsAs(ctx, &modelTPM, false)
-		if len(modelTPM) > 0 {
-			orgReq["model_tpm_limit"] = modelTPM
+		modelTPM, err := int64RequestMap(data.ModelTPMLimit, "model_tpm_limit")
+		if err != nil {
+			return nil, err
 		}
+		orgReq["model_tpm_limit"] = modelTPM
 	}
 
 	if !data.Metadata.IsNull() && !data.Metadata.IsUnknown() {
 		var metadata map[string]string
 		data.Metadata.ElementsAs(ctx, &metadata, false)
 		if len(metadata) > 0 {
-			orgReq["metadata"] = convertMetadataToNative(metadata)
+			metadataPayload := convertMetadataToNative(metadata)
+			delete(metadataPayload, "model_rpm_limit")
+			delete(metadataPayload, "model_tpm_limit")
+			if len(metadataPayload) > 0 {
+				orgReq["metadata"] = metadataPayload
+			}
 		}
 	}
 
-	return orgReq
+	return orgReq, nil
 }
 
 func (r *OrganizationResource) readOrganization(ctx context.Context, data *OrganizationResourceModel) error {
+	return r.readOrganizationWithNumericOwnership(ctx, data, false)
+}
+
+func (r *OrganizationResource) readOrganizationWithNumericOwnership(ctx context.Context, data *OrganizationResourceModel, imported bool) error {
 	orgID := data.OrganizationID.ValueString()
 	if orgID == "" {
 		orgID = data.ID.ValueString()
@@ -352,10 +390,18 @@ func (r *OrganizationResource) readOrganization(ctx context.Context, data *Organ
 		return err
 	}
 
-	// The /organization/info endpoint may return data nested inside "organization_info"
+	// LiteLLM v1.98 returns the organization object flat. Keep compatibility
+	// with deployments that wrap the same object in "organization_info"; both
+	// shapes are authoritative for import once identity and required fields pass.
 	orgInfo := result
 	if nested, ok := result["organization_info"].(map[string]interface{}); ok {
 		orgInfo = nested
+	}
+	if err := validateImportedObjectIdentity(imported, "organization", orgInfo, "organization_id", orgID); err != nil {
+		return err
+	}
+	if err := requireImportedStringField(imported, "organization", orgInfo, "organization_alias"); err != nil {
+		return err
 	}
 
 	// Update fields from response
@@ -369,22 +415,37 @@ func (r *OrganizationResource) readOrganization(ctx context.Context, data *Organ
 	if budgetID, ok := orgInfo["budget_id"].(string); ok && !data.BudgetID.IsNull() {
 		data.BudgetID = types.StringValue(budgetID)
 	}
-	if budgetDuration, ok := orgInfo["budget_duration"].(string); ok {
-		data.BudgetDuration = types.StringValue(budgetDuration)
+	if budgetDuration, presence, err := apiValueAt(orgInfo, "litellm_budget_table", "budget_duration"); err != nil {
+		return err
+	} else if presence == apiValuePresent {
+		value, ok := budgetDuration.(string)
+		if !ok {
+			return fmt.Errorf("invalid response field %q: expected a string", "litellm_budget_table.budget_duration")
+		}
+		if !data.BudgetDuration.IsNull() {
+			data.BudgetDuration = types.StringValue(value)
+		}
+	} else if !data.BudgetDuration.IsNull() {
+		data.BudgetDuration = types.StringNull()
 	}
 	if createdAt, ok := orgInfo["created_at"].(string); ok {
 		data.CreatedAt = types.StringValue(createdAt)
 	}
 
-	// Numeric fields
-	if maxBudget, ok := orgInfo["max_budget"].(float64); ok {
-		data.MaxBudget = types.Float64Value(maxBudget)
+	// LiteLLM v1.98 returns budget and rate fields only through the budget
+	// relation. These attributes are Optional-only, so validate API defaults
+	// without adopting them when Terraform does not own the field.
+	maxBudgetOwned := imported || (!data.MaxBudget.IsNull() && !data.MaxBudget.IsUnknown())
+	if err := updateFloat64FromAPI(&data.MaxBudget, orgInfo, maxBudgetOwned, maxBudgetOwned, "litellm_budget_table", "max_budget"); err != nil {
+		return err
 	}
-	if tpmLimit, ok := orgInfo["tpm_limit"].(float64); ok {
-		data.TPMLimit = types.Int64Value(int64(tpmLimit))
+	tpmOwned := imported || (!data.TPMLimit.IsNull() && !data.TPMLimit.IsUnknown())
+	if err := updateInt64FromAPI(&data.TPMLimit, orgInfo, tpmOwned, tpmOwned, "litellm_budget_table", "tpm_limit"); err != nil {
+		return err
 	}
-	if rpmLimit, ok := orgInfo["rpm_limit"].(float64); ok {
-		data.RPMLimit = types.Int64Value(int64(rpmLimit))
+	rpmOwned := imported || (!data.RPMLimit.IsNull() && !data.RPMLimit.IsUnknown())
+	if err := updateInt64FromAPI(&data.RPMLimit, orgInfo, rpmOwned, rpmOwned, "litellm_budget_table", "rpm_limit"); err != nil {
+		return err
 	}
 
 	// Boolean fields - resolve Unknown to Null when API returns nil
@@ -420,42 +481,39 @@ func (r *OrganizationResource) readOrganization(ctx context.Context, data *Organ
 		data.Tags, _ = types.ListValue(types.StringType, []attr.Value{})
 	}
 
-	// Handle metadata map - preserve null when API returns empty and config didn't specify metadata
-	if metadata, ok := orgInfo["metadata"].(map[string]interface{}); ok && len(metadata) > 0 {
+	// LiteLLM v1.98 persists organization per-model limits in metadata. Build
+	// all three related state values first so malformed numeric data cannot
+	// partially update metadata or only one dedicated attribute.
+	nextMetadata := data.Metadata
+	nextModelRPM := data.ModelRPMLimit
+	nextModelTPM := data.ModelTPMLimit
+	metadata, metadataPresent := orgInfo["metadata"].(map[string]interface{})
+	if metadataPresent {
 		metaMap := make(map[string]attr.Value)
-		for k, v := range metadata {
-			metaMap[k] = types.StringValue(metadataValueToString(v))
+		for key, value := range metadata {
+			if key == "model_rpm_limit" || key == "model_tpm_limit" {
+				continue
+			}
+			metaMap[key] = types.StringValue(metadataValueToString(value))
 		}
-		data.Metadata, _ = types.MapValue(types.StringType, metaMap)
+		if len(metaMap) > 0 || data.Metadata.IsUnknown() {
+			nextMetadata, _ = types.MapValue(types.StringType, metaMap)
+		}
 	} else if data.Metadata.IsUnknown() {
-		data.Metadata, _ = types.MapValue(types.StringType, map[string]attr.Value{})
+		nextMetadata, _ = types.MapValue(types.StringType, map[string]attr.Value{})
 	}
 
-	// Handle model_rpm_limit map - preserve null when API returns empty and config didn't specify model_rpm_limit
-	if modelRPM, ok := orgInfo["model_rpm_limit"].(map[string]interface{}); ok && len(modelRPM) > 0 {
-		rpmMap := make(map[string]attr.Value)
-		for k, v := range modelRPM {
-			if num, ok := v.(float64); ok {
-				rpmMap[k] = types.Int64Value(int64(num))
-			}
-		}
-		data.ModelRPMLimit, _ = types.MapValue(types.Int64Type, rpmMap)
-	} else if data.ModelRPMLimit.IsUnknown() {
-		data.ModelRPMLimit, _ = types.MapValue(types.Int64Type, map[string]attr.Value{})
+	modelRPMOwned := imported || (!data.ModelRPMLimit.IsNull() && !data.ModelRPMLimit.IsUnknown())
+	if err := updateInt64MapFromAPI(&nextModelRPM, orgInfo, modelRPMOwned, modelRPMOwned, "metadata", "model_rpm_limit"); err != nil {
+		return err
 	}
-
-	// Handle model_tpm_limit map - preserve null when API returns empty and config didn't specify model_tpm_limit
-	if modelTPM, ok := orgInfo["model_tpm_limit"].(map[string]interface{}); ok && len(modelTPM) > 0 {
-		tpmMap := make(map[string]attr.Value)
-		for k, v := range modelTPM {
-			if num, ok := v.(float64); ok {
-				tpmMap[k] = types.Int64Value(int64(num))
-			}
-		}
-		data.ModelTPMLimit, _ = types.MapValue(types.Int64Type, tpmMap)
-	} else if data.ModelTPMLimit.IsUnknown() {
-		data.ModelTPMLimit, _ = types.MapValue(types.Int64Type, map[string]attr.Value{})
+	modelTPMOwned := imported || (!data.ModelTPMLimit.IsNull() && !data.ModelTPMLimit.IsUnknown())
+	if err := updateInt64MapFromAPI(&nextModelTPM, orgInfo, modelTPMOwned, modelTPMOwned, "metadata", "model_tpm_limit"); err != nil {
+		return err
 	}
+	data.Metadata = nextMetadata
+	data.ModelRPMLimit = nextModelRPM
+	data.ModelTPMLimit = nextModelTPM
 
 	return nil
 }

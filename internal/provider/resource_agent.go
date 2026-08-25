@@ -368,11 +368,14 @@ func (r *AgentResource) Create(ctx context.Context, req resource.CreateRequest, 
 func (r *AgentResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	var data AgentResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
+	importedMarker, privateDiags := req.Private.GetKey(ctx, numericImportedPrivateKey)
+	resp.Diagnostics.Append(privateDiags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	imported := string(importedMarker) == "true"
 
-	if err := r.readAgent(ctx, &data); err != nil {
+	if err := r.readAgentWithNumericOwnership(ctx, &data, imported); err != nil {
 		if IsNotFoundError(err) {
 			resp.State.RemoveResource(ctx)
 			return
@@ -382,6 +385,9 @@ func (r *AgentResource) Read(ctx context.Context, req resource.ReadRequest, resp
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	if !resp.Diagnostics.HasError() && imported {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, nil)...)
+	}
 }
 
 func (r *AgentResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
@@ -439,6 +445,9 @@ func (r *AgentResource) Delete(ctx context.Context, req resource.DeleteRequest, 
 
 func (r *AgentResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+	if resp.Private != nil {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, []byte("true"))...)
+	}
 }
 
 func agentMapContainsMaskedValues(value types.Map) bool {
@@ -785,6 +794,10 @@ func reconcileAgentStringMap(current types.Map, raw map[string]interface{}, excl
 // --- Read agent ---
 
 func (r *AgentResource) readAgent(ctx context.Context, data *AgentResourceModel) error {
+	return r.readAgentWithNumericOwnership(ctx, data, false)
+}
+
+func (r *AgentResource) readAgentWithNumericOwnership(ctx context.Context, data *AgentResourceModel, imported bool) error {
 	agentID := data.ID.ValueString()
 	if agentID == "" {
 		return fmt.Errorf("agent ID is empty, cannot read agent")
@@ -794,6 +807,12 @@ func (r *AgentResource) readAgent(ctx context.Context, data *AgentResourceModel)
 
 	var result map[string]interface{}
 	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
+		return err
+	}
+	if err := validateImportedObjectIdentity(imported, "agent", result, "agent_id", agentID); err != nil {
+		return err
+	}
+	if err := requireImportedStringField(imported, "agent", result, "agent_name"); err != nil {
 		return err
 	}
 
@@ -819,20 +838,21 @@ func (r *AgentResource) readAgent(ctx context.Context, data *AgentResourceModel)
 		data.UpdatedBy = types.StringValue(v)
 	}
 
-	// Rate limits
-	if v, ok := result["tpm_limit"].(float64); ok {
-		data.TPMLimit = types.Int64Value(int64(v))
-	} else if !data.TPMLimit.IsNull() {
-		// preserve user config
-	}
-	if v, ok := result["rpm_limit"].(float64); ok {
-		data.RPMLimit = types.Int64Value(int64(v))
-	}
-	if v, ok := result["session_tpm_limit"].(float64); ok {
-		data.SessionTPMLimit = types.Int64Value(int64(v))
-	}
-	if v, ok := result["session_rpm_limit"].(float64); ok {
-		data.SessionRPMLimit = types.Int64Value(int64(v))
+	// Rate limits are Optional-only. Imported state adopts visible values once;
+	// ordinary lifecycle reads refresh only values already owned by Terraform.
+	for _, field := range []struct {
+		name   string
+		target *types.Int64
+	}{
+		{"tpm_limit", &data.TPMLimit},
+		{"rpm_limit", &data.RPMLimit},
+		{"session_tpm_limit", &data.SessionTPMLimit},
+		{"session_rpm_limit", &data.SessionRPMLimit},
+	} {
+		owned := imported || (!field.target.IsNull() && !field.target.IsUnknown())
+		if err := updateInt64FromAPI(field.target, result, owned, owned, field.name); err != nil {
+			return err
+		}
 	}
 
 	// LiteLLM params

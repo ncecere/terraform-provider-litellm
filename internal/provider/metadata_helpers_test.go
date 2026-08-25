@@ -68,6 +68,26 @@ func TestConvertMetadataToNative_JSONObject(t *testing.T) {
 	}
 }
 
+func TestConvertMetadataToNative_PreservesExactNestedNumbers(t *testing.T) {
+	t.Parallel()
+
+	result := convertMetadataToNative(map[string]string{
+		"numeric": `{"large":9007199254740993,"close":1.0000000000000001}`,
+	})
+	object, ok := result["numeric"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("numeric metadata = %T", result["numeric"])
+	}
+	large, largeOK := object["large"].(json.Number)
+	closeValue, closeOK := object["close"].(json.Number)
+	if !largeOK || large.String() != "9007199254740993" || !closeOK || closeValue.String() != "1.0000000000000001" {
+		t.Fatalf("numeric metadata rounded: %#v", object)
+	}
+	if got := metadataValueToString(object); got != `{"close":1.0000000000000001,"large":9007199254740993}` {
+		t.Fatalf("numeric metadata read-back = %s", got)
+	}
+}
+
 func TestConvertMetadataToNative_MixedValues(t *testing.T) {
 	t.Parallel()
 
@@ -214,6 +234,23 @@ func TestMetadataValueToStringPreservingMaskedScalar(t *testing.T) {
 		if got := metadataValueToStringPreservingMasked(apiValue, "configured"); got != apiValue {
 			t.Fatalf("unmasked scalar = %q, want API value %q", got, apiValue)
 		}
+	}
+}
+
+func TestMetadataValueToStringPreservingMaskedKeepsExactSemanticFormatting(t *testing.T) {
+	t.Parallel()
+
+	configured := `{ "large": 9007199254740993, "fraction": 9.007199254740993e15 }`
+	apiValue := map[string]interface{}{
+		"fraction": json.Number("9007199254740993.0"),
+		"large":    json.Number("9007199254740993"),
+	}
+	if got := metadataValueToStringPreservingMasked(apiValue, configured); got != configured {
+		t.Fatalf("semantically equal exact metadata formatting changed: %s", got)
+	}
+	apiValue["large"] = json.Number("9007199254740992")
+	if got := metadataValueToStringPreservingMasked(apiValue, configured); got == configured {
+		t.Fatal("distinct metadata integer above 2^53 was hidden as semantically equal")
 	}
 }
 

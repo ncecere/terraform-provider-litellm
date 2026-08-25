@@ -3,10 +3,28 @@ package litellm
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 )
+
+func decodeJSONUseNumber(data []byte, result interface{}) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(result); err != nil {
+		return err
+	}
+	var trailing interface{}
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("multiple JSON values")
+		}
+		return err
+	}
+	return nil
+}
 
 func isModelNotFoundError(errResp ErrorResponse) bool {
 	if msg, ok := errResp.Error.Message.(string); ok {
@@ -41,7 +59,7 @@ func handleAPIResponse(resp *http.Response, _ interface{}) (*ModelResponse, erro
 
 	if resp.StatusCode != http.StatusOK {
 		var errResp ErrorResponse
-		if err := json.Unmarshal(bodyBytes, &errResp); err == nil {
+		if err := decodeJSONUseNumber(bodyBytes, &errResp); err == nil {
 			if isModelNotFoundError(errResp) {
 				return nil, fmt.Errorf("model_not_found")
 			}
@@ -50,7 +68,7 @@ func handleAPIResponse(resp *http.Response, _ interface{}) (*ModelResponse, erro
 	}
 
 	var modelResp ModelResponse
-	if err := json.Unmarshal(bodyBytes, &modelResp); err != nil {
+	if err := decodeJSONUseNumber(bodyBytes, &modelResp); err != nil {
 		return nil, fmt.Errorf("failed to parse LiteLLM response")
 	}
 
@@ -121,7 +139,7 @@ func handleMCPAPIResponse(resp *http.Response, result interface{}) error {
 
 	if resp.StatusCode != http.StatusOK {
 		var errResp ErrorResponse
-		if err := json.Unmarshal(bodyBytes, &errResp); err == nil {
+		if err := decodeJSONUseNumber(bodyBytes, &errResp); err == nil {
 			if isMCPServerNotFoundError(errResp) {
 				return fmt.Errorf("mcp_server_not_found")
 			}
@@ -129,7 +147,7 @@ func handleMCPAPIResponse(resp *http.Response, result interface{}) error {
 		return fmt.Errorf("API request failed: HTTP %d", resp.StatusCode)
 	}
 
-	if err := json.Unmarshal(bodyBytes, result); err != nil {
+	if err := decodeJSONUseNumber(bodyBytes, result); err != nil {
 		return fmt.Errorf("failed to parse LiteLLM response")
 	}
 
@@ -201,7 +219,7 @@ func handleCredentialAPIResponse(resp *http.Response, result interface{}) error 
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		var errResp ErrorResponse
-		if err := json.Unmarshal(bodyBytes, &errResp); err == nil {
+		if err := decodeJSONUseNumber(bodyBytes, &errResp); err == nil {
 			if isCredentialNotFoundError(errResp) {
 				return fmt.Errorf("credential_not_found")
 			}
@@ -209,14 +227,25 @@ func handleCredentialAPIResponse(resp *http.Response, result interface{}) error 
 		return fmt.Errorf("API request failed: HTTP %d", resp.StatusCode)
 	}
 
-	// For credential operations, we might get a simple string response or a credential object
+	trimmed := bytes.TrimSpace(bodyBytes)
 	if result != nil {
-		if err := json.Unmarshal(bodyBytes, result); err != nil {
-			// If parsing fails, it might be a simple string response which is fine for create/update/delete
-			return nil
+		if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+			return fmt.Errorf("failed to parse LiteLLM response")
+		}
+		if err := decodeJSONUseNumber(trimmed, result); err != nil {
+			return fmt.Errorf("failed to parse LiteLLM response")
+		}
+		return nil
+	}
+	// Empty successful mutation responses remain valid, but any body LiteLLM
+	// does send must be one complete JSON value rather than silently ignored
+	// malformed text.
+	if len(trimmed) > 0 {
+		var discarded interface{}
+		if err := decodeJSONUseNumber(trimmed, &discarded); err != nil {
+			return fmt.Errorf("failed to parse LiteLLM response")
 		}
 	}
-
 	return nil
 }
 
@@ -259,7 +288,7 @@ func handleVectorStoreAPIResponse(resp *http.Response, result interface{}) error
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		var errResp ErrorResponse
-		if err := json.Unmarshal(bodyBytes, &errResp); err == nil {
+		if err := decodeJSONUseNumber(bodyBytes, &errResp); err == nil {
 			if isVectorStoreNotFoundError(errResp) {
 				return fmt.Errorf("vector_store_not_found")
 			}
@@ -268,7 +297,7 @@ func handleVectorStoreAPIResponse(resp *http.Response, result interface{}) error
 	}
 
 	if result != nil {
-		if err := json.Unmarshal(bodyBytes, result); err != nil {
+		if err := decodeJSONUseNumber(bodyBytes, result); err != nil {
 			return fmt.Errorf("failed to parse LiteLLM response")
 		}
 	}

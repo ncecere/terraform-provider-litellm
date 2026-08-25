@@ -29,6 +29,8 @@ type OrganizationDataSourceModel struct {
 	MaxBudget         types.Float64 `tfsdk:"max_budget"`
 	TPMLimit          types.Int64   `tfsdk:"tpm_limit"`
 	RPMLimit          types.Int64   `tfsdk:"rpm_limit"`
+	ModelRPMLimit     types.Map     `tfsdk:"model_rpm_limit"`
+	ModelTPMLimit     types.Map     `tfsdk:"model_tpm_limit"`
 	BudgetDuration    types.String  `tfsdk:"budget_duration"`
 	Metadata          types.Map     `tfsdk:"metadata"`
 	Blocked           types.Bool    `tfsdk:"blocked"`
@@ -78,6 +80,16 @@ func (d *OrganizationDataSource) Schema(ctx context.Context, req datasource.Sche
 			"rpm_limit": schema.Int64Attribute{
 				Description: "Max RPM limit for the organization.",
 				Computed:    true,
+			},
+			"model_rpm_limit": schema.MapAttribute{
+				Description: "Per-model RPM limits stored by LiteLLM in organization metadata.",
+				Computed:    true,
+				ElementType: types.Int64Type,
+			},
+			"model_tpm_limit": schema.MapAttribute{
+				Description: "Per-model TPM limits stored by LiteLLM in organization metadata.",
+				Computed:    true,
+				ElementType: types.Int64Type,
 			},
 			"budget_duration": schema.StringAttribute{
 				Description: "Frequency of resetting org budget.",
@@ -163,8 +175,18 @@ func (d *OrganizationDataSource) Read(ctx context.Context, req datasource.ReadRe
 	if budgetID, ok := orgInfo["budget_id"].(string); ok {
 		data.BudgetID = types.StringValue(budgetID)
 	}
-	if budgetDuration, ok := orgInfo["budget_duration"].(string); ok {
-		data.BudgetDuration = types.StringValue(budgetDuration)
+	if budgetDuration, presence, err := apiValueAt(orgInfo, "litellm_budget_table", "budget_duration"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	} else if presence == apiValuePresent {
+		value, ok := budgetDuration.(string)
+		if !ok {
+			resp.Diagnostics.AddError("Invalid API Response", "invalid response field \"litellm_budget_table.budget_duration\": expected a string")
+			return
+		}
+		data.BudgetDuration = types.StringValue(value)
+	} else {
+		data.BudgetDuration = types.StringNull()
 	}
 	if createdAt, ok := orgInfo["created_at"].(string); ok {
 		data.CreatedAt = types.StringValue(createdAt)
@@ -174,17 +196,21 @@ func (d *OrganizationDataSource) Read(ctx context.Context, req datasource.ReadRe
 	}
 
 	// Numeric fields
-	if maxBudget, ok := orgInfo["max_budget"].(float64); ok {
-		data.MaxBudget = types.Float64Value(maxBudget)
+	if err := updateFloat64FromAPI(&data.MaxBudget, orgInfo, true, true, "litellm_budget_table", "max_budget"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
 	}
-	if spend, ok := orgInfo["spend"].(float64); ok {
-		data.Spend = types.Float64Value(spend)
+	if err := updateFloat64FromAPI(&data.Spend, orgInfo, true, true, "spend"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
 	}
-	if tpmLimit, ok := orgInfo["tpm_limit"].(float64); ok {
-		data.TPMLimit = types.Int64Value(int64(tpmLimit))
+	if err := updateInt64FromAPI(&data.TPMLimit, orgInfo, true, true, "litellm_budget_table", "tpm_limit"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
 	}
-	if rpmLimit, ok := orgInfo["rpm_limit"].(float64); ok {
-		data.RPMLimit = types.Int64Value(int64(rpmLimit))
+	if err := updateInt64FromAPI(&data.RPMLimit, orgInfo, true, true, "litellm_budget_table", "rpm_limit"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
 	}
 
 	// Boolean fields
@@ -220,18 +246,32 @@ func (d *OrganizationDataSource) Read(ctx context.Context, req datasource.ReadRe
 		data.Tags, _ = types.ListValue(types.StringType, []attr.Value{})
 	}
 
-	// Handle metadata map
-	if metadata, ok := orgInfo["metadata"].(map[string]interface{}); ok {
-		metaMap := make(map[string]attr.Value)
-		for k, v := range metadata {
-			if str, ok := v.(string); ok {
-				metaMap[k] = types.StringValue(str)
+	// Organization metadata and its two reserved numeric maps are one atomic
+	// response unit. Validate both maps before publishing any related state.
+	metadata, metadataPresent := orgInfo["metadata"].(map[string]interface{})
+	metaMap := make(map[string]attr.Value)
+	if metadataPresent {
+		for key, value := range metadata {
+			if key == "model_rpm_limit" || key == "model_tpm_limit" {
+				continue
 			}
+			metaMap[key] = types.StringValue(metadataValueToString(value))
 		}
-		data.Metadata, _ = types.MapValue(types.StringType, metaMap)
-	} else {
-		data.Metadata, _ = types.MapValue(types.StringType, map[string]attr.Value{})
 	}
+	nextMetadata, _ := types.MapValue(types.StringType, metaMap)
+	nextModelRPM := types.MapNull(types.Int64Type)
+	nextModelTPM := types.MapNull(types.Int64Type)
+	if err := updateInt64MapFromAPI(&nextModelRPM, orgInfo, true, true, "metadata", "model_rpm_limit"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+	if err := updateInt64MapFromAPI(&nextModelTPM, orgInfo, true, true, "metadata", "model_tpm_limit"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+	data.Metadata = nextMetadata
+	data.ModelRPMLimit = nextModelRPM
+	data.ModelTPMLimit = nextModelTPM
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }

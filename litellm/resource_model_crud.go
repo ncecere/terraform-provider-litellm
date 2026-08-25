@@ -1,7 +1,6 @@
 package litellm
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
 	"strconv"
@@ -173,7 +172,7 @@ func createOrUpdateModel(d *schema.ResourceData, m interface{}, isUpdate bool) e
 				trimmedValue := strings.TrimSpace(strValue)
 				if strings.HasPrefix(trimmedValue, "[") || strings.HasPrefix(trimmedValue, "{") {
 					var parsedValue interface{}
-					if err := json.Unmarshal([]byte(strValue), &parsedValue); err == nil {
+					if err := decodeJSONUseNumber([]byte(strValue), &parsedValue); err == nil {
 						// Successfully parsed JSON
 						if key == "additional_drop_params" {
 							// Handle drop params specially
@@ -341,8 +340,12 @@ func resourceLiteLLMModelRead(d *schema.ResourceData, m interface{}) error {
 		if modelResp.LiteLLMParams.Thinking != nil {
 			if thinkingType, ok := modelResp.LiteLLMParams.Thinking["type"].(string); ok && thinkingType == "enabled" {
 				d.Set("thinking_enabled", true)
-				if budgetTokens, ok := modelResp.LiteLLMParams.Thinking["budget_tokens"].(float64); ok {
-					d.Set("thinking_budget_tokens", int(budgetTokens))
+				if rawBudget, exists := modelResp.LiteLLMParams.Thinking["budget_tokens"]; exists {
+					budgetTokens, err := legacyIntFromJSON(rawBudget)
+					if err != nil {
+						return fmt.Errorf("invalid thinking budget in LiteLLM response")
+					}
+					d.Set("thinking_budget_tokens", budgetTokens)
 				}
 			} else {
 				d.Set("thinking_enabled", false)

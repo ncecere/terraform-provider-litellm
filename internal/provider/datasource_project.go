@@ -159,8 +159,9 @@ func (d *ProjectDataSource) Read(ctx context.Context, req datasource.ReadRequest
 	if v, ok := result["blocked"].(bool); ok {
 		data.Blocked = types.BoolValue(v)
 	}
-	if v, ok := result["spend"].(float64); ok {
-		data.Spend = types.Float64Value(v)
+	if err := updateFloat64FromAPI(&data.Spend, result, true, true, "spend"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
 	}
 	if v, ok := result["created_at"].(string); ok {
 		data.CreatedAt = types.StringValue(v)
@@ -201,10 +202,13 @@ func (d *ProjectDataSource) Read(ctx context.Context, req datasource.ReadRequest
 		data.Tags, _ = types.ListValue(types.StringType, []attr.Value{})
 	}
 
-	// Metadata
+	// Metadata excludes the reserved per-model rate maps exposed separately.
 	if metadata, ok := result["metadata"].(map[string]interface{}); ok && len(metadata) > 0 {
 		metaMap := make(map[string]attr.Value)
 		for k, v := range metadata {
+			if k == "model_rpm_limit" || k == "model_tpm_limit" {
+				continue
+			}
 			metaMap[k] = types.StringValue(metadataValueToString(v))
 		}
 		data.Metadata, _ = types.MapValue(types.StringType, metaMap)
@@ -212,28 +216,13 @@ func (d *ProjectDataSource) Read(ctx context.Context, req datasource.ReadRequest
 		data.Metadata = types.MapNull(types.StringType)
 	}
 
-	// Model RPM/TPM limits
-	if mrpm, ok := result["model_rpm_limit"].(map[string]interface{}); ok && len(mrpm) > 0 {
-		rpmMap := make(map[string]attr.Value)
-		for k, v := range mrpm {
-			if num, ok := v.(float64); ok {
-				rpmMap[k] = types.Int64Value(int64(num))
-			}
-		}
-		data.ModelRPMLimit, _ = types.MapValue(types.Int64Type, rpmMap)
-	} else {
-		data.ModelRPMLimit = types.MapNull(types.Int64Type)
+	if err := updateInt64MapFromAPI(&data.ModelRPMLimit, result, true, true, "metadata", "model_rpm_limit"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
 	}
-	if mtpm, ok := result["model_tpm_limit"].(map[string]interface{}); ok && len(mtpm) > 0 {
-		tpmMap := make(map[string]attr.Value)
-		for k, v := range mtpm {
-			if num, ok := v.(float64); ok {
-				tpmMap[k] = types.Int64Value(int64(num))
-			}
-		}
-		data.ModelTPMLimit, _ = types.MapValue(types.Int64Type, tpmMap)
-	} else {
-		data.ModelTPMLimit = types.MapNull(types.Int64Type)
+	if err := updateInt64MapFromAPI(&data.ModelTPMLimit, result, true, true, "metadata", "model_tpm_limit"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)

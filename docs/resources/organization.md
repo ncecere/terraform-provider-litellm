@@ -77,8 +77,8 @@ The following arguments are supported:
 - `max_budget` - (Float64) Maximum budget allowed for the organization.
 - `tpm_limit` - (Int64) Tokens per minute limit for the organization.
 - `rpm_limit` - (Int64) Requests per minute limit for the organization.
-- `model_rpm_limit` - (Map of Int64) Per-model requests per minute limits.
-- `model_tpm_limit` - (Map of Int64) Per-model tokens per minute limits.
+- `model_rpm_limit` - (Map of Int64) Per-model requests per minute limits. LiteLLM v1.98 merges this metadata map, so adding or changing keys updates in place. Removing a known Terraform-owned key is blocked during planning.
+- `model_tpm_limit` - (Map of Int64) Per-model tokens per minute limits. LiteLLM v1.98 merges this metadata map, so adding or changing keys updates in place. Removing a known Terraform-owned key is blocked during planning.
 - `budget_duration` - (String) Duration of the budget window (e.g., `"30d"`, `"1h"`, `"7d"`).
 - `metadata` - (Map of String) Metadata associated with the organization. Values are strings; use `jsonencode()` for complex values (objects, arrays) — they will be sent as native JSON to the API.
 - `blocked` - (Bool) Whether the organization is blocked from making requests.
@@ -105,3 +105,6 @@ terraform import litellm_organization.example <organization-id>
 - Teams belong to organizations.
 - Budget limits at the organization level apply to all teams within it.
 - The `metadata` attribute is a map of strings. Use `jsonencode()` for complex values (objects, arrays) — they will be sent as native JSON to the API.
+- LiteLLM stores per-model RPM and TPM limits inside organization metadata. The provider reads those reserved keys through `model_rpm_limit` and `model_tpm_limit`; do not duplicate them in `metadata`.
+- LiteLLM v1.98 treats an empty per-model limit object as a merge no-op, not a clear. When a known Terraform-owned key is removed, including a nonempty-to-empty transition, the provider fails the plan before any API call while refreshed state still contains that key. It never replaces or deletes the organization automatically: v1.98 organization deletion cascades to dependent teams, memberships, and keys. Restore the key to continue managing the organization. If removal is necessary, coordinate the migration outside this resource, then run a normal refresh so authoritative state confirms the key is absent; the provider then retires that key's private ownership and omitted configuration is a no-op. A plan with `-refresh=false` remains blocked while stale state still contains the key. Import is safe and does not establish removal ownership, but it is not a substitute for refreshing an already-managed organization's migration.
+- Imported, upgraded, unknown, omitted, and otherwise unconfigured per-model maps do not establish removal ownership and do not produce this plan error. Adds and value changes remain in-place updates. This resource intentionally has no opt-in destructive-cascade mode.

@@ -76,8 +76,9 @@ func (r *PromptResource) Schema(ctx context.Context, req resource.SchemaRequest,
 				Sensitive:   true,
 			},
 			"provider_specific_query_params": schema.StringAttribute{
-				Description: "JSON string of provider-specific query parameters.",
+				Description: "JSON object string of provider-specific query parameters.",
 				Optional:    true,
+				Validators:  []validator.String{jsonShapeStringValidator{shape: '{'}},
 			},
 			"ignore_prompt_manager_model": schema.BoolAttribute{
 				Description: "If true, ignore the model specified in the prompt manager.",
@@ -127,7 +128,11 @@ func (r *PromptResource) Create(ctx context.Context, req resource.CreateRequest,
 		return
 	}
 
-	promptReq := r.buildPromptRequest(ctx, &data)
+	promptReq, err := r.buildPromptRequest(ctx, &data)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Prompt JSON", err.Error())
+		return
+	}
 
 	var result map[string]interface{}
 	if err := r.client.DoRequestWithResponse(ctx, "POST", "/prompts", promptReq, &result); err != nil {
@@ -183,7 +188,11 @@ func (r *PromptResource) Update(ctx context.Context, req resource.UpdateRequest,
 	data.ID = state.ID
 	data.PromptID = state.PromptID
 
-	promptReq := r.buildPromptRequest(ctx, &data)
+	promptReq, err := r.buildPromptRequest(ctx, &data)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Prompt JSON", err.Error())
+		return
+	}
 
 	endpoint := fmt.Sprintf("/prompts/%s", data.PromptID.ValueString())
 	if err := r.client.DoRequestWithResponse(ctx, "PUT", endpoint, promptReq, nil); err != nil {
@@ -221,7 +230,7 @@ func (r *PromptResource) ImportState(ctx context.Context, req resource.ImportSta
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("prompt_id"), req.ID)...)
 }
 
-func (r *PromptResource) buildPromptRequest(ctx context.Context, data *PromptResourceModel) map[string]interface{} {
+func (r *PromptResource) buildPromptRequest(ctx context.Context, data *PromptResourceModel) (map[string]interface{}, error) {
 	litellmParams := map[string]interface{}{
 		"prompt_integration": data.PromptIntegration.ValueString(),
 	}
@@ -237,10 +246,11 @@ func (r *PromptResource) buildPromptRequest(ctx context.Context, data *PromptRes
 		litellmParams["dotprompt_content"] = data.DotpromptContent.ValueString()
 	}
 	if !data.ProviderSpecificQueryParams.IsNull() && !data.ProviderSpecificQueryParams.IsUnknown() && data.ProviderSpecificQueryParams.ValueString() != "" {
-		var params map[string]interface{}
-		if err := json.Unmarshal([]byte(data.ProviderSpecificQueryParams.ValueString()), &params); err == nil {
-			litellmParams["provider_specific_query_params"] = params
+		params, err := decodeRequestJSONObject(data.ProviderSpecificQueryParams.ValueString(), "provider_specific_query_params")
+		if err != nil {
+			return nil, err
 		}
+		litellmParams["provider_specific_query_params"] = params
 	}
 
 	// Boolean fields - check IsNull and IsUnknown
@@ -262,7 +272,7 @@ func (r *PromptResource) buildPromptRequest(ctx context.Context, data *PromptRes
 		}
 	}
 
-	return promptReq
+	return promptReq, nil
 }
 
 func (r *PromptResource) readPromptWithRetry(ctx context.Context, data *PromptResourceModel, maxRetries int) error {

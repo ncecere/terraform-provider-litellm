@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -28,6 +29,71 @@ type temporaryTransportTestError struct{}
 func (temporaryTransportTestError) Error() string   { return "temporary detail must be discarded" }
 func (temporaryTransportTestError) Timeout() bool   { return false }
 func (temporaryTransportTestError) Temporary() bool { return true }
+
+func TestClientPreservesGenericJSONNumbers(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"items":[{"limit":9007199254740993,"cost":12.5}],"maximum":9223372036854775807}`))
+	}))
+	defer server.Close()
+
+	client := &Client{APIBase: server.URL, APIKey: "admin", HTTPClient: server.Client()}
+	var result map[string]interface{}
+	if err := client.DoRequestWithResponse(context.Background(), http.MethodGet, "/limits", nil, &result); err != nil {
+		t.Fatal(err)
+	}
+	items := result["items"].([]interface{})
+	item := items[0].(map[string]interface{})
+	if got, err := exactInt64FromAPI(item["limit"]); err != nil || got != 9007199254740993 {
+		t.Fatalf("nested limit = %#v, %v", item["limit"], err)
+	}
+	if got, err := float64FromAPI(item["cost"]); err != nil || got != 12.5 {
+		t.Fatalf("cost = %#v", item["cost"])
+	}
+	if got, err := exactInt64FromAPI(result["maximum"]); err != nil || got != math.MaxInt64 {
+		t.Fatalf("maximum = %#v, %v", result["maximum"], err)
+	}
+}
+
+func TestClientRequestPreservesInt64(t *testing.T) {
+	t.Parallel()
+
+	observed := make(chan map[string]interface{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var body map[string]interface{}
+		decoder := json.NewDecoder(request.Body)
+		decoder.UseNumber()
+		if err := decoder.Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		observed <- body
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	client := &Client{APIBase: server.URL, APIKey: "admin", HTTPClient: server.Client()}
+	request := map[string]interface{}{
+		"minimum": math.MinInt64,
+		"maximum": math.MaxInt64,
+		"nested":  map[string]int64{"above_safe_float": 9007199254740993},
+	}
+	if err := client.DoRequestWithResponse(context.Background(), http.MethodPost, "/limits", request, nil); err != nil {
+		t.Fatal(err)
+	}
+	body := <-observed
+	for field, want := range map[string]string{"minimum": "-9223372036854775808", "maximum": "9223372036854775807"} {
+		if got, ok := body[field].(json.Number); !ok || got.String() != want {
+			t.Fatalf("%s = %#v, want %s", field, body[field], want)
+		}
+	}
+	nested := body["nested"].(map[string]interface{})
+	if got, ok := nested["above_safe_float"].(json.Number); !ok || got.String() != "9007199254740993" {
+		t.Fatalf("nested integer = %#v", nested["above_safe_float"])
+	}
+}
 
 func TestClientSensitiveEchoResponsesAreOmitted(t *testing.T) {
 	t.Parallel()
@@ -83,6 +149,35 @@ func TestClientSensitiveEchoResponsesAreOmitted(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestSanitizeDiagnosticValuePreservesOnlyBoundedJSONNumbers(t *testing.T) {
+	t.Parallel()
+
+	for _, number := range []json.Number{"9007199254740993", "-1.25e+17"} {
+		sanitized, ok := sanitizeDiagnosticValue(number, "limit", 0, nil)
+		if !ok || sanitized != number {
+			t.Fatalf("sanitizeDiagnosticValue(%q) = %#v, %t", number, sanitized, ok)
+		}
+	}
+	for _, number := range []json.Number{"not-a-number", json.Number(strings.Repeat("9", maxDiagnosticNumber+1))} {
+		if sanitized, ok := sanitizeDiagnosticValue(number, "limit", 0, nil); ok || sanitized != nil {
+			t.Fatalf("unsafe json.Number %q was retained: %#v", number, sanitized)
+		}
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		writer.WriteHeader(http.StatusBadRequest)
+		_, _ = writer.Write([]byte(`{"detail":{"limit":9007199254740993,"ratio":1.25e3}}`))
+	}))
+	defer server.Close()
+	client := &Client{APIBase: server.URL, APIKey: "admin", HTTPClient: server.Client()}
+	err := client.DoRequestWithResponse(context.Background(), http.MethodGet, "/team/info", nil, nil)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || !strings.Contains(apiErr.Detail, `9007199254740993`) || !strings.Contains(apiErr.Detail, `1.25e3`) {
+		t.Fatalf("exact bounded numeric detail was not preserved: %#v", err)
 	}
 }
 
@@ -434,10 +529,10 @@ func TestClientRequestIDValidation(t *testing.T) {
 	}
 }
 
-func TestClientEmptyAndNullResponsesRemainAccepted(t *testing.T) {
+func TestClientEmptyAndNullResponsesRequireNoResultTarget(t *testing.T) {
 	t.Parallel()
 
-	for _, body := range []string{"", "null"} {
+	for _, body := range []string{"", "null", "  null\n"} {
 		body := body
 		t.Run(fmt.Sprintf("body-%q", body), func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -446,8 +541,13 @@ func TestClientEmptyAndNullResponsesRemainAccepted(t *testing.T) {
 			defer server.Close()
 			client := &Client{APIBase: server.URL, APIKey: "admin", HTTPClient: server.Client()}
 			var result map[string]interface{}
-			if err := client.DoRequestWithResponse(context.Background(), http.MethodGet, "/team/info", nil, &result); err != nil {
-				t.Fatalf("body %q returned error: %v", body, err)
+			err := client.DoRequestWithResponse(context.Background(), http.MethodGet, "/team/info", nil, &result)
+			var responseErr *safeResponseError
+			if !errors.As(err, &responseErr) || !responseErr.Temporary() || !strings.Contains(err.Error(), "empty JSON response") {
+				t.Fatalf("body %q returned %#v, want safe retryable response error", body, err)
+			}
+			if err := client.DoRequestWithResponse(context.Background(), http.MethodPost, "/team/update", nil, nil); err != nil {
+				t.Fatalf("body %q with no result target returned error: %v", body, err)
 			}
 		})
 	}

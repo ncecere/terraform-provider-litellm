@@ -1,7 +1,6 @@
 package litellm
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -117,7 +116,7 @@ func resourceLiteLLMTeamRead(d *schema.ResourceData, m interface{}) error {
 		return err
 	}
 	var teamResp TeamResponse
-	if err := json.Unmarshal(bodyBytes, &teamResp); err != nil {
+	if err := decodeJSONUseNumber(bodyBytes, &teamResp); err != nil {
 		return fmt.Errorf("error decoding team info response")
 	}
 
@@ -127,7 +126,7 @@ func resourceLiteLLMTeamRead(d *schema.ResourceData, m interface{}) error {
 
 	// Handle metadata separately as it's a map
 	if teamResp.Metadata != nil {
-		d.Set("metadata", teamResp.Metadata)
+		d.Set("metadata", legacyStringMapFromJSON(teamResp.Metadata))
 	} else {
 		d.Set("metadata", d.Get("metadata"))
 	}
@@ -274,7 +273,7 @@ func getTeamPermissions(client *Client, teamID string) (*TeamPermissionsResponse
 	}
 
 	var permResp TeamPermissionsResponse
-	if err := json.Unmarshal(bodyBytes, &permResp); err != nil {
+	if err := decodeJSONUseNumber(bodyBytes, &permResp); err != nil {
 		return nil, fmt.Errorf("error decoding team permissions response")
 	}
 

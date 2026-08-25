@@ -149,20 +149,30 @@ func (d *BudgetsListDataSource) Read(ctx context.Context, req datasource.ReadReq
 			resp.Diagnostics.AddError("Invalid API Response", "/budget/list returned a budget object without budget_id")
 			return
 		}
-		if maxBudget, ok := result["max_budget"].(float64); ok {
-			budget.MaxBudget = types.Float64Value(maxBudget)
+		for _, field := range []struct {
+			name   string
+			target *types.Float64
+		}{
+			{"max_budget", &budget.MaxBudget},
+			{"soft_budget", &budget.SoftBudget},
+		} {
+			if err := updateFloat64FromAPI(field.target, result, true, true, field.name); err != nil {
+				resp.Diagnostics.AddError("Invalid API Response", err.Error())
+				return
+			}
 		}
-		if softBudget, ok := result["soft_budget"].(float64); ok {
-			budget.SoftBudget = types.Float64Value(softBudget)
-		}
-		if maxParallel, ok := result["max_parallel_requests"].(float64); ok {
-			budget.MaxParallelRequests = types.Int64Value(int64(maxParallel))
-		}
-		if tpmLimit, ok := result["tpm_limit"].(float64); ok {
-			budget.TPMLimit = types.Int64Value(int64(tpmLimit))
-		}
-		if rpmLimit, ok := result["rpm_limit"].(float64); ok {
-			budget.RPMLimit = types.Int64Value(int64(rpmLimit))
+		for _, field := range []struct {
+			name   string
+			target *types.Int64
+		}{
+			{"max_parallel_requests", &budget.MaxParallelRequests},
+			{"tpm_limit", &budget.TPMLimit},
+			{"rpm_limit", &budget.RPMLimit},
+		} {
+			if err := updateInt64FromAPI(field.target, result, true, true, field.name); err != nil {
+				resp.Diagnostics.AddError("Invalid API Response", err.Error())
+				return
+			}
 		}
 		if budgetDuration, ok := result["budget_duration"].(string); ok {
 			budget.BudgetDuration = types.StringValue(budgetDuration)

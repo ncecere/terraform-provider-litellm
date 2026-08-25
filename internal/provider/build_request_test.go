@@ -2,8 +2,10 @@ package provider
 
 import (
 	"context"
+	"reflect"
 	"testing"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -27,7 +29,10 @@ func TestBuildBudgetRequest(t *testing.T) {
 		ModelMaxBudget:      types.StringValue(`{"gpt-4o":10}`),
 	}
 
-	req := r.buildBudgetRequest(context.Background(), data)
+	req, err := r.buildBudgetRequest(context.Background(), data)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if req["budget_id"] != "budget-1" {
 		t.Errorf("budget_id = %v", req["budget_id"])
@@ -42,8 +47,80 @@ func TestBuildBudgetRequest(t *testing.T) {
 		t.Errorf("tpm_limit = %v", req["tpm_limit"])
 	}
 	mmb, ok := req["model_max_budget"].(map[string]interface{})
-	if !ok || mmb["gpt-4o"] != float64(10) {
+	modelBudget, numberErr := exactInt64FromAPI(mmb["gpt-4o"])
+	if !ok || numberErr != nil || modelBudget != 10 {
 		t.Errorf("model_max_budget = %#v", req["model_max_budget"])
+	}
+}
+
+func TestNumericPerModelRequestMapsPreserveNullVersusKnownEmpty(t *testing.T) {
+	t.Parallel()
+
+	emptyIntMap := types.MapValueMust(types.Int64Type, map[string]attr.Value{})
+	emptyFloatMap := types.MapValueMust(types.Float64Type, map[string]attr.Value{})
+
+	keyRequest, err := (&KeyResource{}).buildKeyRequest(context.Background(), &KeyResourceModel{
+		ModelMaxBudget: emptyFloatMap,
+		ModelRPMLimit:  emptyIntMap,
+		ModelTPMLimit:  emptyIntMap,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"model_max_budget", "model_rpm_limit", "model_tpm_limit"} {
+		value, present := keyRequest[field]
+		if !present {
+			t.Fatalf("key %s known empty map was omitted", field)
+		}
+		if reflected := reflect.ValueOf(value); reflected.Kind() != reflect.Map || reflected.Len() != 0 {
+			t.Fatalf("key %s = %#v, want empty map", field, value)
+		}
+	}
+
+	teamRequest, err := (&TeamResource{}).buildTeamRequest(context.Background(), &TeamResourceModel{
+		TeamAlias:     types.StringValue("team"),
+		ModelRPMLimit: emptyIntMap,
+		ModelTPMLimit: emptyIntMap,
+	}, "team-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"model_rpm_limit", "model_tpm_limit"} {
+		if _, present := teamRequest[field]; !present {
+			t.Fatalf("team %s known empty map was omitted", field)
+		}
+	}
+
+	projectRequest, err := (&ProjectResource{}).buildProjectRequest(context.Background(), &ProjectResourceModel{
+		ModelMaxBudget: emptyFloatMap,
+		ModelRPMLimit:  emptyIntMap,
+		ModelTPMLimit:  emptyIntMap,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, present := projectRequest["model_max_budget"]; !present {
+		t.Fatal("project model_max_budget known empty map was omitted")
+	}
+	metadata := projectRequest["metadata"].(map[string]interface{})
+	for _, field := range []string{"model_rpm_limit", "model_tpm_limit"} {
+		if _, present := metadata[field]; !present {
+			t.Fatalf("project %s known empty map was omitted", field)
+		}
+	}
+
+	keyNullRequest, err := (&KeyResource{}).buildKeyRequest(context.Background(), &KeyResourceModel{
+		ModelMaxBudget: types.MapNull(types.Float64Type),
+		ModelRPMLimit:  types.MapNull(types.Int64Type),
+		ModelTPMLimit:  types.MapNull(types.Int64Type),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"model_max_budget", "model_rpm_limit", "model_tpm_limit"} {
+		if _, present := keyNullRequest[field]; present {
+			t.Fatalf("null key %s was sent", field)
+		}
 	}
 }
 
@@ -62,7 +139,10 @@ func TestBuildBudgetRequestOmitsUnset(t *testing.T) {
 		ModelMaxBudget:      types.StringNull(),
 	}
 
-	req := r.buildBudgetRequest(context.Background(), data)
+	req, err := r.buildBudgetRequest(context.Background(), data)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(req) != 0 {
 		t.Errorf("expected empty request when all fields null, got %#v", req)
 	}
@@ -79,7 +159,10 @@ func TestBuildTagRequest(t *testing.T) {
 		MaxBudget:   types.Float64Value(50),
 	}
 
-	req := r.buildTagRequest(context.Background(), data)
+	req, err := r.buildTagRequest(context.Background(), data)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if req["name"] != "prod" {
 		t.Errorf("name = %v", req["name"])
@@ -133,7 +216,10 @@ func TestBuildGuardrailRequest(t *testing.T) {
 		DefaultOn:     types.BoolValue(true),
 	}
 
-	req := r.buildGuardrailRequest(context.Background(), data)
+	req, err := r.buildGuardrailRequest(context.Background(), data)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	guardrail, ok := req["guardrail"].(map[string]interface{})
 	if !ok {
@@ -167,7 +253,10 @@ func TestBuildGuardrailRequestParsesModeArray(t *testing.T) {
 		Mode:          types.StringValue(`["pre_call","post_call"]`),
 	}
 
-	req := r.buildGuardrailRequest(context.Background(), data)
+	req, err := r.buildGuardrailRequest(context.Background(), data)
+	if err != nil {
+		t.Fatal(err)
+	}
 	guardrail := req["guardrail"].(map[string]interface{})
 	params := guardrail["litellm_params"].(map[string]interface{})
 	modes, ok := params["mode"].([]string)
@@ -190,7 +279,10 @@ func TestBuildOrganizationRequest(t *testing.T) {
 		Tags:              stringListValue("team-a"),
 	}
 
-	req := r.buildOrganizationRequest(context.Background(), data)
+	req, err := r.buildOrganizationRequest(context.Background(), data)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if req["organization_alias"] != "acme" {
 		t.Errorf("organization_alias = %v", req["organization_alias"])
@@ -222,7 +314,10 @@ func TestBuildPromptRequest(t *testing.T) {
 		PromptType:               types.StringValue("chat"),
 	}
 
-	req := r.buildPromptRequest(context.Background(), data)
+	req, err := r.buildPromptRequest(context.Background(), data)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if req["prompt_id"] != "prompt-1" {
 		t.Errorf("prompt_id = %v", req["prompt_id"])
@@ -259,7 +354,10 @@ func TestBuildSearchToolRequest(t *testing.T) {
 		MaxRetries:     types.Int64Value(3),
 	}
 
-	req := r.buildSearchToolRequest(context.Background(), data)
+	req, err := r.buildSearchToolRequest(context.Background(), data)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if req["search_tool_name"] != "tavily" {
 		t.Errorf("search_tool_name = %v", req["search_tool_name"])

@@ -158,23 +158,43 @@ func (d *TagsListDataSource) Read(ctx context.Context, req datasource.ReadReques
 		if budgetID, ok := budgetMap["budget_id"].(string); ok {
 			tag.BudgetID = types.StringValue(budgetID)
 		}
-		if maxBudget, ok := budgetMap["max_budget"].(float64); ok {
-			tag.MaxBudget = types.Float64Value(maxBudget)
+		for _, field := range []struct {
+			name   string
+			target *types.Float64
+		}{
+			{"max_budget", &tag.MaxBudget},
+			{"soft_budget", &tag.SoftBudget},
+		} {
+			if err := updateFloat64FromAPI(field.target, result, true, true, "litellm_budget_table", field.name); err != nil {
+				resp.Diagnostics.AddError("Invalid API Response", err.Error())
+				return
+			}
 		}
-		if softBudget, ok := budgetMap["soft_budget"].(float64); ok {
-			tag.SoftBudget = types.Float64Value(softBudget)
+		for _, field := range []struct {
+			name   string
+			target *types.Int64
+		}{
+			{"max_parallel_requests", &tag.MaxParallelRequests},
+			{"tpm_limit", &tag.TPMLimit},
+			{"rpm_limit", &tag.RPMLimit},
+		} {
+			if err := updateInt64FromAPI(field.target, result, true, true, "litellm_budget_table", field.name); err != nil {
+				resp.Diagnostics.AddError("Invalid API Response", err.Error())
+				return
+			}
 		}
-		if maxParallel, ok := budgetMap["max_parallel_requests"].(float64); ok {
-			tag.MaxParallelRequests = types.Int64Value(int64(maxParallel))
-		}
-		if tpmLimit, ok := budgetMap["tpm_limit"].(float64); ok {
-			tag.TPMLimit = types.Int64Value(int64(tpmLimit))
-		}
-		if rpmLimit, ok := budgetMap["rpm_limit"].(float64); ok {
-			tag.RPMLimit = types.Int64Value(int64(rpmLimit))
-		}
-		if budgetDuration, ok := budgetMap["budget_duration"].(string); ok {
-			tag.BudgetDuration = types.StringValue(budgetDuration)
+		if budgetDuration, presence, err := apiValueAt(result, "litellm_budget_table", "budget_duration"); err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", err.Error())
+			return
+		} else if presence == apiValuePresent {
+			value, ok := budgetDuration.(string)
+			if !ok {
+				resp.Diagnostics.AddError("Invalid API Response", "invalid response field \"litellm_budget_table.budget_duration\": expected a string")
+				return
+			}
+			tag.BudgetDuration = types.StringValue(value)
+		} else {
+			tag.BudgetDuration = types.StringNull()
 		}
 
 		// Handle models list

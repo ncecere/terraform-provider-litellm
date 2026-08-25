@@ -150,18 +150,21 @@ func (d *OrganizationsListDataSource) Read(ctx context.Context, req datasource.R
 		if alias, ok := orgMap["organization_alias"].(string); ok {
 			item.OrganizationAlias = types.StringValue(alias)
 		}
-		budgetMap := nestedListObject(orgMap, "litellm_budget_table")
-		if maxBudget, ok := budgetMap["max_budget"].(float64); ok {
-			item.MaxBudget = types.Float64Value(maxBudget)
+		if err := updateFloat64FromAPI(&item.MaxBudget, orgMap, true, true, "litellm_budget_table", "max_budget"); err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", err.Error())
+			return
 		}
-		if spend, ok := orgMap["spend"].(float64); ok {
-			item.Spend = types.Float64Value(spend)
+		if err := updateFloat64FromAPI(&item.Spend, orgMap, true, true, "spend"); err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", err.Error())
+			return
 		}
-		if tpmLimit, ok := budgetMap["tpm_limit"].(float64); ok {
-			item.TPMLimit = types.Int64Value(int64(tpmLimit))
+		if err := updateInt64FromAPI(&item.TPMLimit, orgMap, true, true, "litellm_budget_table", "tpm_limit"); err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", err.Error())
+			return
 		}
-		if rpmLimit, ok := budgetMap["rpm_limit"].(float64); ok {
-			item.RPMLimit = types.Int64Value(int64(rpmLimit))
+		if err := updateInt64FromAPI(&item.RPMLimit, orgMap, true, true, "litellm_budget_table", "rpm_limit"); err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", err.Error())
+			return
 		}
 		if blocked, ok := orgMap["blocked"].(bool); ok {
 			item.Blocked = types.BoolValue(blocked)

@@ -208,6 +208,8 @@ MCP servers can be imported using their server ID:
 terraform import litellm_mcp_server.example <server-id>
 ```
 
+On the first read after import, the provider adopts visible numeric cost fields exactly, including `mcp_info.mcp_server_cost_info`. This numeric import marker does not reconstruct unrelated heterogeneous `mcp_info` content that is not represented by the current schema; configure that block explicitly when Terraform must own its display fields.
+
 ## Transport Types
 
 ### HTTP

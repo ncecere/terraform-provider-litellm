@@ -150,23 +150,43 @@ func (d *TagDataSource) Read(ctx context.Context, req datasource.ReadRequest, re
 	if budgetID, ok := result["budget_id"].(string); ok {
 		data.BudgetID = types.StringValue(budgetID)
 	}
-	if maxBudget, ok := result["max_budget"].(float64); ok {
-		data.MaxBudget = types.Float64Value(maxBudget)
+	for _, field := range []struct {
+		name   string
+		target *types.Float64
+	}{
+		{"max_budget", &data.MaxBudget},
+		{"soft_budget", &data.SoftBudget},
+	} {
+		if err := updateFloat64FromAPI(field.target, result, true, true, "litellm_budget_table", field.name); err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", err.Error())
+			return
+		}
 	}
-	if softBudget, ok := result["soft_budget"].(float64); ok {
-		data.SoftBudget = types.Float64Value(softBudget)
+	for _, field := range []struct {
+		name   string
+		target *types.Int64
+	}{
+		{"max_parallel_requests", &data.MaxParallelRequests},
+		{"tpm_limit", &data.TPMLimit},
+		{"rpm_limit", &data.RPMLimit},
+	} {
+		if err := updateInt64FromAPI(field.target, result, true, true, "litellm_budget_table", field.name); err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", err.Error())
+			return
+		}
 	}
-	if maxParallel, ok := result["max_parallel_requests"].(float64); ok {
-		data.MaxParallelRequests = types.Int64Value(int64(maxParallel))
-	}
-	if tpmLimit, ok := result["tpm_limit"].(float64); ok {
-		data.TPMLimit = types.Int64Value(int64(tpmLimit))
-	}
-	if rpmLimit, ok := result["rpm_limit"].(float64); ok {
-		data.RPMLimit = types.Int64Value(int64(rpmLimit))
-	}
-	if budgetDuration, ok := result["budget_duration"].(string); ok {
-		data.BudgetDuration = types.StringValue(budgetDuration)
+	if budgetDuration, presence, err := apiValueAt(result, "litellm_budget_table", "budget_duration"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	} else if presence == apiValuePresent {
+		value, ok := budgetDuration.(string)
+		if !ok {
+			resp.Diagnostics.AddError("Invalid API Response", "invalid response field \"litellm_budget_table.budget_duration\": expected a string")
+			return
+		}
+		data.BudgetDuration = types.StringValue(value)
+	} else {
+		data.BudgetDuration = types.StringNull()
 	}
 
 	// Handle models list
@@ -180,11 +200,18 @@ func (d *TagDataSource) Read(ctx context.Context, req datasource.ReadRequest, re
 		data.Models, _ = types.ListValue(types.StringType, modelsList)
 	}
 
-	// Handle model_max_budget
-	if modelMaxBudget, ok := result["model_max_budget"].(map[string]interface{}); ok && len(modelMaxBudget) > 0 {
-		if jsonBytes, err := json.Marshal(modelMaxBudget); err == nil {
-			data.ModelMaxBudget = types.StringValue(string(jsonBytes))
+	if modelMaxBudget, presence, err := apiValueAt(result, "litellm_budget_table", "model_max_budget"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	} else if presence == apiValuePresent {
+		jsonBytes, marshalErr := json.Marshal(modelMaxBudget)
+		if marshalErr != nil {
+			resp.Diagnostics.AddError("Invalid API Response", "invalid response field \"litellm_budget_table.model_max_budget\": cannot encode JSON")
+			return
 		}
+		data.ModelMaxBudget = types.StringValue(string(jsonBytes))
+	} else {
+		data.ModelMaxBudget = types.StringNull()
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)

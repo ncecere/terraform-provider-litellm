@@ -10,6 +10,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -87,6 +88,7 @@ func (r *BudgetResource) Schema(ctx context.Context, req resource.SchemaRequest,
 			"model_max_budget": schema.StringAttribute{
 				Description: "JSON string for per-model budget configuration (e.g., '{\"gpt-4o\": {\"max_budget\": 0.01, \"budget_duration\": \"1d\"}}').",
 				Optional:    true,
+				Validators:  []validator.String{jsonShapeStringValidator{shape: '{'}},
 			},
 		},
 	}
@@ -117,7 +119,11 @@ func (r *BudgetResource) Create(ctx context.Context, req resource.CreateRequest,
 		return
 	}
 
-	budgetReq := r.buildBudgetRequest(ctx, &data)
+	budgetReq, err := r.buildBudgetRequest(ctx, &data)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Budget JSON", err.Error())
+		return
+	}
 
 	var result map[string]interface{}
 	if err := r.client.DoRequestWithResponse(ctx, "POST", "/budget/new", budgetReq, &result); err != nil {
@@ -143,11 +149,14 @@ func (r *BudgetResource) Read(ctx context.Context, req resource.ReadRequest, res
 	var data BudgetResourceModel
 
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
+	importedMarker, privateDiags := req.Private.GetKey(ctx, numericImportedPrivateKey)
+	resp.Diagnostics.Append(privateDiags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	imported := string(importedMarker) == "true"
 
-	if err := r.readBudget(ctx, &data); err != nil {
+	if err := r.readBudgetWithNumericOwnership(ctx, &data, imported); err != nil {
 		if IsNotFoundError(err) {
 			resp.State.RemoveResource(ctx)
 			return
@@ -157,6 +166,9 @@ func (r *BudgetResource) Read(ctx context.Context, req resource.ReadRequest, res
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	if !resp.Diagnostics.HasError() && imported {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, nil)...)
+	}
 }
 
 func (r *BudgetResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
@@ -177,7 +189,11 @@ func (r *BudgetResource) Update(ctx context.Context, req resource.UpdateRequest,
 	data.ID = state.ID
 	data.BudgetID = state.BudgetID
 
-	budgetReq := r.buildBudgetRequest(ctx, &data)
+	budgetReq, err := r.buildBudgetRequest(ctx, &data)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Budget JSON", err.Error())
+		return
+	}
 	budgetReq["budget_id"] = data.BudgetID.ValueString()
 
 	if err := r.client.DoRequestWithResponse(ctx, "POST", "/budget/update", budgetReq, nil); err != nil {
@@ -216,9 +232,12 @@ func (r *BudgetResource) Delete(ctx context.Context, req resource.DeleteRequest,
 func (r *BudgetResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("budget_id"), req.ID)...)
+	if resp.Private != nil {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, []byte("true"))...)
+	}
 }
 
-func (r *BudgetResource) buildBudgetRequest(ctx context.Context, data *BudgetResourceModel) map[string]interface{} {
+func (r *BudgetResource) buildBudgetRequest(ctx context.Context, data *BudgetResourceModel) (map[string]interface{}, error) {
 	budgetReq := map[string]interface{}{}
 
 	// String fields - check IsNull, IsUnknown, and empty string
@@ -229,11 +248,11 @@ func (r *BudgetResource) buildBudgetRequest(ctx context.Context, data *BudgetRes
 		budgetReq["budget_duration"] = data.BudgetDuration.ValueString()
 	}
 	if !data.ModelMaxBudget.IsNull() && !data.ModelMaxBudget.IsUnknown() && data.ModelMaxBudget.ValueString() != "" {
-		// Parse JSON string to map for API
-		var modelBudget map[string]interface{}
-		if err := json.Unmarshal([]byte(data.ModelMaxBudget.ValueString()), &modelBudget); err == nil {
-			budgetReq["model_max_budget"] = modelBudget
+		modelBudget, err := decodeRequestJSONObject(data.ModelMaxBudget.ValueString(), "model_max_budget")
+		if err != nil {
+			return nil, err
 		}
+		budgetReq["model_max_budget"] = modelBudget
 	}
 
 	// Numeric fields - check IsNull and IsUnknown
@@ -253,10 +272,14 @@ func (r *BudgetResource) buildBudgetRequest(ctx context.Context, data *BudgetRes
 		budgetReq["rpm_limit"] = data.RPMLimit.ValueInt64()
 	}
 
-	return budgetReq
+	return budgetReq, nil
 }
 
 func (r *BudgetResource) readBudget(ctx context.Context, data *BudgetResourceModel) error {
+	return r.readBudgetWithNumericOwnership(ctx, data, false)
+}
+
+func (r *BudgetResource) readBudgetWithNumericOwnership(ctx context.Context, data *BudgetResourceModel, imported bool) error {
 	budgetID := data.BudgetID.ValueString()
 	if budgetID == "" {
 		budgetID = data.ID.ValueString()
@@ -273,38 +296,72 @@ func (r *BudgetResource) readBudget(ctx context.Context, data *BudgetResourceMod
 	}
 
 	if len(results) == 0 {
+		if imported {
+			return fmt.Errorf("budget import read response did not contain exactly one budget")
+		}
 		return fmt.Errorf("budget not found: %s", budgetID)
+	}
+	if imported && len(results) != 1 {
+		return fmt.Errorf("budget import read response did not contain exactly one budget")
 	}
 
 	result := results[0]
+	if err := validateImportedObjectIdentity(imported, "budget", result, "budget_id", budgetID); err != nil {
+		return err
+	}
 
 	// Update fields from response
 	if id, ok := result["budget_id"].(string); ok {
 		data.BudgetID = types.StringValue(id)
 		data.ID = types.StringValue(id)
 	}
-	if maxBudget, ok := result["max_budget"].(float64); ok {
-		data.MaxBudget = types.Float64Value(maxBudget)
+	for _, field := range []struct {
+		name   string
+		target *types.Float64
+	}{
+		{"max_budget", &data.MaxBudget},
+		{"soft_budget", &data.SoftBudget},
+	} {
+		owned := imported || (!field.target.IsNull() && !field.target.IsUnknown())
+		if err := updateFloat64FromAPI(field.target, result, owned, owned, field.name); err != nil {
+			return err
+		}
 	}
-	if softBudget, ok := result["soft_budget"].(float64); ok {
-		data.SoftBudget = types.Float64Value(softBudget)
-	}
-	if maxParallel, ok := result["max_parallel_requests"].(float64); ok {
-		data.MaxParallelRequests = types.Int64Value(int64(maxParallel))
-	}
-	if tpmLimit, ok := result["tpm_limit"].(float64); ok {
-		data.TPMLimit = types.Int64Value(int64(tpmLimit))
-	}
-	if rpmLimit, ok := result["rpm_limit"].(float64); ok {
-		data.RPMLimit = types.Int64Value(int64(rpmLimit))
+	for _, field := range []struct {
+		name   string
+		target *types.Int64
+	}{
+		{"max_parallel_requests", &data.MaxParallelRequests},
+		{"tpm_limit", &data.TPMLimit},
+		{"rpm_limit", &data.RPMLimit},
+	} {
+		owned := imported || (!field.target.IsNull() && !field.target.IsUnknown())
+		if err := updateInt64FromAPI(field.target, result, owned, owned, field.name); err != nil {
+			return err
+		}
 	}
 	if budgetDuration, ok := result["budget_duration"].(string); ok {
 		data.BudgetDuration = types.StringValue(budgetDuration)
 	}
-	if modelMaxBudget, ok := result["model_max_budget"].(map[string]interface{}); ok && len(modelMaxBudget) > 0 {
-		if jsonBytes, err := json.Marshal(modelMaxBudget); err == nil {
-			data.ModelMaxBudget = types.StringValue(string(jsonBytes))
+	modelBudgetOwned := imported || (!data.ModelMaxBudget.IsNull() && !data.ModelMaxBudget.IsUnknown())
+	if modelMaxBudget, presence, err := apiValueAt(result, "model_max_budget"); err != nil {
+		return err
+	} else if presence == apiValuePresent {
+		object, ok := modelMaxBudget.(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("invalid response field %q: expected an object", "model_max_budget")
 		}
+		if modelBudgetOwned {
+			jsonBytes, err := json.Marshal(object)
+			if err != nil {
+				return fmt.Errorf("invalid response field %q: cannot encode JSON", "model_max_budget")
+			}
+			data.ModelMaxBudget = types.StringValue(string(jsonBytes))
+		} else if data.ModelMaxBudget.IsUnknown() {
+			data.ModelMaxBudget = types.StringNull()
+		}
+	} else if modelBudgetOwned || data.ModelMaxBudget.IsUnknown() {
+		data.ModelMaxBudget = types.StringNull()
 	}
 
 	return nil

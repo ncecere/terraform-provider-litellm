@@ -28,6 +28,7 @@ const (
 	maxDiagnosticDetail    = 1024
 	maxRequestIDLength     = 128
 	maxDiagnosticDepth     = 16
+	maxDiagnosticNumber    = 128
 	maxCollectedSecrets    = 128
 )
 
@@ -206,7 +207,7 @@ func classifyRequestSafety(request *http.Request, relativePath string, body []by
 		return safety
 	}
 	var value interface{}
-	if err := json.Unmarshal(body, &value); err != nil {
+	if err := decodeJSONUseNumber(body, &value); err != nil {
 		// A request body the classifier cannot understand must fail closed.
 		safety.suppressDetail = true
 		return safety
@@ -359,7 +360,7 @@ func safeResponseDetail(body []byte, contentType string, safety requestSafety) (
 	}
 
 	var decoded interface{}
-	if err := json.Unmarshal(body, &decoded); err != nil {
+	if err := decodeJSONUseNumber(body, &decoded); err != nil {
 		return "", true
 	}
 	root, ok := decoded.(map[string]interface{})
@@ -434,6 +435,13 @@ func sanitizeDiagnosticValue(value interface{}, key string, depth int, secrets [
 		return result, true
 	case string:
 		return sanitizeDiagnosticString(typed, secrets), true
+	case json.Number:
+		// json.Number is string-backed. Accept only a bounded valid JSON number
+		// and preserve its exact lexical value without canonical expansion.
+		if len(typed.String()) == 0 || len(typed.String()) > maxDiagnosticNumber || !apiJSONNumberPattern.MatchString(typed.String()) {
+			return nil, false
+		}
+		return typed, true
 	case nil, bool, float64:
 		return typed, true
 	default:

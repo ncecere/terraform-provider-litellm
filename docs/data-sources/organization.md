@@ -39,8 +39,10 @@ resource "litellm_team" "new_team" {
 * `max_budget` - Maximum budget for the organization.
 * `tpm_limit` - Tokens per minute limit.
 * `rpm_limit` - Requests per minute limit.
+* `model_rpm_limit` - Per-model requests per minute limits read from LiteLLM organization metadata.
+* `model_tpm_limit` - Per-model tokens per minute limits read from LiteLLM organization metadata.
 * `budget_duration` - Budget reset duration.
-* `metadata` - Map of metadata for the organization.
+* `metadata` - Map of user metadata for the organization. The reserved per-model limit keys are exposed through their dedicated attributes instead.
 * `blocked` - Whether the organization is blocked.
 * `tags` - List of tags for the organization.
 * `spend` - Current spend for the organization.

@@ -95,9 +95,9 @@ func resourceLiteLLMVectorStoreRead(d *schema.ResourceData, m interface{}) error
 	d.Set("vector_store_name", vectorStoreResp.VectorStoreName)
 	d.Set("custom_llm_provider", vectorStoreResp.CustomLLMProvider)
 	d.Set("vector_store_description", vectorStoreResp.VectorStoreDescription)
-	d.Set("vector_store_metadata", vectorStoreResp.VectorStoreMetadata)
+	d.Set("vector_store_metadata", legacyStringMapFromJSON(vectorStoreResp.VectorStoreMetadata))
 	d.Set("litellm_credential_name", vectorStoreResp.LiteLLMCredentialName)
-	d.Set("litellm_params", vectorStoreResp.LiteLLMParams)
+	d.Set("litellm_params", legacyStringMapFromJSON(vectorStoreResp.LiteLLMParams))
 	d.Set("created_at", vectorStoreResp.CreatedAt)
 	d.Set("updated_at", vectorStoreResp.UpdatedAt)
 

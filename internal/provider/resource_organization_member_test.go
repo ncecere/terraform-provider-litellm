@@ -306,7 +306,7 @@ func TestApplyOrganizationMemberResponseRejectsMalformedLoadedContracts(t *testi
 	role := "internal_user"
 	budgetID := "budget-1"
 	otherBudgetID := "other"
-	maxBudget := float64(5)
+	maxBudget := json.Number("5")
 	tests := map[string]organizationMemberAPIModel{
 		"missing user_role": {
 			UserID: "user-1", OrganizationID: "org-1",

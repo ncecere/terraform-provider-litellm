@@ -175,22 +175,24 @@ func (d *AgentDataSource) Read(ctx context.Context, req datasource.ReadRequest, 
 	}
 
 	// Rate limits
-	if v, ok := result["tpm_limit"].(float64); ok {
-		data.TPMLimit = types.Int64Value(int64(v))
-	}
-	if v, ok := result["rpm_limit"].(float64); ok {
-		data.RPMLimit = types.Int64Value(int64(v))
-	}
-	if v, ok := result["session_tpm_limit"].(float64); ok {
-		data.SessionTPMLimit = types.Int64Value(int64(v))
-	}
-	if v, ok := result["session_rpm_limit"].(float64); ok {
-		data.SessionRPMLimit = types.Int64Value(int64(v))
+	for _, field := range []struct {
+		name   string
+		target *types.Int64
+	}{
+		{"tpm_limit", &data.TPMLimit},
+		{"rpm_limit", &data.RPMLimit},
+		{"session_tpm_limit", &data.SessionTPMLimit},
+		{"session_rpm_limit", &data.SessionRPMLimit},
+	} {
+		if err := updateInt64FromAPI(field.target, result, true, true, field.name); err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", err.Error())
+			return
+		}
 	}
 
-	// Spend
-	if v, ok := result["spend"].(float64); ok {
-		data.Spend = types.Float64Value(v)
+	if err := updateFloat64FromAPI(&data.Spend, result, true, true, "spend"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
 	}
 
 	// Static headers

@@ -492,7 +492,7 @@ func TestReadAgent_PopulatesState(t *testing.T) {
 		ExtraHeaders:  types.ListUnknown(types.StringType),
 	}
 
-	if err := r.readAgent(context.Background(), &data); err != nil {
+	if err := r.readAgentWithNumericOwnership(context.Background(), &data, true); err != nil {
 		t.Fatalf("readAgent returned error: %v", err)
 	}
 

@@ -158,17 +158,29 @@ func (d *TeamsListDataSource) Read(ctx context.Context, req datasource.ReadReque
 		if orgID, ok := teamMap["organization_id"].(string); ok {
 			item.OrganizationID = types.StringValue(orgID)
 		}
-		if maxBudget, ok := teamMap["max_budget"].(float64); ok {
-			item.MaxBudget = types.Float64Value(maxBudget)
+		for _, field := range []struct {
+			name   string
+			target *types.Float64
+		}{
+			{"max_budget", &item.MaxBudget},
+			{"spend", &item.Spend},
+		} {
+			if err := updateFloat64FromAPI(field.target, teamMap, true, true, field.name); err != nil {
+				resp.Diagnostics.AddError("Invalid API Response", err.Error())
+				return
+			}
 		}
-		if spend, ok := teamMap["spend"].(float64); ok {
-			item.Spend = types.Float64Value(spend)
-		}
-		if tpmLimit, ok := teamMap["tpm_limit"].(float64); ok {
-			item.TPMLimit = types.Int64Value(int64(tpmLimit))
-		}
-		if rpmLimit, ok := teamMap["rpm_limit"].(float64); ok {
-			item.RPMLimit = types.Int64Value(int64(rpmLimit))
+		for _, field := range []struct {
+			name   string
+			target *types.Int64
+		}{
+			{"tpm_limit", &item.TPMLimit},
+			{"rpm_limit", &item.RPMLimit},
+		} {
+			if err := updateInt64FromAPI(field.target, teamMap, true, true, field.name); err != nil {
+				resp.Diagnostics.AddError("Invalid API Response", err.Error())
+				return
+			}
 		}
 		if blocked, ok := teamMap["blocked"].(bool); ok {
 			item.Blocked = types.BoolValue(blocked)

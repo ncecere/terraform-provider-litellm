@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -80,8 +81,8 @@ type organizationMemberAPIModel struct {
 }
 
 type organizationMemberBudgetAPIModel struct {
-	BudgetID  *string  `json:"budget_id"`
-	MaxBudget *float64 `json:"max_budget"`
+	BudgetID  *string      `json:"budget_id"`
+	MaxBudget *json.Number `json:"max_budget"`
 }
 
 type organizationMemberUserAPIModel struct {
@@ -275,6 +276,10 @@ func applyOrganizationMemberResponse(data *OrganizationMemberResourceModel, memb
 // only when LiteLLM actually returned the nested budget relation. An omitted or
 // null relation preserves the snapshot but cannot confirm a requested change.
 func applyOrganizationMemberResponseWithBudgetConfirmation(data *OrganizationMemberResourceModel, member organizationMemberAPIModel) (bool, error) {
+	return applyOrganizationMemberResponseWithNumericOwnership(data, member, true)
+}
+
+func applyOrganizationMemberResponseWithNumericOwnership(data *OrganizationMemberResourceModel, member organizationMemberAPIModel, budgetOwned bool) (bool, error) {
 	if err := validateOrganizationMember(member); err != nil {
 		return false, err
 	}
@@ -305,9 +310,17 @@ func applyOrganizationMemberResponseWithBudgetConfirmation(data *OrganizationMem
 		return true, fmt.Errorf("litellm_budget_table has a budget_id but the membership does not")
 	}
 	if budget.MaxBudget == nil {
-		data.MaxBudgetInOrganization = types.Float64Null()
+		if budgetOwned {
+			data.MaxBudgetInOrganization = types.Float64Null()
+		}
 	} else {
-		data.MaxBudgetInOrganization = types.Float64Value(*budget.MaxBudget)
+		maxBudget, err := float64FromAPI(*budget.MaxBudget)
+		if err != nil {
+			return true, fmt.Errorf("invalid numeric response field %q: %w", "litellm_budget_table.max_budget", err)
+		}
+		if budgetOwned {
+			data.MaxBudgetInOrganization = types.Float64Value(maxBudget)
+		}
 	}
 	return true, nil
 }
@@ -407,6 +420,10 @@ func (r *OrganizationMemberResource) readOrganizationMember(ctx context.Context,
 }
 
 func (r *OrganizationMemberResource) readOrganizationMemberWithBudgetConfirmation(ctx context.Context, data *OrganizationMemberResourceModel) (bool, bool, error) {
+	return r.readOrganizationMemberWithNumericOwnership(ctx, data, false)
+}
+
+func (r *OrganizationMemberResource) readOrganizationMemberWithNumericOwnership(ctx context.Context, data *OrganizationMemberResourceModel, imported bool) (bool, bool, error) {
 	userID, userEmail, err := organizationMemberIdentity(data)
 	if err != nil {
 		return false, false, err
@@ -439,7 +456,8 @@ func (r *OrganizationMemberResource) readOrganizationMemberWithBudgetConfirmatio
 		if !matchOrganizationMember(member.UserID, memberEmail, userID, userEmail) {
 			continue
 		}
-		budgetConfirmed, err := applyOrganizationMemberResponseWithBudgetConfirmation(data, member)
+		budgetOwned := imported || (!data.MaxBudgetInOrganization.IsNull() && !data.MaxBudgetInOrganization.IsUnknown())
+		budgetConfirmed, err := applyOrganizationMemberResponseWithNumericOwnership(data, member, budgetOwned)
 		if err != nil {
 			return false, budgetConfirmed, err
 		}
@@ -677,11 +695,14 @@ func (r *OrganizationMemberResource) Create(ctx context.Context, req resource.Cr
 func (r *OrganizationMemberResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	var data OrganizationMemberResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
+	importedMarker, privateDiags := req.Private.GetKey(ctx, numericImportedPrivateKey)
+	resp.Diagnostics.Append(privateDiags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	imported := string(importedMarker) == "true"
 
-	exists, err := r.readOrganizationMember(ctx, &data)
+	exists, _, err := r.readOrganizationMemberWithNumericOwnership(ctx, &data, imported)
 	if err != nil {
 		if IsAPIErrorStatus(err, http.StatusNotFound) {
 			resp.State.RemoveResource(ctx)
@@ -695,6 +716,9 @@ func (r *OrganizationMemberResource) Read(ctx context.Context, req resource.Read
 		return
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	if !resp.Diagnostics.HasError() && imported {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, nil)...)
+	}
 }
 
 func (r *OrganizationMemberResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
@@ -850,4 +874,7 @@ func (r *OrganizationMemberResource) ImportState(ctx context.Context, req resour
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("organization_id"), parts[0])...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("user_id"), parts[1])...)
+	if resp.Private != nil {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, []byte("true"))...)
+	}
 }

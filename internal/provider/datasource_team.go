@@ -165,17 +165,29 @@ func (d *TeamDataSource) Read(ctx context.Context, req datasource.ReadRequest, r
 	}
 
 	// Numeric fields
-	if maxBudget, ok := teamInfo["max_budget"].(float64); ok {
-		data.MaxBudget = types.Float64Value(maxBudget)
+	for _, field := range []struct {
+		name   string
+		target *types.Float64
+	}{
+		{"max_budget", &data.MaxBudget},
+		{"spend", &data.Spend},
+	} {
+		if err := updateFloat64FromAPI(field.target, teamInfo, true, true, field.name); err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", err.Error())
+			return
+		}
 	}
-	if spend, ok := teamInfo["spend"].(float64); ok {
-		data.Spend = types.Float64Value(spend)
-	}
-	if tpmLimit, ok := teamInfo["tpm_limit"].(float64); ok {
-		data.TPMLimit = types.Int64Value(int64(tpmLimit))
-	}
-	if rpmLimit, ok := teamInfo["rpm_limit"].(float64); ok {
-		data.RPMLimit = types.Int64Value(int64(rpmLimit))
+	for _, field := range []struct {
+		name   string
+		target *types.Int64
+	}{
+		{"tpm_limit", &data.TPMLimit},
+		{"rpm_limit", &data.RPMLimit},
+	} {
+		if err := updateInt64FromAPI(field.target, teamInfo, true, true, field.name); err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", err.Error())
+			return
+		}
 	}
 
 	// Boolean fields

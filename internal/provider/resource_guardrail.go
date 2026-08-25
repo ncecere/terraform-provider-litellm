@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -71,18 +73,21 @@ func (r *GuardrailResource) Schema(ctx context.Context, req resource.SchemaReque
 			"mode": schema.StringAttribute{
 				Description: "When to apply the guardrail. Can be a single value or JSON array (e.g., 'pre_call', 'post_call', 'during_call', '[\"pre_call\", \"post_call\"]').",
 				Required:    true,
+				Validators:  []validator.String{guardrailModeStringValidator{}},
 			},
 			"default_on": schema.BoolAttribute{
 				Description: "Whether the guardrail is enabled by default for all requests.",
 				Optional:    true,
 			},
 			"litellm_params": schema.StringAttribute{
-				Description: "JSON string containing additional provider-specific parameters for the guardrail.",
+				Description: "JSON object string containing additional provider-specific parameters for the guardrail.",
 				Optional:    true,
+				Validators:  []validator.String{jsonShapeStringValidator{shape: '{'}},
 			},
 			"guardrail_info": schema.StringAttribute{
-				Description: "JSON string containing additional metadata for the guardrail.",
+				Description: "JSON object string containing additional metadata for the guardrail.",
 				Optional:    true,
+				Validators:  []validator.String{jsonShapeStringValidator{shape: '{'}},
 			},
 			"created_at": schema.StringAttribute{
 				Description: "Timestamp when the guardrail was created.",
@@ -120,7 +125,11 @@ func (r *GuardrailResource) Create(ctx context.Context, req resource.CreateReque
 		return
 	}
 
-	guardrailReq := r.buildGuardrailRequest(ctx, &data)
+	guardrailReq, err := r.buildGuardrailRequest(ctx, &data)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Guardrail JSON", err.Error())
+		return
+	}
 
 	var result map[string]interface{}
 	if err := r.client.DoRequestWithResponse(ctx, "POST", "/guardrails", guardrailReq, &result); err != nil {
@@ -185,7 +194,11 @@ func (r *GuardrailResource) Update(ctx context.Context, req resource.UpdateReque
 	data.ID = state.ID
 	data.GuardrailID = state.GuardrailID
 
-	guardrailReq := r.buildGuardrailRequest(ctx, &data)
+	guardrailReq, err := r.buildGuardrailRequest(ctx, &data)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Guardrail JSON", err.Error())
+		return
+	}
 
 	endpoint := fmt.Sprintf("/guardrails/%s", data.GuardrailID.ValueString())
 	if err := r.client.DoRequestWithResponse(ctx, "PUT", endpoint, guardrailReq, nil); err != nil {
@@ -223,20 +236,19 @@ func (r *GuardrailResource) ImportState(ctx context.Context, req resource.Import
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("guardrail_id"), req.ID)...)
 }
 
-func (r *GuardrailResource) buildGuardrailRequest(ctx context.Context, data *GuardrailResourceModel) map[string]interface{} {
+func (r *GuardrailResource) buildGuardrailRequest(ctx context.Context, data *GuardrailResourceModel) (map[string]interface{}, error) {
 	litellmParams := map[string]interface{}{
 		"guardrail": data.Guardrail.ValueString(),
 	}
 
 	// Parse mode - can be string or array
-	modeStr := data.Mode.ValueString()
-	if len(modeStr) > 0 && modeStr[0] == '[' {
+	modeStr := strings.TrimSpace(data.Mode.ValueString())
+	if strings.HasPrefix(modeStr, "[") {
 		var modeArray []string
-		if err := json.Unmarshal([]byte(modeStr), &modeArray); err == nil {
-			litellmParams["mode"] = modeArray
-		} else {
-			litellmParams["mode"] = modeStr
+		if err := decodeJSONUseNumber([]byte(modeStr), &modeArray); err != nil {
+			return nil, fmt.Errorf("invalid mode: JSON array must contain only strings")
 		}
+		litellmParams["mode"] = modeArray
 	} else {
 		litellmParams["mode"] = modeStr
 	}
@@ -248,11 +260,12 @@ func (r *GuardrailResource) buildGuardrailRequest(ctx context.Context, data *Gua
 
 	// Merge additional litellm_params if provided
 	if !data.LitellmParams.IsNull() && !data.LitellmParams.IsUnknown() && data.LitellmParams.ValueString() != "" {
-		var additionalParams map[string]interface{}
-		if err := json.Unmarshal([]byte(data.LitellmParams.ValueString()), &additionalParams); err == nil {
-			for k, v := range additionalParams {
-				litellmParams[k] = v
-			}
+		additionalParams, err := decodeRequestJSONObject(data.LitellmParams.ValueString(), "litellm_params")
+		if err != nil {
+			return nil, err
+		}
+		for k, v := range additionalParams {
+			litellmParams[k] = v
 		}
 	}
 
@@ -267,15 +280,16 @@ func (r *GuardrailResource) buildGuardrailRequest(ctx context.Context, data *Gua
 	}
 
 	if !data.GuardrailInfo.IsNull() && !data.GuardrailInfo.IsUnknown() && data.GuardrailInfo.ValueString() != "" {
-		var guardrailInfo map[string]interface{}
-		if err := json.Unmarshal([]byte(data.GuardrailInfo.ValueString()), &guardrailInfo); err == nil {
-			guardrail["guardrail_info"] = guardrailInfo
+		guardrailInfo, err := decodeRequestJSONObject(data.GuardrailInfo.ValueString(), "guardrail_info")
+		if err != nil {
+			return nil, err
 		}
+		guardrail["guardrail_info"] = guardrailInfo
 	}
 
 	return map[string]interface{}{
 		"guardrail": guardrail,
-	}
+	}, nil
 }
 
 func removeUnconfiguredGuardrailNulls(apiValue, configuredValue interface{}) interface{} {
@@ -363,21 +377,24 @@ func (r *GuardrailResource) readGuardrail(ctx context.Context, data *GuardrailRe
 		// fields that the user omitted; retain explicit nulls and non-null additions
 		// so real server-side drift remains visible.
 		if !data.LitellmParams.IsNull() && !data.LitellmParams.IsUnknown() {
-			var userParams map[string]interface{}
-			if err := json.Unmarshal([]byte(data.LitellmParams.ValueString()), &userParams); err == nil {
-				otherParams := make(map[string]interface{})
-				for k, configuredValue := range userParams {
-					if k != "guardrail" && k != "mode" && k != "default_on" {
-						if apiValue, exists := litellmParams[k]; exists {
-							otherParams[k] = removeUnconfiguredGuardrailNulls(apiValue, configuredValue)
-						}
+			userParams, err := decodeRequestJSONObject(data.LitellmParams.ValueString(), "litellm_params")
+			if err != nil {
+				return err
+			}
+			otherParams := make(map[string]interface{})
+			for k, configuredValue := range userParams {
+				if k != "guardrail" && k != "mode" && k != "default_on" {
+					if apiValue, exists := litellmParams[k]; exists {
+						otherParams[k] = removeUnconfiguredGuardrailNulls(apiValue, configuredValue)
 					}
 				}
-				if len(otherParams) > 0 {
-					if jsonBytes, err := json.Marshal(otherParams); err == nil {
-						data.LitellmParams = types.StringValue(string(jsonBytes))
-					}
+			}
+			if len(otherParams) > 0 {
+				jsonBytes, err := json.Marshal(otherParams)
+				if err != nil {
+					return fmt.Errorf("invalid litellm_params response: cannot encode JSON")
 				}
+				data.LitellmParams = types.StringValue(string(jsonBytes))
 			}
 		}
 	}

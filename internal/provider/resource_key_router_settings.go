@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"reflect"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	datasourceschema "github.com/hashicorp/terraform-plugin-framework/datasource/schema"
@@ -151,8 +153,8 @@ func (v jsonShapeStringValidator) ValidateString(ctx context.Context, req valida
 		return
 	}
 	var decoded interface{}
-	if err := json.Unmarshal([]byte(req.ConfigValue.ValueString()), &decoded); err != nil {
-		resp.Diagnostics.AddAttributeError(req.Path, "Invalid Router Settings JSON", fmt.Sprintf("Value must be valid JSON: %s", err))
+	if err := decodeJSONUseNumber([]byte(req.ConfigValue.ValueString()), &decoded); err != nil {
+		resp.Diagnostics.AddAttributeError(req.Path, "Invalid JSON", fmt.Sprintf("Value must be valid JSON: %s", err))
 		return
 	}
 	valid := false
@@ -162,13 +164,13 @@ func (v jsonShapeStringValidator) ValidateString(ctx context.Context, req valida
 		_, valid = decoded.([]interface{})
 	}
 	if !valid {
-		resp.Diagnostics.AddAttributeError(req.Path, "Invalid Router Settings JSON Shape", v.Description(ctx))
+		resp.Diagnostics.AddAttributeError(req.Path, "Invalid JSON Shape", v.Description(ctx))
 	}
 }
 
 func decodeRouterSettingsJSON(value types.String) (interface{}, error) {
 	var decoded interface{}
-	if err := json.Unmarshal([]byte(value.ValueString()), &decoded); err != nil {
+	if err := decodeJSONUseNumber([]byte(value.ValueString()), &decoded); err != nil {
 		return nil, err
 	}
 	return decoded, nil
@@ -252,10 +254,60 @@ func normalizedRouterSettingsJSON(value interface{}) (interface{}, error) {
 		return nil, err
 	}
 	var normalized interface{}
-	if err := json.Unmarshal(encoded, &normalized); err != nil {
+	if err := decodeJSONUseNumber(encoded, &normalized); err != nil {
 		return nil, err
 	}
-	return normalized, nil
+	return canonicalizeRouterSettingsNumbers(normalized), nil
+}
+
+type canonicalRouterSettingsNumber struct {
+	negative bool
+	digits   string
+	scale    string
+}
+
+func canonicalizeRouterSettingsNumbers(value interface{}) interface{} {
+	switch typed := value.(type) {
+	case json.Number:
+		parts := apiJSONNumberPattern.FindStringSubmatch(typed.String())
+		if parts == nil {
+			return typed
+		}
+		digits := strings.TrimLeft(parts[2]+parts[3], "0")
+		if digits == "" {
+			return canonicalRouterSettingsNumber{digits: "0", scale: "0"}
+		}
+		trimmedDigits := strings.TrimRight(digits, "0")
+		trailingZeros := len(digits) - len(trimmedDigits)
+
+		exponent := new(big.Int)
+		if parts[4] != "" {
+			if _, ok := exponent.SetString(parts[4], 10); !ok {
+				return typed
+			}
+		}
+		exponent.Sub(exponent, big.NewInt(int64(len(parts[3]))))
+		exponent.Add(exponent, big.NewInt(int64(trailingZeros)))
+		return canonicalRouterSettingsNumber{
+			negative: parts[1] == "-",
+			digits:   trimmedDigits,
+			scale:    exponent.String(),
+		}
+	case map[string]interface{}:
+		result := make(map[string]interface{}, len(typed))
+		for name, nested := range typed {
+			result[name] = canonicalizeRouterSettingsNumbers(nested)
+		}
+		return result
+	case []interface{}:
+		result := make([]interface{}, len(typed))
+		for index, nested := range typed {
+			result[index] = canonicalizeRouterSettingsNumbers(nested)
+		}
+		return result
+	default:
+		return value
+	}
 }
 
 // keyRouterSettingsMatchAPI compares the complete owned document. A nil or
@@ -292,7 +344,7 @@ func routerSettingsMapFromAPI(raw interface{}) (map[string]interface{}, bool, er
 			return nil, false, nil
 		}
 		var decoded interface{}
-		if err := json.Unmarshal([]byte(value), &decoded); err != nil {
+		if err := decodeJSONUseNumber([]byte(value), &decoded); err != nil {
 			return nil, false, fmt.Errorf("decode router_settings response: %w", err)
 		}
 		raw = decoded
@@ -311,40 +363,31 @@ func jsonStringFromRouterSettingsAPI(raw interface{}, current attr.Value) (types
 	}
 	if existing, ok := current.(types.String); ok && !existing.IsNull() && !existing.IsUnknown() {
 		var configured interface{}
-		if json.Unmarshal([]byte(existing.ValueString()), &configured) == nil && reflect.DeepEqual(configured, raw) {
-			return existing, nil
+		if decodeJSONUseNumber([]byte(existing.ValueString()), &configured) == nil {
+			normalizedConfigured, configuredErr := normalizedRouterSettingsJSON(configured)
+			normalizedRaw, normalizeErr := normalizedRouterSettingsJSON(raw)
+			if configuredErr == nil && normalizeErr == nil && reflect.DeepEqual(normalizedConfigured, normalizedRaw) {
+				return existing, nil
+			}
 		}
 	}
 	return types.StringValue(string(canonical)), nil
 }
 
 func int64FromRouterSettingsAPI(raw interface{}) (types.Int64, error) {
-	switch value := raw.(type) {
-	case float64:
-		if value != float64(int64(value)) {
-			return types.Int64Null(), fmt.Errorf("expected an integer, got %v", value)
-		}
-		return types.Int64Value(int64(value)), nil
-	case int:
-		return types.Int64Value(int64(value)), nil
-	case int64:
-		return types.Int64Value(value), nil
-	default:
-		return types.Int64Null(), fmt.Errorf("expected an integer, got %T", raw)
+	value, err := exactInt64FromAPI(raw)
+	if err != nil {
+		return types.Int64Null(), err
 	}
+	return types.Int64Value(value), nil
 }
 
 func float64FromRouterSettingsAPI(raw interface{}) (types.Float64, error) {
-	switch value := raw.(type) {
-	case float64:
-		return types.Float64Value(value), nil
-	case int:
-		return types.Float64Value(float64(value)), nil
-	case int64:
-		return types.Float64Value(float64(value)), nil
-	default:
-		return types.Float64Null(), fmt.Errorf("expected a number, got %T", raw)
+	value, err := float64FromAPI(raw)
+	if err != nil {
+		return types.Float64Null(), err
 	}
+	return types.Float64Value(value), nil
 }
 
 func retryPolicyFromAPI(raw interface{}) (types.Object, error) {

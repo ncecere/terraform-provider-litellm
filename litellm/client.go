@@ -162,13 +162,17 @@ func (c *Client) parseKeyResponse(resp map[string]interface{}) (*Key, error) {
 				}
 			}
 		case "spend":
-			if f, ok := v.(float64); ok {
-				createdKey.Spend = f
+			value, err := legacyFloat64FromJSON(v)
+			if err != nil {
+				return nil, fmt.Errorf("invalid numeric key response field spend")
 			}
+			createdKey.Spend = value
 		case "max_budget":
-			if f, ok := v.(float64); ok {
-				createdKey.MaxBudget = f
+			value, err := legacyFloat64FromJSON(v)
+			if err != nil {
+				return nil, fmt.Errorf("invalid numeric key response field max_budget")
 			}
+			createdKey.MaxBudget = value
 		case "user_id":
 			if s, ok := v.(string); ok {
 				createdKey.UserID = s
@@ -178,29 +182,37 @@ func (c *Client) parseKeyResponse(resp map[string]interface{}) (*Key, error) {
 				createdKey.TeamID = s
 			}
 		case "max_parallel_requests":
-			if i, ok := v.(float64); ok {
-				createdKey.MaxParallelRequests = int(i)
+			value, err := legacyIntFromJSON(v)
+			if err != nil {
+				return nil, fmt.Errorf("invalid numeric key response field max_parallel_requests")
 			}
+			createdKey.MaxParallelRequests = value
 		case "metadata":
 			if m, ok := v.(map[string]interface{}); ok {
-				createdKey.Metadata = m
+				createdKey.Metadata = legacyStringMapFromJSON(m)
 			}
 		case "tpm_limit":
-			if i, ok := v.(float64); ok {
-				createdKey.TPMLimit = int(i)
+			value, err := legacyIntFromJSON(v)
+			if err != nil {
+				return nil, fmt.Errorf("invalid numeric key response field tpm_limit")
 			}
+			createdKey.TPMLimit = value
 		case "rpm_limit":
-			if i, ok := v.(float64); ok {
-				createdKey.RPMLimit = int(i)
+			value, err := legacyIntFromJSON(v)
+			if err != nil {
+				return nil, fmt.Errorf("invalid numeric key response field rpm_limit")
 			}
+			createdKey.RPMLimit = value
 		case "budget_duration":
 			if s, ok := v.(string); ok {
 				createdKey.BudgetDuration = s
 			}
 		case "soft_budget":
-			if f, ok := v.(float64); ok {
-				createdKey.SoftBudget = f
+			value, err := legacyFloat64FromJSON(v)
+			if err != nil {
+				return nil, fmt.Errorf("invalid numeric key response field soft_budget")
 			}
+			createdKey.SoftBudget = value
 		case "key_alias":
 			if s, ok := v.(string); ok {
 				createdKey.KeyAlias = s
@@ -211,28 +223,46 @@ func (c *Client) parseKeyResponse(resp map[string]interface{}) (*Key, error) {
 			}
 		case "aliases":
 			if m, ok := v.(map[string]interface{}); ok {
-				createdKey.Aliases = m
+				createdKey.Aliases = legacyStringMapFromJSON(m)
 			}
 		case "config":
 			if m, ok := v.(map[string]interface{}); ok {
-				createdKey.Config = m
+				createdKey.Config = legacyStringMapFromJSON(m)
 			}
 		case "permissions":
 			if m, ok := v.(map[string]interface{}); ok {
-				createdKey.Permissions = m
+				createdKey.Permissions = legacyStringMapFromJSON(m)
 			}
 		case "model_max_budget":
-			if m, ok := v.(map[string]interface{}); ok {
-				createdKey.ModelMaxBudget = m
+			m, ok := v.(map[string]interface{})
+			if !ok {
+				return nil, fmt.Errorf("invalid numeric key response field model_max_budget")
 			}
+			values, err := legacyFloatMapFromJSON(m)
+			if err != nil {
+				return nil, fmt.Errorf("invalid numeric key response field model_max_budget")
+			}
+			createdKey.ModelMaxBudget = values
 		case "model_rpm_limit":
-			if m, ok := v.(map[string]interface{}); ok {
-				createdKey.ModelRPMLimit = m
+			m, ok := v.(map[string]interface{})
+			if !ok {
+				return nil, fmt.Errorf("invalid numeric key response field model_rpm_limit")
 			}
+			values, err := legacyIntMapFromJSON(m)
+			if err != nil {
+				return nil, fmt.Errorf("invalid numeric key response field model_rpm_limit")
+			}
+			createdKey.ModelRPMLimit = values
 		case "model_tpm_limit":
-			if m, ok := v.(map[string]interface{}); ok {
-				createdKey.ModelTPMLimit = m
+			m, ok := v.(map[string]interface{})
+			if !ok {
+				return nil, fmt.Errorf("invalid numeric key response field model_tpm_limit")
 			}
+			values, err := legacyIntMapFromJSON(m)
+			if err != nil {
+				return nil, fmt.Errorf("invalid numeric key response field model_tpm_limit")
+			}
+			createdKey.ModelTPMLimit = values
 		case "guardrails":
 			if guardrails, ok := v.([]interface{}); ok {
 				createdKey.Guardrails = make([]string, len(guardrails))
@@ -305,7 +335,7 @@ func (c *Client) sendRequest(method, path string, body interface{}) (map[string]
 	}
 
 	var result map[string]interface{}
-	if err := json.Unmarshal(bodyBytes, &result); err != nil {
+	if err := decodeJSONUseNumber(bodyBytes, &result); err != nil {
 		if method == "POST" && (len(bodyBytes) == 0 || string(bodyBytes) == "null") {
 			return make(map[string]interface{}), nil
 		}

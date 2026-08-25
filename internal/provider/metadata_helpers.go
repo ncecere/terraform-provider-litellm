@@ -23,7 +23,7 @@ func convertMetadataToNative(metadata map[string]string) map[string]interface{} 
 		trimmed := strings.TrimSpace(v)
 		if strings.HasPrefix(trimmed, "[") || strings.HasPrefix(trimmed, "{") {
 			var parsed interface{}
-			if err := json.Unmarshal([]byte(v), &parsed); err == nil {
+			if err := decodeJSONUseNumber([]byte(v), &parsed); err == nil {
 				result[k] = parsed
 				continue
 			}
@@ -58,7 +58,7 @@ func metadataValueToStringPreservingMasked(apiValue interface{}, configured stri
 	if apiString, ok := apiValue.(string); ok {
 		if isMaskedMetadataAPIString(apiString) {
 			var configuredValue interface{}
-			if err := json.Unmarshal([]byte(configured), &configuredValue); err == nil {
+			if err := decodeJSONUseNumber([]byte(configured), &configuredValue); err == nil {
 				switch configuredValue.(type) {
 				case map[string]interface{}, []interface{}:
 					// A container becoming a masked scalar is structural drift, not
@@ -72,10 +72,16 @@ func metadataValueToStringPreservingMasked(apiValue interface{}, configured stri
 	}
 
 	var configuredValue interface{}
-	if err := json.Unmarshal([]byte(configured), &configuredValue); err != nil {
+	if err := decodeJSONUseNumber([]byte(configured), &configuredValue); err != nil {
 		return metadataValueToString(apiValue)
 	}
-	return metadataValueToString(restoreMaskedMetadataLeaves(apiValue, configuredValue))
+	observed := metadataValueToString(restoreMaskedMetadataLeaves(apiValue, configuredValue))
+	if jsonSemanticallyEqual(configured, observed) {
+		// Preserve the configured spelling (and therefore Terraform marks) when
+		// only JSON whitespace, key order, or exact number notation differs.
+		return configured
+	}
+	return observed
 }
 
 func isMaskedMetadataAPIString(value string) bool {

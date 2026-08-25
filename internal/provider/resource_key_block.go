@@ -430,7 +430,10 @@ func (r *KeyBlockResource) UpgradeState(ctx context.Context) map[int64]resource.
 
 				var rawID string
 				if raw, ok := priorState["id"]; ok {
-					_ = json.Unmarshal(raw, &rawID)
+					if err := json.Unmarshal(raw, &rawID); err != nil {
+						resp.Diagnostics.AddError("Unable to Upgrade Key Block State", "The prior state does not contain a valid key identity.")
+						return
+					}
 				}
 				if rawID == "" {
 					resp.Diagnostics.AddError("Unable to Upgrade Key Block State", "The prior state does not contain a valid key identity.")
@@ -443,7 +446,12 @@ func (r *KeyBlockResource) UpgradeState(ctx context.Context) map[int64]resource.
 					return
 				}
 				tflog.Info(ctx, "Upgrading litellm_key_block state from v0 to v1 by normalizing the resource ID")
-				priorState["id"], _ = json.Marshal(identity.managementID)
+				encodedID, err := json.Marshal(identity.managementID)
+				if err != nil {
+					resp.Diagnostics.AddError("Unable to Upgrade Key Block State", "The normalized key identity could not be encoded.")
+					return
+				}
+				priorState["id"] = encodedID
 				if _, ok := priorState["key_hash"]; !ok {
 					priorState["key_hash"] = json.RawMessage("null")
 				}

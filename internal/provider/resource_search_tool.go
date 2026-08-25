@@ -10,6 +10,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -84,8 +85,9 @@ func (r *SearchToolResource) Schema(ctx context.Context, req resource.SchemaRequ
 				Optional:    true,
 			},
 			"search_tool_info": schema.StringAttribute{
-				Description: "Additional search tool configuration as a JSON string.",
+				Description: "Additional search tool configuration as a JSON object string.",
 				Optional:    true,
+				Validators:  []validator.String{jsonShapeStringValidator{shape: '{'}},
 			},
 		},
 	}
@@ -116,7 +118,11 @@ func (r *SearchToolResource) Create(ctx context.Context, req resource.CreateRequ
 		return
 	}
 
-	searchToolBody := r.buildSearchToolRequest(ctx, &data)
+	searchToolBody, err := r.buildSearchToolRequest(ctx, &data)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Search Tool JSON", err.Error())
+		return
+	}
 	// API expects {"search_tool": {...}}
 	searchReq := map[string]interface{}{
 		"search_tool": searchToolBody,
@@ -150,11 +156,14 @@ func (r *SearchToolResource) Read(ctx context.Context, req resource.ReadRequest,
 	var data SearchToolResourceModel
 
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
+	importedMarker, privateDiags := req.Private.GetKey(ctx, numericImportedPrivateKey)
+	resp.Diagnostics.Append(privateDiags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	imported := string(importedMarker) == "true"
 
-	if err := r.readSearchTool(ctx, &data); err != nil {
+	if err := r.readSearchToolWithNumericOwnership(ctx, &data, imported); err != nil {
 		if IsNotFoundError(err) {
 			resp.State.RemoveResource(ctx)
 			return
@@ -164,6 +173,9 @@ func (r *SearchToolResource) Read(ctx context.Context, req resource.ReadRequest,
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	if !resp.Diagnostics.HasError() && imported {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, nil)...)
+	}
 }
 
 func (r *SearchToolResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
@@ -184,7 +196,11 @@ func (r *SearchToolResource) Update(ctx context.Context, req resource.UpdateRequ
 	data.ID = state.ID
 	data.SearchToolID = state.SearchToolID
 
-	searchToolBody := r.buildSearchToolRequest(ctx, &data)
+	searchToolBody, err := r.buildSearchToolRequest(ctx, &data)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Search Tool JSON", err.Error())
+		return
+	}
 	searchToolBody["search_tool_id"] = data.SearchToolID.ValueString()
 	// API expects {"search_tool": {...}}
 	searchReq := map[string]interface{}{
@@ -230,9 +246,12 @@ func (r *SearchToolResource) Delete(ctx context.Context, req resource.DeleteRequ
 func (r *SearchToolResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("search_tool_id"), req.ID)...)
+	if resp.Private != nil {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, []byte("true"))...)
+	}
 }
 
-func (r *SearchToolResource) buildSearchToolRequest(ctx context.Context, data *SearchToolResourceModel) map[string]interface{} {
+func (r *SearchToolResource) buildSearchToolRequest(ctx context.Context, data *SearchToolResourceModel) (map[string]interface{}, error) {
 	searchReq := map[string]interface{}{
 		"search_tool_name": data.SearchToolName.ValueString(),
 	}
@@ -263,18 +282,21 @@ func (r *SearchToolResource) buildSearchToolRequest(ctx context.Context, data *S
 	searchReq["litellm_params"] = litellmParams
 
 	if !data.SearchToolInfo.IsNull() && !data.SearchToolInfo.IsUnknown() && data.SearchToolInfo.ValueString() != "" {
-		var searchToolInfo map[string]interface{}
-		if err := json.Unmarshal([]byte(data.SearchToolInfo.ValueString()), &searchToolInfo); err == nil {
-			searchReq["search_tool_info"] = searchToolInfo
-		} else {
-			searchReq["search_tool_info"] = data.SearchToolInfo.ValueString()
+		searchToolInfo, err := decodeRequestJSONObject(data.SearchToolInfo.ValueString(), "search_tool_info")
+		if err != nil {
+			return nil, err
 		}
+		searchReq["search_tool_info"] = searchToolInfo
 	}
 
-	return searchReq
+	return searchReq, nil
 }
 
 func (r *SearchToolResource) readSearchTool(ctx context.Context, data *SearchToolResourceModel) error {
+	return r.readSearchToolWithNumericOwnership(ctx, data, false)
+}
+
+func (r *SearchToolResource) readSearchToolWithNumericOwnership(ctx context.Context, data *SearchToolResourceModel, imported bool) error {
 	searchToolID := data.SearchToolID.ValueString()
 	if searchToolID == "" {
 		searchToolID = data.ID.ValueString()
@@ -285,6 +307,21 @@ func (r *SearchToolResource) readSearchTool(ctx context.Context, data *SearchToo
 	var result map[string]interface{}
 	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
 		return err
+	}
+	if err := validateImportedObjectIdentity(imported, "search tool", result, "search_tool_id", searchToolID); err != nil {
+		return err
+	}
+	if err := requireImportedStringField(imported, "search tool", result, "search_tool_name"); err != nil {
+		return err
+	}
+	if imported {
+		litellmParams, err := requireImportedObjectField(true, "search tool", result, "litellm_params")
+		if err != nil {
+			return err
+		}
+		if err := requireImportedStringField(true, "search tool", litellmParams, "search_provider"); err != nil {
+			return err
+		}
 	}
 
 	// Update fields from response
@@ -305,11 +342,13 @@ func (r *SearchToolResource) readSearchTool(ctx context.Context, data *SearchToo
 		if apiBase, ok := litellmParams["api_base"].(string); ok {
 			data.APIBase = types.StringValue(apiBase)
 		}
-		if timeout, ok := litellmParams["timeout"].(float64); ok {
-			data.Timeout = types.Float64Value(timeout)
+		timeoutOwned := imported || (!data.Timeout.IsNull() && !data.Timeout.IsUnknown())
+		if err := updateFloat64FromAPI(&data.Timeout, litellmParams, timeoutOwned, timeoutOwned, "timeout"); err != nil {
+			return err
 		}
-		if maxRetries, ok := litellmParams["max_retries"].(float64); ok {
-			data.MaxRetries = types.Int64Value(int64(maxRetries))
+		retriesOwned := imported || (!data.MaxRetries.IsNull() && !data.MaxRetries.IsUnknown())
+		if err := updateInt64FromAPI(&data.MaxRetries, litellmParams, retriesOwned, retriesOwned, "max_retries"); err != nil {
+			return err
 		}
 		// Note: API key is not read back for security reasons
 	}

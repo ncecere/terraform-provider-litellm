@@ -241,24 +241,39 @@ func (d *KeyDataSource) Read(ctx context.Context, req datasource.ReadRequest, re
 		data.BudgetDuration = types.StringValue(budgetDuration)
 	}
 
-	// Numeric fields
-	if maxBudget, ok := info["max_budget"].(float64); ok {
-		data.MaxBudget = types.Float64Value(maxBudget)
+	// Budget values come from the v1.98 budget relation, with historical
+	// flattened /key/info responses retained as a compatibility fallback.
+	for _, field := range []struct {
+		name   string
+		target *types.Float64
+	}{
+		{"max_budget", &data.MaxBudget},
+		{"soft_budget", &data.SoftBudget},
+	} {
+		if err := updateFloat64FromAPIPaths(field.target, info, true, true,
+			[]string{"litellm_budget_table", field.name},
+			[]string{field.name},
+		); err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", err.Error())
+			return
+		}
 	}
-	if spend, ok := info["spend"].(float64); ok {
-		data.Spend = types.Float64Value(spend)
+	if err := updateFloat64FromAPI(&data.Spend, info, true, true, "spend"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
 	}
-	if softBudget, ok := info["soft_budget"].(float64); ok {
-		data.SoftBudget = types.Float64Value(softBudget)
-	}
-	if maxParallel, ok := info["max_parallel_requests"].(float64); ok {
-		data.MaxParallelRequests = types.Int64Value(int64(maxParallel))
-	}
-	if tpmLimit, ok := info["tpm_limit"].(float64); ok {
-		data.TPMLimit = types.Int64Value(int64(tpmLimit))
-	}
-	if rpmLimit, ok := info["rpm_limit"].(float64); ok {
-		data.RPMLimit = types.Int64Value(int64(rpmLimit))
+	for _, field := range []struct {
+		name   string
+		target *types.Int64
+	}{
+		{"max_parallel_requests", &data.MaxParallelRequests},
+		{"tpm_limit", &data.TPMLimit},
+		{"rpm_limit", &data.RPMLimit},
+	} {
+		if err := updateInt64FromAPI(field.target, info, true, true, field.name); err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", err.Error())
+			return
+		}
 	}
 
 	// Boolean fields

@@ -447,11 +447,14 @@ func TestLimitAndRoleRequestBuildersPreserveValidatedLiterals(t *testing.T) {
 		t.Errorf("key rpm_limit_type = %#v, want guaranteed_throughput", got)
 	}
 
-	teamRequest := (&TeamResource{}).buildTeamRequest(ctx, &TeamResourceModel{
+	teamRequest, err := (&TeamResource{}).buildTeamRequest(ctx, &TeamResourceModel{
 		TeamAlias:    types.StringValue("contract-team"),
 		TPMLimitType: types.StringValue("best_effort_throughput"),
 		RPMLimitType: types.StringValue("guaranteed_throughput"),
 	}, "team-contract")
+	if err != nil {
+		t.Fatalf("build team request: %v", err)
+	}
 	if got := teamRequest["tpm_limit_type"]; got != "best_effort_throughput" {
 		t.Errorf("team tpm_limit_type = %#v, want best_effort_throughput", got)
 	}
