@@ -31,6 +31,6 @@ This data source has no required arguments.
 ## Attribute Reference
 
 * `id` - Placeholder identifier.
-* `access_groups` - List of access group objects, each containing:
+* `access_groups` - List of access group objects sorted by access-group name, each containing:
   * `access_group` - The access group name.
-  * `model_names` - List of model names in this access group.
+  * `model_names` - Sorted, deduplicated list of model names in this access group. LiteLLM does not return deployment-level `model_ids` from this endpoint.

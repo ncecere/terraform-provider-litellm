@@ -27,4 +27,4 @@ resource "litellm_team" "premium_team" {
 ## Attribute Reference
 
 * `id` - The unique identifier of the access group.
-* `model_names` - List of model names included in this access group.
+* `model_names` - Sorted, deduplicated list of model names included in this access group. LiteLLM's read endpoint does not expose deployment-level `model_ids`.

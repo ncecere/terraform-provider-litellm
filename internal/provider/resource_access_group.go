@@ -3,13 +3,15 @@ package provider
 import (
 	"context"
 	"fmt"
+	"sort"
 
-	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -53,9 +55,14 @@ func (r *AccessGroupResource) Schema(ctx context.Context, req resource.SchemaReq
 				},
 			},
 			"model_names": schema.ListAttribute{
-				Description: "List of model names (model_name from litellm_model) to include in this access group.",
+				Description: "Non-empty list of model names (model_name from litellm_model) to include in this access group. Membership order and duplicate entries are not significant.",
 				Required:    true,
 				ElementType: types.StringType,
+				Validators: []validator.List{
+					listvalidator.IsRequired(),
+					listvalidator.SizeAtLeast(1),
+					listvalidator.NoNullValues(),
+				},
 			},
 		},
 	}
@@ -86,8 +93,11 @@ func (r *AccessGroupResource) Create(ctx context.Context, req resource.CreateReq
 		return
 	}
 
-	var modelNames []string
-	data.ModelNames.ElementsAs(ctx, &modelNames, false)
+	modelNames, err := accessGroupModelNamesForRequest(data.ModelNames)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Model Names", err.Error())
+		return
+	}
 
 	createReq := map[string]interface{}{
 		"access_group": data.AccessGroup.ValueString(),
@@ -148,8 +158,11 @@ func (r *AccessGroupResource) Update(ctx context.Context, req resource.UpdateReq
 	data.ID = state.ID
 	data.AccessGroup = state.AccessGroup
 
-	var modelNames []string
-	data.ModelNames.ElementsAs(ctx, &modelNames, false)
+	modelNames, err := accessGroupModelNamesForRequest(data.ModelNames)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Model Names", err.Error())
+		return
+	}
 
 	updateReq := map[string]interface{}{
 		"model_names": modelNames,
@@ -192,6 +205,112 @@ func (r *AccessGroupResource) ImportState(ctx context.Context, req resource.Impo
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("access_group"), req.ID)...)
 }
 
+func accessGroupModelNamesForRequest(modelNames types.List) ([]string, error) {
+	if modelNames.IsNull() {
+		return nil, fmt.Errorf("model_names must not be null")
+	}
+	if modelNames.IsUnknown() {
+		return nil, fmt.Errorf("model_names must be known before it can be sent to LiteLLM")
+	}
+	if len(modelNames.Elements()) == 0 {
+		return nil, fmt.Errorf("model_names must contain at least one model name")
+	}
+
+	names := make([]string, 0, len(modelNames.Elements()))
+	for index, element := range modelNames.Elements() {
+		name, ok := element.(types.String)
+		if !ok {
+			return nil, fmt.Errorf("model_names[%d] must be a string, got %T", index, element)
+		}
+		if name.IsNull() {
+			return nil, fmt.Errorf("model_names[%d] must not be null", index)
+		}
+		if name.IsUnknown() {
+			return nil, fmt.Errorf("model_names[%d] must be known before it can be sent to LiteLLM", index)
+		}
+		names = append(names, name.ValueString())
+	}
+
+	return canonicalAccessGroupModelNames(names)
+}
+
+func canonicalAccessGroupModelNames(raw interface{}) ([]string, error) {
+	var names []string
+	switch values := raw.(type) {
+	case nil:
+		names = []string{}
+	case []string:
+		names = append([]string(nil), values...)
+	case []interface{}:
+		names = make([]string, 0, len(values))
+		for index, value := range values {
+			name, ok := value.(string)
+			if !ok {
+				return nil, fmt.Errorf("model_names[%d] must be a string, got %T", index, value)
+			}
+			names = append(names, name)
+		}
+	default:
+		return nil, fmt.Errorf("model_names must be a list of strings, got %T", raw)
+	}
+
+	sort.Strings(names)
+	unique := names[:0]
+	for _, name := range names {
+		if len(unique) == 0 || name != unique[len(unique)-1] {
+			unique = append(unique, name)
+		}
+	}
+	return unique, nil
+}
+
+func reconcileAccessGroupModelNames(ctx context.Context, current types.List, raw interface{}) (types.List, error) {
+	remote, err := canonicalAccessGroupModelNames(raw)
+	if err != nil {
+		return types.ListNull(types.StringType), err
+	}
+	if accessGroupModelMembershipEqual(current, remote) {
+		return current, nil
+	}
+
+	result, diagnostics := types.ListValueFrom(ctx, types.StringType, remote)
+	if diagnostics.HasError() {
+		return types.ListNull(types.StringType), fmt.Errorf("failed to convert model_names: %v", diagnostics.Errors())
+	}
+	return result, nil
+}
+
+func accessGroupModelMembershipEqual(current types.List, canonicalRemote []string) bool {
+	if current.IsNull() || current.IsUnknown() {
+		return false
+	}
+
+	currentNames := make([]string, 0, len(current.Elements()))
+	for _, element := range current.Elements() {
+		name, ok := element.(types.String)
+		if !ok || name.IsNull() || name.IsUnknown() {
+			return false
+		}
+		currentNames = append(currentNames, name.ValueString())
+	}
+	sort.Strings(currentNames)
+	uniqueCurrent := currentNames[:0]
+	for _, name := range currentNames {
+		if len(uniqueCurrent) == 0 || name != uniqueCurrent[len(uniqueCurrent)-1] {
+			uniqueCurrent = append(uniqueCurrent, name)
+		}
+	}
+	if len(uniqueCurrent) != len(canonicalRemote) {
+		return false
+	}
+	for index := range uniqueCurrent {
+		if uniqueCurrent[index] != canonicalRemote[index] {
+			return false
+		}
+	}
+	return true
+}
+
 func (r *AccessGroupResource) readAccessGroup(ctx context.Context, data *AccessGroupResourceModel) error {
 	accessGroup := data.AccessGroup.ValueString()
 	if accessGroup == "" {
@@ -211,15 +330,12 @@ func (r *AccessGroupResource) readAccessGroup(ctx context.Context, data *AccessG
 		data.ID = types.StringValue(ag)
 	}
 
-	// Handle model_names list
-	if modelNames, ok := result["model_names"].([]interface{}); ok {
-		modelsList := make([]attr.Value, len(modelNames))
-		for i, m := range modelNames {
-			if str, ok := m.(string); ok {
-				modelsList[i] = types.StringValue(str)
-			}
+	if rawModelNames, ok := result["model_names"]; ok {
+		modelNames, err := reconcileAccessGroupModelNames(ctx, data.ModelNames, rawModelNames)
+		if err != nil {
+			return fmt.Errorf("invalid model_names response: %w", err)
 		}
-		data.ModelNames, _ = types.ListValue(types.StringType, modelsList)
+		data.ModelNames = modelNames
 	}
 
 	return nil

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -43,7 +42,7 @@ func (d *AccessGroupDataSource) Schema(ctx context.Context, req datasource.Schem
 				Required:    true,
 			},
 			"model_names": schema.ListAttribute{
-				Description: "List of model names in this access group.",
+				Description: "Sorted, deduplicated list of model names in this access group.",
 				Computed:    true,
 				ElementType: types.StringType,
 			},
@@ -88,15 +87,13 @@ func (d *AccessGroupDataSource) Read(ctx context.Context, req datasource.ReadReq
 	// Populate the data model
 	data.ID = types.StringValue(accessGroup)
 
-	// Handle model_names list
-	if modelNames, ok := result["model_names"].([]interface{}); ok {
-		modelsList := make([]attr.Value, len(modelNames))
-		for i, m := range modelNames {
-			if str, ok := m.(string); ok {
-				modelsList[i] = types.StringValue(str)
-			}
+	if rawModelNames, ok := result["model_names"]; ok {
+		modelNames, err := reconcileAccessGroupModelNames(ctx, types.ListNull(types.StringType), rawModelNames)
+		if err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", fmt.Sprintf("Unable to decode model_names: %s", err))
+			return
 		}
-		data.ModelNames, _ = types.ListValue(types.StringType, modelsList)
+		data.ModelNames = modelNames
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
