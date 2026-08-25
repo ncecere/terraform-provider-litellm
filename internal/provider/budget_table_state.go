@@ -106,16 +106,6 @@ func updateBudgetInt64(target *types.Int64, table budgetTableState, clearAbsent,
 	return nil
 }
 
-func updateBudgetFloat64Map(target *types.Map, table budgetTableState, clearAbsent, adoptPresent bool, field string) error {
-	if table.presence == apiValuePresent {
-		return updateFloat64MapFromAPI(target, table.object, clearAbsent, adoptPresent, field)
-	}
-	if clearAbsent || target.IsUnknown() {
-		*target = types.MapNull(types.Float64Type)
-	}
-	return nil
-}
-
 func updateBudgetDuration(target *types.String, table budgetTableState, clearAbsent, adoptPresent bool) error {
 	value, presence, err := table.value("budget_duration")
 	if err != nil {

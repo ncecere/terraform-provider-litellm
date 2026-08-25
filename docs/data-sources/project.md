@@ -35,9 +35,8 @@ output "project_budget" {
 - `budget_duration`
 - `tpm_limit` / `rpm_limit`
 - `max_parallel_requests`
-- `model_max_budget`
 - `model_rpm_limit` / `model_tpm_limit`
 - `created_at` / `updated_at`
 - `created_by` / `updated_by`
 
-Budget values come only from `litellm_budget_table`. A missing or null relation produces null budget attributes; malformed relations and inconsistent budget IDs fail the read. Exact integer values above `2^53` are preserved.
+Representable budget values come only from `litellm_budget_table`. Structured `model_max_budget` remains deferred rather than being flattened into the incompatible legacy resource type. A missing or null relation produces null budget attributes; malformed relations and inconsistent budget IDs fail the read. Exact integer values above `2^53` are preserved.

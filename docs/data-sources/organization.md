@@ -33,7 +33,6 @@ output "organization_budget" {
 - `max_budget` / `soft_budget` - Hard and soft budget limits.
 - `tpm_limit` / `rpm_limit` - Global rate limits.
 - `max_parallel_requests` - Concurrent request limit.
-- `model_max_budget` - Legacy per-model budget map shape.
 - `budget_duration` - Reset duration.
 - `model_rpm_limit` / `model_tpm_limit` - Exact per-model integer limits stored in metadata.
 - `metadata` - Metadata excluding dedicated per-model rate maps.
@@ -42,4 +41,4 @@ output "organization_budget" {
 - `blocked` - Compatibility value `false`; v1.98 has no organization blocked column.
 - `tags` - Compatibility empty list; v1.98 has no organization tags column.
 
-Budget values come only from `litellm_budget_table`. A missing or null relation produces null budget attributes, while malformed relations and inconsistent budget IDs fail the read.
+Representable budget values come only from `litellm_budget_table`. Structured `model_max_budget` is intentionally deferred because v1.98's GenericBudgetConfig values cannot be represented accurately as `map(float64)`. A missing or null relation produces null budget attributes, while malformed relations and inconsistent budget IDs fail the read.

@@ -153,6 +153,8 @@ func TestReadProject_PopulatesState(t *testing.T) {
 
 	data := ProjectResourceModel{
 		ID:             types.StringValue("proj-abc-123"),
+		ProjectAlias:   types.StringValue("configured-project"),
+		Description:    types.StringValue("configured description"),
 		Models:         types.ListUnknown(types.StringType),
 		Tags:           types.ListUnknown(types.StringType),
 		Metadata:       types.MapUnknown(types.StringType),

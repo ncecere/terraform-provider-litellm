@@ -20,6 +20,8 @@ var _ resource.Resource = &ProjectResource{}
 var _ resource.ResourceWithImportState = &ProjectResource{}
 var _ resource.ResourceWithModifyPlan = &ProjectResource{}
 
+const projectImportedOptionalStringsPrivateKey = "project_imported_optional_strings_v1"
+
 func NewProjectResource() resource.Resource { return &ProjectResource{} }
 
 type ProjectResource struct{ client *Client }
@@ -58,8 +60,8 @@ func (r *ProjectResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 		Description: "Manages a LiteLLM Project. Project budget controls are read authoritatively from the nested litellm_budget_table relation.",
 		Attributes: map[string]schema.Attribute{
 			"id":                    schema.StringAttribute{Description: "The unique project ID (assigned by LiteLLM).", Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
-			"project_alias":         schema.StringAttribute{Description: "Human-friendly name for the project.", Optional: true},
-			"description":           schema.StringAttribute{Description: "Description of the project's purpose and use case.", Optional: true},
+			"project_alias":         schema.StringAttribute{Description: "Human-friendly name for the project.", Optional: true, Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
+			"description":           schema.StringAttribute{Description: "Description of the project's purpose and use case.", Optional: true, Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
 			"team_id":               schema.StringAttribute{Description: "The team ID that this project belongs to.", Required: true, PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}},
 			"models":                schema.ListAttribute{Description: "List of models the project can access.", Optional: true, Computed: true, ElementType: types.StringType},
 			"metadata":              schema.MapAttribute{Description: "Metadata for the project. Values are strings; use jsonencode() for complex values.", Optional: true, Computed: true, ElementType: types.StringType},
@@ -67,7 +69,7 @@ func (r *ProjectResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 			"max_budget":            schema.Float64Attribute{Description: "Maximum budget for this project.", Optional: true},
 			"soft_budget":           schema.Float64Attribute{Description: "Soft budget limit for warnings.", Optional: true},
 			"budget_duration":       schema.StringAttribute{Description: "Budget reset duration (for example, '30d' or '1h').", Optional: true},
-			"budget_id":             schema.StringAttribute{Description: "Budget ID associated with this project. Reassociation is not safely supported by LiteLLM v1.98.", Optional: true},
+			"budget_id":             schema.StringAttribute{Description: "Budget ID associated with this project. Reassociation is not safely supported by LiteLLM v1.98.", Optional: true, Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
 			"tpm_limit":             schema.Int64Attribute{Description: "Tokens per minute limit.", Optional: true},
 			"rpm_limit":             schema.Int64Attribute{Description: "Requests per minute limit.", Optional: true},
 			"max_parallel_requests": schema.Int64Attribute{Description: "Maximum parallel requests allowed.", Optional: true},
@@ -96,28 +98,60 @@ func (r *ProjectResource) Configure(_ context.Context, req resource.ConfigureReq
 }
 
 func (r *ProjectResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
-	if req.State.Raw.IsNull() || req.Plan.Raw.IsNull() {
+	if organizationProjectPlanIsDestroy(req) {
 		return
 	}
-	var state, plan ProjectResourceModel
-	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	var state, plan, config ProjectResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	if knownString(state.BudgetID) && !plan.BudgetID.IsUnknown() && !state.BudgetID.Equal(plan.BudgetID) {
-		resp.Diagnostics.AddAttributeError(path.Root("budget_id"), "Unsafe Project Budget Reassociation", "LiteLLM v1.98 does not provide a convergent project budget reassociation update. Keep the existing budget_id or coordinate a replacement explicitly.")
-	}
-	for _, field := range []struct {
-		name  string
-		plan  types.String
-		state types.String
-	}{
-		{"project_alias", plan.ProjectAlias, state.ProjectAlias}, {"description", plan.Description, state.Description},
-	} {
-		if knownString(field.state) && field.plan.IsNull() {
-			resp.Diagnostics.AddAttributeError(path.Root(field.name), "Unsupported Project String Clear", fmt.Sprintf("LiteLLM v1.98's /project/update excludes null %s values, so removing this configured value cannot converge. Keep it configured or set an explicit non-null replacement.", field.name))
+	if req.State.Raw.IsNull() {
+		if !config.BudgetID.IsNull() && projectBudgetControlsPresentInConfig(&config) {
+			resp.Diagnostics.AddAttributeError(path.Root("budget_id"), "Unsafe Shared Project Budget Controls", "budget_id cannot be combined with project budget controls during creation because LiteLLM v1.98 ignores or strips those controls for an existing shared budget.")
 		}
+		if config.ModelMaxBudget.IsUnknown() || (knownMap(config.ModelMaxBudget) && len(config.ModelMaxBudget.Elements()) > 0) {
+			resp.Diagnostics.AddAttributeError(path.Root("model_max_budget"), "Unsupported Structured Project Model Budget", "LiteLLM v1.98 requires GenericBudgetConfig objects for model_max_budget, but this resource's legacy schema is map(float64). Non-empty or unknown configuration is rejected until a migration-safe structured representation is available.")
+		}
+		return
+	}
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	importedBudget, importedOptionalStrings := false, false
+	if req.Private != nil {
+		budgetMarker, diagnostics := req.Private.GetKey(ctx, organizationProjectImportedBudgetPrivateKey)
+		resp.Diagnostics.Append(diagnostics...)
+		importedBudget = string(budgetMarker) == "true"
+		stringMarker, diagnostics := req.Private.GetKey(ctx, projectImportedOptionalStringsPrivateKey)
+		resp.Diagnostics.Append(diagnostics...)
+		importedOptionalStrings = string(stringMarker) == "true"
+	}
+	preserveOrganizationProjectBudgetID(ctx, "Project", state.BudgetID, config.BudgetID, plan.BudgetID, importedBudget, resp)
+	for _, field := range []struct {
+		name                string
+		state, plan, config types.String
+	}{
+		{"project_alias", state.ProjectAlias, plan.ProjectAlias, config.ProjectAlias},
+		{"description", state.Description, plan.Description, config.Description},
+	} {
+		switch {
+		case field.config.IsNull() && importedOptionalStrings:
+			resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root(field.name), field.state)...)
+		case knownString(field.state) && field.config.IsNull():
+			resp.Diagnostics.AddAttributeError(path.Root(field.name), "Unsupported Project String Clear", fmt.Sprintf("LiteLLM v1.98's /project/update excludes null %s values, so removing this configured value cannot converge. Keep it configured or set an explicit non-null replacement.", field.name))
+		case knownString(field.state) && (field.config.IsUnknown() || field.plan.IsUnknown()):
+			resp.Diagnostics.AddAttributeError(path.Root(field.name), "Unknown Project String Transition", fmt.Sprintf("%s must be known while planning because an unknown value could resolve to an unsupported null clear on LiteLLM v1.98.", field.name))
+		}
+	}
+	if config.ModelMaxBudget.IsNull() && knownMap(state.ModelMaxBudget) {
+		// A known legacy scalar map can still be removed safely through an
+		// explicit null budget update. Override the framework's computed unknown.
+		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("model_max_budget"), types.MapNull(types.Float64Type))...)
+	} else if config.ModelMaxBudget.IsUnknown() || (knownMap(config.ModelMaxBudget) && len(config.ModelMaxBudget.Elements()) > 0 && !config.ModelMaxBudget.Equal(state.ModelMaxBudget)) {
+		resp.Diagnostics.AddAttributeError(path.Root("model_max_budget"), "Unsupported Structured Project Model Budget", "LiteLLM v1.98 requires GenericBudgetConfig objects for model_max_budget, but this resource's legacy schema is map(float64). Non-empty additions, changes, or unknown transitions are rejected until a migration-safe structured representation is available.")
 	}
 }
 
@@ -208,15 +242,34 @@ func (r *ProjectResource) Read(ctx context.Context, req resource.ReadRequest, re
 }
 
 func (r *ProjectResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var plan, state ProjectResourceModel
+	var plan, state, config ProjectResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if !req.Config.Raw.IsNull() {
+		resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+	} else {
+		config = plan
+	}
 	if resp.Diagnostics.HasError() {
 		return
 	}
 	plan.ID = state.ID
-	if knownString(state.BudgetID) && !plan.BudgetID.IsUnknown() && !state.BudgetID.Equal(plan.BudgetID) {
-		resp.Diagnostics.AddError("Unsafe Project Budget Reassociation", "The project budget_id changed despite the plan safety check; no API call was made.")
+	if state.BudgetID.IsUnknown() || plan.BudgetID.IsUnknown() || !state.BudgetID.Equal(plan.BudgetID) {
+		resp.Diagnostics.AddError("Unsafe Project Budget Reassociation", "The project budget_id changed or remained unknown despite the plan safety check; no API call was made.")
+		return
+	}
+	importedOptionalStrings := false
+	if req.Private != nil {
+		marker, diagnostics := req.Private.GetKey(ctx, projectImportedOptionalStringsPrivateKey)
+		resp.Diagnostics.Append(diagnostics...)
+		importedOptionalStrings = string(marker) == "true"
+	}
+	if !importedOptionalStrings && ((knownString(state.ProjectAlias) && config.ProjectAlias.IsNull()) || (knownString(state.Description) && config.Description.IsNull())) {
+		resp.Diagnostics.AddError("Unsupported Project String Clear", "project_alias or description was removed despite the plan safety check; LiteLLM v1.98 ignores this null clear and no API call was made.")
+		return
+	}
+	if config.ModelMaxBudget.IsUnknown() || (knownMap(plan.ModelMaxBudget) && len(plan.ModelMaxBudget.Elements()) > 0 && !plan.ModelMaxBudget.Equal(state.ModelMaxBudget)) {
+		resp.Diagnostics.AddError("Unsupported Structured Project Model Budget", "The model_max_budget was unknown or changed despite the plan safety check; no API call was made.")
 		return
 	}
 	projectRequest, projectChanged, err := buildProjectRowUpdateRequest(ctx, &plan, &state)
@@ -295,6 +348,8 @@ func (r *ProjectResource) ImportState(ctx context.Context, req resource.ImportSt
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 	if resp.Private != nil {
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, []byte("true"))...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, organizationProjectImportedBudgetPrivateKey, []byte("true"))...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, projectImportedOptionalStringsPrivateKey, []byte("true"))...)
 	}
 }
 
@@ -305,6 +360,12 @@ func (r *ProjectResource) buildProjectRequest(ctx context.Context, data *Project
 }
 
 func (r *ProjectResource) buildProjectCreateRequest(ctx context.Context, data *ProjectResourceModel) (map[string]interface{}, error) {
+	if knownString(data.BudgetID) && projectBudgetControlsConfigured(data) {
+		return nil, fmt.Errorf("budget_id cannot be combined with project budget controls during creation because LiteLLM v1.98 ignores or strips those controls for an existing shared budget")
+	}
+	if knownMap(data.ModelMaxBudget) && len(data.ModelMaxBudget.Elements()) > 0 {
+		return nil, fmt.Errorf("non-empty model_max_budget is unsupported because LiteLLM v1.98 requires structured GenericBudgetConfig values while the migration-compatible project schema is map(float64)")
+	}
 	request := map[string]interface{}{"team_id": data.TeamID.ValueString()}
 	if knownString(data.ProjectAlias) {
 		request["project_alias"] = data.ProjectAlias.ValueString()
@@ -531,12 +592,15 @@ func (r *ProjectResource) readProjectWithNumericOwnership(ctx context.Context, d
 		data.BudgetID = types.StringValue(remoteBudgetID)
 	} else if budgetOwned && budgetPresence != apiValuePresent {
 		data.BudgetID = types.StringNull()
+	} else if !budgetOwned && data.BudgetID.IsUnknown() {
+		// Do not adopt LiteLLM's generated budget for an ordinary omitted create.
+		data.BudgetID = types.StringNull()
 	}
 	data.ID = types.StringValue(projectID)
-	if err := updateNullableString(&data.ProjectAlias, object, "project_alias"); err != nil {
+	if err := updateProjectOptionalString(&data.ProjectAlias, object, "project_alias", imported); err != nil {
 		return err
 	}
-	if err := updateNullableString(&data.Description, object, "description"); err != nil {
+	if err := updateProjectOptionalString(&data.Description, object, "description", imported); err != nil {
 		return err
 	}
 	if err := updateNullableString(&data.TeamID, object, "team_id"); err != nil {
@@ -599,8 +663,7 @@ func (r *ProjectResource) readProjectWithNumericOwnership(ctx context.Context, d
 	if err := updateBudgetDuration(&data.BudgetDuration, table, durationOwned, durationOwned); err != nil {
 		return err
 	}
-	modelBudgetOwned := imported || knownMap(data.ModelMaxBudget)
-	if err := updateBudgetFloat64Map(&data.ModelMaxBudget, table, modelBudgetOwned, modelBudgetOwned, "model_max_budget"); err != nil {
+	if err := updateLegacyProjectModelMaxBudget(&data.ModelMaxBudget, table); err != nil {
 		return err
 	}
 
@@ -685,6 +748,71 @@ func projectChangedFieldMismatch(desired, prior, actual *ProjectResourceModel) (
 		}
 	}
 	return "", false
+}
+
+func updateProjectOptionalString(target *types.String, object map[string]interface{}, field string, imported bool) error {
+	owned := imported || knownString(*target)
+	value, presence, err := apiValueAt(object, field)
+	if err != nil {
+		return err
+	}
+	if presence != apiValuePresent {
+		if owned || target.IsUnknown() {
+			*target = types.StringNull()
+		}
+		return nil
+	}
+	stringValue, ok := value.(string)
+	if !ok {
+		return fmt.Errorf("invalid response field %q: expected a string or null", field)
+	}
+	if owned {
+		*target = types.StringValue(stringValue)
+	} else if target.IsUnknown() {
+		*target = types.StringNull()
+	}
+	return nil
+}
+
+func projectBudgetControlsConfigured(data *ProjectResourceModel) bool {
+	return knownFloat(data.MaxBudget) || knownFloat(data.SoftBudget) || knownString(data.BudgetDuration) ||
+		knownInt(data.TPMLimit) || knownInt(data.RPMLimit) || knownInt(data.MaxParallelRequests) || knownMap(data.ModelMaxBudget)
+}
+
+func projectBudgetControlsPresentInConfig(data *ProjectResourceModel) bool {
+	return !data.MaxBudget.IsNull() || !data.SoftBudget.IsNull() || !data.BudgetDuration.IsNull() ||
+		!data.TPMLimit.IsNull() || !data.RPMLimit.IsNull() || !data.MaxParallelRequests.IsNull() || !data.ModelMaxBudget.IsNull()
+}
+
+func updateLegacyProjectModelMaxBudget(target *types.Map, table budgetTableState) error {
+	// The public project schema predates LiteLLM v1.98 and can only represent
+	// map(float64), while v1.98 returns map(GenericBudgetConfig). Never adopt a
+	// remote value into unconfigured/import state, and retain existing legacy
+	// scalar state when the authoritative value has the structured v1.98 shape.
+	if target.IsNull() || target.IsUnknown() {
+		if target.IsUnknown() {
+			*target = types.MapNull(types.Float64Type)
+		}
+		return nil
+	}
+	value, presence, err := table.value("model_max_budget")
+	if err != nil {
+		return err
+	}
+	if presence != apiValuePresent {
+		*target = types.MapNull(types.Float64Type)
+		return nil
+	}
+	object, ok := value.(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("invalid response field %q: expected an object", "litellm_budget_table.model_max_budget")
+	}
+	for _, raw := range object {
+		if _, structured := raw.(map[string]interface{}); structured {
+			return nil
+		}
+	}
+	return updateFloat64MapFromAPI(target, table.object, true, true, "model_max_budget")
 }
 
 func updateNullableString(target *types.String, object map[string]interface{}, field string) error {

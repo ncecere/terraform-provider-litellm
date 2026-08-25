@@ -484,15 +484,16 @@ func TestReadProjectPreservesExactNestedLimits(t *testing.T) {
 		t.Fatalf("readProject: %v", err)
 	}
 	var modelRPM, modelTPM map[string]int64
-	var modelBudget map[string]float64
 	data.ModelRPMLimit.ElementsAs(context.Background(), &modelRPM, false)
 	data.ModelTPMLimit.ElementsAs(context.Background(), &modelTPM, false)
-	data.ModelMaxBudget.ElementsAs(context.Background(), &modelBudget, false)
 	if data.MaxBudget.ValueFloat64() != 100.25 || data.SoftBudget.ValueFloat64() != 80.5 || data.TPMLimit.ValueInt64() != 9007199254740993 || data.RPMLimit.ValueInt64() != math.MaxInt64 || data.MaxParallelRequests.ValueInt64() != math.MinInt64 {
 		t.Errorf("project numbers = %v, %v, %d, %d, %d", data.MaxBudget.ValueFloat64(), data.SoftBudget.ValueFloat64(), data.TPMLimit.ValueInt64(), data.RPMLimit.ValueInt64(), data.MaxParallelRequests.ValueInt64())
 	}
-	if modelRPM["large"] != 9007199254740993 || modelTPM["maximum"] != math.MaxInt64 || modelBudget["fractional"] != 12.5 {
-		t.Errorf("project nested numbers = %#v, %#v, %#v", modelRPM, modelTPM, modelBudget)
+	if modelRPM["large"] != 9007199254740993 || modelTPM["maximum"] != math.MaxInt64 {
+		t.Errorf("project nested numbers = %#v, %#v", modelRPM, modelTPM)
+	}
+	if !data.ModelMaxBudget.IsNull() {
+		t.Fatalf("legacy map(float64) adopted remote model budget: %#v", data.ModelMaxBudget)
 	}
 }
 

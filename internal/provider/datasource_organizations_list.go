@@ -28,7 +28,6 @@ type OrganizationListItem struct {
 	TPMLimit            types.Int64   `tfsdk:"tpm_limit"`
 	RPMLimit            types.Int64   `tfsdk:"rpm_limit"`
 	MaxParallelRequests types.Int64   `tfsdk:"max_parallel_requests"`
-	ModelMaxBudget      types.Map     `tfsdk:"model_max_budget"`
 	ModelRPMLimit       types.Map     `tfsdk:"model_rpm_limit"`
 	ModelTPMLimit       types.Map     `tfsdk:"model_tpm_limit"`
 	BudgetDuration      types.String  `tfsdk:"budget_duration"`
@@ -56,7 +55,6 @@ func (d *OrganizationsListDataSource) Schema(_ context.Context, _ datasource.Sch
 		"tpm_limit":             schema.Int64Attribute{Description: "Tokens per minute limit.", Computed: true},
 		"rpm_limit":             schema.Int64Attribute{Description: "Requests per minute limit.", Computed: true},
 		"max_parallel_requests": schema.Int64Attribute{Description: "Maximum parallel requests.", Computed: true},
-		"model_max_budget":      schema.MapAttribute{Description: "Legacy per-model budget map shape.", Computed: true, ElementType: types.Float64Type},
 		"model_rpm_limit":       schema.MapAttribute{Description: "Per-model RPM limits stored in metadata.", Computed: true, ElementType: types.Int64Type},
 		"model_tpm_limit":       schema.MapAttribute{Description: "Per-model TPM limits stored in metadata.", Computed: true, ElementType: types.Int64Type},
 		"budget_duration":       schema.StringAttribute{Description: "Budget reset duration.", Computed: true},
@@ -158,10 +156,6 @@ func (d *OrganizationsListDataSource) Read(ctx context.Context, req datasource.R
 			}
 		}
 		if err := updateBudgetDuration(&item.BudgetDuration, table, true, true); err != nil {
-			resp.Diagnostics.AddError("Invalid API Response", err.Error())
-			return
-		}
-		if err := updateBudgetFloat64Map(&item.ModelMaxBudget, table, true, true, "model_max_budget"); err != nil {
 			resp.Diagnostics.AddError("Invalid API Response", err.Error())
 			return
 		}

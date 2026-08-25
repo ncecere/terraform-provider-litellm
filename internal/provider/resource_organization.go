@@ -35,7 +35,6 @@ type OrganizationResourceModel struct {
 	TPMLimit            types.Int64   `tfsdk:"tpm_limit"`
 	RPMLimit            types.Int64   `tfsdk:"rpm_limit"`
 	MaxParallelRequests types.Int64   `tfsdk:"max_parallel_requests"`
-	ModelMaxBudget      types.Map     `tfsdk:"model_max_budget"`
 	ModelRPMLimit       types.Map     `tfsdk:"model_rpm_limit"`
 	ModelTPMLimit       types.Map     `tfsdk:"model_tpm_limit"`
 	BudgetDuration      types.String  `tfsdk:"budget_duration"`
@@ -57,13 +56,12 @@ func (r *OrganizationResource) Schema(_ context.Context, _ resource.SchemaReques
 			"organization_id":       schema.StringAttribute{Description: "The organization ID. If not specified, one will be generated.", Optional: true, Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown(), stringplanmodifier.RequiresReplace()}},
 			"organization_alias":    schema.StringAttribute{Description: "The name/alias of the organization.", Required: true},
 			"models":                schema.ListAttribute{Description: "The models the organization has access to.", Optional: true, Computed: true, ElementType: types.StringType},
-			"budget_id":             schema.StringAttribute{Description: "The ID for the organization's budget. Reassociating an existing organization is not supported safely by LiteLLM v1.98.", Optional: true},
+			"budget_id":             schema.StringAttribute{Description: "The ID for the organization's budget. Reassociating an existing organization is not supported safely by LiteLLM v1.98.", Optional: true, Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
 			"max_budget":            schema.Float64Attribute{Description: "Maximum hard budget for the organization.", Optional: true},
 			"soft_budget":           schema.Float64Attribute{Description: "Soft budget alert threshold for the organization.", Optional: true},
 			"tpm_limit":             schema.Int64Attribute{Description: "Maximum tokens per minute for the organization.", Optional: true},
 			"rpm_limit":             schema.Int64Attribute{Description: "Maximum requests per minute for the organization.", Optional: true},
 			"max_parallel_requests": schema.Int64Attribute{Description: "Maximum parallel requests for the organization budget.", Optional: true},
-			"model_max_budget":      schema.MapAttribute{Description: "Legacy per-model budget map shape retained for schema compatibility. LiteLLM validates non-empty values as GenericBudgetConfig objects.", Optional: true, Computed: true, ElementType: types.Float64Type, Validators: []validator.Map{mapvalidator.NoNullValues()}},
 			"model_rpm_limit":       schema.MapAttribute{Description: "The RPM limit per model. Updated through v1.98's transactional complete-metadata replacement so owned keys can clear safely.", Optional: true, Computed: true, ElementType: types.Int64Type, Validators: []validator.Map{mapvalidator.NoNullValues()}},
 			"model_tpm_limit":       schema.MapAttribute{Description: "The TPM limit per model. Updated through v1.98's transactional complete-metadata replacement so owned keys can clear safely.", Optional: true, Computed: true, ElementType: types.Int64Type, Validators: []validator.Map{mapvalidator.NoNullValues()}},
 			"budget_duration":       schema.StringAttribute{Description: "Budget reset duration (for example, '30d' or '1h').", Optional: true},
@@ -88,7 +86,7 @@ func (r *OrganizationResource) Configure(_ context.Context, req resource.Configu
 }
 
 func (r *OrganizationResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
-	if req.Plan.Raw.IsNull() {
+	if organizationProjectPlanIsDestroy(req) {
 		return
 	}
 	var plan, config OrganizationResourceModel
@@ -101,14 +99,21 @@ func (r *OrganizationResource) ModifyPlan(ctx context.Context, req resource.Modi
 	}
 	var state OrganizationResourceModel
 	hasState := !req.State.Raw.IsNull()
+	if !hasState && !config.BudgetID.IsNull() && organizationBudgetControlsPresentInConfig(&config) {
+		resp.Diagnostics.AddAttributeError(path.Root("budget_id"), "Unsafe Shared Organization Budget Controls", "budget_id cannot be combined with organization budget controls during creation because LiteLLM v1.98 ignores or strips those controls for an existing shared budget.")
+	}
 	if hasState {
 		resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 		if resp.Diagnostics.HasError() {
 			return
 		}
-		if knownString(state.BudgetID) && !plan.BudgetID.IsUnknown() && !state.BudgetID.Equal(plan.BudgetID) {
-			resp.Diagnostics.AddAttributeError(path.Root("budget_id"), "Unsafe Organization Budget Reassociation", "LiteLLM v1.98 does not provide a safe organization budget reassociation lifecycle. Keep the existing budget_id; create a separately coordinated replacement only after protecting dependent teams, memberships, and keys.")
+		importedBudget := false
+		if req.Private != nil {
+			marker, diagnostics := req.Private.GetKey(ctx, organizationProjectImportedBudgetPrivateKey)
+			resp.Diagnostics.Append(diagnostics...)
+			importedBudget = string(marker) == "true"
 		}
+		preserveOrganizationProjectBudgetID(ctx, "Organization", state.BudgetID, config.BudgetID, plan.BudgetID, importedBudget, resp)
 	}
 
 	if !config.Blocked.IsNull() && !config.Blocked.IsUnknown() {
@@ -214,8 +219,8 @@ func (r *OrganizationResource) Update(ctx context.Context, req resource.UpdateRe
 		return
 	}
 	plan.ID, plan.OrganizationID = state.ID, state.OrganizationID
-	if knownString(state.BudgetID) && !plan.BudgetID.IsUnknown() && !state.BudgetID.Equal(plan.BudgetID) {
-		resp.Diagnostics.AddError("Unsafe Organization Budget Reassociation", "The organization budget_id changed despite the plan safety check; no API call was made.")
+	if state.BudgetID.IsUnknown() || plan.BudgetID.IsUnknown() || !state.BudgetID.Equal(plan.BudgetID) {
+		resp.Diagnostics.AddError("Unsafe Organization Budget Reassociation", "The organization budget_id changed or remained unknown despite the plan safety check; no API call was made.")
 		return
 	}
 	if !plan.Blocked.IsNull() && !plan.Blocked.IsUnknown() && plan.Blocked.ValueBool() && !plan.Blocked.Equal(state.Blocked) {
@@ -230,6 +235,12 @@ func (r *OrganizationResource) Update(ctx context.Context, req resource.UpdateRe
 	if err != nil {
 		resp.Diagnostics.AddError("Invalid Organization Request", err.Error())
 		return
+	}
+	if organizationUpdateChangesBudget(updateRequest) {
+		if _, err := r.lookupOrganizationBudgetID(ctx, state.OrganizationID.ValueString(), state.BudgetID); err != nil {
+			resp.Diagnostics.AddError("Organization Budget Lookup Error", err.Error())
+			return
+		}
 	}
 	if len(updateRequest) > 0 {
 		var result map[string]interface{}
@@ -277,6 +288,7 @@ func (r *OrganizationResource) ImportState(ctx context.Context, req resource.Imp
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("organization_id"), req.ID)...)
 	if resp.Private != nil {
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, []byte("true"))...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, organizationProjectImportedBudgetPrivateKey, []byte("true"))...)
 	}
 }
 
@@ -287,6 +299,9 @@ func (r *OrganizationResource) buildOrganizationRequest(ctx context.Context, dat
 }
 
 func (r *OrganizationResource) buildOrganizationCreateRequest(ctx context.Context, data *OrganizationResourceModel) (map[string]interface{}, error) {
+	if knownString(data.BudgetID) && organizationBudgetControlsConfigured(data) {
+		return nil, fmt.Errorf("budget_id cannot be combined with organization budget controls during creation because LiteLLM v1.98 ignores or strips those controls for an existing shared budget")
+	}
 	if !data.Blocked.IsNull() && !data.Blocked.IsUnknown() && data.Blocked.ValueBool() {
 		return nil, fmt.Errorf("blocked=true is unsupported because LiteLLM v1.98 has no persistent organization blocked field")
 	}
@@ -314,13 +329,6 @@ func (r *OrganizationResource) buildOrganizationCreateRequest(ctx context.Contex
 			return nil, err
 		}
 		request["models"] = models
-	}
-	if !data.ModelMaxBudget.IsNull() && !data.ModelMaxBudget.IsUnknown() {
-		values, err := float64RequestMap(data.ModelMaxBudget, "model_max_budget")
-		if err != nil {
-			return nil, err
-		}
-		request["model_max_budget"] = values
 	}
 	metadata, err := organizationMetadataPayload(ctx, data)
 	if err != nil {
@@ -359,17 +367,6 @@ func buildOrganizationUpdateRequest(ctx context.Context, plan, state *Organizati
 			request["budget_duration"] = plan.BudgetDuration.ValueString()
 		}
 	}
-	if !plan.ModelMaxBudget.IsUnknown() && !plan.ModelMaxBudget.Equal(state.ModelMaxBudget) {
-		if plan.ModelMaxBudget.IsNull() {
-			request["model_max_budget"] = nil
-		} else {
-			values, err := float64RequestMap(plan.ModelMaxBudget, "model_max_budget")
-			if err != nil {
-				return nil, err
-			}
-			request["model_max_budget"] = values
-		}
-	}
 	metadataChanged := (!plan.Metadata.IsUnknown() && !plan.Metadata.Equal(state.Metadata)) || (!plan.ModelRPMLimit.IsUnknown() && !plan.ModelRPMLimit.Equal(state.ModelRPMLimit)) || (!plan.ModelTPMLimit.IsUnknown() && !plan.ModelTPMLimit.Equal(state.ModelTPMLimit))
 	if metadataChanged {
 		metadata, err := organizationMetadataPayload(ctx, plan)
@@ -379,6 +376,55 @@ func buildOrganizationUpdateRequest(ctx context.Context, plan, state *Organizati
 		request["metadata"] = metadata
 	}
 	return request, nil
+}
+
+func organizationBudgetControlsConfigured(data *OrganizationResourceModel) bool {
+	return knownFloat(data.MaxBudget) || knownFloat(data.SoftBudget) || knownString(data.BudgetDuration) ||
+		knownInt(data.TPMLimit) || knownInt(data.RPMLimit) || knownInt(data.MaxParallelRequests)
+}
+
+func organizationBudgetControlsPresentInConfig(data *OrganizationResourceModel) bool {
+	return !data.MaxBudget.IsNull() || !data.SoftBudget.IsNull() || !data.BudgetDuration.IsNull() ||
+		!data.TPMLimit.IsNull() || !data.RPMLimit.IsNull() || !data.MaxParallelRequests.IsNull()
+}
+
+func organizationUpdateChangesBudget(request map[string]interface{}) bool {
+	for _, field := range []string{"max_budget", "soft_budget", "budget_duration", "tpm_limit", "rpm_limit", "max_parallel_requests"} {
+		if _, changed := request[field]; changed {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *OrganizationResource) lookupOrganizationBudgetID(ctx context.Context, organizationID string, configured types.String) (string, error) {
+	var result map[string]interface{}
+	endpoint := "/organization/info?organization_id=" + url.QueryEscape(organizationID)
+	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
+		return "", fmt.Errorf("unable to read authoritative organization budget: %w", err)
+	}
+	object, err := unwrapObjectEnvelope(result, "organization_info", "data")
+	if err != nil {
+		return "", err
+	}
+	if err := validateImportedObjectIdentity(true, "organization budget lookup", object, "organization_id", organizationID); err != nil {
+		return "", err
+	}
+	table, err := parseBudgetTable(object)
+	if err != nil {
+		return "", err
+	}
+	budgetID, presence, err := budgetTableID(object, table)
+	if err != nil {
+		return "", err
+	}
+	if presence != apiValuePresent {
+		return "", fmt.Errorf("organization %q has no authoritative budget identity", organizationID)
+	}
+	if knownString(configured) && configured.ValueString() != budgetID {
+		return "", fmt.Errorf("organization budget reassociation detected: state budget_id %q, API budget_id %q", configured.ValueString(), budgetID)
+	}
+	return budgetID, nil
 }
 
 func organizationMetadataPayload(ctx context.Context, data *OrganizationResourceModel) (map[string]interface{}, error) {
@@ -452,6 +498,10 @@ func (r *OrganizationResource) readOrganizationWithNumericOwnership(ctx context.
 		data.BudgetID = types.StringValue(remoteBudgetID)
 	} else if budgetOwned && (budgetPresence == apiValueNull || budgetPresence == apiValueAbsent) {
 		data.BudgetID = types.StringNull()
+	} else if !budgetOwned && data.BudgetID.IsUnknown() {
+		// Optional+Computed is required for import adoption, but ordinary creates
+		// with omitted budget_id must not adopt LiteLLM's generated default.
+		data.BudgetID = types.StringNull()
 	}
 
 	data.ID = types.StringValue(organizationID)
@@ -500,11 +550,6 @@ func (r *OrganizationResource) readOrganizationWithNumericOwnership(ctx context.
 	if err := updateBudgetDuration(&data.BudgetDuration, table, durationOwned, durationOwned); err != nil {
 		return err
 	}
-	modelBudgetOwned := imported || knownMap(data.ModelMaxBudget)
-	if err := updateBudgetFloat64Map(&data.ModelMaxBudget, table, modelBudgetOwned, modelBudgetOwned, "model_max_budget"); err != nil {
-		return err
-	}
-
 	nextMetadata, metadataPresence, err := stringMapFromAPI(object, "metadata", "model_rpm_limit", "model_tpm_limit")
 	if err != nil {
 		return err
@@ -553,9 +598,6 @@ func seedOrganizationClearOwnership(target, prior *OrganizationResourceModel) {
 	if target.BudgetDuration.IsNull() && knownString(prior.BudgetDuration) {
 		target.BudgetDuration = prior.BudgetDuration
 	}
-	if target.ModelMaxBudget.IsNull() && knownMap(prior.ModelMaxBudget) {
-		target.ModelMaxBudget = prior.ModelMaxBudget
-	}
 	if target.ModelRPMLimit.IsNull() && knownMap(prior.ModelRPMLimit) {
 		target.ModelRPMLimit = prior.ModelRPMLimit
 	}
@@ -574,7 +616,7 @@ func organizationChangedFieldMismatch(desired, prior, actual *OrganizationResour
 		{"max_budget", desired.MaxBudget, prior.MaxBudget, actual.MaxBudget}, {"soft_budget", desired.SoftBudget, prior.SoftBudget, actual.SoftBudget},
 		{"tpm_limit", desired.TPMLimit, prior.TPMLimit, actual.TPMLimit}, {"rpm_limit", desired.RPMLimit, prior.RPMLimit, actual.RPMLimit},
 		{"max_parallel_requests", desired.MaxParallelRequests, prior.MaxParallelRequests, actual.MaxParallelRequests},
-		{"model_max_budget", desired.ModelMaxBudget, prior.ModelMaxBudget, actual.ModelMaxBudget}, {"budget_duration", desired.BudgetDuration, prior.BudgetDuration, actual.BudgetDuration},
+		{"budget_duration", desired.BudgetDuration, prior.BudgetDuration, actual.BudgetDuration},
 		{"metadata", desired.Metadata, prior.Metadata, actual.Metadata}, {"model_rpm_limit", desired.ModelRPMLimit, prior.ModelRPMLimit, actual.ModelRPMLimit}, {"model_tpm_limit", desired.ModelTPMLimit, prior.ModelTPMLimit, actual.ModelTPMLimit},
 	} {
 		if !field.desired.IsUnknown() && !field.desired.Equal(field.prior) && !field.desired.Equal(field.actual) {

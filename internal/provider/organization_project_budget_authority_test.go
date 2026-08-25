@@ -92,7 +92,7 @@ func TestOrganizationNestedBudgetIsAuthoritativeAndExact(t *testing.T) {
 	data := OrganizationResourceModel{
 		OrganizationID: types.StringValue("org-1"), BudgetID: types.StringNull(),
 		Models: types.ListUnknown(types.StringType), Metadata: types.MapUnknown(types.StringType),
-		ModelMaxBudget: types.MapUnknown(types.Float64Type), ModelRPMLimit: types.MapUnknown(types.Int64Type), ModelTPMLimit: types.MapUnknown(types.Int64Type),
+		ModelRPMLimit: types.MapUnknown(types.Int64Type), ModelTPMLimit: types.MapUnknown(types.Int64Type),
 		Blocked: types.BoolUnknown(), Tags: types.ListUnknown(types.StringType),
 	}
 	if err := (&OrganizationResource{client: client}).readOrganizationWithNumericOwnership(context.Background(), &data, true); err != nil {
@@ -125,7 +125,7 @@ func TestOrganizationOmittedBudgetDoesNotAdoptDefaults(t *testing.T) {
 	defer server.Close()
 	data := OrganizationResourceModel{
 		OrganizationID: types.StringValue("org-1"), BudgetID: types.StringNull(), MaxBudget: types.Float64Null(), TPMLimit: types.Int64Null(), BudgetDuration: types.StringNull(),
-		Models: types.ListNull(types.StringType), Metadata: types.MapNull(types.StringType), ModelMaxBudget: types.MapNull(types.Float64Type), ModelRPMLimit: types.MapNull(types.Int64Type), ModelTPMLimit: types.MapNull(types.Int64Type),
+		Models: types.ListNull(types.StringType), Metadata: types.MapNull(types.StringType), ModelRPMLimit: types.MapNull(types.Int64Type), ModelTPMLimit: types.MapNull(types.Int64Type),
 		Blocked: types.BoolNull(), Tags: types.ListNull(types.StringType),
 	}
 	if err := (&OrganizationResource{client: client}).readOrganization(context.Background(), &data); err != nil {
@@ -187,14 +187,14 @@ func TestProjectDataSourceReadsNestedBudgetAndMetadataTags(t *testing.T) {
 		"data": map[string]interface{}{
 			"project_id": "project-1", "team_id": "team-1", "budget_id": "budget-1", "blocked": false,
 			"metadata":             map[string]interface{}{"tags": []interface{}{"production"}, "model_rpm_limit": map[string]interface{}{"gpt": int64(9007199254740993)}, "model_tpm_limit": map[string]interface{}{"gpt": int64(9007199254740995)}},
-			"litellm_budget_table": map[string]interface{}{"budget_id": "budget-1", "max_budget": 100, "tpm_limit": int64(9007199254740997), "rpm_limit": int64(9007199254740999), "budget_duration": "7d"},
+			"litellm_budget_table": map[string]interface{}{"budget_id": "budget-1", "max_budget": 100, "tpm_limit": int64(9007199254740997), "rpm_limit": int64(9007199254740999), "budget_duration": "7d", "model_max_budget": map[string]interface{}{"gpt": map[string]interface{}{"max_budget": 2.5}}},
 		},
 	})
 	defer server.Close()
 	dataSource := &ProjectDataSource{client: client}
 	var schemaResponse datasource.SchemaResponse
 	dataSource.Schema(context.Background(), datasource.SchemaRequest{}, &schemaResponse)
-	raw, err := tftypes.ValueFromJSON([]byte(`{"id":"project-1","project_alias":null,"description":null,"team_id":null,"models":null,"metadata":null,"tags":null,"blocked":null,"spend":null,"budget_id":null,"max_budget":null,"soft_budget":null,"budget_duration":null,"tpm_limit":null,"rpm_limit":null,"max_parallel_requests":null,"model_max_budget":null,"model_rpm_limit":null,"model_tpm_limit":null,"created_at":null,"updated_at":null,"created_by":null,"updated_by":null}`), schemaResponse.Schema.Type().TerraformType(context.Background()))
+	raw, err := tftypes.ValueFromJSON([]byte(`{"id":"project-1","project_alias":null,"description":null,"team_id":null,"models":null,"metadata":null,"tags":null,"blocked":null,"spend":null,"budget_id":null,"max_budget":null,"soft_budget":null,"budget_duration":null,"tpm_limit":null,"rpm_limit":null,"max_parallel_requests":null,"model_rpm_limit":null,"model_tpm_limit":null,"created_at":null,"updated_at":null,"created_by":null,"updated_by":null}`), schemaResponse.Schema.Type().TerraformType(context.Background()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +219,7 @@ func TestProjectDataSourceReadsNestedBudgetAndMetadataTags(t *testing.T) {
 func TestOrganizationAndProjectListsInventoryNestedBudgets(t *testing.T) {
 	t.Parallel()
 	t.Run("organizations", func(t *testing.T) {
-		server, client := jsonServer(t, []interface{}{map[string]interface{}{"organization_id": "org-1", "organization_alias": "acme", "budget_id": "budget-1", "metadata": map[string]interface{}{"model_rpm_limit": map[string]interface{}{"gpt": int64(9007199254740993)}}, "litellm_budget_table": map[string]interface{}{"budget_id": "budget-1", "tpm_limit": int64(9007199254740995), "budget_duration": "30d"}}})
+		server, client := jsonServer(t, []interface{}{map[string]interface{}{"organization_id": "org-1", "organization_alias": "acme", "budget_id": "budget-1", "metadata": map[string]interface{}{"model_rpm_limit": map[string]interface{}{"gpt": int64(9007199254740993)}}, "litellm_budget_table": map[string]interface{}{"budget_id": "budget-1", "tpm_limit": int64(9007199254740995), "budget_duration": "30d", "model_max_budget": map[string]interface{}{"gpt": map[string]interface{}{"max_budget": 2.5}}}}})
 		defer server.Close()
 		dataSource := &OrganizationsListDataSource{client: client}
 		var schemaResponse datasource.SchemaResponse
@@ -243,7 +243,7 @@ func TestOrganizationAndProjectListsInventoryNestedBudgets(t *testing.T) {
 		}
 	})
 	t.Run("projects", func(t *testing.T) {
-		server, client := jsonServer(t, []interface{}{map[string]interface{}{"project_id": "project-1", "team_id": "team-1", "budget_id": "budget-1", "metadata": map[string]interface{}{"model_tpm_limit": map[string]interface{}{"gpt": int64(9007199254740993)}}, "litellm_budget_table": map[string]interface{}{"budget_id": "budget-1", "rpm_limit": int64(9007199254740995), "budget_duration": "7d"}}})
+		server, client := jsonServer(t, []interface{}{map[string]interface{}{"project_id": "project-1", "team_id": "team-1", "budget_id": "budget-1", "metadata": map[string]interface{}{"model_tpm_limit": map[string]interface{}{"gpt": int64(9007199254740993)}}, "litellm_budget_table": map[string]interface{}{"budget_id": "budget-1", "rpm_limit": int64(9007199254740995), "budget_duration": "7d", "model_max_budget": map[string]interface{}{"gpt": map[string]interface{}{"max_budget": 2.5}}}}})
 		defer server.Close()
 		dataSource := &ProjectsListDataSource{client: client}
 		var schemaResponse datasource.SchemaResponse
@@ -274,8 +274,8 @@ func TestOrganizationUpdateUsesV2ReplacementAndExplicitBudgetClears(t *testing.T
 		OrganizationAlias: types.StringValue("acme"), MaxBudget: types.Float64Value(100), SoftBudget: types.Float64Value(80), BudgetDuration: types.StringValue("30d"),
 		Metadata:      types.MapValueMust(types.StringType, map[string]attr.Value{"environment": types.StringValue("prod")}),
 		ModelRPMLimit: types.MapValueMust(types.Int64Type, map[string]attr.Value{"a": types.Int64Value(1), "b": types.Int64Value(2)}),
-		ModelTPMLimit: types.MapValueMust(types.Int64Type, map[string]attr.Value{"a": types.Int64Value(10)}), ModelMaxBudget: types.MapNull(types.Float64Type),
-		Models: types.ListNull(types.StringType), Tags: types.ListNull(types.StringType),
+		ModelTPMLimit: types.MapValueMust(types.Int64Type, map[string]attr.Value{"a": types.Int64Value(10)}),
+		Models:        types.ListNull(types.StringType), Tags: types.ListNull(types.StringType),
 	}
 	plan := state
 	plan.MaxBudget = types.Float64Null()
@@ -347,11 +347,17 @@ func organizationBudgetTestPlan(t *testing.T, schema resourceschema.Schema, data
 	return plan
 }
 
+func organizationBudgetTestConfig(t *testing.T, schema resourceschema.Schema, data OrganizationResourceModel) tfsdk.Config {
+	t.Helper()
+	state := organizationBudgetTestState(t, schema, data)
+	return tfsdk.Config{Raw: state.Raw, Schema: schema}
+}
+
 func typedOrganizationBudgetModel() OrganizationResourceModel {
 	return OrganizationResourceModel{
 		ID: types.StringNull(), OrganizationID: types.StringNull(), OrganizationAlias: types.StringValue("acme"), Models: types.ListNull(types.StringType), BudgetID: types.StringNull(),
 		MaxBudget: types.Float64Null(), SoftBudget: types.Float64Null(), TPMLimit: types.Int64Null(), RPMLimit: types.Int64Null(), MaxParallelRequests: types.Int64Null(),
-		ModelMaxBudget: types.MapNull(types.Float64Type), ModelRPMLimit: types.MapNull(types.Int64Type), ModelTPMLimit: types.MapNull(types.Int64Type), BudgetDuration: types.StringNull(), Metadata: types.MapNull(types.StringType),
+		ModelRPMLimit: types.MapNull(types.Int64Type), ModelTPMLimit: types.MapNull(types.Int64Type), BudgetDuration: types.StringNull(), Metadata: types.MapNull(types.StringType),
 		Blocked: types.BoolNull(), Tags: types.ListNull(types.StringType), CreatedAt: types.StringNull(),
 	}
 }
@@ -476,6 +482,12 @@ func projectBudgetTestPlan(t *testing.T, schema resourceschema.Schema, data Proj
 		t.Fatalf("set plan: %v", diagnostics)
 	}
 	return plan
+}
+
+func projectBudgetTestConfig(t *testing.T, schema resourceschema.Schema, data ProjectResourceModel) tfsdk.Config {
+	t.Helper()
+	state := projectBudgetTestState(t, schema, data)
+	return tfsdk.Config{Raw: state.Raw, Schema: schema}
 }
 
 func typedProjectBudgetModel() ProjectResourceModel {

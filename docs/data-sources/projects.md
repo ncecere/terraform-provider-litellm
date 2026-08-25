@@ -26,9 +26,8 @@ output "project_budgets" {
   - `budget_duration`
   - `tpm_limit` / `rpm_limit`
   - `max_parallel_requests`
-  - `model_max_budget`
   - `model_rpm_limit` / `model_tpm_limit`
   - `created_at` / `updated_at`
   - `created_by` / `updated_by`
 
-Every budget value is decoded from `litellm_budget_table`. Null/absent relations produce null inventory values; malformed relations or inconsistent budget IDs fail the whole snapshot. Exact integer limits above `2^53` are preserved.
+Every exposed budget value is decoded from `litellm_budget_table`. Structured `model_max_budget` remains deferred rather than being flattened inaccurately. Null/absent relations produce null inventory values; malformed relations or inconsistent budget IDs fail the whole snapshot. Exact integer limits above `2^53` are preserved.

@@ -62,7 +62,7 @@ resource "litellm_project" "full" {
 - `tpm_limit` - (Optional Int64) Tokens-per-minute limit.
 - `rpm_limit` - (Optional Int64) Requests-per-minute limit.
 - `max_parallel_requests` - (Optional Int64) Concurrent request limit.
-- `model_max_budget` - (Optional Map of Float64) Legacy schema-compatible per-model budget shape. LiteLLM v1.98 expects structured GenericBudgetConfig objects for non-empty API values.
+- `model_max_budget` - (Optional Map of Float64) Legacy schema-compatible shape. Existing scalar-map state remains readable and can be cleared, but new non-empty additions and changes are rejected because LiteLLM v1.98 requires structured GenericBudgetConfig objects.
 - `model_rpm_limit` - (Optional Map of Int64) Per-model RPM limits stored in metadata.
 - `model_tpm_limit` - (Optional Map of Int64) Per-model TPM limits stored in metadata.
 - `blocked` - (Optional Bool) Whether the project is blocked.
@@ -79,14 +79,15 @@ resource "litellm_project" "full" {
 terraform import litellm_project.example <project-id>
 ```
 
-The first authoritative import read adopts visible nested budget values, including exact integer limits above `2^53`. Normal reads do not adopt unconfigured API defaults.
+The first authoritative import read adopts visible nested budget values, including `budget_id`, remote aliases/descriptions, and exact integer limits above `2^53`. Imported `budget_id`, `project_alias`, and `description` values may remain omitted without producing a plan. Normal reads do not adopt unconfigured API defaults.
 
 ## Budget, Clear, and Partial-Failure Semantics
 
-- LiteLLM v1.98 returns project budget controls through `litellm_budget_table`; similarly named top-level fields are ignored.
-- Configured/imported values detect out-of-band drift. A null or absent relation clears owned state; malformed relations and mismatched budget identities fail without publishing partial state.
+- LiteLLM v1.98 returns project budget controls through `litellm_budget_table`; similarly named top-level fields are ignored. Unconfigured structured `model_max_budget` values are not exposed through the legacy `map(float64)` attribute.
+- Configured/imported values detect out-of-band drift. Removing or changing a configured `budget_id` is rejected; import provenance permits omission only for an imported association.
+- An existing `budget_id` cannot be combined with budget limits, duration, or `model_max_budget` during create because v1.98 strips or ignores those controls against the shared budget. A null or absent relation clears owned state; malformed relations and mismatched budget identities fail without publishing partial state.
 - Project-row fields and budget-row fields use separate v1.98 endpoints. Budget removals send explicit nulls through `/budget/update`; clearing `budget_duration` also clears the server-managed reset timestamp.
 - `budget_reset_at` is not exposed by the v1.98 project response model. The provider initializes it after create and updates or clears it with duration changes.
 - Metadata, tags, and per-model RPM/TPM limits are replaced as one authoritative metadata document, so owned keys can be removed safely.
-- v1.98 ignores null clears for `project_alias` and `description`; the provider rejects those non-convergent plans instead of claiming success. Replace either with a non-null value.
+- v1.98 ignores null clears for `project_alias` and `description`; the provider rejects explicit configured removals instead of claiming success. Import provenance allows remotely adopted values to remain omitted. Replace configured values with a non-null value.
 - If LiteLLM accepts a project-row update but a subsequent budget update fails or returns the wrong budget identity, Terraform retains prior state and reports the partial failure. A later apply safely retries the idempotent desired values.

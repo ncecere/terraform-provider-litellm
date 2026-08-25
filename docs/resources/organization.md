@@ -69,7 +69,6 @@ Do not configure `blocked = true` or non-empty `tags`. LiteLLM v1.98 has no orga
 - `tpm_limit` - (Int64) Tokens-per-minute limit.
 - `rpm_limit` - (Int64) Requests-per-minute limit.
 - `max_parallel_requests` - (Int64) Concurrent request limit.
-- `model_max_budget` - (Map of Float64) Legacy schema-compatible per-model budget shape. LiteLLM v1.98 validates non-empty API values as structured GenericBudgetConfig objects; use with care pending structured-budget schema support.
 - `model_rpm_limit` - (Map of Int64) Per-model RPM limits stored in organization metadata.
 - `model_tpm_limit` - (Map of Int64) Per-model TPM limits stored in organization metadata.
 - `budget_duration` - (String) Reset duration such as `"30d"`, `"1h"`, or `"7d"`.
@@ -88,12 +87,13 @@ Do not configure `blocked = true` or non-empty `tags`. LiteLLM v1.98 has no orga
 terraform import litellm_organization.example <organization-id>
 ```
 
-The first authoritative import read adopts visible nested budget values, including exact integer limits above `2^53`. Normal lifecycle reads do not adopt unconfigured API defaults.
+The first authoritative import read adopts visible nested budget values, including `budget_id` and exact integer limits above `2^53`. The imported `budget_id` may remain omitted from configuration without producing a plan. Normal lifecycle reads do not adopt unconfigured API defaults.
 
 ## Budget and Drift Semantics
 
-- LiteLLM v1.98 returns organization budget controls through `litellm_budget_table`; similarly named top-level fields are not authoritative.
-- Configured/imported budget values detect out-of-band changes and explicit remote nulls. An absent or null relation clears owned state; malformed relations fail without publishing partial state.
+- LiteLLM v1.98 returns organization budget controls through `litellm_budget_table`; similarly named top-level fields are not authoritative. Structured `model_max_budget` is deferred because its GenericBudgetConfig values cannot be represented accurately as `map(float64)`.
+- Configured/imported budget values detect out-of-band changes and explicit remote nulls. Removing or changing a configured `budget_id` is rejected; an import-provenance marker permits omission only for an imported association.
+- An existing `budget_id` cannot be combined with budget limits or duration during create because v1.98 strips or ignores those controls against the shared budget. An absent or null relation clears owned state; malformed relations fail without publishing partial state.
 - Scalar and duration removal uses v1.98's transactional `/v2/organization/{id}` merge-patch endpoint with explicit `null` clears. Duration changes also recompute, or clear, the server reset timestamp.
 - Per-model RPM/TPM keys use the same endpoint's complete metadata replacement, allowing owned keys to clear without replacing the organization. Unrelated metadata already visible in state is preserved.
 - The provider never replaces or deletes an organization merely to clear a budget or metadata key; organization deletion cascades to dependent teams, memberships, and keys.
