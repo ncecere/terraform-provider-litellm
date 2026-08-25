@@ -23,6 +23,68 @@ import (
 // They assert the framework contracts hold uniformly across every type, and in
 // doing so give broad coverage of otherwise-untested boilerplate.
 
+var expectedResourceTypeNames = []string{
+	"litellm_model",
+	"litellm_key",
+	"litellm_key_block",
+	"litellm_team",
+	"litellm_team_block",
+	"litellm_team_member",
+	"litellm_team_member_add",
+	"litellm_mcp_server",
+	"litellm_credential",
+	"litellm_vector_store",
+	"litellm_organization",
+	"litellm_organization_member",
+	"litellm_user",
+	"litellm_budget",
+	"litellm_tag",
+	"litellm_access_group",
+	"litellm_unified_access_group",
+	"litellm_prompt",
+	"litellm_guardrail",
+	"litellm_search_tool",
+	"litellm_fallback",
+	"litellm_agent",
+	"litellm_project",
+}
+
+var expectedDataSourceTypeNames = []string{
+	"litellm_model",
+	"litellm_key",
+	"litellm_team",
+	"litellm_credential",
+	"litellm_vector_store",
+	"litellm_organization",
+	"litellm_user",
+	"litellm_budget",
+	"litellm_tag",
+	"litellm_access_group",
+	"litellm_unified_access_group",
+	"litellm_prompt",
+	"litellm_guardrail",
+	"litellm_mcp_server",
+	"litellm_search_tool",
+	"litellm_fallback",
+	"litellm_agent",
+	"litellm_project",
+	"litellm_models",
+	"litellm_keys",
+	"litellm_teams",
+	"litellm_organizations",
+	"litellm_users",
+	"litellm_budgets",
+	"litellm_tags",
+	"litellm_access_groups",
+	"litellm_unified_access_groups",
+	"litellm_prompts",
+	"litellm_guardrails",
+	"litellm_mcp_servers",
+	"litellm_search_tools",
+	"litellm_agents",
+	"litellm_projects",
+}
+
 func newTestProvider() provider.Provider {
 	return New("test")()
 }
@@ -80,8 +142,17 @@ func TestResourcesMetadataAndSchema(t *testing.T) {
 	}
 
 	seen := map[string]bool{}
+	actualTypeNames := make([]string, 0, len(factories))
 	for i, factory := range factories {
+		if factory == nil {
+			t.Errorf("resource factory #%d is nil", i)
+			continue
+		}
 		res := factory()
+		if res == nil {
+			t.Errorf("resource factory #%d returned nil", i)
+			continue
+		}
 
 		// Metadata: type name must be non-empty, litellm-prefixed and unique.
 		metaResp := &resource.MetadataResponse{}
@@ -100,6 +171,7 @@ func TestResourcesMetadataAndSchema(t *testing.T) {
 			t.Errorf("duplicate resource type name %q", metaResp.TypeName)
 		}
 		seen[metaResp.TypeName] = true
+		actualTypeNames = append(actualTypeNames, metaResp.TypeName)
 
 		// Schema: must not error and must define at least one attribute or block.
 		schemaResp := &resource.SchemaResponse{}
@@ -121,6 +193,8 @@ func TestResourcesMetadataAndSchema(t *testing.T) {
 			}
 		}
 	}
+
+	assertExactTypeNames(t, "resource", actualTypeNames, expectedResourceTypeNames)
 }
 
 // TestResourcesConfigureRejectsWrongProviderData verifies the type-assertion
@@ -190,8 +264,17 @@ func TestDataSourcesMetadataAndSchema(t *testing.T) {
 	}
 
 	seen := map[string]bool{}
+	actualTypeNames := make([]string, 0, len(factories))
 	for i, factory := range factories {
+		if factory == nil {
+			t.Errorf("data source factory #%d is nil", i)
+			continue
+		}
 		ds := factory()
+		if ds == nil {
+			t.Errorf("data source factory #%d returned nil", i)
+			continue
+		}
 
 		metaResp := &datasource.MetadataResponse{}
 		ds.Metadata(
@@ -209,6 +292,7 @@ func TestDataSourcesMetadataAndSchema(t *testing.T) {
 			t.Errorf("duplicate data source type name %q", metaResp.TypeName)
 		}
 		seen[metaResp.TypeName] = true
+		actualTypeNames = append(actualTypeNames, metaResp.TypeName)
 
 		schemaResp := &datasource.SchemaResponse{}
 		ds.Schema(context.Background(), datasource.SchemaRequest{}, schemaResp)
@@ -227,6 +311,8 @@ func TestDataSourcesMetadataAndSchema(t *testing.T) {
 			}
 		}
 	}
+
+	assertExactTypeNames(t, "data source", actualTypeNames, expectedDataSourceTypeNames)
 }
 
 // TestDataSourcesConfigureRejectsWrongProviderData verifies the guard in each
@@ -392,4 +478,38 @@ func hasResourceFields(s fwresourceschema.Schema) bool {
 
 func hasDataSourceFields(s fwdatasourceschema.Schema) bool {
 	return len(s.Attributes) > 0 || len(s.Blocks) > 0
+}
+
+func assertExactTypeNames(t *testing.T, kind string, actual, expected []string) {
+	t.Helper()
+
+	actualCounts := make(map[string]int, len(actual))
+	for _, typeName := range actual {
+		actualCounts[typeName]++
+	}
+	expectedNames := make(map[string]struct{}, len(expected))
+	for _, typeName := range expected {
+		if _, duplicate := expectedNames[typeName]; duplicate {
+			t.Fatalf("test contains duplicate expected %s type name %q", kind, typeName)
+		}
+		expectedNames[typeName] = struct{}{}
+	}
+
+	if len(actual) != len(expected) {
+		t.Errorf("registered %s count changed: got %d, want %d", kind, len(actual), len(expected))
+	}
+	for _, typeName := range expected {
+		switch actualCounts[typeName] {
+		case 0:
+			t.Errorf("missing registered %s type name %q", kind, typeName)
+		case 1:
+		default:
+			t.Errorf("registered %s type name %q %d times", kind, typeName, actualCounts[typeName])
+		}
+	}
+	for typeName := range actualCounts {
+		if _, expected := expectedNames[typeName]; !expected {
+			t.Errorf("unexpected registered %s type name %q", kind, typeName)
+		}
+	}
 }
