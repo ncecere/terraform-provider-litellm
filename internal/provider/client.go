@@ -70,7 +70,7 @@ func (c *Client) executeRequest(request *http.Request) (*http.Response, error) {
 		if response != nil && response.Body != nil {
 			_ = response.Body.Close()
 		}
-		return nil, safeTransportFailure(err)
+		return nil, safeDispatchedTransportFailure(err)
 	}
 	return response, nil
 }

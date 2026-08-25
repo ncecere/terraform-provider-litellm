@@ -43,16 +43,29 @@ type requestSafety struct {
 }
 
 type safeTransportError struct {
-	kind      string
-	identity  error
-	timeout   bool
-	temporary bool
+	kind       string
+	identity   error
+	timeout    bool
+	temporary  bool
+	dispatched bool
 }
 
 func (e *safeTransportError) Error() string   { return e.kind }
 func (e *safeTransportError) Unwrap() error   { return e.identity }
 func (e *safeTransportError) Timeout() bool   { return e.timeout }
 func (e *safeTransportError) Temporary() bool { return e.temporary }
+
+// safeDispatchedTransportFailure records that an HTTP transport was given the
+// request. Unless the failure proves a terminal TLS/protocol problem, a create
+// may have reached LiteLLM before the transport lost its response.
+func safeDispatchedTransportFailure(err error) error {
+	safeErr := safeTransportFailure(err)
+	var transportErr *safeTransportError
+	if errors.As(safeErr, &transportErr) {
+		transportErr.dispatched = true
+	}
+	return safeErr
+}
 
 type safeResponseError struct {
 	statusCode int

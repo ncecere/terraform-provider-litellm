@@ -234,7 +234,11 @@ func (r *UnifiedAccessGroupResource) Create(ctx context.Context, req resource.Cr
 		responseErr = validateUnifiedAccessGroupIdentity(result, "", data.AccessGroupName.ValueString())
 	}
 	if responseErr != nil {
-		r.recoverUnifiedAccessGroupCreate(ctx, &data, keyMutation, accepted, mutationErr, responseErr, resp)
+		if shouldRecoverUnifiedAccessGroupCreate(accepted, mutationErr) {
+			r.recoverUnifiedAccessGroupCreate(ctx, &data, keyMutation, accepted, mutationErr, responseErr, resp)
+		} else {
+			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to create unified access group: %s", responseErr))
+		}
 		return
 	}
 
@@ -249,6 +253,43 @@ func (r *UnifiedAccessGroupResource) Create(ctx context.Context, req resource.Cr
 	if synchronizationErr != nil {
 		resp.Diagnostics.AddError("Assigned Key Synchronization Partial", synchronizationErr.Error())
 	}
+}
+
+func isAmbiguousUnifiedAccessGroupCreateStatus(statusCode int) bool {
+	return statusCode == http.StatusRequestTimeout || (statusCode >= http.StatusInternalServerError && statusCode < 600)
+}
+
+func shouldRecoverUnifiedAccessGroupCreate(accepted bool, mutationErr error) bool {
+	// Any unusable 2xx result is ambiguous: LiteLLM accepted the request even
+	// though the provider could not read, decode, or validate its identity.
+	if accepted {
+		return true
+	}
+	if mutationErr == nil || errors.Is(mutationErr, context.Canceled) {
+		return false
+	}
+
+	var apiErr *APIError
+	if errors.As(mutationErr, &apiErr) {
+		return isAmbiguousUnifiedAccessGroupCreateStatus(apiErr.StatusCode)
+	}
+	var responseErr *safeResponseError
+	if errors.As(mutationErr, &responseErr) {
+		return isAmbiguousUnifiedAccessGroupCreateStatus(responseErr.statusCode)
+	}
+	var transportErr *safeTransportError
+	if errors.As(mutationErr, &transportErr) {
+		if !transportErr.dispatched {
+			return false
+		}
+		if transportErr.Timeout() || transportErr.Temporary() {
+			return true
+		}
+		// A generic failure after dispatch can be a lost response after commit.
+		// Known TLS/protocol failures are terminal and use a distinct safe kind.
+		return transportErr.dispatched && transportErr.kind == "LiteLLM HTTP transport request failed"
+	}
+	return false
 }
 
 func (r *UnifiedAccessGroupResource) recoverUnifiedAccessGroupCreate(
@@ -1490,6 +1531,27 @@ func unifiedAccessGroupCandidateMatchesConfiguration(ctx context.Context, candid
 			if configured[index] != observed[index] {
 				return false, nil
 			}
+		}
+	}
+	if isKnownUnifiedAccessGroupKeyList(data.AssignedKeyIDs) {
+		configured, err := unifiedAccessGroupKeyRepresentations(data.AssignedKeyIDs)
+		if err != nil {
+			return false, errors.New("configured assigned-key membership could not be decoded")
+		}
+		observed, invalid, err := rawUnifiedAccessGroupAssignedKeyRepresentations(candidate["assigned_key_ids"])
+		if err != nil || invalid != 0 {
+			return false, nil
+		}
+		configuredHashes := make(map[string]bool, len(configured))
+		observedHashes := make(map[string]bool, len(observed))
+		for hash := range configured {
+			configuredHashes[hash] = true
+		}
+		for hash := range observed {
+			observedHashes[hash] = true
+		}
+		if !unifiedAccessGroupHashSetsEqual(configuredHashes, observedHashes) {
+			return false, nil
 		}
 	}
 	return true, nil

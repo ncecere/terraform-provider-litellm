@@ -428,8 +428,9 @@ func TestUnifiedAccessGroupMissingKeyFailsBeforeMutationWithoutDisclosure(t *tes
 }
 
 type commitThenFailRoundTripper struct {
-	base http.RoundTripper
-	once atomic.Bool
+	base    http.RoundTripper
+	failure error
+	once    atomic.Bool
 }
 
 func (r *commitThenFailRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
@@ -440,13 +441,44 @@ func (r *commitThenFailRoundTripper) RoundTrip(request *http.Request) (*http.Res
 	if request.Method == http.MethodPost && request.URL.Path == "/v1/access_group" && !r.once.Swap(true) {
 		_, _ = io.Copy(io.Discard, response.Body)
 		_ = response.Body.Close()
-		return nil, errors.New("connection reset after database commit")
+		return nil, r.failure
 	}
 	return response, nil
 }
 
+type failResponseReadBody struct {
+	io.ReadCloser
+}
+
+func (b *failResponseReadBody) Read([]byte) (int, error) {
+	return 0, errors.New("response stream failed")
+}
+
+type failCreateResponseReadRoundTripper struct {
+	base http.RoundTripper
+}
+
+func (r *failCreateResponseReadRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	response, err := r.base.RoundTrip(request)
+	if err == nil && request.Method == http.MethodPost && request.URL.Path == "/v1/access_group" {
+		response.Body = &failResponseReadBody{ReadCloser: response.Body}
+		response.ContentLength = -1
+	}
+	return response, err
+}
+
 func TestUnifiedAccessGroupAcceptedAndAmbiguousCreateRecoveryRetainsExplicitPartialState(t *testing.T) {
-	for _, mode := range []string{"malformed-success", "non-2xx-after-commit", "transport-after-commit"} {
+	for _, mode := range []string{
+		"malformed-success",
+		"missing-identity-success",
+		"accepted-read-failure",
+		"request-timeout-after-commit",
+		"internal-server-error-after-commit",
+		"bad-gateway-after-commit",
+		"transport-after-commit",
+		"temporary-transport-after-commit",
+		"timeout-transport-after-commit",
+	} {
 		mode := mode
 		t.Run(mode, func(t *testing.T) {
 			t.Parallel()
@@ -474,8 +506,15 @@ func TestUnifiedAccessGroupAcceptedAndAmbiguousCreateRecoveryRetainsExplicitPart
 					case "malformed-success":
 						writer.WriteHeader(http.StatusCreated)
 						_, _ = writer.Write([]byte(`{"access_group_id":`))
-					case "non-2xx-after-commit":
+					case "missing-identity-success":
+						writer.WriteHeader(http.StatusCreated)
+						_, _ = writer.Write([]byte(`{"accepted":true}`))
+					case "request-timeout-after-commit":
+						http.Error(writer, `{"detail":"response timed out"}`, http.StatusRequestTimeout)
+					case "internal-server-error-after-commit":
 						http.Error(writer, `{"detail":"response cache failed"}`, http.StatusInternalServerError)
+					case "bad-gateway-after-commit":
+						http.Error(writer, `{"detail":"proxy lost upstream response"}`, http.StatusBadGateway)
 					default:
 						_ = json.NewEncoder(writer).Encode(unifiedAccessGroupAPIResponse("ignored-by-transport", "recovered", []string{hash}))
 					}
@@ -497,8 +536,20 @@ func TestUnifiedAccessGroupAcceptedAndAmbiguousCreateRecoveryRetainsExplicitPart
 			defer server.Close()
 
 			httpClient := server.Client()
-			if mode == "transport-after-commit" {
-				httpClient = &http.Client{Transport: &commitThenFailRoundTripper{base: server.Client().Transport}}
+			if mode == "accepted-read-failure" {
+				httpClient = &http.Client{Transport: &failCreateResponseReadRoundTripper{base: server.Client().Transport}}
+			}
+			var transportFailure error
+			switch mode {
+			case "transport-after-commit":
+				transportFailure = errors.New("connection reset after database commit")
+			case "temporary-transport-after-commit":
+				transportFailure = temporaryNetworkError{}
+			case "timeout-transport-after-commit":
+				transportFailure = timeoutNetworkError{}
+			}
+			if transportFailure != nil {
+				httpClient = &http.Client{Transport: &commitThenFailRoundTripper{base: server.Client().Transport, failure: transportFailure}}
 			}
 			schema := unifiedAccessGroupTestSchema(t)
 			configured := unifiedAccessGroupStringList("sha256:" + hash)
@@ -535,6 +586,271 @@ func TestUnifiedAccessGroupAcceptedAndAmbiguousCreateRecoveryRetainsExplicitPart
 			}
 		})
 	}
+}
+
+func TestUnifiedAccessGroupCreateDoesNotRecoverDefinitiveHTTPFailures(t *testing.T) {
+	for _, status := range []int{
+		http.StatusBadRequest,
+		http.StatusUnauthorized,
+		http.StatusForbidden,
+		http.StatusNotFound,
+		http.StatusConflict,
+		http.StatusMethodNotAllowed,
+		http.StatusUnprocessableEntity,
+		http.StatusTooManyRequests,
+	} {
+		status := status
+		t.Run(fmt.Sprintf("status-%d", status), func(t *testing.T) {
+			t.Parallel()
+
+			var postAttempted atomic.Bool
+			var listCalls atomic.Int32
+			var deleteCalls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				writer.Header().Set("Content-Type", "application/json")
+				switch {
+				case request.Method == http.MethodGet && request.URL.Path == "/v1/access_group":
+					listCalls.Add(1)
+					if postAttempted.Load() {
+						_ = json.NewEncoder(writer).Encode([]interface{}{unifiedAccessGroupAPIResponse("other-actor", "raced", []string{})})
+						return
+					}
+					_, _ = writer.Write([]byte(`[]`))
+				case request.Method == http.MethodPost && request.URL.Path == "/v1/access_group":
+					postAttempted.Store(true)
+					http.Error(writer, `{"detail":"definitive request failure"}`, status)
+				case request.Method == http.MethodDelete:
+					deleteCalls.Add(1)
+					writer.WriteHeader(http.StatusNoContent)
+				default:
+					http.NotFound(writer, request)
+				}
+			}))
+			defer server.Close()
+
+			schema := unifiedAccessGroupTestSchema(t)
+			plan := unifiedAccessGroupTestPlan(t, schema, unifiedAccessGroupPlanModel("raced", unifiedAccessGroupStringList()))
+			resourceUnderTest := &UnifiedAccessGroupResource{
+				client:                     &Client{APIBase: server.URL, APIKey: "test", HTTPClient: server.Client()},
+				keyVerificationMaxAttempts: 1,
+			}
+			response := &resource.CreateResponse{State: tfsdk.State{Raw: plan.Raw, Schema: schema}}
+			resourceUnderTest.Create(context.Background(), resource.CreateRequest{Plan: plan}, response)
+
+			if !response.Diagnostics.HasError() || !strings.Contains(fmt.Sprint(response.Diagnostics), fmt.Sprintf("status %d", status)) {
+				t.Fatalf("HTTP %d create diagnostics: %v", status, response.Diagnostics)
+			}
+			if listCalls.Load() != 1 {
+				t.Fatalf("HTTP %d exact-name list calls = %d, want preflight only", status, listCalls.Load())
+			}
+			if deleteCalls.Load() != 0 {
+				t.Fatalf("HTTP %d create deleted another actor's group", status)
+			}
+			var state UnifiedAccessGroupResourceModel
+			if diagnostics := response.State.Get(context.Background(), &state); diagnostics.HasError() {
+				t.Fatalf("decode HTTP %d failed-create state: %v", status, diagnostics)
+			}
+			if !state.AccessGroupID.IsUnknown() || !state.ID.IsUnknown() {
+				t.Fatalf("HTTP %d adopted another actor's identity: id=%#v access_group_id=%#v", status, state.ID, state.AccessGroupID)
+			}
+			if status == http.StatusConflict && strings.Contains(fmt.Sprint(response.Diagnostics), "Uncertain Ownership") {
+				t.Fatalf("raced 409 entered create recovery: %v", response.Diagnostics)
+			}
+		})
+	}
+}
+
+type failCreateRoundTripper struct {
+	base    http.RoundTripper
+	failure error
+}
+
+func (r *failCreateRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	if request.Method == http.MethodPost && request.URL.Path == "/v1/access_group" {
+		return nil, r.failure
+	}
+	return r.base.RoundTrip(request)
+}
+
+func TestUnifiedAccessGroupCreateDoesNotRecoverTerminalTransportFailures(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		failure error
+	}{
+		{name: "TLS hostname", failure: x509.HostnameError{Host: "wrong-host"}},
+		{name: "canceled", failure: context.Canceled},
+	} {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			var listCalls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				if request.Method == http.MethodGet && request.URL.Path == "/v1/access_group" {
+					listCalls.Add(1)
+					_, _ = writer.Write([]byte(`[]`))
+					return
+				}
+				http.NotFound(writer, request)
+			}))
+			defer server.Close()
+
+			httpClient := &http.Client{Transport: &failCreateRoundTripper{base: server.Client().Transport, failure: test.failure}}
+			schema := unifiedAccessGroupTestSchema(t)
+			plan := unifiedAccessGroupTestPlan(t, schema, unifiedAccessGroupPlanModel("terminal", unifiedAccessGroupStringList()))
+			resourceUnderTest := &UnifiedAccessGroupResource{
+				client:                     &Client{APIBase: server.URL, APIKey: "test", HTTPClient: httpClient},
+				keyVerificationMaxAttempts: 1,
+			}
+			response := &resource.CreateResponse{State: tfsdk.State{Raw: plan.Raw, Schema: schema}}
+			resourceUnderTest.Create(context.Background(), resource.CreateRequest{Plan: plan}, response)
+
+			if !response.Diagnostics.HasError() {
+				t.Fatal("terminal create transport failure unexpectedly succeeded")
+			}
+			if listCalls.Load() != 1 {
+				t.Fatalf("terminal create transport exact-name list calls = %d, want preflight only", listCalls.Load())
+			}
+			var state UnifiedAccessGroupResourceModel
+			if diagnostics := response.State.Get(context.Background(), &state); diagnostics.HasError() {
+				t.Fatalf("decode terminal transport state: %v", diagnostics)
+			}
+			if !state.AccessGroupID.IsUnknown() {
+				t.Fatalf("terminal create transport failure adopted an identity: %#v", state.AccessGroupID)
+			}
+		})
+	}
+}
+
+func TestUnifiedAccessGroupCreateRecoveryRequiresExactAssignedKeyMembership(t *testing.T) {
+	t.Run("same name with different keys is rejected", func(t *testing.T) {
+		t.Parallel()
+
+		configuredHash := strings.Repeat("6", 64)
+		otherHash := strings.Repeat("7", 64)
+		var committed atomic.Bool
+		var listCalls atomic.Int32
+		var keyListCalls atomic.Int32
+		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			writer.Header().Set("Content-Type", "application/json")
+			switch {
+			case request.Method == http.MethodGet && request.URL.Path == "/v1/access_group":
+				listCalls.Add(1)
+				if committed.Load() {
+					_ = json.NewEncoder(writer).Encode([]interface{}{unifiedAccessGroupAPIResponse("other-actor", "same-name", []string{otherHash})})
+					return
+				}
+				_, _ = writer.Write([]byte(`[]`))
+			case request.Method == http.MethodGet && request.URL.Path == "/key/info":
+				hash := request.URL.Query().Get("key")
+				_ = json.NewEncoder(writer).Encode(map[string]interface{}{"key": hash, "info": map[string]interface{}{"access_group_ids": []string{}}})
+			case request.Method == http.MethodPost && request.URL.Path == "/v1/access_group":
+				committed.Store(true)
+				writer.WriteHeader(http.StatusCreated)
+				_, _ = writer.Write([]byte(`{"access_group_id":`))
+			case request.Method == http.MethodGet && request.URL.Path == "/key/list":
+				keyListCalls.Add(1)
+				writeUnifiedAccessGroupKeyPage(writer, 1, 1, otherHash)
+			default:
+				http.NotFound(writer, request)
+			}
+		}))
+		defer server.Close()
+
+		schema := unifiedAccessGroupTestSchema(t)
+		plan := unifiedAccessGroupTestPlan(t, schema, unifiedAccessGroupPlanModel("same-name", unifiedAccessGroupStringList("sha256:"+configuredHash)))
+		resourceUnderTest := &UnifiedAccessGroupResource{
+			client:                     &Client{APIBase: server.URL, APIKey: "test", HTTPClient: server.Client()},
+			keyVerificationMaxAttempts: 1,
+		}
+		response := &resource.CreateResponse{State: tfsdk.State{Raw: plan.Raw, Schema: schema}}
+		resourceUnderTest.Create(context.Background(), resource.CreateRequest{Plan: plan}, response)
+
+		if !response.Diagnostics.HasError() || !strings.Contains(fmt.Sprint(response.Diagnostics), "full identity did not exactly match") {
+			t.Fatalf("different-key candidate diagnostics: %v", response.Diagnostics)
+		}
+		if listCalls.Load() != 2 || keyListCalls.Load() != 0 {
+			t.Fatalf("different-key recovery list calls: groups=%d keys=%d", listCalls.Load(), keyListCalls.Load())
+		}
+		var state UnifiedAccessGroupResourceModel
+		if diagnostics := response.State.Get(context.Background(), &state); diagnostics.HasError() {
+			t.Fatalf("decode different-key recovery state: %v", diagnostics)
+		}
+		if !state.AccessGroupID.IsUnknown() {
+			t.Fatalf("same-name different-key candidate was adopted: %#v", state.AccessGroupID)
+		}
+	})
+
+	t.Run("normalized unordered duplicate keys match before two-sided verification", func(t *testing.T) {
+		t.Parallel()
+
+		a := strings.Repeat("8", 64)
+		b := strings.Repeat("9", 64)
+		configured := unifiedAccessGroupStringList("SHA256:"+strings.ToUpper(b), "sha256:"+a, a, "SHA256:"+strings.ToUpper(a))
+		candidateAssignments := []string{"sha256:" + strings.ToUpper(a), b, "SHA256:" + strings.ToUpper(b), a}
+		var committed atomic.Bool
+		var keyInfoCalls atomic.Int32
+		var keyListCalls atomic.Int32
+		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			writer.Header().Set("Content-Type", "application/json")
+			switch {
+			case request.Method == http.MethodGet && request.URL.Path == "/v1/access_group":
+				if committed.Load() {
+					_ = json.NewEncoder(writer).Encode([]interface{}{unifiedAccessGroupAPIResponse("ag-normalized", "normalized", candidateAssignments)})
+					return
+				}
+				_, _ = writer.Write([]byte(`[]`))
+			case request.Method == http.MethodGet && request.URL.Path == "/key/info":
+				keyInfoCalls.Add(1)
+				hash := request.URL.Query().Get("key")
+				groups := []string{}
+				if committed.Load() {
+					groups = []string{"ag-normalized"}
+				}
+				_ = json.NewEncoder(writer).Encode(map[string]interface{}{"key": hash, "info": map[string]interface{}{"access_group_ids": groups}})
+			case request.Method == http.MethodPost && request.URL.Path == "/v1/access_group":
+				var body map[string]interface{}
+				if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+					t.Errorf("decode normalized create request: %v", err)
+				}
+				if got, want := body["assigned_key_ids"], []interface{}{a, b}; !reflect.DeepEqual(got, want) {
+					t.Errorf("normalized create key hashes = %#v, want %#v", got, want)
+				}
+				committed.Store(true)
+				writer.WriteHeader(http.StatusCreated)
+				_, _ = writer.Write([]byte(`{"access_group_id":`))
+			case request.Method == http.MethodGet && request.URL.Path == "/key/list":
+				keyListCalls.Add(1)
+				writeUnifiedAccessGroupKeyPage(writer, 1, 1, b, a)
+			default:
+				http.NotFound(writer, request)
+			}
+		}))
+		defer server.Close()
+
+		schema := unifiedAccessGroupTestSchema(t)
+		plan := unifiedAccessGroupTestPlan(t, schema, unifiedAccessGroupPlanModel("normalized", configured))
+		resourceUnderTest := &UnifiedAccessGroupResource{
+			client:                     &Client{APIBase: server.URL, APIKey: "test", HTTPClient: server.Client()},
+			keyVerificationMaxAttempts: 1,
+		}
+		response := &resource.CreateResponse{State: tfsdk.State{Raw: plan.Raw, Schema: schema}}
+		resourceUnderTest.Create(context.Background(), resource.CreateRequest{Plan: plan}, response)
+
+		if !response.Diagnostics.HasError() || !strings.Contains(fmt.Sprint(response.Diagnostics), "Recovered With Uncertain Ownership") {
+			t.Fatalf("normalized candidate recovery diagnostics: %v", response.Diagnostics)
+		}
+		var state UnifiedAccessGroupResourceModel
+		if diagnostics := response.State.Get(context.Background(), &state); diagnostics.HasError() {
+			t.Fatalf("decode normalized recovery state: %v", diagnostics)
+		}
+		if state.AccessGroupID.ValueString() != "ag-normalized" || !state.AssignedKeyIDs.Equal(configured) {
+			t.Fatalf("normalized exact-key candidate was not retained after two-sided verification: %#v", state)
+		}
+		if keyInfoCalls.Load() != 4 || keyListCalls.Load() != 1 {
+			t.Fatalf("normalized candidate did not run preflight plus two-sided verification: key info=%d key list=%d", keyInfoCalls.Load(), keyListCalls.Load())
+		}
+	})
 }
 
 func TestUnifiedAccessGroupAcceptedCreateRecoveryRetriesSuccessfulEmptyDiscovery(t *testing.T) {
@@ -1282,6 +1598,12 @@ type temporaryNetworkError struct{}
 func (temporaryNetworkError) Error() string   { return "temporary network failure" }
 func (temporaryNetworkError) Timeout() bool   { return false }
 func (temporaryNetworkError) Temporary() bool { return true }
+
+type timeoutNetworkError struct{}
+
+func (timeoutNetworkError) Error() string   { return "network timeout" }
+func (timeoutNetworkError) Timeout() bool   { return true }
+func (timeoutNetworkError) Temporary() bool { return true }
 
 func TestUnifiedAccessGroupKeyInfoRequiresMatchingTopLevelEcho(t *testing.T) {
 	t.Parallel()
