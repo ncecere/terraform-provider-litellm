@@ -7,6 +7,7 @@ import (
 	"regexp"
 
 	"github.com/google/uuid"
+	"github.com/hashicorp/terraform-plugin-framework-validators/mapvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -229,12 +230,14 @@ func (r *TeamResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 				Optional:    true,
 				Computed:    true,
 				ElementType: types.Int64Type,
+				Validators:  []validator.Map{mapvalidator.NoNullValues()},
 			},
 			"model_tpm_limit": schema.MapAttribute{
 				Description: "Per-model TPM limits for the team.",
 				Optional:    true,
 				Computed:    true,
 				ElementType: types.Int64Type,
+				Validators:  []validator.Map{mapvalidator.NoNullValues()},
 			},
 			"tags": schema.ListAttribute{
 				Description: "Tags for the team (for spend tracking and routing).",
@@ -360,7 +363,11 @@ func (r *TeamResource) Create(ctx context.Context, req resource.CreateRequest, r
 
 	teamID := teamIDForCreate(data.TeamID)
 	data.TeamID = types.StringValue(teamID)
-	teamReq := r.buildTeamRequest(ctx, &data, teamID)
+	teamReq, err := r.buildTeamRequest(ctx, &data, teamID)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Team Numeric Map", err.Error())
+		return
+	}
 
 	if err := r.client.DoRequestWithResponse(ctx, "POST", "/team/new", teamReq, nil); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to create team: %s", err))
@@ -381,11 +388,14 @@ func (r *TeamResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 	var data TeamResourceModel
 
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
+	importedMarker, privateDiags := req.Private.GetKey(ctx, numericImportedPrivateKey)
+	resp.Diagnostics.Append(privateDiags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	imported := string(importedMarker) == "true"
 
-	if err := r.readTeam(ctx, &data); err != nil {
+	if err := r.readTeamWithNumericOwnership(ctx, &data, imported); err != nil {
 		if IsNotFoundError(err) {
 			resp.State.RemoveResource(ctx)
 			return
@@ -395,6 +405,9 @@ func (r *TeamResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	if !resp.Diagnostics.HasError() && imported {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, nil)...)
+	}
 }
 
 func (r *TeamResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
@@ -416,7 +429,11 @@ func (r *TeamResource) Update(ctx context.Context, req resource.UpdateRequest, r
 	if data.TeamID.IsNull() || data.TeamID.IsUnknown() {
 		data.TeamID = state.ID
 	}
-	teamReq := r.buildTeamUpdateRequest(ctx, &data, data.ID.ValueString())
+	teamReq, err := r.buildTeamUpdateRequest(ctx, &data, data.ID.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Team Numeric Map", err.Error())
+		return
+	}
 	applyTeamNullableClears(teamReq, &state, &data)
 
 	// LiteLLM's team-default budget handler ignores explicit nulls whenever the
@@ -477,9 +494,12 @@ func (r *TeamResource) Delete(ctx context.Context, req resource.DeleteRequest, r
 func (r *TeamResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("team_id"), req.ID)...)
+	if resp.Private != nil {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, []byte("true"))...)
+	}
 }
 
-func (r *TeamResource) buildTeamRequest(ctx context.Context, data *TeamResourceModel, teamID string) map[string]interface{} {
+func (r *TeamResource) buildTeamRequest(ctx context.Context, data *TeamResourceModel, teamID string) (map[string]interface{}, error) {
 	teamReq := map[string]interface{}{
 		"team_id":    teamID,
 		"team_alias": data.TeamAlias.ValueString(),
@@ -584,26 +604,31 @@ func (r *TeamResource) buildTeamRequest(ctx context.Context, data *TeamResourceM
 	}
 
 	if !data.ModelRPMLimit.IsNull() && !data.ModelRPMLimit.IsUnknown() {
-		var modelRPM map[string]int64
-		data.ModelRPMLimit.ElementsAs(ctx, &modelRPM, false)
-		if len(modelRPM) > 0 {
-			teamReq["model_rpm_limit"] = modelRPM
+		modelRPM, err := int64RequestMap(data.ModelRPMLimit, "model_rpm_limit")
+		if err != nil {
+			return nil, err
 		}
+		teamReq["model_rpm_limit"] = modelRPM
 	}
 
 	if !data.ModelTPMLimit.IsNull() && !data.ModelTPMLimit.IsUnknown() {
-		var modelTPM map[string]int64
-		data.ModelTPMLimit.ElementsAs(ctx, &modelTPM, false)
-		if len(modelTPM) > 0 {
-			teamReq["model_tpm_limit"] = modelTPM
+		modelTPM, err := int64RequestMap(data.ModelTPMLimit, "model_tpm_limit")
+		if err != nil {
+			return nil, err
 		}
+		teamReq["model_tpm_limit"] = modelTPM
 	}
 
 	if !data.Metadata.IsNull() && !data.Metadata.IsUnknown() {
 		var metadata map[string]string
 		data.Metadata.ElementsAs(ctx, &metadata, false)
 		if len(metadata) > 0 {
-			teamReq["metadata"] = convertMetadataToNative(metadata)
+			metadataPayload := convertMetadataToNative(metadata)
+			delete(metadataPayload, "model_rpm_limit")
+			delete(metadataPayload, "model_tpm_limit")
+			if len(metadataPayload) > 0 {
+				teamReq["metadata"] = metadataPayload
+			}
 		}
 	}
 
@@ -613,18 +638,21 @@ func (r *TeamResource) buildTeamRequest(ctx context.Context, data *TeamResourceM
 		teamReq["router_settings"] = map[string]interface{}{}
 	}
 
-	return teamReq
+	return teamReq, nil
 }
 
-func (r *TeamResource) buildTeamUpdateRequest(ctx context.Context, data *TeamResourceModel, teamID string) map[string]interface{} {
-	teamReq := r.buildTeamRequest(ctx, data, teamID)
+func (r *TeamResource) buildTeamUpdateRequest(ctx context.Context, data *TeamResourceModel, teamID string) (map[string]interface{}, error) {
+	teamReq, err := r.buildTeamRequest(ctx, data, teamID)
+	if err != nil {
+		return nil, err
+	}
 
 	// LiteLLM v1.98 only defines limit enforcement types on NewTeamRequest.
 	// UpdateTeamRequest ignores them, so changes are handled by replacement.
 	delete(teamReq, "tpm_limit_type")
 	delete(teamReq, "rpm_limit_type")
 
-	return teamReq
+	return teamReq, nil
 }
 
 func extractTeamMemberBudgetClears(teamReq map[string]interface{}, teamID string) map[string]interface{} {
@@ -715,6 +743,10 @@ func fallbackEntriesToAPIFormat(ctx context.Context, list types.List) []map[stri
 }
 
 func (r *TeamResource) readTeam(ctx context.Context, data *TeamResourceModel) error {
+	return r.readTeamWithNumericOwnership(ctx, data, false)
+}
+
+func (r *TeamResource) readTeamWithNumericOwnership(ctx context.Context, data *TeamResourceModel, imported bool) error {
 	endpoint := fmt.Sprintf("/team/info?team_id=%s", url.QueryEscape(data.ID.ValueString()))
 
 	var result map[string]interface{}
@@ -722,10 +754,23 @@ func (r *TeamResource) readTeam(ctx context.Context, data *TeamResourceModel) er
 		return err
 	}
 
-	// The /team/info endpoint may return team data nested inside "team_info"
+	// The /team/info endpoint may return team data nested inside "team_info".
 	teamInfo := result
 	if nested, ok := result["team_info"].(map[string]interface{}); ok {
 		teamInfo = nested
+	}
+	if imported {
+		validated, err := requireImportedObjectField(true, "team", result, "team_info")
+		if err != nil {
+			return err
+		}
+		teamInfo = validated
+	}
+	if err := validateImportedObjectIdentity(imported, "team", teamInfo, "team_id", data.ID.ValueString()); err != nil {
+		return err
+	}
+	if err := requireImportedStringField(imported, "team", teamInfo, "team_alias"); err != nil {
+		return err
 	}
 
 	// Keep the configurable team_id and Terraform id tied to the same remote
@@ -747,38 +792,20 @@ func (r *TeamResource) readTeam(ctx context.Context, data *TeamResourceModel) er
 		return fmt.Errorf("invalid access_group_ids in team response: %w", err)
 	}
 	data.AccessGroupIDs = accessGroupIDs
-	if v, exists := teamInfo["tpm_limit"]; exists {
-		if tpm, ok := v.(float64); ok {
-			data.TPMLimit = types.Int64Value(int64(tpm))
-		} else if v == nil {
-			data.TPMLimit = types.Int64Null()
-		}
-	} else if data.TPMLimit.IsUnknown() {
-		data.TPMLimit = types.Int64Null()
+	// These numeric attributes are Optional-only. Validate every present value,
+	// adopt only configured values, and clear configured state on API null or
+	// omission so remote removals are observable.
+	tpmOwned := imported || (!data.TPMLimit.IsNull() && !data.TPMLimit.IsUnknown())
+	if err := updateInt64FromAPI(&data.TPMLimit, teamInfo, tpmOwned, tpmOwned, "tpm_limit"); err != nil {
+		return err
 	}
-	if v, exists := teamInfo["rpm_limit"]; exists {
-		if rpm, ok := v.(float64); ok {
-			data.RPMLimit = types.Int64Value(int64(rpm))
-		} else if v == nil {
-			data.RPMLimit = types.Int64Null()
-		}
-	} else if data.RPMLimit.IsUnknown() {
-		data.RPMLimit = types.Int64Null()
+	rpmOwned := imported || (!data.RPMLimit.IsNull() && !data.RPMLimit.IsUnknown())
+	if err := updateInt64FromAPI(&data.RPMLimit, teamInfo, rpmOwned, rpmOwned, "rpm_limit"); err != nil {
+		return err
 	}
-	// max_budget and budget_duration are Optional-only managed inputs. LiteLLM
-	// deployments can inject server-side defaults when these fields are omitted.
-	// Do not copy those defaults into null Terraform state: doing so changes an
-	// unconfigured planned value during Create and causes an inconsistent-result
-	// error. Configured values are still refreshed, and explicit API nulls still
-	// clear state so drift and user-requested removals are handled normally.
-	if v, exists := teamInfo["max_budget"]; exists {
-		if maxBudget, ok := v.(float64); ok && !data.MaxBudget.IsNull() {
-			data.MaxBudget = types.Float64Value(maxBudget)
-		} else if v == nil {
-			data.MaxBudget = types.Float64Null()
-		}
-	} else if data.MaxBudget.IsUnknown() {
-		data.MaxBudget = types.Float64Null()
+	maxBudgetOwned := imported || (!data.MaxBudget.IsNull() && !data.MaxBudget.IsUnknown())
+	if err := updateFloat64FromAPI(&data.MaxBudget, teamInfo, maxBudgetOwned, maxBudgetOwned, "max_budget"); err != nil {
+		return err
 	}
 	if v, exists := teamInfo["budget_duration"]; exists {
 		if budgetDuration, ok := v.(string); ok && budgetDuration != "" && !data.BudgetDuration.IsNull() {
@@ -802,22 +829,9 @@ func (r *TeamResource) readTeam(ctx context.Context, data *TeamResourceModel) er
 	if nestedBudget, ok := teamInfo["team_member_budget_table"].(map[string]interface{}); ok {
 		teamMemberBudgetInfo = nestedBudget
 	}
-	if !data.TeamMemberBudget.IsNull() || data.TeamMemberBudget.IsUnknown() {
-		if v, exists := teamMemberBudgetInfo["team_member_budget"]; exists {
-			if teamMemberBudget, ok := v.(float64); ok {
-				data.TeamMemberBudget = types.Float64Value(teamMemberBudget)
-			} else if v == nil {
-				data.TeamMemberBudget = types.Float64Null()
-			}
-		} else if v, exists := teamMemberBudgetInfo["max_budget"]; exists {
-			if teamMemberBudget, ok := v.(float64); ok {
-				data.TeamMemberBudget = types.Float64Value(teamMemberBudget)
-			} else if v == nil {
-				data.TeamMemberBudget = types.Float64Null()
-			}
-		} else if data.TeamMemberBudget.IsUnknown() {
-			data.TeamMemberBudget = types.Float64Null()
-		}
+	teamMemberBudgetOwned := imported || (!data.TeamMemberBudget.IsNull() && !data.TeamMemberBudget.IsUnknown())
+	if err := updateFloat64FromAPIAliases(&data.TeamMemberBudget, teamMemberBudgetInfo, teamMemberBudgetOwned, teamMemberBudgetOwned, "team_member_budget", "max_budget"); err != nil {
+		return err
 	}
 	if !data.MemberBudgetDuration.IsNull() || data.MemberBudgetDuration.IsUnknown() {
 		if v, exists := teamMemberBudgetInfo["team_member_budget_duration"]; exists {
@@ -836,39 +850,13 @@ func (r *TeamResource) readTeam(ctx context.Context, data *TeamResourceModel) er
 			data.MemberBudgetDuration = types.StringNull()
 		}
 	}
-	if !data.TeamMemberRPMLimit.IsNull() || data.TeamMemberRPMLimit.IsUnknown() {
-		if v, exists := teamMemberBudgetInfo["team_member_rpm_limit"]; exists {
-			if teamMemberRPMLimit, ok := v.(float64); ok {
-				data.TeamMemberRPMLimit = types.Int64Value(int64(teamMemberRPMLimit))
-			} else if v == nil {
-				data.TeamMemberRPMLimit = types.Int64Null()
-			}
-		} else if v, exists := teamMemberBudgetInfo["rpm_limit"]; exists {
-			if teamMemberRPMLimit, ok := v.(float64); ok {
-				data.TeamMemberRPMLimit = types.Int64Value(int64(teamMemberRPMLimit))
-			} else if v == nil {
-				data.TeamMemberRPMLimit = types.Int64Null()
-			}
-		} else if data.TeamMemberRPMLimit.IsUnknown() {
-			data.TeamMemberRPMLimit = types.Int64Null()
-		}
+	teamMemberRPMOwned := imported || (!data.TeamMemberRPMLimit.IsNull() && !data.TeamMemberRPMLimit.IsUnknown())
+	if err := updateInt64FromAPIAliases(&data.TeamMemberRPMLimit, teamMemberBudgetInfo, teamMemberRPMOwned, teamMemberRPMOwned, "team_member_rpm_limit", "rpm_limit"); err != nil {
+		return err
 	}
-	if !data.TeamMemberTPMLimit.IsNull() || data.TeamMemberTPMLimit.IsUnknown() {
-		if v, exists := teamMemberBudgetInfo["team_member_tpm_limit"]; exists {
-			if teamMemberTPMLimit, ok := v.(float64); ok {
-				data.TeamMemberTPMLimit = types.Int64Value(int64(teamMemberTPMLimit))
-			} else if v == nil {
-				data.TeamMemberTPMLimit = types.Int64Null()
-			}
-		} else if v, exists := teamMemberBudgetInfo["tpm_limit"]; exists {
-			if teamMemberTPMLimit, ok := v.(float64); ok {
-				data.TeamMemberTPMLimit = types.Int64Value(int64(teamMemberTPMLimit))
-			} else if v == nil {
-				data.TeamMemberTPMLimit = types.Int64Null()
-			}
-		} else if data.TeamMemberTPMLimit.IsUnknown() {
-			data.TeamMemberTPMLimit = types.Int64Null()
-		}
+	teamMemberTPMOwned := imported || (!data.TeamMemberTPMLimit.IsNull() && !data.TeamMemberTPMLimit.IsUnknown())
+	if err := updateInt64FromAPIAliases(&data.TeamMemberTPMLimit, teamMemberBudgetInfo, teamMemberTPMOwned, teamMemberTPMOwned, "team_member_tpm_limit", "tpm_limit"); err != nil {
+		return err
 	}
 
 	// Handle models list - preserve null when API returns empty and config didn't specify models
@@ -938,6 +926,9 @@ func (r *TeamResource) readTeam(ctx context.Context, data *TeamResourceModel) er
 
 		metaMap := make(map[string]attr.Value)
 		for k, v := range metadata {
+			if k == "model_rpm_limit" || k == "model_tpm_limit" {
+				continue
+			}
 			if len(configuredKeys) > 0 && !configuredKeys[k] {
 				continue
 			}
@@ -966,32 +957,14 @@ func (r *TeamResource) readTeam(ctx context.Context, data *TeamResourceModel) er
 		data.ModelAliases, _ = types.MapValue(types.StringType, map[string]attr.Value{})
 	}
 
-	// Handle model_rpm_limit map
-	// The API may not echo back per-model limits, so only clear on Unknown.
-	if modelRPM, ok := teamInfo["model_rpm_limit"].(map[string]interface{}); ok && len(modelRPM) > 0 {
-		rpmMap := make(map[string]attr.Value)
-		for k, v := range modelRPM {
-			if num, ok := v.(float64); ok {
-				rpmMap[k] = types.Int64Value(int64(num))
-			}
-		}
-		data.ModelRPMLimit, _ = types.MapValue(types.Int64Type, rpmMap)
-	} else if data.ModelRPMLimit.IsUnknown() {
-		data.ModelRPMLimit, _ = types.MapValue(types.Int64Type, map[string]attr.Value{})
+	// LiteLLM v1.98 stores team per-model rates in team_info.metadata.
+	modelRPMOwned := imported || (!data.ModelRPMLimit.IsNull() && !data.ModelRPMLimit.IsUnknown())
+	if err := updateInt64MapFromAPI(&data.ModelRPMLimit, teamInfo, modelRPMOwned, modelRPMOwned, "metadata", "model_rpm_limit"); err != nil {
+		return err
 	}
-
-	// Handle model_tpm_limit map
-	// The API may not echo back per-model limits, so only clear on Unknown.
-	if modelTPM, ok := teamInfo["model_tpm_limit"].(map[string]interface{}); ok && len(modelTPM) > 0 {
-		tpmMap := make(map[string]attr.Value)
-		for k, v := range modelTPM {
-			if num, ok := v.(float64); ok {
-				tpmMap[k] = types.Int64Value(int64(num))
-			}
-		}
-		data.ModelTPMLimit, _ = types.MapValue(types.Int64Type, tpmMap)
-	} else if data.ModelTPMLimit.IsUnknown() {
-		data.ModelTPMLimit, _ = types.MapValue(types.Int64Type, map[string]attr.Value{})
+	modelTPMOwned := imported || (!data.ModelTPMLimit.IsNull() && !data.ModelTPMLimit.IsUnknown())
+	if err := updateInt64MapFromAPI(&data.ModelTPMLimit, teamInfo, modelTPMOwned, modelTPMOwned, "metadata", "model_tpm_limit"); err != nil {
+		return err
 	}
 
 	// Handle router_settings - always reflect the API's actual state so Terraform
@@ -1006,7 +979,11 @@ func (r *TeamResource) readTeam(ctx context.Context, data *TeamResourceModel) er
 	permEndpoint := fmt.Sprintf("/team/permissions_list?team_id=%s", url.QueryEscape(data.ID.ValueString()))
 	var permResult map[string]interface{}
 	if err := r.client.DoRequestWithResponse(ctx, "GET", permEndpoint, nil, &permResult); err == nil {
-		if perms, ok := permResult["team_member_permissions"].([]interface{}); ok && len(perms) > 0 {
+		permsValue, permsPresent := permResult["team_member_permissions"].([]interface{})
+		if imported && !permsPresent {
+			return fmt.Errorf("team import permissions response is missing the required permissions array")
+		}
+		if perms := permsValue; permsPresent && len(perms) > 0 {
 			permissions := make([]string, len(perms))
 			for i, p := range perms {
 				if s, ok := p.(string); ok {
@@ -1017,6 +994,8 @@ func (r *TeamResource) readTeam(ctx context.Context, data *TeamResourceModel) er
 		} else if !data.TeamMemberPermissions.IsNull() {
 			data.TeamMemberPermissions, _ = types.ListValue(types.StringType, []attr.Value{})
 		}
+	} else if imported {
+		return fmt.Errorf("team import permissions response could not be authoritatively validated")
 	} else if !data.TeamMemberPermissions.IsNull() {
 		data.TeamMemberPermissions, _ = types.ListValue(types.StringType, []attr.Value{})
 	}

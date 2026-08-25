@@ -138,11 +138,13 @@ func (d *SearchToolsListDataSource) Read(ctx context.Context, req datasource.Rea
 			if apiBase, ok := litellmParams["api_base"].(string); ok {
 				item.APIBase = types.StringValue(apiBase)
 			}
-			if timeout, ok := litellmParams["timeout"].(float64); ok {
-				item.Timeout = types.Float64Value(timeout)
+			if err := updateFloat64FromAPI(&item.Timeout, litellmParams, true, true, "timeout"); err != nil {
+				resp.Diagnostics.AddError("Invalid API Response", err.Error())
+				return
 			}
-			if maxRetries, ok := litellmParams["max_retries"].(float64); ok {
-				item.MaxRetries = types.Int64Value(int64(maxRetries))
+			if err := updateInt64FromAPI(&item.MaxRetries, litellmParams, true, true, "max_retries"); err != nil {
+				resp.Diagnostics.AddError("Invalid API Response", err.Error())
+				return
 			}
 		}
 

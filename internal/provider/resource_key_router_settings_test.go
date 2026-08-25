@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -292,6 +293,76 @@ func TestKeyRouterSettingsFromAPIPreservesEquivalentConfiguredJSON(t *testing.T)
 	}
 	if !got.Attributes()["retry_policy"].Equal(current.Attributes()["retry_policy"]) {
 		t.Fatalf("retry policy changed: %#v", got.Attributes()["retry_policy"])
+	}
+}
+
+func TestKeyRouterSettingsPreservesExactIntegerReadback(t *testing.T) {
+	t.Parallel()
+
+	got, present, err := keyRouterSettingsFromAPI(`{"num_retries":9.007199254740993e15,"max_retries":9223372036854775807,"retry_after":0.25,"retry_policy":{"RateLimitErrorRetries":-9223372036854775808}}`, types.ObjectNull(keyRouterSettingsAttrTypes))
+	if err != nil || !present {
+		t.Fatalf("exact numeric string readback = present %t, error %v", present, err)
+	}
+	attrs := got.Attributes()
+	if attrs["num_retries"].(types.Int64).ValueInt64() != 9007199254740993 || attrs["max_retries"].(types.Int64).ValueInt64() != math.MaxInt64 {
+		t.Fatalf("router retry limits = %#v, %#v", attrs["num_retries"], attrs["max_retries"])
+	}
+	policy := attrs["retry_policy"].(types.Object).Attributes()
+	if policy["rate_limit_error_retries"].(types.Int64).ValueInt64() != math.MinInt64 {
+		t.Fatalf("nested retry limit = %#v", policy["rate_limit_error_retries"])
+	}
+	if attrs["retry_after"].(types.Float64).ValueFloat64() != 0.25 {
+		t.Fatalf("retry_after = %#v", attrs["retry_after"])
+	}
+
+	secret := "9007199254740993-secret"
+	if _, _, err := keyRouterSettingsFromAPI(map[string]interface{}{"num_retries": secret}, types.ObjectNull(keyRouterSettingsAttrTypes)); err == nil || strings.Contains(err.Error(), secret) {
+		t.Fatalf("unsafe malformed integer error: %v", err)
+	}
+}
+
+func TestKeyRouterSettingsComplexJSONPreservesIntegersAboveTwoToFiftyThree(t *testing.T) {
+	t.Parallel()
+
+	configured := types.StringValue(`{ "threshold": 9007199254740993, "scientific": 9.223372036854775807e18, "beyond_int64": 18446744073709551617, "fraction": 0.25 }`)
+	decoded, err := decodeRouterSettingsJSON(configured)
+	if err != nil {
+		t.Fatal(err)
+	}
+	object := types.ObjectValueMust(keyRouterSettingsAttrTypes, map[string]attr.Value{
+		"routing_strategy_args":       configured,
+		"routing_strategy":            types.StringNull(),
+		"routing_groups":              types.StringNull(),
+		"retry_policy":                types.ObjectNull(keyRetryPolicyAttrTypes),
+		"model_group_retry_policy":    types.StringNull(),
+		"model_group_affinity_config": types.StringNull(),
+		"allowed_fails":               types.Int64Null(),
+		"cooldown_time":               types.Float64Null(),
+		"num_retries":                 types.Int64Null(),
+		"timeout":                     types.Float64Null(),
+		"max_retries":                 types.Int64Null(),
+		"retry_after":                 types.Float64Null(),
+		"fallbacks":                   types.StringNull(),
+		"context_window_fallbacks":    types.StringNull(),
+		"model_group_alias":           types.StringNull(),
+		"enable_tag_filtering":        types.BoolNull(),
+		"tag_routing_prefix":          types.StringNull(),
+	})
+	payload, err := keyRouterSettingsPayload(object)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(payload["routing_strategy_args"], decoded) {
+		t.Fatalf("payload lost exact configured JSON: %#v", payload["routing_strategy_args"])
+	}
+	matches, err := keyRouterSettingsMatchAPI(payload, `{"routing_strategy_args":{"scientific":9223372036854775807,"threshold":9.007199254740993e15,"beyond_int64":1.8446744073709551617e19,"fraction":2.5e-1}}`)
+	if err != nil || !matches {
+		t.Fatalf("exact configured/API semantic comparison = %t, %v", matches, err)
+	}
+
+	readBack, err := jsonStringFromRouterSettingsAPI(decoded, configured)
+	if err != nil || readBack.ValueString() != configured.ValueString() {
+		t.Fatalf("configured formatting/exact values not preserved: %q, %v", readBack.ValueString(), err)
 	}
 }
 

@@ -40,6 +40,11 @@ type ModelResource struct {
 	client *Client
 }
 
+type modelReadOwnership struct {
+	imported         bool
+	topThinkingOwned bool
+}
+
 // ModelResourceModel describes the resource data model.
 type ModelResourceModel struct {
 	ID                                types.String  `tfsdk:"id"`
@@ -316,6 +321,15 @@ func (r *ModelResource) Create(ctx context.Context, req resource.CreateRequest, 
 		return
 	}
 
+	var configuredThinkingEnabled types.Bool
+	var configuredThinkingBudget types.Int64
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("thinking_enabled"), &configuredThinkingEnabled)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("thinking_budget_tokens"), &configuredThinkingBudget)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	topThinkingOwned := !configuredThinkingEnabled.IsNull() || !configuredThinkingBudget.IsNull()
+
 	var configuredAdditionalParams types.Map
 	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("additional_litellm_params"), &configuredAdditionalParams)...)
 	if resp.Diagnostics.HasError() {
@@ -352,14 +366,19 @@ func (r *ModelResource) Create(ctx context.Context, req resource.CreateRequest, 
 
 	planned := data
 
-	// Read back to ensure consistency
-	if err := r.readModelWithRetry(ctx, &data, 8); err != nil {
+	// Read back to ensure consistency using the same ownership that built the
+	// request. Additional thinking still wins when both forms are configured.
+	ownership := modelReadOwnership{topThinkingOwned: topThinkingOwned}
+	if err := r.readModelWithRetryOwnership(ctx, &data, 8, ownership); err != nil {
 		finalizeModelComputedDefaults(&data)
 		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Model created but failed to read back: %s", err))
 	}
 	reassertPlannedCosts(&data, &planned)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	if !resp.Diagnostics.HasError() && resp.Private != nil {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelTopThinkingOwnedPrivateKey, []byte(strconv.FormatBool(topThinkingOwned)))...)
+	}
 }
 
 func (r *ModelResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -374,11 +393,23 @@ func (r *ModelResource) Read(ctx context.Context, req resource.ReadRequest, resp
 	priorModelInfo := data.AdditionalModelInfo
 	importedMarker, privateDiags := req.Private.GetKey(ctx, modelImportedPrivateKey)
 	resp.Diagnostics.Append(privateDiags...)
+	topThinkingMarker, topThinkingDiags := req.Private.GetKey(ctx, modelTopThinkingOwnedPrivateKey)
+	resp.Diagnostics.Append(topThinkingDiags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	imported := string(importedMarker) == "true"
+	topThinkingOwned := string(topThinkingMarker) == "true"
+	if len(topThinkingMarker) == 0 && !imported {
+		// Backward compatibility for state written before private ownership was
+		// recorded. Enabled top-level thinking was necessarily request-owned.
+		topThinkingOwned = !data.ThinkingEnabled.IsNull() && !data.ThinkingEnabled.IsUnknown() && data.ThinkingEnabled.ValueBool()
+	}
 
-	err := r.readModelWithRetry(ctx, &data, 8)
+	err := r.readModelWithRetryOwnership(ctx, &data, 8, modelReadOwnership{
+		imported:         imported,
+		topThinkingOwned: topThinkingOwned,
+	})
 	if err != nil {
 		if IsNotFoundError(err) {
 			resp.State.RemoveResource(ctx)
@@ -390,20 +421,26 @@ func (r *ModelResource) Read(ctx context.Context, req resource.ReadRequest, resp
 
 	if data.AdditionalLiteLLMParamsConfigured.IsNull() || data.AdditionalLiteLLMParamsConfigured.IsUnknown() {
 		configured := len(inferLegacyConfiguredAdditionalParamKeys(priorAdditionalParams)) > 0
-		if string(importedMarker) == "true" {
+		if imported {
 			configured = false
 		}
 		data.AdditionalLiteLLMParamsConfigured = types.BoolValue(configured)
 	}
 	if data.AdditionalModelInfoConfigured.IsNull() || data.AdditionalModelInfoConfigured.IsUnknown() {
 		configured := len(configuredAdditionalParamKeys(priorModelInfo)) > 0
-		if string(importedMarker) == "true" {
+		if imported {
 			configured = false
 		}
 		data.AdditionalModelInfoConfigured = types.BoolValue(configured)
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	if !resp.Diagnostics.HasError() && resp.Private != nil {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelTopThinkingOwnedPrivateKey, []byte(strconv.FormatBool(topThinkingOwned)))...)
+		if imported {
+			resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelImportedPrivateKey, nil)...)
+		}
+	}
 }
 
 func (r *ModelResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
@@ -413,6 +450,15 @@ func (r *ModelResource) Update(ctx context.Context, req resource.UpdateRequest, 
 	if resp.Diagnostics.HasError() {
 		return
 	}
+
+	var configuredThinkingEnabled types.Bool
+	var configuredThinkingBudget types.Int64
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("thinking_enabled"), &configuredThinkingEnabled)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("thinking_budget_tokens"), &configuredThinkingBudget)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	topThinkingOwned := !configuredThinkingEnabled.IsNull() || !configuredThinkingBudget.IsNull()
 
 	var configuredAdditionalParams types.Map
 	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("additional_litellm_params"), &configuredAdditionalParams)...)
@@ -448,12 +494,16 @@ func (r *ModelResource) Update(ctx context.Context, req resource.UpdateRequest, 
 		return
 	}
 
-	if err := r.readModelAfterUpdate(ctx, &data, plannedData, state, 8); err != nil {
+	if err := r.readModelAfterUpdateWithOwnership(ctx, &data, plannedData, state, 8, modelReadOwnership{topThinkingOwned: topThinkingOwned}); err != nil {
 		resp.Diagnostics.AddError("Model Update Not Yet Consistent", fmt.Sprintf("LiteLLM accepted the model update but did not return the planned values before the consistency timeout: %s", err))
 		return
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	if !resp.Diagnostics.HasError() && resp.Private != nil {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelTopThinkingOwnedPrivateKey, []byte(strconv.FormatBool(topThinkingOwned)))...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelImportedPrivateKey, nil)...)
+	}
 }
 
 func (r *ModelResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
@@ -474,7 +524,10 @@ func (r *ModelResource) Delete(ctx context.Context, req resource.DeleteRequest, 
 
 func (r *ModelResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
-	resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelImportedPrivateKey, []byte("true"))...)
+	if resp.Private != nil {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelImportedPrivateKey, []byte("true"))...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelTopThinkingOwnedPrivateKey, []byte("false"))...)
+	}
 }
 
 func (r *ModelResource) createOrUpdateModel(ctx context.Context, data *ModelResourceModel, modelID string, isUpdate bool) error {
@@ -636,6 +689,12 @@ func (r *ModelResource) createOrUpdateModel(ctx context.Context, data *ModelReso
 }
 
 func (r *ModelResource) readModel(ctx context.Context, data *ModelResourceModel) error {
+	return r.readModelWithOwnership(ctx, data, modelReadOwnership{
+		topThinkingOwned: !data.ThinkingEnabled.IsNull() && !data.ThinkingEnabled.IsUnknown() && data.ThinkingEnabled.ValueBool(),
+	})
+}
+
+func (r *ModelResource) readModelWithOwnership(ctx context.Context, data *ModelResourceModel, ownership modelReadOwnership) error {
 	endpoint := fmt.Sprintf("/model/info?litellm_model_id=%s", data.ID.ValueString())
 
 	var rawResult map[string]interface{}
@@ -643,11 +702,65 @@ func (r *ModelResource) readModel(ctx context.Context, data *ModelResourceModel)
 		return err
 	}
 
-	// The /model/info endpoint returns {"data": [{...}]}, extract the first element
+	// /model/info normally returns {"data": [{...}]}. In v1.98's
+	// user_model mode, the same endpoint legitimately returns {"data": {...}}.
+	// Normalize both exact envelopes before applying the same identity and
+	// required-field authority checks.
 	result := rawResult
-	if dataArr, ok := rawResult["data"].([]interface{}); ok && len(dataArr) > 0 {
-		if firstItem, ok := dataArr[0].(map[string]interface{}); ok {
-			result = firstItem
+	dataValue, dataPresent := rawResult["data"]
+	switch data := dataValue.(type) {
+	case []interface{}:
+		if len(data) > 0 {
+			if firstItem, ok := data[0].(map[string]interface{}); ok {
+				result = firstItem
+			}
+		}
+	case map[string]interface{}:
+		if data != nil {
+			result = data
+		}
+	}
+	if ownership.imported {
+		switch data := dataValue.(type) {
+		case []interface{}:
+			if len(data) != 1 {
+				return fmt.Errorf("model import read response did not contain exactly one model")
+			}
+			var ok bool
+			result, ok = data[0].(map[string]interface{})
+			if !ok || result == nil {
+				return fmt.Errorf("model import read response contains an invalid model object")
+			}
+		case map[string]interface{}:
+			if data == nil {
+				return fmt.Errorf("model import read response contains an invalid model object")
+			}
+			result = data
+		default:
+			if !dataPresent {
+				return fmt.Errorf("model import read response is missing a required data field")
+			}
+			return fmt.Errorf("model import read response contains an invalid data field")
+		}
+		modelInfo, err := requireImportedObjectField(true, "model", result, "model_info")
+		if err != nil {
+			return err
+		}
+		if err := validateImportedObjectIdentity(true, "model", modelInfo, "id", data.ID.ValueString()); err != nil {
+			return err
+		}
+		if err := requireImportedStringField(true, "model", modelInfo, "base_model"); err != nil {
+			return err
+		}
+		litellmParams, err := requireImportedObjectField(true, "model", result, "litellm_params")
+		if err != nil {
+			return err
+		}
+		if err := requireImportedStringField(true, "model", litellmParams, "custom_llm_provider"); err != nil {
+			return err
+		}
+		if err := requireImportedStringField(true, "model", result, "model_name"); err != nil {
+			return err
 		}
 	}
 
@@ -684,17 +797,57 @@ func (r *ModelResource) readModel(ctx context.Context, data *ModelResourceModel)
 		if apiVersion, ok := litellmParams["api_version"].(string); ok && apiVersion != "" {
 			data.APIVersion = types.StringValue(apiVersion)
 		}
-		if tpm, ok := litellmParams["tpm"].(float64); ok && !data.TPM.IsNull() {
-			data.TPM = types.Int64Value(int64(tpm))
+		tpmOwned := ownership.imported || (!data.TPM.IsNull() && !data.TPM.IsUnknown())
+		if err := updateInt64FromAPI(&data.TPM, litellmParams, tpmOwned, tpmOwned, "tpm"); err != nil {
+			return err
 		}
-		if rpm, ok := litellmParams["rpm"].(float64); ok && !data.RPM.IsNull() {
-			data.RPM = types.Int64Value(int64(rpm))
+		rpmOwned := ownership.imported || (!data.RPM.IsNull() && !data.RPM.IsUnknown())
+		if err := updateInt64FromAPI(&data.RPM, litellmParams, rpmOwned, rpmOwned, "rpm"); err != nil {
+			return err
 		}
-		if tpm, ok := litellmParams["tpm"].(int64); ok && !data.TPM.IsNull() {
-			data.TPM = types.Int64Value(tpm)
+		_, additionalThinkingOwned := data.AdditionalLiteLLMParams.Elements()["thinking"]
+		thinkingRaw, thinkingPresence, err := apiValueAt(litellmParams, "thinking")
+		if err != nil {
+			return err
 		}
-		if rpm, ok := litellmParams["rpm"].(int64); ok && !data.RPM.IsNull() {
-			data.RPM = types.Int64Value(rpm)
+		var thinking map[string]interface{}
+		if thinkingPresence == apiValuePresent {
+			var ok bool
+			thinking, ok = thinkingRaw.(map[string]interface{})
+			if !ok {
+				return fmt.Errorf("invalid response field %q: expected an object", "thinking")
+			}
+		}
+		// Validate the exact budget even when additional parameters or an
+		// unmanaged remote default own the document.
+		budget, budgetPresence, err := apiInt64At(litellmParams, "thinking", "budget_tokens")
+		if err != nil {
+			return err
+		}
+		// Request construction writes top-level thinking first and additional
+		// parameters last. Mirror that precedence: an owned additional key is
+		// authoritative while top-level state remains byte-for-byte unchanged.
+		if ownership.topThinkingOwned && !additionalThinkingOwned {
+			enabled := false
+			if thinkingPresence == apiValuePresent {
+				typeValue, exists := thinking["type"]
+				if exists && typeValue != nil {
+					typeString, ok := typeValue.(string)
+					if !ok {
+						return fmt.Errorf("invalid response field %q: expected a string", "thinking.type")
+					}
+					enabled = typeString == "enabled"
+				}
+			}
+			data.ThinkingEnabled = types.BoolValue(enabled)
+			if enabled {
+				switch budgetPresence {
+				case apiValuePresent:
+					data.ThinkingBudgetTokens = types.Int64Value(budget)
+				case apiValueNull, apiValueAbsent:
+					data.ThinkingBudgetTokens = types.Int64Null()
+				}
+			}
 		}
 		if awsRegion, ok := litellmParams["aws_region_name"].(string); ok && awsRegion != "" {
 			data.AWSRegionName = types.StringValue(awsRegion)
@@ -707,12 +860,24 @@ func (r *ModelResource) readModel(ctx context.Context, data *ModelResourceModel)
 		// Like tpm/rpm above, only update when the attribute is set in the
 		// config (!IsNull) — costs inferred by LiteLLM from its model cost map
 		// must not create drift for users who never configured them.
-		data.InputCostPerMillionTokens = readBackCost(data.InputCostPerMillionTokens, litellmParams["input_cost_per_token"], 1000000.0)
-		data.OutputCostPerMillionTokens = readBackCost(data.OutputCostPerMillionTokens, litellmParams["output_cost_per_token"], 1000000.0)
-		data.InputCostPerPixel = readBackCost(data.InputCostPerPixel, litellmParams["input_cost_per_pixel"], 1.0)
-		data.OutputCostPerPixel = readBackCost(data.OutputCostPerPixel, litellmParams["output_cost_per_pixel"], 1.0)
-		data.InputCostPerSecond = readBackCost(data.InputCostPerSecond, litellmParams["input_cost_per_second"], 1.0)
-		data.OutputCostPerSecond = readBackCost(data.OutputCostPerSecond, litellmParams["output_cost_per_second"], 1.0)
+		for _, cost := range []struct {
+			name   string
+			scale  float64
+			target *types.Float64
+		}{
+			{"input_cost_per_token", 1000000.0, &data.InputCostPerMillionTokens},
+			{"output_cost_per_token", 1000000.0, &data.OutputCostPerMillionTokens},
+			{"input_cost_per_pixel", 1.0, &data.InputCostPerPixel},
+			{"output_cost_per_pixel", 1.0, &data.OutputCostPerPixel},
+			{"input_cost_per_second", 1.0, &data.InputCostPerSecond},
+			{"output_cost_per_second", 1.0, &data.OutputCostPerSecond},
+		} {
+			value, err := readBackCostWithOwnership(*cost.target, litellmParams, cost.name, cost.scale, ownership.imported)
+			if err != nil {
+				return err
+			}
+			*cost.target = value
+		}
 		// NOTE: merge_reasoning_content_in_choices is intentionally NOT read into the
 		// top-level attribute here. It can be passed both as a top-level attribute and
 		// via additional_litellm_params. Since templates commonly use additional_litellm_params,
@@ -765,11 +930,12 @@ func (r *ModelResource) readModel(ctx context.Context, data *ModelResourceModel)
 		additionalParams := make(map[string]attr.Value)
 		for key, rawValue := range litellmParams {
 			// Skip "known" params (handled by top-level attributes) UNLESS the
-			// user explicitly placed them in additional_litellm_params.  Without
-			// this exception, keys like input_cost_per_token would be silently
-			// dropped on read-back, causing "element has vanished" errors.
+			// user explicitly placed them in additional_litellm_params. Import is
+			// the one extra case: remote thinking has no top-level ownership, so
+			// adopt that complete document through additional parameters.
 			if _, isKnown := knownLiteLLMParams[key]; isKnown {
-				if _, inState := stateKeys[key]; !inState {
+				_, inState := stateKeys[key]
+				if !inState && !(ownership.imported && key == "thinking") {
 					continue
 				}
 			}
@@ -789,10 +955,10 @@ func (r *ModelResource) readModel(ctx context.Context, data *ModelResourceModel)
 				// value to Terraform's post-apply consistency check.
 				if prior, hasPrior := priorStrings[key]; hasPrior && isMaskedAPIString(v) {
 					additionalParams[key] = types.StringValue(prior)
-				} else if f, err := strconv.ParseFloat(v, 64); err == nil {
-					// Normalize numeric strings to decimal notation so that
-					// "1.75e-07" (from API) matches "0.000000175" (from config).
-					additionalParams[key] = types.StringValue(strconv.FormatFloat(f, 'f', -1, 64))
+				} else if number, ok := canonicalJSONNumberString(v); ok {
+					// Normalize without float64 so close values above 2^53 remain
+					// distinct and scientific notation round-trips exactly.
+					additionalParams[key] = types.StringValue(number)
 				} else {
 					additionalParams[key] = types.StringValue(v)
 				}
@@ -800,6 +966,12 @@ func (r *ModelResource) readModel(ctx context.Context, data *ModelResourceModel)
 				additionalParams[key] = types.StringValue(strconv.FormatBool(v))
 			case float64:
 				additionalParams[key] = types.StringValue(strconv.FormatFloat(v, 'f', -1, 64))
+			case json.Number:
+				if number, ok := canonicalJSONNumberString(v.String()); ok {
+					additionalParams[key] = types.StringValue(number)
+				} else {
+					additionalParams[key] = types.StringValue(v.String())
+				}
 			case int:
 				additionalParams[key] = types.StringValue(strconv.Itoa(v))
 			case int64:
@@ -956,40 +1128,43 @@ func reassertPlannedCosts(data *ModelResourceModel, planned *ModelResourceModel)
 	data.OutputCostPerSecond = planned.OutputCostPerSecond
 }
 
-// readBackCost returns the refreshed value for a cost attribute from the raw
-// API value, scaled (per-token → per-million-tokens where applicable). The
-// state value is kept when:
-//   - the attribute is not set in state (null/unknown) — API-inferred costs
-//     must not surface as drift for users who never configured them;
-//   - the API value is missing or not numeric;
-//   - the scaled value matches the state within a small relative tolerance,
-//     so the per-token round-trip (x/1e6*1e6) doesn't churn the state.
-func readBackCost(current types.Float64, raw interface{}, scale float64) types.Float64 {
-	if current.IsNull() || current.IsUnknown() {
-		return current
-	}
+// readBackCost returns the refreshed value for a cost attribute, scaled
+// (per-token → per-million-tokens where applicable). Present malformed values
+// are errors. API-inferred values remain unowned when state is null/unknown;
+// explicit null clears owned state; an omitted compatibility field preserves
+// state because LiteLLM does not consistently echo inferred costs.
+func readBackCost(current types.Float64, object map[string]interface{}, field string, scale float64) (types.Float64, error) {
+	return readBackCostWithOwnership(current, object, field, scale, false)
+}
 
-	var value float64
-	switch v := raw.(type) {
-	case float64:
-		value = v
-	case string:
-		parsed, err := strconv.ParseFloat(v, 64)
-		if err != nil {
-			return current
-		}
-		value = parsed
-	default:
-		return current
+func readBackCostWithOwnership(current types.Float64, object map[string]interface{}, field string, scale float64, adopt bool) (types.Float64, error) {
+	value, presence, err := apiFloat64At(object, field)
+	if err != nil {
+		return types.Float64Null(), err
+	}
+	if !adopt && (current.IsNull() || current.IsUnknown()) {
+		return current, nil
+	}
+	if presence == apiValueNull {
+		return types.Float64Null(), nil
+	}
+	if presence == apiValueAbsent {
+		return current, nil
 	}
 
 	value *= scale
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return types.Float64Null(), fmt.Errorf("invalid numeric response field %q: scaled value must be finite", field)
+	}
+	if adopt && (current.IsNull() || current.IsUnknown()) {
+		return types.Float64Value(value), nil
+	}
 	stateValue := current.ValueFloat64()
 	tolerance := 1e-9 * math.Max(math.Abs(stateValue), math.Abs(value))
 	if math.Abs(value-stateValue) <= tolerance {
-		return current
+		return current, nil
 	}
-	return types.Float64Value(value)
+	return types.Float64Value(value), nil
 }
 
 // stringifyAPIValue converts a raw JSON value into the canonical string
@@ -997,14 +1172,19 @@ func readBackCost(current types.Float64, raw interface{}, scale float64) types.F
 func stringifyAPIValue(rawValue interface{}) (attr.Value, bool) {
 	switch value := rawValue.(type) {
 	case string:
-		if number, err := strconv.ParseFloat(value, 64); err == nil {
-			return types.StringValue(strconv.FormatFloat(number, 'f', -1, 64)), true
+		if number, ok := canonicalJSONNumberString(value); ok {
+			return types.StringValue(number), true
 		}
 		return types.StringValue(value), true
 	case bool:
 		return types.StringValue(strconv.FormatBool(value)), true
 	case float64:
 		return types.StringValue(strconv.FormatFloat(value, 'f', -1, 64)), true
+	case json.Number:
+		if number, ok := canonicalJSONNumberString(value.String()); ok {
+			return types.StringValue(number), true
+		}
+		return types.StringValue(value.String()), true
 	case int:
 		return types.StringValue(strconv.Itoa(value)), true
 	case int64:
@@ -1034,12 +1214,18 @@ func finalizeModelComputedDefaults(data *ModelResourceModel) {
 }
 
 func (r *ModelResource) readModelWithRetry(ctx context.Context, data *ModelResourceModel, maxRetries int) error {
+	return r.readModelWithRetryOwnership(ctx, data, maxRetries, modelReadOwnership{
+		topThinkingOwned: !data.ThinkingEnabled.IsNull() && !data.ThinkingEnabled.IsUnknown() && data.ThinkingEnabled.ValueBool(),
+	})
+}
+
+func (r *ModelResource) readModelWithRetryOwnership(ctx context.Context, data *ModelResourceModel, maxRetries int, ownership modelReadOwnership) error {
 	var err error
 	delay := 1 * time.Second
 	maxDelay := 10 * time.Second
 
 	for i := 0; i < maxRetries; i++ {
-		err = r.readModel(ctx, data)
+		err = r.readModelWithOwnership(ctx, data, ownership)
 		if err == nil {
 			return nil
 		}
@@ -1061,6 +1247,12 @@ func (r *ModelResource) readModelWithRetry(ctx context.Context, data *ModelResou
 }
 
 func (r *ModelResource) readModelAfterUpdate(ctx context.Context, data *ModelResourceModel, planned, prior ModelResourceModel, maxRetries int) error {
+	return r.readModelAfterUpdateWithOwnership(ctx, data, planned, prior, maxRetries, modelReadOwnership{
+		topThinkingOwned: !planned.ThinkingEnabled.IsNull() && !planned.ThinkingEnabled.IsUnknown() && planned.ThinkingEnabled.ValueBool(),
+	})
+}
+
+func (r *ModelResource) readModelAfterUpdateWithOwnership(ctx context.Context, data *ModelResourceModel, planned, prior ModelResourceModel, maxRetries int, ownership modelReadOwnership) error {
 	if maxRetries < 1 {
 		return fmt.Errorf("maxRetries must be at least 1")
 	}
@@ -1074,7 +1266,7 @@ func (r *ModelResource) readModelAfterUpdate(ctx context.Context, data *ModelRes
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		candidate := planned
-		lastErr = r.readModel(ctx, &candidate)
+		lastErr = r.readModelWithOwnership(ctx, &candidate, ownership)
 		if lastErr == nil {
 			staleFields = changedModelFieldsNotConverged(planned, prior, candidate)
 			if len(staleFields) == 0 {
@@ -1311,12 +1503,8 @@ func (r *ModelResource) patchModel(ctx context.Context, data *ModelResourceModel
 // become "0.0000025", preventing Terraform from seeing a diff between the
 // planned value and the value read back from the API.
 func normalizeNumericString(s string) string {
-	// Try integer first – "500" stays "500".
-	if _, err := strconv.ParseInt(s, 10, 64); err == nil {
-		return s // already canonical
-	}
-	if f, err := strconv.ParseFloat(s, 64); err == nil {
-		return strconv.FormatFloat(f, 'f', -1, 64)
+	if canonical, ok := canonicalJSONNumberString(s); ok {
+		return canonical
 	}
 	return s
 }
@@ -1328,13 +1516,46 @@ func normalizeNumericString(s string) string {
 // is not treated as drift.
 func jsonSemanticallyEqual(a, b string) bool {
 	var av, bv interface{}
-	if err := json.Unmarshal([]byte(a), &av); err != nil {
+	if err := decodeJSONUseNumber([]byte(a), &av); err != nil {
 		return false
 	}
-	if err := json.Unmarshal([]byte(b), &bv); err != nil {
+	if err := decodeJSONUseNumber([]byte(b), &bv); err != nil {
 		return false
 	}
-	return reflect.DeepEqual(av, bv)
+	return exactJSONValuesEqual(av, bv)
+}
+
+func exactJSONValuesEqual(a, b interface{}) bool {
+	switch left := a.(type) {
+	case json.Number:
+		right, ok := b.(json.Number)
+		return ok && exactJSONNumbersEqual(left, right)
+	case map[string]interface{}:
+		right, ok := b.(map[string]interface{})
+		if !ok || len(left) != len(right) {
+			return false
+		}
+		for key, leftValue := range left {
+			rightValue, exists := right[key]
+			if !exists || !exactJSONValuesEqual(leftValue, rightValue) {
+				return false
+			}
+		}
+		return true
+	case []interface{}:
+		right, ok := b.([]interface{})
+		if !ok || len(left) != len(right) {
+			return false
+		}
+		for index := range left {
+			if !exactJSONValuesEqual(left[index], right[index]) {
+				return false
+			}
+		}
+		return true
+	default:
+		return reflect.DeepEqual(a, b)
+	}
 }
 
 // jsonSameShape reports whether two JSON strings have the same structure --
@@ -1344,10 +1565,10 @@ func jsonSemanticallyEqual(a, b string) bool {
 // unmasked remote drift remains visible.
 func jsonSameShape(a, b string) bool {
 	var av, bv interface{}
-	if err := json.Unmarshal([]byte(a), &av); err != nil {
+	if err := decodeJSONUseNumber([]byte(a), &av); err != nil {
 		return false
 	}
-	if err := json.Unmarshal([]byte(b), &bv); err != nil {
+	if err := decodeJSONUseNumber([]byte(b), &bv); err != nil {
 		return false
 	}
 	return sameShape(av, bv)
@@ -1402,7 +1623,7 @@ func isMaskedAPIString(value string) bool {
 
 func jsonContainsMaskedValue(value string) bool {
 	var decoded interface{}
-	if err := json.Unmarshal([]byte(value), &decoded); err != nil {
+	if err := decodeJSONUseNumber([]byte(value), &decoded); err != nil {
 		return false
 	}
 	return containsMaskedValue(decoded)
@@ -1448,23 +1669,22 @@ func normalizeAdditionalParams(ctx context.Context, m types.Map) types.Map {
 // This allows additional_litellm_params values (which are stored as strings in
 // Terraform state) to be sent as native JSON types in the API request.
 func convertStringValue(s string) interface{} {
-	// Try integer
+	// Keep exact integers in their natural request type. Other valid JSON
+	// numbers use json.Number so request encoding never rounds through float64.
 	if intVal, err := strconv.ParseInt(s, 10, 64); err == nil {
 		return intVal
 	}
-	// Try float
-	if floatVal, err := strconv.ParseFloat(s, 64); err == nil {
-		return floatVal
+	if canonical, ok := canonicalJSONNumberString(s); ok {
+		return json.Number(canonical)
 	}
-	// Try boolean
 	if boolVal, err := strconv.ParseBool(s); err == nil {
 		return boolVal
 	}
-	// Try JSON (arrays and objects)
+	// Try JSON (arrays and objects) with UseNumber for exact nested values.
 	trimmed := strings.TrimSpace(s)
 	if strings.HasPrefix(trimmed, "[") || strings.HasPrefix(trimmed, "{") {
 		var parsed interface{}
-		if err := json.Unmarshal([]byte(s), &parsed); err == nil {
+		if err := decodeJSONUseNumber([]byte(s), &parsed); err == nil {
 			return parsed
 		}
 	}

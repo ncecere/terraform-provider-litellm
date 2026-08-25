@@ -7,6 +7,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/mapvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -262,6 +263,7 @@ func (r *MCPServerResource) Schema(ctx context.Context, req resource.SchemaReque
 								Optional:    true,
 								Computed:    true,
 								ElementType: types.Float64Type,
+								Validators:  []validator.Map{mapvalidator.NoNullValues()},
 							},
 						},
 					},
@@ -296,7 +298,11 @@ func (r *MCPServerResource) Create(ctx context.Context, req resource.CreateReque
 		return
 	}
 
-	mcpReq := r.buildMCPServerRequest(ctx, &data)
+	mcpReq, err := r.buildMCPServerRequest(ctx, &data)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid MCP Numeric Map", err.Error())
+		return
+	}
 
 	var result map[string]interface{}
 	if err := r.client.DoRequestWithResponse(ctx, "POST", "/v1/mcp/server", mcpReq, &result); err != nil {
@@ -329,11 +335,14 @@ func (r *MCPServerResource) Read(ctx context.Context, req resource.ReadRequest, 
 	var data MCPServerResourceModel
 
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
+	importedMarker, privateDiags := req.Private.GetKey(ctx, numericImportedPrivateKey)
+	resp.Diagnostics.Append(privateDiags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	imported := string(importedMarker) == "true"
 
-	if err := r.readMCPServer(ctx, &data); err != nil {
+	if err := r.readMCPServerWithNumericOwnership(ctx, &data, imported); err != nil {
 		if IsAPIErrorStatus(err, 404) {
 			resp.State.RemoveResource(ctx)
 			return
@@ -343,6 +352,9 @@ func (r *MCPServerResource) Read(ctx context.Context, req resource.ReadRequest, 
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	if !resp.Diagnostics.HasError() && imported {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, nil)...)
+	}
 }
 
 func (r *MCPServerResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
@@ -363,7 +375,11 @@ func (r *MCPServerResource) Update(ctx context.Context, req resource.UpdateReque
 	data.ID = state.ID
 	data.ServerID = state.ServerID
 
-	mcpReq := r.buildMCPServerRequest(ctx, &data)
+	mcpReq, err := r.buildMCPServerRequest(ctx, &data)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid MCP Numeric Map", err.Error())
+		return
+	}
 	mcpReq["server_id"] = data.ServerID.ValueString()
 
 	if err := r.client.DoRequestWithResponse(ctx, "PUT", "/v1/mcp/server", mcpReq, nil); err != nil {
@@ -406,6 +422,9 @@ func (r *MCPServerResource) Delete(ctx context.Context, req resource.DeleteReque
 func (r *MCPServerResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("server_id"), req.ID)...)
+	if resp.Private != nil {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, []byte("true"))...)
+	}
 }
 
 // UpgradeState handles state migrations from older schema versions.
@@ -436,22 +455,24 @@ func (r *MCPServerResource) UpgradeState(ctx context.Context) map[int64]resource
 
 				if raw, ok := priorState["extra_headers"]; ok && string(raw) != "null" {
 					var oldMap map[string]string
-					if err := json.Unmarshal(raw, &oldMap); err == nil {
-						headers := make([]string, 0, len(oldMap))
-						for header := range oldMap {
-							headers = append(headers, header)
-						}
-						sort.Strings(headers)
-						converted, err := json.Marshal(headers)
-						if err != nil {
-							resp.Diagnostics.AddError(
-								"Unable to Upgrade State",
-								fmt.Sprintf("Failed to marshal upgraded extra_headers: %s", err),
-							)
-							return
-						}
-						priorState["extra_headers"] = converted
+					if err := json.Unmarshal(raw, &oldMap); err != nil {
+						resp.Diagnostics.AddError("Unable to Upgrade State", "Failed to decode legacy extra_headers.")
+						return
 					}
+					headers := make([]string, 0, len(oldMap))
+					for header := range oldMap {
+						headers = append(headers, header)
+					}
+					sort.Strings(headers)
+					converted, err := json.Marshal(headers)
+					if err != nil {
+						resp.Diagnostics.AddError(
+							"Unable to Upgrade State",
+							fmt.Sprintf("Failed to marshal upgraded extra_headers: %s", err),
+						)
+						return
+					}
+					priorState["extra_headers"] = converted
 				}
 
 				upgradedJSON, err := json.Marshal(priorState)
@@ -469,7 +490,7 @@ func (r *MCPServerResource) UpgradeState(ctx context.Context) map[int64]resource
 	}
 }
 
-func (r *MCPServerResource) buildMCPServerRequest(ctx context.Context, data *MCPServerResourceModel) map[string]interface{} {
+func (r *MCPServerResource) buildMCPServerRequest(ctx context.Context, data *MCPServerResourceModel) (map[string]interface{}, error) {
 	mcpReq := map[string]interface{}{
 		"server_name":  data.ServerName.ValueString(),
 		"url":          data.URL.ValueString(),
@@ -585,8 +606,10 @@ func (r *MCPServerResource) buildMCPServerRequest(ctx context.Context, data *MCP
 				costInfo["default_cost_per_query"] = data.MCPInfo.MCPServerCostInfo.DefaultCostPerQuery.ValueFloat64()
 			}
 			if !data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery.IsNull() && !data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery.IsUnknown() {
-				var toolCosts map[string]float64
-				data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery.ElementsAs(ctx, &toolCosts, false)
+				toolCosts, err := float64RequestMap(data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery, "mcp_info.mcp_server_cost_info.tool_name_to_cost_per_query")
+				if err != nil {
+					return nil, err
+				}
 				if len(toolCosts) > 0 {
 					costInfo["tool_name_to_cost_per_query"] = toolCosts
 				}
@@ -602,7 +625,7 @@ func (r *MCPServerResource) buildMCPServerRequest(ctx context.Context, data *MCP
 		}
 	}
 
-	return mcpReq
+	return mcpReq, nil
 }
 
 func resolveUnknownMCPServerState(data *MCPServerResourceModel, previous *MCPServerResourceModel) {
@@ -741,6 +764,10 @@ func (r *MCPServerResource) getMCPServer(ctx context.Context, serverID string) (
 }
 
 func (r *MCPServerResource) readMCPServer(ctx context.Context, data *MCPServerResourceModel) error {
+	return r.readMCPServerWithNumericOwnership(ctx, data, false)
+}
+
+func (r *MCPServerResource) readMCPServerWithNumericOwnership(ctx context.Context, data *MCPServerResourceModel, imported bool) error {
 	serverID := data.ID.ValueString()
 	if serverID == "" {
 		serverID = data.ServerID.ValueString()
@@ -749,6 +776,14 @@ func (r *MCPServerResource) readMCPServer(ctx context.Context, data *MCPServerRe
 	result, err := r.getMCPServer(ctx, serverID)
 	if err != nil {
 		return err
+	}
+	if err := validateImportedObjectIdentity(imported, "MCP server", result, "server_id", serverID); err != nil {
+		return err
+	}
+	for _, field := range []string{"server_name", "url", "transport"} {
+		if err := requireImportedStringField(imported, "MCP server", result, field); err != nil {
+			return err
+		}
 	}
 
 	// Update fields from response
@@ -893,37 +928,38 @@ func (r *MCPServerResource) readMCPServer(ctx context.Context, data *MCPServerRe
 		data.AllowAllKeys = types.BoolValue(allowAllKeys)
 	}
 
-	// Handle mcp_info block, including Optional+Computed nested tool_name_to_cost_per_query.
-	// Only populate mcp_info if user originally configured it (don't create from nil)
-	if mcpInfoRaw, ok := result["mcp_info"].(map[string]interface{}); ok && data.MCPInfo != nil {
-		if serverName, ok := mcpInfoRaw["server_name"].(string); ok {
-			data.MCPInfo.ServerName = types.StringValue(serverName)
+	// The import marker is deliberately scoped to numeric cost ownership. When
+	// mcp_info was not configured, import may create only the nested shells needed
+	// to expose visible cost fields; reconstructing heterogeneous mcp_info belongs
+	// to #213 and remains out of scope.
+	if mcpInfoRaw, ok := result["mcp_info"].(map[string]interface{}); ok && (data.MCPInfo != nil || imported) {
+		if data.MCPInfo == nil {
+			data.MCPInfo = &MCPInfoModel{}
 		}
-		if description, ok := mcpInfoRaw["description"].(string); ok {
-			data.MCPInfo.Description = types.StringValue(description)
-		}
-		if logoURL, ok := mcpInfoRaw["logo_url"].(string); ok {
-			data.MCPInfo.LogoURL = types.StringValue(logoURL)
+		if !imported {
+			if serverName, ok := mcpInfoRaw["server_name"].(string); ok {
+				data.MCPInfo.ServerName = types.StringValue(serverName)
+			}
+			if description, ok := mcpInfoRaw["description"].(string); ok {
+				data.MCPInfo.Description = types.StringValue(description)
+			}
+			if logoURL, ok := mcpInfoRaw["logo_url"].(string); ok {
+				data.MCPInfo.LogoURL = types.StringValue(logoURL)
+			}
 		}
 
 		if costInfoRaw, ok := mcpInfoRaw["mcp_server_cost_info"].(map[string]interface{}); ok {
 			if data.MCPInfo.MCPServerCostInfo == nil {
 				data.MCPInfo.MCPServerCostInfo = &MCPServerCostInfoModel{}
 			}
-			if defaultCost, ok := costInfoRaw["default_cost_per_query"].(float64); ok {
-				data.MCPInfo.MCPServerCostInfo.DefaultCostPerQuery = types.Float64Value(defaultCost)
+			defaultOwned := imported || (!data.MCPInfo.MCPServerCostInfo.DefaultCostPerQuery.IsNull() && !data.MCPInfo.MCPServerCostInfo.DefaultCostPerQuery.IsUnknown())
+			if err := updateFloat64FromAPI(&data.MCPInfo.MCPServerCostInfo.DefaultCostPerQuery, costInfoRaw, defaultOwned, defaultOwned, "default_cost_per_query"); err != nil {
+				return err
 			}
 
-			if toolCostsRaw, ok := costInfoRaw["tool_name_to_cost_per_query"].(map[string]interface{}); ok && len(toolCostsRaw) > 0 {
-				toolCosts := make(map[string]attr.Value)
-				for k, v := range toolCostsRaw {
-					if num, ok := v.(float64); ok {
-						toolCosts[k] = types.Float64Value(num)
-					}
-				}
-				data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery, _ = types.MapValue(types.Float64Type, toolCosts)
-			} else if data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery.IsUnknown() {
-				data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery, _ = types.MapValue(types.Float64Type, map[string]attr.Value{})
+			toolCostsOwned := imported || (!data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery.IsNull() && !data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery.IsUnknown())
+			if err := updateFloat64MapFromAPI(&data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery, costInfoRaw, toolCostsOwned, toolCostsOwned, "tool_name_to_cost_per_query"); err != nil {
+				return err
 			}
 		} else if data.MCPInfo.MCPServerCostInfo != nil && data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery.IsUnknown() {
 			data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery, _ = types.MapValue(types.Float64Type, map[string]attr.Value{})

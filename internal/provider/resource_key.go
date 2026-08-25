@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/mapvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/resourcevalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -318,18 +319,21 @@ func (r *KeyResource) Schema(ctx context.Context, req resource.SchemaRequest, re
 				Optional:    true,
 				Computed:    true,
 				ElementType: types.Float64Type,
+				Validators:  []validator.Map{mapvalidator.NoNullValues()},
 			},
 			"model_rpm_limit": schema.MapAttribute{
 				Description: "Per-model RPM limits.",
 				Optional:    true,
 				Computed:    true,
 				ElementType: types.Int64Type,
+				Validators:  []validator.Map{mapvalidator.NoNullValues()},
 			},
 			"model_tpm_limit": schema.MapAttribute{
 				Description: "Per-model TPM limits.",
 				Optional:    true,
 				Computed:    true,
 				ElementType: types.Int64Type,
+				Validators:  []validator.Map{mapvalidator.NoNullValues()},
 			},
 			"guardrails": schema.ListAttribute{
 				Description: "Guardrails for the key.",
@@ -476,11 +480,14 @@ func (r *KeyResource) Read(ctx context.Context, req resource.ReadRequest, resp *
 	var data KeyResourceModel
 
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
+	importedMarker, privateDiags := req.Private.GetKey(ctx, numericImportedPrivateKey)
+	resp.Diagnostics.Append(privateDiags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	imported := string(importedMarker) == "true"
 
-	if err := r.readKey(ctx, &data); err != nil {
+	if err := r.readKeyWithNumericOwnership(ctx, &data, imported); err != nil {
 		if IsNotFoundError(err) {
 			resp.State.RemoveResource(ctx)
 			return
@@ -490,6 +497,9 @@ func (r *KeyResource) Read(ctx context.Context, req resource.ReadRequest, resp *
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	if !resp.Diagnostics.HasError() && imported {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, nil)...)
+	}
 }
 
 func (r *KeyResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
@@ -577,6 +587,9 @@ func (r *KeyResource) ImportState(ctx context.Context, req resource.ImportStateR
 		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
 		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("key"), types.StringNull())...)
 		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("key_wo_version"), "1")...)
+		if resp.Private != nil {
+			resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, []byte("true"))...)
+		}
 		return
 	}
 
@@ -585,6 +598,9 @@ func (r *KeyResource) ImportState(ctx context.Context, req resource.ImportStateR
 	rawKey := req.ID
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), hashKeyForID(rawKey))...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("key"), rawKey)...)
+	if resp.Private != nil {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, []byte("true"))...)
+	}
 }
 
 // UpgradeState handles state migrations from older schema versions.
@@ -796,10 +812,13 @@ func (r *KeyResource) buildKeyRequest(ctx context.Context, data *KeyResourceMode
 		var metadata map[string]string
 		data.Metadata.ElementsAs(ctx, &metadata, false)
 		if len(metadata) > 0 {
-			// Convert string values that contain JSON objects/arrays to native
-			// types so the API receives them as structured data rather than
-			// escaped strings (e.g. logging configuration).
-			keyReq["metadata"] = convertMetadataToNative(metadata)
+			// Dedicated per-model attributes own these reserved keys.
+			metadataPayload := convertMetadataToNative(metadata)
+			delete(metadataPayload, "model_rpm_limit")
+			delete(metadataPayload, "model_tpm_limit")
+			if len(metadataPayload) > 0 {
+				keyReq["metadata"] = metadataPayload
+			}
 		}
 	}
 
@@ -828,27 +847,27 @@ func (r *KeyResource) buildKeyRequest(ctx context.Context, data *KeyResourceMode
 	}
 
 	if !data.ModelMaxBudget.IsNull() && !data.ModelMaxBudget.IsUnknown() {
-		var modelMaxBudget map[string]float64
-		data.ModelMaxBudget.ElementsAs(ctx, &modelMaxBudget, false)
-		if len(modelMaxBudget) > 0 {
-			keyReq["model_max_budget"] = modelMaxBudget
+		modelMaxBudget, err := float64RequestMap(data.ModelMaxBudget, "model_max_budget")
+		if err != nil {
+			return nil, err
 		}
+		keyReq["model_max_budget"] = modelMaxBudget
 	}
 
 	if !data.ModelRPMLimit.IsNull() && !data.ModelRPMLimit.IsUnknown() {
-		var modelRPMLimit map[string]int64
-		data.ModelRPMLimit.ElementsAs(ctx, &modelRPMLimit, false)
-		if len(modelRPMLimit) > 0 {
-			keyReq["model_rpm_limit"] = modelRPMLimit
+		modelRPMLimit, err := int64RequestMap(data.ModelRPMLimit, "model_rpm_limit")
+		if err != nil {
+			return nil, err
 		}
+		keyReq["model_rpm_limit"] = modelRPMLimit
 	}
 
 	if !data.ModelTPMLimit.IsNull() && !data.ModelTPMLimit.IsUnknown() {
-		var modelTPMLimit map[string]int64
-		data.ModelTPMLimit.ElementsAs(ctx, &modelTPMLimit, false)
-		if len(modelTPMLimit) > 0 {
-			keyReq["model_tpm_limit"] = modelTPMLimit
+		modelTPMLimit, err := int64RequestMap(data.ModelTPMLimit, "model_tpm_limit")
+		if err != nil {
+			return nil, err
 		}
+		keyReq["model_tpm_limit"] = modelTPMLimit
 	}
 
 	if !data.RouterSettings.IsNull() && !data.RouterSettings.IsUnknown() {
@@ -971,38 +990,65 @@ func (r *KeyResource) waitForKeyRouterSettings(ctx context.Context, data *KeyRes
 }
 
 func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error {
+	return r.readKeyWithNumericOwnership(ctx, data, false)
+}
+
+func (r *KeyResource) readKeyWithNumericOwnership(ctx context.Context, data *KeyResourceModel, imported bool) error {
+	keyIdentifier, err := keyLookupIdentifier(data)
+	if err != nil {
+		return err
+	}
 	result, info, err := r.getKeyInfo(ctx, data)
 	if err != nil {
 		return err
 	}
+	if err := validateImportedObjectIdentity(imported, "key", result, "key", keyIdentifier); err != nil {
+		return err
+	}
+	if imported {
+		validatedInfo, err := requireImportedObjectField(true, "key", result, "info")
+		if err != nil {
+			return err
+		}
+		info = validatedInfo
+	}
 
-	// Update computed fields from response.
-	// For Optional+Computed scalars, resolve Unknown to Null when the API
-	// returns nil so Terraform never sees an unknown value after apply.
-	if maxBudget, ok := info["max_budget"].(float64); ok {
-		data.MaxBudget = types.Float64Value(maxBudget)
-	} else if data.MaxBudget.IsUnknown() {
-		data.MaxBudget = types.Float64Null()
+	// LiteLLM v1.98 stores max_budget on the verification-token row, while
+	// soft_budget belongs to the budget relation. Older responses may expose
+	// either field at the other location, so each field has its own fallback
+	// order. In particular, the unrelated nullable relation max_budget must not
+	// override the key row's max_budget. Normal reads refresh configured values
+	// when visible, preserve them across API omission, and never adopt defaults
+	// for unconfigured fields. Imports adopt the authoritative snapshot and clear
+	// values it omits.
+	maxBudgetOwned := imported || (!data.MaxBudget.IsNull() && !data.MaxBudget.IsUnknown())
+	if err := updateFloat64FromAPIPaths(&data.MaxBudget, info, imported, maxBudgetOwned,
+		[]string{"max_budget"},
+		[]string{"litellm_budget_table", "max_budget"},
+	); err != nil {
+		return err
 	}
-	if tpmLimit, ok := info["tpm_limit"].(float64); ok {
-		data.TPMLimit = types.Int64Value(int64(tpmLimit))
-	} else if data.TPMLimit.IsUnknown() {
-		data.TPMLimit = types.Int64Null()
+	softBudgetOwned := imported || (!data.SoftBudget.IsNull() && !data.SoftBudget.IsUnknown())
+	if err := updateFloat64FromAPIPaths(&data.SoftBudget, info, imported, softBudgetOwned,
+		[]string{"litellm_budget_table", "soft_budget"},
+		[]string{"soft_budget"},
+	); err != nil {
+		return err
 	}
-	if rpmLimit, ok := info["rpm_limit"].(float64); ok {
-		data.RPMLimit = types.Int64Value(int64(rpmLimit))
-	} else if data.RPMLimit.IsUnknown() {
-		data.RPMLimit = types.Int64Null()
-	}
-	if maxParallel, ok := info["max_parallel_requests"].(float64); ok {
-		data.MaxParallelRequests = types.Int64Value(int64(maxParallel))
-	} else if data.MaxParallelRequests.IsUnknown() {
-		data.MaxParallelRequests = types.Int64Null()
-	}
-	if softBudget, ok := info["soft_budget"].(float64); ok {
-		data.SoftBudget = types.Float64Value(softBudget)
-	} else if data.SoftBudget.IsUnknown() {
-		data.SoftBudget = types.Float64Null()
+
+	// Key rate and parallelism limits remain columns on the v1.98 key row.
+	for _, field := range []struct {
+		name   string
+		target *types.Int64
+	}{
+		{"tpm_limit", &data.TPMLimit},
+		{"rpm_limit", &data.RPMLimit},
+		{"max_parallel_requests", &data.MaxParallelRequests},
+	} {
+		owned := imported || (!field.target.IsNull() && !field.target.IsUnknown())
+		if err := updateInt64FromAPI(field.target, info, imported, owned, field.name); err != nil {
+			return err
+		}
 	}
 	if blocked, ok := info["blocked"].(bool); ok {
 		data.Blocked = types.BoolValue(blocked)
@@ -1203,6 +1249,11 @@ func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error
 
 		metaMap := make(map[string]attr.Value)
 		for k, v := range metadata {
+			// Per-model rates have dedicated attributes and must never be
+			// flattened into the user metadata map.
+			if k == "model_rpm_limit" || k == "model_tpm_limit" {
+				continue
+			}
 			// If user had specific keys, only keep those. Otherwise keep all.
 			if len(configuredKeys) > 0 && !configuredKeys[k] {
 				continue
@@ -1266,31 +1317,20 @@ func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error
 		data.Permissions, _ = types.MapValue(types.StringType, map[string]attr.Value{})
 	}
 
-	// Handle model_max_budget map - preserve null when API returns empty and config didn't specify model_max_budget
-	if modelMaxBudget, ok := info["model_max_budget"].(map[string]interface{}); ok && len(modelMaxBudget) > 0 {
-		budgetMap := make(map[string]attr.Value)
-		for k, v := range modelMaxBudget {
-			if num, ok := v.(float64); ok {
-				budgetMap[k] = types.Float64Value(num)
-			}
-		}
-		data.ModelMaxBudget, _ = types.MapValue(types.Float64Type, budgetMap)
-	} else if !data.ModelMaxBudget.IsNull() {
-		data.ModelMaxBudget, _ = types.MapValue(types.Float64Type, map[string]attr.Value{})
+	modelBudgetOwned := imported || (!data.ModelMaxBudget.IsNull() && !data.ModelMaxBudget.IsUnknown())
+	if err := updateFloat64MapFromAPIPaths(&data.ModelMaxBudget, info, imported, modelBudgetOwned,
+		[]string{"litellm_budget_table", "model_max_budget"},
+		[]string{"model_max_budget"},
+	); err != nil {
+		return err
 	}
 
-	// Handle model_rpm_limit map
-	// The API may not echo back per-model limits, so only clear on Unknown.
-	if modelRPM, ok := info["model_rpm_limit"].(map[string]interface{}); ok && len(modelRPM) > 0 {
-		rpmMap := make(map[string]attr.Value)
-		for k, v := range modelRPM {
-			if num, ok := v.(float64); ok {
-				rpmMap[k] = types.Int64Value(int64(num))
-			}
-		}
-		data.ModelRPMLimit, _ = types.MapValue(types.Int64Type, rpmMap)
-	} else if data.ModelRPMLimit.IsUnknown() {
-		data.ModelRPMLimit, _ = types.MapValue(types.Int64Type, map[string]attr.Value{})
+	// LiteLLM v1.98 stores key per-model rates under info.metadata. Explicit
+	// null is authoritative, while omission is preserved for configured state
+	// and normalized to null for unconfigured/imported state as applicable.
+	modelRPMOwned := imported || (!data.ModelRPMLimit.IsNull() && !data.ModelRPMLimit.IsUnknown())
+	if err := updateInt64MapFromAPI(&data.ModelRPMLimit, info, imported, modelRPMOwned, "metadata", "model_rpm_limit"); err != nil {
+		return err
 	}
 
 	// router_settings is Optional rather than Optional+Computed. An absent block
@@ -1304,18 +1344,9 @@ func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error
 		data.RouterSettings = routerSettings
 	}
 
-	// Handle model_tpm_limit map
-	// The API may not echo back per-model limits, so only clear on Unknown.
-	if modelTPM, ok := info["model_tpm_limit"].(map[string]interface{}); ok && len(modelTPM) > 0 {
-		tpmMap := make(map[string]attr.Value)
-		for k, v := range modelTPM {
-			if num, ok := v.(float64); ok {
-				tpmMap[k] = types.Int64Value(int64(num))
-			}
-		}
-		data.ModelTPMLimit, _ = types.MapValue(types.Int64Type, tpmMap)
-	} else if data.ModelTPMLimit.IsUnknown() {
-		data.ModelTPMLimit, _ = types.MapValue(types.Int64Type, map[string]attr.Value{})
+	modelTPMOwned := imported || (!data.ModelTPMLimit.IsNull() && !data.ModelTPMLimit.IsUnknown())
+	if err := updateInt64MapFromAPI(&data.ModelTPMLimit, info, imported, modelTPMOwned, "metadata", "model_tpm_limit"); err != nil {
+		return err
 	}
 
 	return nil

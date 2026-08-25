@@ -156,8 +156,14 @@ func TestTeamLimitTypeCreateAndUpdatePayloadsMatchEndpointContracts(t *testing.T
 		RPMLimitType: types.StringValue("guaranteed_throughput"),
 	}
 	teamResource := &TeamResource{}
-	createRequest := teamResource.buildTeamRequest(context.Background(), data, "team-contract")
-	updateRequest := teamResource.buildTeamUpdateRequest(context.Background(), data, "team-contract")
+	createRequest, err := teamResource.buildTeamRequest(context.Background(), data, "team-contract")
+	if err != nil {
+		t.Fatal(err)
+	}
+	updateRequest, err := teamResource.buildTeamUpdateRequest(context.Background(), data, "team-contract")
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	for name, want := range map[string]string{
 		"tpm_limit_type": "best_effort_throughput",

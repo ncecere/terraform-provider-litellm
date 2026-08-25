@@ -154,10 +154,14 @@ func (c *Client) doRequestWithResponse(ctx context.Context, method, requestPath 
 	if truncated {
 		return true, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "LiteLLM response exceeded the provider safety limit"}
 	}
-	if result == nil || len(bodyBytes) == 0 || string(bodyBytes) == "null" {
+	if result == nil {
 		return true, nil
 	}
-	if err := json.Unmarshal(bodyBytes, result); err != nil {
+	trimmedBody := bytes.TrimSpace(bodyBytes)
+	if len(trimmedBody) == 0 || bytes.Equal(trimmedBody, []byte("null")) {
+		return true, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "LiteLLM returned an empty JSON response where an object or array was required", retryable: true}
+	}
+	if err := decodeJSONUseNumber(trimmedBody, result); err != nil {
 		return true, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "failed to decode LiteLLM response as JSON", identity: safeErrorIdentity(err), retryable: true}
 	}
 	return true, nil

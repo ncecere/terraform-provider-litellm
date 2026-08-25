@@ -145,20 +145,23 @@ func (d *AgentsListDataSource) Read(ctx context.Context, req datasource.ReadRequ
 		if v, ok := item["agent_name"].(string); ok {
 			agent.AgentName = types.StringValue(v)
 		}
-		if v, ok := item["tpm_limit"].(float64); ok {
-			agent.TPMLimit = types.Int64Value(int64(v))
+		for _, field := range []struct {
+			name   string
+			target *types.Int64
+		}{
+			{"tpm_limit", &agent.TPMLimit},
+			{"rpm_limit", &agent.RPMLimit},
+			{"session_tpm_limit", &agent.SessionTPMLimit},
+			{"session_rpm_limit", &agent.SessionRPMLimit},
+		} {
+			if err := updateInt64FromAPI(field.target, item, true, true, field.name); err != nil {
+				resp.Diagnostics.AddError("Invalid API Response", err.Error())
+				return
+			}
 		}
-		if v, ok := item["rpm_limit"].(float64); ok {
-			agent.RPMLimit = types.Int64Value(int64(v))
-		}
-		if v, ok := item["session_tpm_limit"].(float64); ok {
-			agent.SessionTPMLimit = types.Int64Value(int64(v))
-		}
-		if v, ok := item["session_rpm_limit"].(float64); ok {
-			agent.SessionRPMLimit = types.Int64Value(int64(v))
-		}
-		if v, ok := item["spend"].(float64); ok {
-			agent.Spend = types.Float64Value(v)
+		if err := updateFloat64FromAPI(&agent.Spend, item, true, true, "spend"); err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", err.Error())
+			return
 		}
 		if v, ok := item["created_at"].(string); ok {
 			agent.CreatedAt = types.StringValue(v)

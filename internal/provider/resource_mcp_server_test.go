@@ -24,7 +24,10 @@ func TestBuildMCPServerRequestIncludesSkipURLValidation(t *testing.T) {
 		SkipURLValidation: types.BoolValue(true),
 	}
 
-	req := r.buildMCPServerRequest(context.Background(), data)
+	req, err := r.buildMCPServerRequest(context.Background(), data)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if got, ok := req["skip_url_validation"].(bool); !ok || !got {
 		t.Fatalf("expected skip_url_validation=true, got %T: %v", req["skip_url_validation"], req["skip_url_validation"])
@@ -158,7 +161,10 @@ func TestBuildMCPServerRequestOmitsSkipURLValidationWhenUnconfigured(t *testing.
 		SkipURLValidation: types.BoolNull(),
 	}
 
-	req := r.buildMCPServerRequest(context.Background(), data)
+	req, err := r.buildMCPServerRequest(context.Background(), data)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if _, ok := req["skip_url_validation"]; ok {
 		t.Fatalf("skip_url_validation should be omitted when unconfigured, got %v", req["skip_url_validation"])
@@ -176,7 +182,10 @@ func TestBuildMCPServerRequestExtraHeadersList(t *testing.T) {
 		ExtraHeaders: stringListValue("header-one", "header-two"),
 	}
 
-	req := r.buildMCPServerRequest(context.Background(), data)
+	req, err := r.buildMCPServerRequest(context.Background(), data)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	extraHeaders, ok := req["extra_headers"].([]string)
 	if !ok {
@@ -382,7 +391,7 @@ func TestReadMCPServerReadsNestedToolCostMap(t *testing.T) {
 		},
 	}
 
-	if err := r.readMCPServer(context.Background(), &data); err != nil {
+	if err := r.readMCPServerWithNumericOwnership(context.Background(), &data, true); err != nil {
 		t.Fatalf("readMCPServer returned error: %v", err)
 	}
 

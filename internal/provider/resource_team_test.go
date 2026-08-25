@@ -102,7 +102,10 @@ func TestBuildTeamRequestIncludesManagedAccessGroupIDs(t *testing.T) {
 			types.StringValue("group-a"),
 		}),
 	}
-	request := (&TeamResource{}).buildTeamRequest(context.Background(), data, "team-123")
+	request, err := (&TeamResource{}).buildTeamRequest(context.Background(), data, "team-123")
+	if err != nil {
+		t.Fatal(err)
+	}
 	got, ok := request["access_group_ids"].([]string)
 	if !ok {
 		t.Fatalf("access_group_ids request type = %T, want []string", request["access_group_ids"])
@@ -112,7 +115,10 @@ func TestBuildTeamRequestIncludesManagedAccessGroupIDs(t *testing.T) {
 	}
 
 	data.AccessGroupIDs = types.SetValueMust(types.StringType, []attr.Value{})
-	request = (&TeamResource{}).buildTeamRequest(context.Background(), data, "team-123")
+	request, err = (&TeamResource{}).buildTeamRequest(context.Background(), data, "team-123")
+	if err != nil {
+		t.Fatal(err)
+	}
 	got, ok = request["access_group_ids"].([]string)
 	if !ok || len(got) != 0 {
 		t.Fatalf("empty access_group_ids request = %#v, want []string{}", request["access_group_ids"])
@@ -314,11 +320,14 @@ func TestTeamDefaultMemberBudgetDurationSchema(t *testing.T) {
 func TestBuildTeamRequestIncludesMemberBudgetDuration(t *testing.T) {
 	t.Parallel()
 
-	request := (&TeamResource{}).buildTeamRequest(context.Background(), &TeamResourceModel{
+	request, err := (&TeamResource{}).buildTeamRequest(context.Background(), &TeamResourceModel{
 		TeamAlias:            types.StringValue("budget-team"),
 		TeamMemberBudget:     types.Float64Value(50),
 		MemberBudgetDuration: types.StringValue("30d"),
 	}, "team-1")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got := request["team_member_budget_duration"]; got != "30d" {
 		t.Fatalf("team_member_budget_duration = %#v, want 30d", got)
 	}
@@ -443,10 +452,12 @@ func TestReadTeamWithNestedTeamInfoResponse(t *testing.T) {
 					"tags":            []interface{}{"prod", "high-priority"},
 					"guardrails":      []interface{}{"content-filter"},
 					"prompts":         []interface{}{},
-					"metadata":        map[string]interface{}{"env": "production"},
-					"model_aliases":   map[string]interface{}{"fast": "gpt-3.5-turbo"},
-					"model_rpm_limit": map[string]interface{}{"gpt-4": 100.0},
-					"model_tpm_limit": map[string]interface{}{"gpt-4": 5000.0},
+					"metadata": map[string]interface{}{
+						"env":             "production",
+						"model_rpm_limit": map[string]interface{}{"gpt-4": 100.0},
+						"model_tpm_limit": map[string]interface{}{"gpt-4": 5000.0},
+					},
+					"model_aliases": map[string]interface{}{"fast": "gpt-3.5-turbo"},
 					"team_member_budget_table": map[string]interface{}{
 						"max_budget":      50.0,
 						"budget_duration": "30d",
@@ -489,7 +500,7 @@ func TestReadTeamWithNestedTeamInfoResponse(t *testing.T) {
 		TeamMemberPermissions: types.ListUnknown(types.StringType),
 	}
 
-	if err := r.readTeam(context.Background(), &data); err != nil {
+	if err := r.readTeamWithNumericOwnership(context.Background(), &data, true); err != nil {
 		t.Fatalf("readTeam returned error: %v", err)
 	}
 
@@ -582,7 +593,10 @@ func TestBuildTeamRequest_RouterSettingsWithFallbacks(t *testing.T) {
 		RouterSettings: rs,
 	}
 
-	req := r.buildTeamRequest(ctx, data, "team-123")
+	req, err := r.buildTeamRequest(ctx, data, "team-123")
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	rsPayload, ok := req["router_settings"].(map[string]interface{})
 	if !ok {
@@ -620,7 +634,10 @@ func TestBuildTeamRequest_NullRouterSettings_SendsEmptyToAPI(t *testing.T) {
 		RouterSettings: types.ObjectNull(routerSettingsAttrTypes),
 	}
 
-	req := r.buildTeamRequest(ctx, data, "team-123")
+	req, err := r.buildTeamRequest(ctx, data, "team-123")
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	rs, exists := req["router_settings"]
 	if !exists {

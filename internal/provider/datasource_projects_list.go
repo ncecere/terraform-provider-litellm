@@ -149,8 +149,9 @@ func (d *ProjectsListDataSource) Read(ctx context.Context, req datasource.ReadRe
 		if v, ok := item["blocked"].(bool); ok {
 			project.Blocked = types.BoolValue(v)
 		}
-		if v, ok := item["spend"].(float64); ok {
-			project.Spend = types.Float64Value(v)
+		if err := updateFloat64FromAPI(&project.Spend, item, true, true, "spend"); err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", err.Error())
+			return
 		}
 		if v, ok := item["created_at"].(string); ok {
 			project.CreatedAt = types.StringValue(v)

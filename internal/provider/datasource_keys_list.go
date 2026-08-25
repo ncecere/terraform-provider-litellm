@@ -261,17 +261,25 @@ func decodeKeyListItem(raw json.RawMessage) (KeyListItem, error) {
 	if teamID, ok := keyMap["team_id"].(string); ok {
 		item.TeamID = types.StringValue(teamID)
 	}
-	if maxBudget, ok := keyMap["max_budget"].(float64); ok {
-		item.MaxBudget = types.Float64Value(maxBudget)
+	if err := updateFloat64FromAPIPaths(&item.MaxBudget, keyMap, true, true,
+		[]string{"max_budget"},
+		[]string{"litellm_budget_table", "max_budget"},
+	); err != nil {
+		return KeyListItem{}, err
 	}
-	if spend, ok := keyMap["spend"].(float64); ok {
-		item.Spend = types.Float64Value(spend)
+	if err := updateFloat64FromAPI(&item.Spend, keyMap, true, true, "spend"); err != nil {
+		return KeyListItem{}, err
 	}
-	if tpmLimit, ok := keyMap["tpm_limit"].(float64); ok {
-		item.TPMLimit = types.Int64Value(int64(tpmLimit))
-	}
-	if rpmLimit, ok := keyMap["rpm_limit"].(float64); ok {
-		item.RPMLimit = types.Int64Value(int64(rpmLimit))
+	for _, field := range []struct {
+		name   string
+		target *types.Int64
+	}{
+		{"tpm_limit", &item.TPMLimit},
+		{"rpm_limit", &item.RPMLimit},
+	} {
+		if err := updateInt64FromAPI(field.target, keyMap, true, true, field.name); err != nil {
+			return KeyListItem{}, err
+		}
 	}
 	if blocked, ok := keyMap["blocked"].(bool); ok {
 		item.Blocked = types.BoolValue(blocked)

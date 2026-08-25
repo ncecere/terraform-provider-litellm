@@ -9,7 +9,10 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
-const modelImportedPrivateKey = "model_imported_v1"
+const (
+	modelImportedPrivateKey         = "model_imported_v1"
+	modelTopThinkingOwnedPrivateKey = "model_top_thinking_owned_v1"
+)
 
 // LiteLLM v1.98.0 injects this complete set into litellm_params for models
 // created without additional_litellm_params. Older provider state has no

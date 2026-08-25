@@ -11,6 +11,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -103,6 +104,7 @@ func (r *TagResource) Schema(ctx context.Context, req resource.SchemaRequest, re
 			"model_max_budget": schema.StringAttribute{
 				Description: "JSON string for per-model budget configuration.",
 				Optional:    true,
+				Validators:  []validator.String{jsonShapeStringValidator{shape: '{'}},
 			},
 		},
 	}
@@ -133,7 +135,11 @@ func (r *TagResource) Create(ctx context.Context, req resource.CreateRequest, re
 		return
 	}
 
-	tagReq := r.buildTagRequest(ctx, &data)
+	tagReq, err := r.buildTagRequest(ctx, &data)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Tag JSON", err.Error())
+		return
+	}
 
 	var result map[string]interface{}
 	if err := r.client.DoRequestWithResponse(ctx, "POST", "/tag/new", tagReq, &result); err != nil {
@@ -156,11 +162,14 @@ func (r *TagResource) Read(ctx context.Context, req resource.ReadRequest, resp *
 	var data TagResourceModel
 
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
+	importedMarker, privateDiags := req.Private.GetKey(ctx, numericImportedPrivateKey)
+	resp.Diagnostics.Append(privateDiags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	imported := string(importedMarker) == "true"
 
-	if err := r.readTag(ctx, &data); err != nil {
+	if err := r.readTagWithNumericOwnership(ctx, &data, imported); err != nil {
 		if IsNotFoundError(err) {
 			resp.State.RemoveResource(ctx)
 			return
@@ -170,6 +179,9 @@ func (r *TagResource) Read(ctx context.Context, req resource.ReadRequest, resp *
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	if !resp.Diagnostics.HasError() && imported {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, nil)...)
+	}
 }
 
 func (r *TagResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
@@ -190,7 +202,11 @@ func (r *TagResource) Update(ctx context.Context, req resource.UpdateRequest, re
 	data.ID = state.ID
 	data.Name = state.Name
 
-	tagReq := r.buildTagRequest(ctx, &data)
+	tagReq, err := r.buildTagRequest(ctx, &data)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Tag JSON", err.Error())
+		return
+	}
 
 	if err := r.client.DoRequestWithResponse(ctx, "POST", "/tag/update", tagReq, nil); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to update tag: %s", err))
@@ -228,9 +244,12 @@ func (r *TagResource) Delete(ctx context.Context, req resource.DeleteRequest, re
 func (r *TagResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("name"), req.ID)...)
+	if resp.Private != nil {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, []byte("true"))...)
+	}
 }
 
-func (r *TagResource) buildTagRequest(ctx context.Context, data *TagResourceModel) map[string]interface{} {
+func (r *TagResource) buildTagRequest(ctx context.Context, data *TagResourceModel) (map[string]interface{}, error) {
 	tagReq := map[string]interface{}{
 		"name": data.Name.ValueString(),
 	}
@@ -246,10 +265,11 @@ func (r *TagResource) buildTagRequest(ctx context.Context, data *TagResourceMode
 		tagReq["budget_duration"] = data.BudgetDuration.ValueString()
 	}
 	if !data.ModelMaxBudget.IsNull() && !data.ModelMaxBudget.IsUnknown() && data.ModelMaxBudget.ValueString() != "" {
-		var modelBudget map[string]interface{}
-		if err := json.Unmarshal([]byte(data.ModelMaxBudget.ValueString()), &modelBudget); err == nil {
-			tagReq["model_max_budget"] = modelBudget
+		modelBudget, err := decodeRequestJSONObject(data.ModelMaxBudget.ValueString(), "model_max_budget")
+		if err != nil {
+			return nil, err
 		}
+		tagReq["model_max_budget"] = modelBudget
 	}
 
 	// Numeric fields - check IsNull and IsUnknown
@@ -278,10 +298,14 @@ func (r *TagResource) buildTagRequest(ctx context.Context, data *TagResourceMode
 		}
 	}
 
-	return tagReq
+	return tagReq, nil
 }
 
 func (r *TagResource) readTag(ctx context.Context, data *TagResourceModel) error {
+	return r.readTagWithNumericOwnership(ctx, data, false)
+}
+
+func (r *TagResource) readTagWithNumericOwnership(ctx context.Context, data *TagResourceModel, imported bool) error {
 	tagName := data.Name.ValueString()
 	if tagName == "" {
 		tagName = data.ID.ValueString()
@@ -301,17 +325,28 @@ func (r *TagResource) readTag(ctx context.Context, data *TagResourceModel) error
 		return err
 	}
 
-	// Extract tag data from the map-keyed response
+	// Extract tag data from the map-keyed response. Imported state requires the
+	// authoritative keyed envelope; the flat shape remains read-compatible for
+	// established state but cannot clear the one-time import marker.
 	var result map[string]interface{}
 	if tagData, ok := rawResult[tagName].(map[string]interface{}); ok {
 		result = tagData
 	} else {
-		// Flat response - the rawResult might be the tag data directly
 		result = rawResult
+	}
+	if imported {
+		tagData, ok := rawResult[tagName].(map[string]interface{})
+		if !ok || tagData == nil {
+			return fmt.Errorf("tag import read response is missing the authoritative keyed envelope")
+		}
+		result = tagData
 	}
 
 	if result == nil || len(result) == 0 {
 		return fmt.Errorf("tag not found: %s", tagName)
+	}
+	if err := validateImportedObjectIdentity(imported, "tag", result, "name", tagName); err != nil {
+		return err
 	}
 
 	// Update fields from response
@@ -325,23 +360,44 @@ func (r *TagResource) readTag(ctx context.Context, data *TagResourceModel) error
 	if budgetID, ok := result["budget_id"].(string); ok {
 		data.BudgetID = types.StringValue(budgetID)
 	}
-	if maxBudget, ok := result["max_budget"].(float64); ok {
-		data.MaxBudget = types.Float64Value(maxBudget)
+	// LiteLLM v1.98 returns budget and rate fields through the nested budget
+	// relation. Tag budget fields are Optional-only: validate defaults, adopt
+	// only configured values, and expose explicit/omitted remote clears.
+	for _, field := range []struct {
+		name   string
+		target *types.Float64
+	}{
+		{"max_budget", &data.MaxBudget},
+		{"soft_budget", &data.SoftBudget},
+	} {
+		owned := imported || (!field.target.IsNull() && !field.target.IsUnknown())
+		if err := updateFloat64FromAPI(field.target, result, owned, owned, "litellm_budget_table", field.name); err != nil {
+			return err
+		}
 	}
-	if softBudget, ok := result["soft_budget"].(float64); ok {
-		data.SoftBudget = types.Float64Value(softBudget)
+	for _, field := range []struct {
+		name   string
+		target *types.Int64
+	}{
+		{"max_parallel_requests", &data.MaxParallelRequests},
+		{"tpm_limit", &data.TPMLimit},
+		{"rpm_limit", &data.RPMLimit},
+	} {
+		owned := imported || (!field.target.IsNull() && !field.target.IsUnknown())
+		if err := updateInt64FromAPI(field.target, result, owned, owned, "litellm_budget_table", field.name); err != nil {
+			return err
+		}
 	}
-	if maxParallel, ok := result["max_parallel_requests"].(float64); ok {
-		data.MaxParallelRequests = types.Int64Value(int64(maxParallel))
-	}
-	if tpmLimit, ok := result["tpm_limit"].(float64); ok {
-		data.TPMLimit = types.Int64Value(int64(tpmLimit))
-	}
-	if rpmLimit, ok := result["rpm_limit"].(float64); ok {
-		data.RPMLimit = types.Int64Value(int64(rpmLimit))
-	}
-	if budgetDuration, ok := result["budget_duration"].(string); ok {
-		data.BudgetDuration = types.StringValue(budgetDuration)
+	if budgetDuration, presence, err := apiValueAt(result, "litellm_budget_table", "budget_duration"); err != nil {
+		return err
+	} else if presence == apiValuePresent && !data.BudgetDuration.IsNull() {
+		value, ok := budgetDuration.(string)
+		if !ok {
+			return fmt.Errorf("invalid response field %q: expected a string", "litellm_budget_table.budget_duration")
+		}
+		data.BudgetDuration = types.StringValue(value)
+	} else if presence != apiValuePresent && !data.BudgetDuration.IsNull() {
+		data.BudgetDuration = types.StringNull()
 	}
 
 	// Handle models list - resolve Unknown to empty, preserve null
@@ -357,11 +413,19 @@ func (r *TagResource) readTag(ctx context.Context, data *TagResourceModel) error
 		data.Models, _ = types.ListValue(types.StringType, []attr.Value{})
 	}
 
-	// Handle model_max_budget
-	if modelMaxBudget, ok := result["model_max_budget"].(map[string]interface{}); ok && len(modelMaxBudget) > 0 {
+	// model_max_budget is owned by its existing JSON-string schema. Read it
+	// from the exact v1.98 budget relation without introducing a flattened
+	// compatibility field.
+	if modelMaxBudget, presence, err := apiValueAt(result, "litellm_budget_table", "model_max_budget"); err != nil {
+		return err
+	} else if presence == apiValuePresent && (imported || (!data.ModelMaxBudget.IsNull() && !data.ModelMaxBudget.IsUnknown())) {
 		if jsonBytes, err := json.Marshal(modelMaxBudget); err == nil {
 			data.ModelMaxBudget = types.StringValue(string(jsonBytes))
+		} else {
+			return fmt.Errorf("invalid response field %q: cannot encode JSON", "litellm_budget_table.model_max_budget")
 		}
+	} else if presence != apiValuePresent && (imported || (!data.ModelMaxBudget.IsNull() && !data.ModelMaxBudget.IsUnknown())) {
+		data.ModelMaxBudget = types.StringNull()
 	}
 
 	return nil

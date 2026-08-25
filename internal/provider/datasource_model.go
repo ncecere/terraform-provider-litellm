@@ -169,11 +169,13 @@ func (d *ModelDataSource) Read(ctx context.Context, req datasource.ReadRequest, 
 		if apiVersion, ok := litellmParams["api_version"].(string); ok {
 			data.APIVersion = types.StringValue(apiVersion)
 		}
-		if tpm, ok := litellmParams["tpm"].(float64); ok {
-			data.TPM = types.Int64Value(int64(tpm))
+		if err := updateInt64FromAPI(&data.TPM, litellmParams, true, true, "tpm"); err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", err.Error())
+			return
 		}
-		if rpm, ok := litellmParams["rpm"].(float64); ok {
-			data.RPM = types.Int64Value(int64(rpm))
+		if err := updateInt64FromAPI(&data.RPM, litellmParams, true, true, "rpm"); err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", err.Error())
+			return
 		}
 		if awsRegion, ok := litellmParams["aws_region_name"].(string); ok {
 			data.AWSRegionName = types.StringValue(awsRegion)

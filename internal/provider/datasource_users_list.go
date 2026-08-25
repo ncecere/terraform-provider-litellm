@@ -225,17 +225,27 @@ func decodeUserListItem(rawItem json.RawMessage) (UserListItem, error) {
 	if role, ok := userMap["user_role"].(string); ok {
 		item.UserRole = types.StringValue(role)
 	}
-	if maxBudget, ok := userMap["max_budget"].(float64); ok {
-		item.MaxBudget = types.Float64Value(maxBudget)
+	for _, field := range []struct {
+		name   string
+		target *types.Float64
+	}{
+		{"max_budget", &item.MaxBudget},
+		{"spend", &item.Spend},
+	} {
+		if err := updateFloat64FromAPI(field.target, userMap, true, true, field.name); err != nil {
+			return UserListItem{}, err
+		}
 	}
-	if spend, ok := userMap["spend"].(float64); ok {
-		item.Spend = types.Float64Value(spend)
-	}
-	if tpmLimit, ok := userMap["tpm_limit"].(float64); ok {
-		item.TPMLimit = types.Int64Value(int64(tpmLimit))
-	}
-	if rpmLimit, ok := userMap["rpm_limit"].(float64); ok {
-		item.RPMLimit = types.Int64Value(int64(rpmLimit))
+	for _, field := range []struct {
+		name   string
+		target *types.Int64
+	}{
+		{"tpm_limit", &item.TPMLimit},
+		{"rpm_limit", &item.RPMLimit},
+	} {
+		if err := updateInt64FromAPI(field.target, userMap, true, true, field.name); err != nil {
+			return UserListItem{}, err
+		}
 	}
 	return item, nil
 }

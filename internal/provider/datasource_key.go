@@ -241,24 +241,39 @@ func (d *KeyDataSource) Read(ctx context.Context, req datasource.ReadRequest, re
 		data.BudgetDuration = types.StringValue(budgetDuration)
 	}
 
-	// Numeric fields
-	if maxBudget, ok := info["max_budget"].(float64); ok {
-		data.MaxBudget = types.Float64Value(maxBudget)
+	// max_budget belongs to the v1.98 verification-token row; soft_budget
+	// belongs to the budget relation. Retain the opposite locations only as
+	// historical compatibility fallbacks.
+	if err := updateFloat64FromAPIPaths(&data.MaxBudget, info, true, true,
+		[]string{"max_budget"},
+		[]string{"litellm_budget_table", "max_budget"},
+	); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
 	}
-	if spend, ok := info["spend"].(float64); ok {
-		data.Spend = types.Float64Value(spend)
+	if err := updateFloat64FromAPIPaths(&data.SoftBudget, info, true, true,
+		[]string{"litellm_budget_table", "soft_budget"},
+		[]string{"soft_budget"},
+	); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
 	}
-	if softBudget, ok := info["soft_budget"].(float64); ok {
-		data.SoftBudget = types.Float64Value(softBudget)
+	if err := updateFloat64FromAPI(&data.Spend, info, true, true, "spend"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
 	}
-	if maxParallel, ok := info["max_parallel_requests"].(float64); ok {
-		data.MaxParallelRequests = types.Int64Value(int64(maxParallel))
-	}
-	if tpmLimit, ok := info["tpm_limit"].(float64); ok {
-		data.TPMLimit = types.Int64Value(int64(tpmLimit))
-	}
-	if rpmLimit, ok := info["rpm_limit"].(float64); ok {
-		data.RPMLimit = types.Int64Value(int64(rpmLimit))
+	for _, field := range []struct {
+		name   string
+		target *types.Int64
+	}{
+		{"max_parallel_requests", &data.MaxParallelRequests},
+		{"tpm_limit", &data.TPMLimit},
+		{"rpm_limit", &data.RPMLimit},
+	} {
+		if err := updateInt64FromAPI(field.target, info, true, true, field.name); err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", err.Error())
+			return
+		}
 	}
 
 	// Boolean fields

@@ -3,13 +3,207 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-go/tftypes"
 )
+
+func TestModelThinkingAdditionalParamsDoNotOwnTopLevelPlanOrRead(t *testing.T) {
+	t.Parallel()
+
+	var created map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch request.URL.Path {
+		case "/model/new":
+			defer request.Body.Close()
+			decoder := json.NewDecoder(request.Body)
+			decoder.UseNumber()
+			if err := decoder.Decode(&created); err != nil {
+				t.Errorf("decode create body: %v", err)
+			}
+			_, _ = w.Write([]byte(`{}`))
+		case "/model/info":
+			_, _ = w.Write([]byte(`{"data":[{"model_name":"claude","litellm_params":{"custom_llm_provider":"anthropic","model":"anthropic/claude","thinking":{"type":"enabled","budget_tokens":2048}},"model_info":{"base_model":"claude"}}]}`))
+		default:
+			http.NotFound(w, request)
+		}
+	}))
+	defer server.Close()
+
+	resourceUnderTest := &ModelResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
+	var schemaResponse resource.SchemaResponse
+	resourceUnderTest.Schema(context.Background(), resource.SchemaRequest{}, &schemaResponse)
+	if schemaResponse.Diagnostics.HasError() {
+		t.Fatalf("schema diagnostics: %v", schemaResponse.Diagnostics)
+	}
+	schema := schemaResponse.Schema
+	empty := tftypes.NewValue(schema.Type().TerraformType(context.Background()), nil)
+	planned := ModelResourceModel{
+		ModelName:            types.StringValue("claude"),
+		CustomLLMProvider:    types.StringValue("anthropic"),
+		BaseModel:            types.StringValue("claude"),
+		ThinkingEnabled:      types.BoolValue(true),
+		ThinkingBudgetTokens: types.Int64Value(4096),
+		AccessGroups:         types.ListNull(types.StringType),
+		AdditionalLiteLLMParams: types.MapValueMust(types.StringType, map[string]attr.Value{
+			"thinking": types.StringValue(`{"type":"enabled","budget_tokens":2048}`),
+		}),
+		AdditionalModelInfo: types.MapNull(types.StringType),
+	}
+	plan := tfsdk.Plan{Raw: empty, Schema: schema}
+	if diagnostics := plan.Set(context.Background(), &planned); diagnostics.HasError() {
+		t.Fatalf("set plan: %v", diagnostics)
+	}
+	config := tfsdk.Config{Raw: plan.Raw, Schema: schema}
+	createResponse := &resource.CreateResponse{State: tfsdk.State{Raw: empty, Schema: schema}}
+	resourceUnderTest.Create(context.Background(), resource.CreateRequest{Plan: plan, Config: config}, createResponse)
+	if createResponse.Diagnostics.HasError() {
+		t.Fatalf("create diagnostics: %v", createResponse.Diagnostics)
+	}
+
+	var state ModelResourceModel
+	if diagnostics := createResponse.State.Get(context.Background(), &state); diagnostics.HasError() {
+		t.Fatalf("get state: %v", diagnostics)
+	}
+	if !state.ThinkingEnabled.ValueBool() || state.ThinkingBudgetTokens.ValueInt64() != 4096 {
+		t.Fatalf("additional thinking overwrote top-level plan/read state: enabled=%v budget=%d", state.ThinkingEnabled, state.ThinkingBudgetTokens.ValueInt64())
+	}
+	var stateAdditional map[string]string
+	state.AdditionalLiteLLMParams.ElementsAs(context.Background(), &stateAdditional, false)
+	if got := stateAdditional["thinking"]; got != `{"type":"enabled","budget_tokens":2048}` {
+		t.Fatalf("both configured forms produced inconsistent additional state: %s", got)
+	}
+	params := created["litellm_params"].(map[string]interface{})
+	thinking := params["thinking"].(map[string]interface{})
+	if budget, err := exactInt64FromAPI(thinking["budget_tokens"]); err != nil || budget != 2048 {
+		t.Fatalf("additional thinking was not retained in API payload: %#v, %v", thinking, err)
+	}
+}
+
+func TestReadModelAdditionalThinkingOwnsRemoteAndPreservesTopLevelState(t *testing.T) {
+	t.Parallel()
+
+	server, client := jsonServer(t, map[string]interface{}{
+		"model_name": "claude",
+		"litellm_params": map[string]interface{}{
+			"thinking": map[string]interface{}{"type": "enabled", "budget_tokens": int64(9007199254740993)},
+		},
+	})
+	defer server.Close()
+	priorThinking := `{"type":"enabled","budget_tokens":2048}`
+	data := &ModelResourceModel{
+		ID:                   types.StringValue("model-1"),
+		ThinkingEnabled:      types.BoolValue(false),
+		ThinkingBudgetTokens: types.Int64Value(1024),
+		AdditionalLiteLLMParams: types.MapValueMust(types.StringType, map[string]attr.Value{
+			"thinking": types.StringValue(priorThinking),
+		}),
+		AdditionalLiteLLMParamsConfigured: types.BoolValue(true),
+	}
+	if err := (&ModelResource{client: client}).readModelWithOwnership(context.Background(), data, modelReadOwnership{topThinkingOwned: true}); err != nil {
+		t.Fatal(err)
+	}
+	if data.ThinkingEnabled.ValueBool() || data.ThinkingBudgetTokens.ValueInt64() != 1024 {
+		t.Fatalf("additional ownership changed top-level state: %#v", data)
+	}
+	var additional map[string]string
+	data.AdditionalLiteLLMParams.ElementsAs(context.Background(), &additional, false)
+	if got := additional["thinking"]; got != `{"budget_tokens":9007199254740993,"type":"enabled"}` {
+		t.Fatalf("additional thinking did not refresh exact remote value: %s", got)
+	}
+}
+
+func TestReadModelImportAdoptsRemoteThinkingThroughAdditionalParams(t *testing.T) {
+	t.Parallel()
+
+	server, client := jsonServer(t, map[string]interface{}{
+		"data": []interface{}{map[string]interface{}{
+			"model_name": "claude",
+			"litellm_params": map[string]interface{}{
+				"custom_llm_provider": "anthropic",
+				"model":               "anthropic/claude",
+				"thinking": map[string]interface{}{
+					"type":          "enabled",
+					"budget_tokens": int64(9007199254740993),
+				},
+			},
+			"model_info": map[string]interface{}{"id": "model-1", "base_model": "claude"},
+		}},
+	})
+	defer server.Close()
+	data := &ModelResourceModel{
+		ID:                      types.StringValue("model-1"),
+		ThinkingEnabled:         types.BoolNull(),
+		ThinkingBudgetTokens:    types.Int64Null(),
+		AdditionalLiteLLMParams: types.MapNull(types.StringType),
+	}
+	if err := (&ModelResource{client: client}).readModelWithOwnership(context.Background(), data, modelReadOwnership{imported: true}); err != nil {
+		t.Fatal(err)
+	}
+	if !data.ThinkingEnabled.IsNull() || !data.ThinkingBudgetTokens.IsNull() {
+		t.Fatalf("import invented top-level thinking ownership: %#v", data)
+	}
+	var additional map[string]string
+	data.AdditionalLiteLLMParams.ElementsAs(context.Background(), &additional, false)
+	if got := additional["thinking"]; got != `{"budget_tokens":9007199254740993,"type":"enabled"}` {
+		t.Fatalf("imported thinking = %s", got)
+	}
+}
+
+func TestReadModelTopLevelThinkingOwnsBudgetWhenEnabled(t *testing.T) {
+	t.Parallel()
+
+	server, client := jsonServer(t, map[string]interface{}{
+		"model_name": "claude",
+		"litellm_params": map[string]interface{}{
+			"thinking": map[string]interface{}{"type": "enabled", "budget_tokens": int64(9007199254740993)},
+		},
+	})
+	defer server.Close()
+	data := &ModelResourceModel{
+		ID:                   types.StringValue("model-1"),
+		ThinkingEnabled:      types.BoolValue(true),
+		ThinkingBudgetTokens: types.Int64Value(1024),
+	}
+	if err := (&ModelResource{client: client}).readModel(context.Background(), data); err != nil {
+		t.Fatal(err)
+	}
+	if data.ThinkingBudgetTokens.ValueInt64() != 9007199254740993 {
+		t.Fatalf("enabled top-level thinking budget = %d", data.ThinkingBudgetTokens.ValueInt64())
+	}
+}
+
+func TestReadModelTopLevelThinkingRefreshesEnabledState(t *testing.T) {
+	t.Parallel()
+
+	server, client := jsonServer(t, map[string]interface{}{
+		"model_name":     "claude",
+		"litellm_params": map[string]interface{}{},
+	})
+	defer server.Close()
+	data := &ModelResourceModel{
+		ID:                   types.StringValue("model-1"),
+		ThinkingEnabled:      types.BoolValue(true),
+		ThinkingBudgetTokens: types.Int64Value(2048),
+	}
+	if err := (&ModelResource{client: client}).readModelWithOwnership(context.Background(), data, modelReadOwnership{topThinkingOwned: true}); err != nil {
+		t.Fatal(err)
+	}
+	if data.ThinkingEnabled.ValueBool() {
+		t.Fatal("owned top-level thinking did not observe remote disable")
+	}
+	if data.ThinkingBudgetTokens.ValueInt64() != 2048 {
+		t.Fatalf("disabled remote thinking unnecessarily rewrote budget state: %v", data.ThinkingBudgetTokens)
+	}
+}
 
 func TestReadModelResolvesUnknownOptionalComputedCollections(t *testing.T) {
 	t.Parallel()
@@ -205,6 +399,24 @@ func TestConvertStringValue(t *testing.T) {
 	}
 }
 
+func TestConvertStringValuePreservesExactJSONNumbers(t *testing.T) {
+	t.Parallel()
+
+	nested, ok := convertStringValue(`{"large":9007199254740993,"close":1.0000000000000001}`).(map[string]interface{})
+	if !ok {
+		t.Fatalf("converted nested JSON = %T", nested)
+	}
+	large, largeOK := nested["large"].(json.Number)
+	closeValue, closeOK := nested["close"].(json.Number)
+	if !largeOK || large.String() != "9007199254740993" || !closeOK || closeValue.String() != "1.0000000000000001" {
+		t.Fatalf("converted nested numbers rounded: %#v", nested)
+	}
+	scalar, ok := convertStringValue("9007199254740993.0").(json.Number)
+	if !ok || scalar.String() != "9007199254740993" {
+		t.Fatalf("converted scalar = %#v", scalar)
+	}
+}
+
 func TestJSONSemanticallyEqual(t *testing.T) {
 	t.Parallel()
 
@@ -218,6 +430,9 @@ func TestJSONSemanticallyEqual(t *testing.T) {
 		{"key ordering", `{"a":1,"b":2}`, `{"b":2,"a":1}`, true},
 		{"identical", `{"inputs":"{prompt}"}`, `{"inputs":"{prompt}"}`, true},
 		{"arrays equal", `["a", "b"]`, `["a","b"]`, true},
+		{"exact numeric notation", `{"n":9007199254740993}`, `{"n":9.007199254740993e15}`, true},
+		{"close large integers differ", `{"n":9007199254740992}`, `{"n":9007199254740993}`, false},
+		{"close decimals differ", `{"n":1.0000000000000001}`, `{"n":1.0000000000000002}`, false},
 		{"different values", `{"inputs":"{prompt}"}`, `{"inputs":"{other}"}`, false},
 		{"different keys", `{"a":1}`, `{"b":1}`, false},
 		{"a not json", `not json {`, `{"a":1}`, false},
@@ -1317,64 +1532,28 @@ func TestReadBackCost(t *testing.T) {
 	cases := []struct {
 		name    string
 		current types.Float64
-		raw     interface{}
+		object  map[string]interface{}
 		scale   float64
 		want    types.Float64
+		wantErr bool
 	}{
-		{
-			name:    "null state stays null even when API returns a value",
-			current: types.Float64Null(),
-			raw:     2.5e-06,
-			scale:   1000000.0,
-			want:    types.Float64Null(),
-		},
-		{
-			name:    "changed API value updates state with scaling",
-			current: types.Float64Value(3.0),
-			raw:     2.5e-06,
-			scale:   1000000.0,
-			want:    types.Float64Value(2.5),
-		},
-		{
-			name:    "per-token round-trip within tolerance keeps state value",
-			current: types.Float64Value(3.0),
-			raw:     3.0 / 1000000.0,
-			scale:   1000000.0,
-			want:    types.Float64Value(3.0),
-		},
-		{
-			name:    "numeric string from API is parsed",
-			current: types.Float64Value(3.0),
-			raw:     "2.5e-06",
-			scale:   1000000.0,
-			want:    types.Float64Value(2.5),
-		},
-		{
-			name:    "missing API value keeps state",
-			current: types.Float64Value(3.0),
-			raw:     nil,
-			scale:   1000000.0,
-			want:    types.Float64Value(3.0),
-		},
-		{
-			name:    "non-numeric API value keeps state",
-			current: types.Float64Value(3.0),
-			raw:     "not-a-number",
-			scale:   1000000.0,
-			want:    types.Float64Value(3.0),
-		},
-		{
-			name:    "unscaled cost (per pixel) updates directly",
-			current: types.Float64Value(0.001),
-			raw:     0.002,
-			scale:   1.0,
-			want:    types.Float64Value(0.002),
-		},
+		{"null state stays null when API returns a value", types.Float64Null(), map[string]interface{}{"cost": 2.5e-06}, 1000000.0, types.Float64Null(), false},
+		{"changed API value updates state with scaling", types.Float64Value(3.0), map[string]interface{}{"cost": 2.5e-06}, 1000000.0, types.Float64Value(2.5), false},
+		{"round-trip within tolerance keeps state", types.Float64Value(3.0), map[string]interface{}{"cost": 3.0 / 1000000.0}, 1000000.0, types.Float64Value(3.0), false},
+		{"numeric string from API is parsed", types.Float64Value(3.0), map[string]interface{}{"cost": "2.5e-06"}, 1000000.0, types.Float64Value(2.5), false},
+		{"missing API value keeps state", types.Float64Value(3.0), map[string]interface{}{}, 1000000.0, types.Float64Value(3.0), false},
+		{"explicit null clears state", types.Float64Value(3.0), map[string]interface{}{"cost": nil}, 1000000.0, types.Float64Null(), false},
+		{"non-numeric API value is rejected without stale state", types.Float64Value(3.0), map[string]interface{}{"cost": "not-a-number"}, 1000000.0, types.Float64Null(), true},
+		{"scaled overflow is rejected without stale state", types.Float64Value(3.0), map[string]interface{}{"cost": math.MaxFloat64}, 2.0, types.Float64Null(), true},
+		{"unscaled cost updates directly", types.Float64Value(0.001), map[string]interface{}{"cost": 0.002}, 1.0, types.Float64Value(0.002), false},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := readBackCost(tc.current, tc.raw, tc.scale)
+			got, err := readBackCost(tc.current, tc.object, "cost", tc.scale)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("readBackCost() error = %v, wantErr %t", err, tc.wantErr)
+			}
 			if !got.Equal(tc.want) {
 				t.Fatalf("readBackCost() = %v, want %v", got, tc.want)
 			}

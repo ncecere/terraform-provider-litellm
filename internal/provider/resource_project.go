@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"net/url"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/mapvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -131,18 +133,21 @@ func (r *ProjectResource) Schema(ctx context.Context, req resource.SchemaRequest
 				Optional:    true,
 				Computed:    true,
 				ElementType: types.Float64Type,
+				Validators:  []validator.Map{mapvalidator.NoNullValues()},
 			},
 			"model_rpm_limit": schema.MapAttribute{
 				Description: "Per-model RPM limits.",
 				Optional:    true,
 				Computed:    true,
 				ElementType: types.Int64Type,
+				Validators:  []validator.Map{mapvalidator.NoNullValues()},
 			},
 			"model_tpm_limit": schema.MapAttribute{
 				Description: "Per-model TPM limits.",
 				Optional:    true,
 				Computed:    true,
 				ElementType: types.Int64Type,
+				Validators:  []validator.Map{mapvalidator.NoNullValues()},
 			},
 			"blocked": schema.BoolAttribute{
 				Description: "Whether the project is blocked from making requests.",
@@ -189,7 +194,11 @@ func (r *ProjectResource) Create(ctx context.Context, req resource.CreateRequest
 		return
 	}
 
-	projectReq := r.buildProjectRequest(ctx, &data)
+	projectReq, err := r.buildProjectRequest(ctx, &data)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Project Numeric Map", err.Error())
+		return
+	}
 
 	var result map[string]interface{}
 	if err := r.client.DoRequestWithResponse(ctx, "POST", "/project/new", projectReq, &result); err != nil {
@@ -211,11 +220,14 @@ func (r *ProjectResource) Create(ctx context.Context, req resource.CreateRequest
 func (r *ProjectResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	var data ProjectResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
+	importedMarker, privateDiags := req.Private.GetKey(ctx, numericImportedPrivateKey)
+	resp.Diagnostics.Append(privateDiags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	imported := string(importedMarker) == "true"
 
-	if err := r.readProject(ctx, &data); err != nil {
+	if err := r.readProjectWithNumericOwnership(ctx, &data, imported); err != nil {
 		if IsNotFoundError(err) {
 			resp.State.RemoveResource(ctx)
 			return
@@ -225,6 +237,9 @@ func (r *ProjectResource) Read(ctx context.Context, req resource.ReadRequest, re
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	if !resp.Diagnostics.HasError() && imported {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, nil)...)
+	}
 }
 
 func (r *ProjectResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
@@ -241,7 +256,11 @@ func (r *ProjectResource) Update(ctx context.Context, req resource.UpdateRequest
 	}
 	data.ID = state.ID
 
-	updateReq := r.buildProjectRequest(ctx, &data)
+	updateReq, err := r.buildProjectRequest(ctx, &data)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Project Numeric Map", err.Error())
+		return
+	}
 	updateReq["project_id"] = data.ID.ValueString()
 
 	if err := r.client.DoRequestWithResponse(ctx, "POST", "/project/update", updateReq, nil); err != nil {
@@ -275,11 +294,14 @@ func (r *ProjectResource) Delete(ctx context.Context, req resource.DeleteRequest
 
 func (r *ProjectResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+	if resp.Private != nil {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, []byte("true"))...)
+	}
 }
 
 // --- Build request ---
 
-func (r *ProjectResource) buildProjectRequest(ctx context.Context, data *ProjectResourceModel) map[string]interface{} {
+func (r *ProjectResource) buildProjectRequest(ctx context.Context, data *ProjectResourceModel) (map[string]interface{}, error) {
 	req := map[string]interface{}{}
 
 	if !data.TeamID.IsNull() && !data.TeamID.IsUnknown() {
@@ -336,54 +358,52 @@ func (r *ProjectResource) buildProjectRequest(ctx context.Context, data *Project
 		}
 	}
 
-	// Maps
+	// Maps. LiteLLM v1.98 persists project per-model RPM/TPM limits in
+	// metadata, not in fabricated top-level response fields. Keep the dedicated
+	// Terraform attributes authoritative over those reserved metadata keys.
+	metadataPayload := map[string]interface{}{}
 	if !data.Metadata.IsNull() && !data.Metadata.IsUnknown() {
 		var metadata map[string]string
 		data.Metadata.ElementsAs(ctx, &metadata, false)
-		if len(metadata) > 0 {
-			req["metadata"] = convertMetadataToNative(metadata)
-		}
+		metadataPayload = convertMetadataToNative(metadata)
+		delete(metadataPayload, "model_rpm_limit")
+		delete(metadataPayload, "model_tpm_limit")
 	}
 	if !data.ModelMaxBudget.IsNull() && !data.ModelMaxBudget.IsUnknown() {
-		budgetMap := map[string]interface{}{}
-		for k, v := range data.ModelMaxBudget.Elements() {
-			if fv, ok := v.(types.Float64); ok {
-				budgetMap[k] = fv.ValueFloat64()
-			}
+		budgetMap, err := float64RequestMap(data.ModelMaxBudget, "model_max_budget")
+		if err != nil {
+			return nil, err
 		}
-		if len(budgetMap) > 0 {
-			req["model_max_budget"] = budgetMap
-		}
+		req["model_max_budget"] = budgetMap
 	}
 	if !data.ModelRPMLimit.IsNull() && !data.ModelRPMLimit.IsUnknown() {
-		rpmMap := map[string]interface{}{}
-		for k, v := range data.ModelRPMLimit.Elements() {
-			if iv, ok := v.(types.Int64); ok {
-				rpmMap[k] = iv.ValueInt64()
-			}
+		rpmMap, err := int64RequestMap(data.ModelRPMLimit, "model_rpm_limit")
+		if err != nil {
+			return nil, err
 		}
-		if len(rpmMap) > 0 {
-			req["model_rpm_limit"] = rpmMap
-		}
+		metadataPayload["model_rpm_limit"] = rpmMap
 	}
 	if !data.ModelTPMLimit.IsNull() && !data.ModelTPMLimit.IsUnknown() {
-		tpmMap := map[string]interface{}{}
-		for k, v := range data.ModelTPMLimit.Elements() {
-			if iv, ok := v.(types.Int64); ok {
-				tpmMap[k] = iv.ValueInt64()
-			}
+		tpmMap, err := int64RequestMap(data.ModelTPMLimit, "model_tpm_limit")
+		if err != nil {
+			return nil, err
 		}
-		if len(tpmMap) > 0 {
-			req["model_tpm_limit"] = tpmMap
-		}
+		metadataPayload["model_tpm_limit"] = tpmMap
+	}
+	if len(metadataPayload) > 0 {
+		req["metadata"] = metadataPayload
 	}
 
-	return req
+	return req, nil
 }
 
 // --- Read project ---
 
 func (r *ProjectResource) readProject(ctx context.Context, data *ProjectResourceModel) error {
+	return r.readProjectWithNumericOwnership(ctx, data, false)
+}
+
+func (r *ProjectResource) readProjectWithNumericOwnership(ctx context.Context, data *ProjectResourceModel, imported bool) error {
 	projectID := data.ID.ValueString()
 	if projectID == "" {
 		return fmt.Errorf("project ID is empty, cannot read project")
@@ -393,6 +413,12 @@ func (r *ProjectResource) readProject(ctx context.Context, data *ProjectResource
 
 	var result map[string]interface{}
 	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
+		return err
+	}
+	if err := validateImportedObjectIdentity(imported, "project", result, "project_id", projectID); err != nil {
+		return err
+	}
+	if err := requireImportedStringField(imported, "project", result, "team_id"); err != nil {
 		return err
 	}
 
@@ -410,9 +436,46 @@ func (r *ProjectResource) readProject(ctx context.Context, data *ProjectResource
 		data.TeamID = types.StringValue(v)
 	}
 
-	// Budget fields — only set if user configured them
+	// Budget and rate-limit fields are Optional-only. Refresh configured values
+	// without adopting API defaults into null state.
 	if v, ok := result["budget_id"].(string); ok && v != "" && !data.BudgetID.IsNull() {
 		data.BudgetID = types.StringValue(v)
+	}
+	if budgetDuration, presence, err := apiValueAt(result, "litellm_budget_table", "budget_duration"); err != nil {
+		return err
+	} else if presence == apiValuePresent && !data.BudgetDuration.IsNull() {
+		value, ok := budgetDuration.(string)
+		if !ok {
+			return fmt.Errorf("invalid response field %q: expected a string", "litellm_budget_table.budget_duration")
+		}
+		data.BudgetDuration = types.StringValue(value)
+	} else if presence != apiValuePresent && !data.BudgetDuration.IsNull() {
+		data.BudgetDuration = types.StringNull()
+	}
+	for _, field := range []struct {
+		name   string
+		target *types.Float64
+	}{
+		{"max_budget", &data.MaxBudget},
+		{"soft_budget", &data.SoftBudget},
+	} {
+		owned := imported || (!field.target.IsNull() && !field.target.IsUnknown())
+		if err := updateFloat64FromAPI(field.target, result, owned, owned, "litellm_budget_table", field.name); err != nil {
+			return err
+		}
+	}
+	for _, field := range []struct {
+		name   string
+		target *types.Int64
+	}{
+		{"tpm_limit", &data.TPMLimit},
+		{"rpm_limit", &data.RPMLimit},
+		{"max_parallel_requests", &data.MaxParallelRequests},
+	} {
+		owned := imported || (!field.target.IsNull() && !field.target.IsUnknown())
+		if err := updateInt64FromAPI(field.target, result, owned, owned, "litellm_budget_table", field.name); err != nil {
+			return err
+		}
 	}
 
 	// Bool
@@ -462,10 +525,14 @@ func (r *ProjectResource) readProject(ctx context.Context, data *ProjectResource
 		data.Tags, _ = types.ListValue(types.StringType, []attr.Value{})
 	}
 
-	// Metadata
+	// Metadata excludes the two reserved numeric maps represented by dedicated
+	// Terraform attributes.
 	if metadata, ok := result["metadata"].(map[string]interface{}); ok && len(metadata) > 0 {
 		metaMap := make(map[string]attr.Value)
 		for k, v := range metadata {
+			if k == "model_rpm_limit" || k == "model_tpm_limit" {
+				continue
+			}
 			metaMap[k] = types.StringValue(metadataValueToString(v))
 		}
 		data.Metadata, _ = types.MapValue(types.StringType, metaMap)
@@ -473,43 +540,17 @@ func (r *ProjectResource) readProject(ctx context.Context, data *ProjectResource
 		data.Metadata, _ = types.MapValue(types.StringType, map[string]attr.Value{})
 	}
 
-	// Model max budget
-	if mmb, ok := result["model_max_budget"].(map[string]interface{}); ok && len(mmb) > 0 {
-		budgetMap := make(map[string]attr.Value)
-		for k, v := range mmb {
-			if num, ok := v.(float64); ok {
-				budgetMap[k] = types.Float64Value(num)
-			}
-		}
-		data.ModelMaxBudget, _ = types.MapValue(types.Float64Type, budgetMap)
-	} else if data.ModelMaxBudget.IsUnknown() {
-		data.ModelMaxBudget, _ = types.MapValue(types.Float64Type, map[string]attr.Value{})
+	modelBudgetOwned := imported || (!data.ModelMaxBudget.IsNull() && !data.ModelMaxBudget.IsUnknown())
+	if err := updateFloat64MapFromAPI(&data.ModelMaxBudget, result, modelBudgetOwned, modelBudgetOwned, "litellm_budget_table", "model_max_budget"); err != nil {
+		return err
 	}
-
-	// Model RPM limit
-	if mrpm, ok := result["model_rpm_limit"].(map[string]interface{}); ok && len(mrpm) > 0 {
-		rpmMap := make(map[string]attr.Value)
-		for k, v := range mrpm {
-			if num, ok := v.(float64); ok {
-				rpmMap[k] = types.Int64Value(int64(num))
-			}
-		}
-		data.ModelRPMLimit, _ = types.MapValue(types.Int64Type, rpmMap)
-	} else if data.ModelRPMLimit.IsUnknown() {
-		data.ModelRPMLimit, _ = types.MapValue(types.Int64Type, map[string]attr.Value{})
+	modelRPMOwned := imported || (!data.ModelRPMLimit.IsNull() && !data.ModelRPMLimit.IsUnknown())
+	if err := updateInt64MapFromAPI(&data.ModelRPMLimit, result, modelRPMOwned, modelRPMOwned, "metadata", "model_rpm_limit"); err != nil {
+		return err
 	}
-
-	// Model TPM limit
-	if mtpm, ok := result["model_tpm_limit"].(map[string]interface{}); ok && len(mtpm) > 0 {
-		tpmMap := make(map[string]attr.Value)
-		for k, v := range mtpm {
-			if num, ok := v.(float64); ok {
-				tpmMap[k] = types.Int64Value(int64(num))
-			}
-		}
-		data.ModelTPMLimit, _ = types.MapValue(types.Int64Type, tpmMap)
-	} else if data.ModelTPMLimit.IsUnknown() {
-		data.ModelTPMLimit, _ = types.MapValue(types.Int64Type, map[string]attr.Value{})
+	modelTPMOwned := imported || (!data.ModelTPMLimit.IsNull() && !data.ModelTPMLimit.IsUnknown())
+	if err := updateInt64MapFromAPI(&data.ModelTPMLimit, result, modelTPMOwned, modelTPMOwned, "metadata", "model_tpm_limit"); err != nil {
+		return err
 	}
 
 	return nil

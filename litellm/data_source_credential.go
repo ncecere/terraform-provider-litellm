@@ -66,7 +66,7 @@ func dataSourceLiteLLMCredentialRead(d *schema.ResourceData, m interface{}) erro
 	// Set the data source ID to the credential name
 	d.SetId(credentialResp.CredentialName)
 	d.Set("credential_name", credentialResp.CredentialName)
-	d.Set("credential_info", credentialResp.CredentialInfo)
+	d.Set("credential_info", legacyStringMapFromJSON(credentialResp.CredentialInfo))
 	// Note: We don't expose credential_values in data sources for security reasons
 
 	return nil

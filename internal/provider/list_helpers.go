@@ -214,7 +214,7 @@ func decodeTopLevelList(raw json.RawMessage, endpoint string) ([]json.RawMessage
 		return nil, fmt.Errorf("%s returned an unsupported response shape; expected a JSON array", endpoint)
 	}
 	var items []json.RawMessage
-	if err := json.Unmarshal(trimmed, &items); err != nil {
+	if err := decodeJSONUseNumber(trimmed, &items); err != nil {
 		return nil, fmt.Errorf("%s returned a malformed JSON array", endpoint)
 	}
 	if items == nil {
@@ -229,7 +229,7 @@ func decodeEnvelopeList(raw json.RawMessage, endpoint, field string) ([]json.Raw
 		return nil, fmt.Errorf("%s returned an unsupported response shape; expected a JSON object", endpoint)
 	}
 	var envelope map[string]json.RawMessage
-	if err := json.Unmarshal(trimmed, &envelope); err != nil {
+	if err := decodeJSONUseNumber(trimmed, &envelope); err != nil {
 		return nil, fmt.Errorf("%s returned a malformed JSON object", endpoint)
 	}
 	itemsRaw, ok := envelope[field]
@@ -245,7 +245,7 @@ func decodeNamedList(raw json.RawMessage, endpoint, field string) ([]json.RawMes
 		return nil, fmt.Errorf("%s returned an invalid %q field; expected a JSON array", endpoint, field)
 	}
 	var items []json.RawMessage
-	if err := json.Unmarshal(trimmed, &items); err != nil {
+	if err := decodeJSONUseNumber(trimmed, &items); err != nil {
 		return nil, fmt.Errorf("%s returned a malformed %q array", endpoint, field)
 	}
 	if items == nil {
@@ -262,7 +262,7 @@ func decodeEnvelopeListOrObject(raw json.RawMessage, endpoint, field string) ([]
 		return nil, fmt.Errorf("%s returned an unsupported response shape; expected a JSON object", endpoint)
 	}
 	var envelope map[string]json.RawMessage
-	if err := json.Unmarshal(trimmed, &envelope); err != nil {
+	if err := decodeJSONUseNumber(trimmed, &envelope); err != nil {
 		return nil, fmt.Errorf("%s returned a malformed JSON object", endpoint)
 	}
 	value, ok := envelope[field]
@@ -335,7 +335,7 @@ func decodeListObject(raw json.RawMessage, endpoint, itemName string) (map[strin
 		return nil, fmt.Errorf("%s returned an invalid %s; expected a JSON object", endpoint, itemName)
 	}
 	var item map[string]interface{}
-	if err := json.Unmarshal(trimmed, &item); err != nil || item == nil {
+	if err := decodeJSONUseNumber(trimmed, &item); err != nil || item == nil {
 		return nil, fmt.Errorf("%s returned a malformed %s object", endpoint, itemName)
 	}
 	return item, nil

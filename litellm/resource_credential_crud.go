@@ -84,7 +84,7 @@ func resourceLiteLLMCredentialRead(d *schema.ResourceData, m interface{}) error 
 	}
 
 	d.Set("credential_name", credentialResp.CredentialName)
-	d.Set("credential_info", credentialResp.CredentialInfo)
+	d.Set("credential_info", legacyStringMapFromJSON(credentialResp.CredentialInfo))
 	// Note: We don't set credential_values from the response for security reasons
 	// The API might not return sensitive values, and we want to preserve what's in state
 

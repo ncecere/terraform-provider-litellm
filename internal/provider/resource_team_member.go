@@ -405,6 +405,10 @@ func observeTeamMember(snapshot *teamMemberAddSnapshot, data *TeamMemberResource
 }
 
 func applyTeamMemberObservation(data *TeamMemberResourceModel, observation teamMemberObservation) error {
+	return applyTeamMemberObservationWithNumericOwnership(data, observation, false)
+}
+
+func applyTeamMemberObservationWithNumericOwnership(data *TeamMemberResourceModel, observation teamMemberObservation, imported bool) error {
 	if observation.CanonicalUserID == "" {
 		return fmt.Errorf("authoritative member identity is missing canonical user_id")
 	}
@@ -421,7 +425,7 @@ func applyTeamMemberObservation(data *TeamMemberResourceModel, observation teamM
 		data.Role = types.StringUnknown()
 	}
 
-	if !data.MaxBudgetInTeam.IsNull() || data.MaxBudgetInTeam.IsUnknown() {
+	if imported || !data.MaxBudgetInTeam.IsNull() || data.MaxBudgetInTeam.IsUnknown() {
 		switch {
 		case observation.Membership == nil && observation.Status == teamMemberRemoteRosterOnly:
 			data.MaxBudgetInTeam = types.Float64Unknown()
@@ -933,6 +937,7 @@ func (r *TeamMemberResource) Read(ctx context.Context, req resource.ReadRequest,
 		return
 	}
 	uncertain := false
+	imported := false
 	if req.Private != nil {
 		raw, privateDiags := req.Private.GetKey(ctx, teamMemberUncertainPrivateKey)
 		resp.Diagnostics.Append(privateDiags...)
@@ -941,6 +946,9 @@ func (r *TeamMemberResource) Read(ctx context.Context, req resource.ReadRequest,
 		} else {
 			uncertain = len(raw) != 0
 		}
+		importedMarker, importedDiags := req.Private.GetKey(ctx, numericImportedPrivateKey)
+		resp.Diagnostics.Append(importedDiags...)
+		imported = string(importedMarker) == "true"
 		if resp.Diagnostics.HasError() {
 			return
 		}
@@ -980,7 +988,7 @@ func (r *TeamMemberResource) Read(ctx context.Context, req resource.ReadRequest,
 		resp.State.RemoveResource(ctx)
 		return
 	}
-	if err := applyTeamMemberObservation(&data, observation); err != nil {
+	if err := applyTeamMemberObservationWithNumericOwnership(&data, observation, imported); err != nil {
 		resp.Diagnostics.AddError("Team Member Response Error", err.Error())
 		return
 	}
@@ -991,6 +999,9 @@ func (r *TeamMemberResource) Read(ctx context.Context, req resource.ReadRequest,
 	}
 	if observation.Status == teamMemberRemoteRosterOnly {
 		resp.Diagnostics.AddError("Roster-Only Team Member State", "LiteLLM returned the owned members_with_roles entry without its canonical team_memberships row. State was retained; manually remediate this partial v1.98 condition before update.")
+	}
+	if !resp.Diagnostics.HasError() && imported && resp.Private != nil {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, nil)...)
 	}
 }
 
@@ -1329,6 +1340,9 @@ func (r *TeamMemberResource) ImportState(ctx context.Context, req resource.Impor
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), stableID)...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("team_id"), teamID)...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("user_id"), userID)...)
+	if resp.Private != nil {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, []byte("true"))...)
+	}
 }
 
 // applyTeamMemberNullableClears sends explicit JSON null for nullable fields
