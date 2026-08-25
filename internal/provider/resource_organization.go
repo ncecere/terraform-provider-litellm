@@ -570,10 +570,10 @@ func (r *OrganizationResource) readOrganizationWithNumericOwnership(ctx context.
 
 	// These fields do not exist in the v1.98 organization request/table/response
 	// contracts. Ignore equally named API extras rather than adopting phantoms.
-	if data.Blocked.IsUnknown() {
+	if data.Blocked.IsUnknown() || (imported && data.Blocked.IsNull()) {
 		data.Blocked = types.BoolValue(false)
 	}
-	if data.Tags.IsUnknown() {
+	if data.Tags.IsUnknown() || (imported && data.Tags.IsNull()) {
 		data.Tags = types.ListValueMust(types.StringType, []attr.Value{})
 	}
 	return nil

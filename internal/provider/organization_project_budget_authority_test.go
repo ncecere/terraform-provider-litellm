@@ -136,6 +136,29 @@ func TestOrganizationOmittedBudgetDoesNotAdoptDefaults(t *testing.T) {
 	}
 }
 
+func TestOrganizationImportAdoptsCompatibilityDefaults(t *testing.T) {
+	t.Parallel()
+	server, client := jsonServer(t, map[string]interface{}{
+		"organization_id": "org-1", "organization_alias": "acme",
+	})
+	defer server.Close()
+	data := OrganizationResourceModel{
+		OrganizationID: types.StringValue("org-1"),
+		Models:         types.ListNull(types.StringType),
+		Metadata:       types.MapNull(types.StringType),
+		ModelRPMLimit:  types.MapNull(types.Int64Type),
+		ModelTPMLimit:  types.MapNull(types.Int64Type),
+		Blocked:        types.BoolNull(),
+		Tags:           types.ListNull(types.StringType),
+	}
+	if err := (&OrganizationResource{client: client}).readOrganizationWithNumericOwnership(context.Background(), &data, true); err != nil {
+		t.Fatal(err)
+	}
+	if data.Blocked.IsNull() || data.Blocked.ValueBool() || data.Tags.IsNull() || len(data.Tags.Elements()) != 0 {
+		t.Fatalf("import compatibility defaults = blocked %#v, tags %#v", data.Blocked, data.Tags)
+	}
+}
+
 func TestConfiguredOrganizationBudgetTracksPresentNullAndAbsentDrift(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
