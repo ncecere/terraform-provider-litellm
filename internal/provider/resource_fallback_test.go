@@ -143,6 +143,7 @@ func TestParseFallbackImportIDFromSupportedRightSuffix(t *testing.T) {
 	tests := []struct {
 		importID, model, fallbackType string
 	}{
+		{"legacy-simple-model", "legacy-simple-model", "general"},
 		{"simple:general", "simple", "general"},
 		{"llama3:8b:general", "llama3:8b", "general"},
 		{"model:general:context_window", "model:general", "context_window"},
@@ -166,7 +167,6 @@ func TestParseFallbackImportIDRejectsInvalidIDsWithoutEchoingContent(t *testing.
 
 	for name, importID := range map[string]string{
 		"empty":                             "",
-		"missing suffix":                    "sensitive-model",
 		"empty suffix":                      "sensitive-model:",
 		"empty model":                       ":general",
 		"unknown suffix":                    "sensitive-model:unknown-secret-type",
@@ -209,9 +209,13 @@ func TestFallbackEndpointEscapesSpecialModelExactlyOnce(t *testing.T) {
 	}
 }
 
-func TestFallbackResourceAndDataSourceUseEscapedIdentityRoutes(t *testing.T) {
+func TestFallbackResourceAndDataSourceBuildEscapedSlashIdentityRequests(t *testing.T) {
 	t.Parallel()
 
+	// This transport-level test verifies exact-once escaping in every provider
+	// call path. LiteLLM v1.98's non-path-capturing /fallback/{model} route
+	// rejects decoded slash identities before its handler runs; it does not make
+	// a slash-bearing identity lifecycle-capable on that server version.
 	model := "tenant/route?revision=1&literal=%2F:雪"
 	fallbackType := "content_policy"
 	wantURI := fallbackEndpoint(model, fallbackType)

@@ -102,6 +102,33 @@ func TestFallbackSpecialIdentityImportRefreshNoDriftDestroyProtocol(t *testing.T
 	}
 }
 
+func TestFallbackLegacyModelOnlyImportDefaultsGeneralProtocol(t *testing.T) {
+	ctx := context.Background()
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.RequestURI != "/fallback/legacy-model?fallback_type=general" {
+			t.Errorf("request URI = %q", request.RequestURI)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+			"model": "legacy-model", "fallback_type": "general", "fallback_models": []string{"secondary"},
+		})
+	}))
+	defer server.Close()
+	protocolServer, schemas := configuredImportProtocolServer(t, ctx, server.URL)
+	const typeName = "litellm_fallback"
+	imported, err := protocolServer.ImportResourceState(ctx, &tfprotov6.ImportResourceStateRequest{TypeName: typeName, ID: "legacy-model"})
+	if err != nil || accessGroupProtocolDiagnosticsHaveError(imported.Diagnostics) || len(imported.ImportedResources) != 1 {
+		t.Fatalf("legacy import: err=%v diagnostics=%v", err, imported.Diagnostics)
+	}
+	attributes := protocolAttributeMap(t, schemas.ResourceSchemas[typeName], imported.ImportedResources[0].State)
+	for field, expected := range map[string]string{"id": "legacy-model:general", "model": "legacy-model", "fallback_type": "general"} {
+		var actual string
+		if err := attributes[field].As(&actual); err != nil || actual != expected {
+			t.Fatalf("%s=%q err=%v", field, actual, err)
+		}
+	}
+}
+
 func TestFallbackDiagnosticsOmitIdentityResponseAndTransportDetailsProtocol(t *testing.T) {
 	ctx := context.Background()
 	const secretModel = "secret/model?token=do-not-print"

@@ -204,8 +204,17 @@ func (r *FallbackResource) ImportState(ctx context.Context, req resource.ImportS
 
 func parseFallbackImportID(importID string) (string, string, error) {
 	separator := strings.LastIndexByte(importID, ':')
-	if separator < 0 || separator == len(importID)-1 {
-		return "", "", fmt.Errorf("use the exact composite format <model>:<fallback_type>; fallback_type must be one of general, context_window, or content_policy")
+	if separator < 0 {
+		if importID == "" {
+			return "", "", fmt.Errorf("the model component must not be empty; use <model> or <model>:<fallback_type>")
+		}
+		// Preserve the provider's historical model-only import grammar. A model
+		// containing a colon must use an explicit supported right-hand suffix so
+		// it cannot be confused with a misspelled fallback type.
+		return importID, "general", nil
+	}
+	if separator == len(importID)-1 {
+		return "", "", fmt.Errorf("use <model>:<fallback_type>; fallback_type must be one of general, context_window, or content_policy")
 	}
 	if separator == 0 {
 		return "", "", fmt.Errorf("the model component must not be empty; use <model>:<fallback_type>")
