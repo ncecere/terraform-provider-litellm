@@ -229,7 +229,7 @@ func TestRequestEnumValidatorsMatchLiteLLMV198Contracts(t *testing.T) {
 	}
 }
 
-func TestBudgetDurationValidatorsAcceptPositiveMonthCounts(t *testing.T) {
+func TestBudgetDurationValidatorsMatchLiteLLMRuntimeContract(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -247,12 +247,17 @@ func TestBudgetDurationValidatorsAcceptPositiveMonthCounts(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			for _, value := range []string{"1mo", "2mo", "12mo", "monthly", "30d", "24h"} {
+			t.Parallel()
+			for _, value := range []string{"1s", "60s", "1m", "15m", "1h", "24h", "1d", "30d", "1mo"} {
 				if validateStringValue(ctx, test.validators, types.StringValue(value)) {
 					t.Errorf("valid duration %q produced a validation error", value)
 				}
 			}
-			for _, value := range []string{"0mo", "mo", "-2mo", "2month", "2MO", ""} {
+			for _, value := range []string{
+				"0s", "0m", "0h", "0d", "01d", "1w",
+				"0mo", "2mo", "12mo", "mo", "-1mo", "1month",
+				"1MO", "1Mo", "2MO", "30D", "monthly", "daily", "",
+			} {
 				if !validateStringValue(ctx, test.validators, types.StringValue(value)) {
 					t.Errorf("invalid duration %q did not produce a validation error", value)
 				}

@@ -76,12 +76,12 @@ func (r *TeamMemberResource) Schema(ctx context.Context, req resource.SchemaRequ
 				Optional:    true,
 			},
 			"budget_duration": schema.StringAttribute{
-				Description: "Recurring reset interval for this member's budget (for example, 30d or 24h). It may be configured without an explicit max to override an inherited/default interval. LiteLLM manages the reset schedule.",
+				Description: "Recurring reset interval for this member's budget (for example, 30d, 24h, or 1mo). It may be configured without an explicit max to override an inherited/default interval. LiteLLM manages the reset schedule.",
 				Optional:    true,
 				Validators: []validator.String{
 					stringvalidator.RegexMatches(
 						budgetDurationPattern,
-						`must be hourly, daily, weekly, monthly, or a positive integer with unit s, m, h, d, w, or mo`,
+						`must be a positive integer with unit s, m, h, or d, or exactly 1mo`,
 					),
 				},
 			},

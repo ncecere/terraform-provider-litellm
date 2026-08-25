@@ -67,6 +67,9 @@ func TestTeamImportMirrorsIDAndTeamID(t *testing.T) {
 	if data.ID.ValueString() != "external-team" || data.TeamID.ValueString() != "external-team" {
 		t.Fatalf("imported identity: id=%q team_id=%q", data.ID.ValueString(), data.TeamID.ValueString())
 	}
+	if !data.TPMLimitType.IsNull() || !data.RPMLimitType.IsNull() {
+		t.Fatalf("import must leave create-only limit types unconfigured: tpm=%v rpm=%v", data.TPMLimitType, data.RPMLimitType)
+	}
 }
 
 func TestTeamAccessGroupIDsSchemaIsOptionalUnordered(t *testing.T) {

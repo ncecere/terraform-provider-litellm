@@ -131,15 +131,15 @@ The following arguments are supported:
 * `budget_duration` - (Optional) Duration for the budget cycle (e.g., `"30d"`, `"7d"`, `"1h"`).
 * `tpm_limit` - (Optional) Tokens per minute limit for the team.
 * `rpm_limit` - (Optional) Requests per minute limit for the team.
-* `tpm_limit_type` - (Optional) Type of TPM limit. LiteLLM v1.98 team requests accept exactly `"guaranteed_throughput"` or `"best_effort_throughput"`.
-* `rpm_limit_type` - (Optional) Type of RPM limit. LiteLLM v1.98 team requests accept exactly `"guaranteed_throughput"` or `"best_effort_throughput"`.
+* `tpm_limit_type` - (Optional, Forces replacement) Create-only TPM limit type. LiteLLM v1.98 accepts exactly `"guaranteed_throughput"` or `"best_effort_throughput"` when creating a team. Adding, changing, or removing it replaces the team.
+* `rpm_limit_type` - (Optional, Forces replacement) Create-only RPM limit type. LiteLLM v1.98 accepts exactly `"guaranteed_throughput"` or `"best_effort_throughput"` when creating a team. Adding, changing, or removing it replaces the team.
 * `models` - (Optional) List of model names the team is allowed to use.
 * `blocked` - (Optional) Whether the team is blocked from making requests.
 * `guardrails` - (Optional) List of guardrail identifiers applied to the team.
 * `prompts` - (Optional) List of prompt identifiers associated with the team.
 * `team_member_permissions` - (Optional) List of permissions granted to team members.
 * `team_member_budget` - (Optional) Default budget for each team member.
-* `team_member_budget_duration` - (Optional) Recurring reset interval for the default member budget. Accepted forms are `hourly`, `daily`, `weekly`, `monthly`, or a positive integer followed by `s`, `m`, `h`, `d`, `w`, or `mo` (for example, `30d`, `24h`, or `2mo`). LiteLLM applies it to new/default membership budgets and may backfill memberships without a budget; private member overrides are preserved. Configure `litellm_team_member.budget_duration` for per-member control.
+* `team_member_budget_duration` - (Optional) Recurring reset interval for the default member budget. Use a positive integer followed by `s`, `m`, `h`, or `d` (for example, `30d` or `24h`), or exactly `1mo`. Other month counts, aliases such as `monthly`, week units, zero values, and case variants are rejected. LiteLLM applies it to new/default membership budgets and may backfill memberships without a budget; private member overrides are preserved. Configure `litellm_team_member.budget_duration` for per-member control.
 * `team_member_rpm_limit` - (Optional) Default requests per minute limit for each team member.
 * `team_member_tpm_limit` - (Optional) Default tokens per minute limit for each team member.
 * `metadata` - (Optional) A map of metadata pairs for the team. Values are strings; use `jsonencode()` for complex values (objects, arrays) — they will be sent as native JSON to the API.
@@ -184,6 +184,6 @@ terraform import litellm_team.example <team-id>
 
 ## Notes
 
-- Earlier provider documentation suggested `"key"` and `"team"` for the limit-type attributes. LiteLLM v1.98 rejects those request values. Existing imported/read state is not rewritten by schema validation, but an explicit configuration must be changed to one of the two supported throughput literals before planning.
+- Earlier provider documentation suggested `"key"` and `"team"` for the limit-type attributes. LiteLLM v1.98 rejects those values in `NewTeamRequest`, and `UpdateTeamRequest` has no limit-type fields. The attributes are therefore create-only and force replacement when added, changed, or removed. Existing imported/read state is not rewritten by schema validation, but explicit configuration must use one of the two supported throughput literals.
 - Team members are managed through the separate `litellm_team_member` resource. See the `litellm_team_member` resource documentation for details on managing team membership.
 - The `tags` attribute requires a LiteLLM Enterprise license.
