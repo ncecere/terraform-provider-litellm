@@ -354,12 +354,13 @@ func (r *CredentialResource) Create(ctx context.Context, req resource.CreateRequ
 	}
 	metadata.AllRemoteOwned = credentialRemoteFullyOwned(remote.info, info.Object, info.UnionOwnership, false) &&
 		credentialRemoteFullyOwned(remote.values, values.Object, credentialMetadataOwnership(metadata, true), true)
-	if err := reconcileCredentialState(ctx, &plan, remote, info.Object, values.Object, metadata); err != nil {
+	state := credentialCreateStateFromConfig(config, metadata)
+	if err := reconcileCredentialState(ctx, &state, remote, info.Object, values.Object, metadata); err != nil {
 		setCredentialUncertainCreateState(ctx, resp, &plan, config)
 		resp.Diagnostics.AddError("Credential Create State Reconciliation Failed", "LiteLLM reported create success, but the authoritative result could not be represented safely. Caller-known identity was retained in partial state with no remote ownership.")
 		return
 	}
-	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 	if resp.Private != nil {
 		resp.Diagnostics.Append(writeCredentialPrivateMetadata(ctx, resp.Private, metadata)...)
 	}
@@ -415,6 +416,16 @@ func (r *CredentialResource) buildCredentialRequest(ctx context.Context, data *C
 }
 
 func buildCredentialCreateRequest(ctx context.Context, data CredentialResourceModel) (map[string]interface{}, credentialConfiguredObject, credentialConfiguredObject, error) {
+	// Apply configuration, rather than the planned state, is the source of the
+	// POST payload. Unknown identity or source selection at this boundary must
+	// fail closed before even the exact-name preflight, since treating an
+	// unknown model_id as omitted could create the wrong credential.
+	if data.CredentialName.IsUnknown() || data.ModelID.IsUnknown() {
+		return nil, credentialConfiguredObject{}, credentialConfiguredObject{}, errCredentialUnknown
+	}
+	if data.CredentialName.IsNull() || data.CredentialName.ValueString() == "" {
+		return nil, credentialConfiguredObject{}, credentialConfiguredObject{}, errors.New("credential_name must be a known non-empty string at apply time")
+	}
 	info, err := buildCredentialConfiguredObject(ctx, data.CredentialInfo, data.CredentialInfoJSON)
 	if err != nil {
 		return nil, credentialConfiguredObject{}, credentialConfiguredObject{}, err
@@ -772,10 +783,23 @@ func writeCredentialPrivateMetadata(ctx context.Context, private credentialPriva
 	return diagnostics
 }
 
-func finalizeCredentialRecoveryState(data *CredentialResourceModel, config CredentialResourceModel, metadata credentialPrivateMetadata) {
-	data.ID = data.CredentialName
+func credentialCreateStateFromConfig(config CredentialResourceModel, metadata credentialPrivateMetadata) CredentialResourceModel {
+	// The plan may legitimately contain unknowns that resolve only in apply
+	// configuration. Start create state from that resolved configuration so a
+	// known model, write-only value, or JSON document is never replaced by its
+	// stale planned unknown. Omitted Optional+Computed surfaces are normalized
+	// to known null until an authoritative postflight read populates them.
+	data := config
+	data.ID = types.StringValue(config.CredentialName.ValueString())
+	data.CredentialName = types.StringValue(config.CredentialName.ValueString())
+	if data.ModelID.IsUnknown() {
+		data.ModelID = types.StringNull()
+	}
 	if data.CredentialInfo.IsUnknown() {
 		data.CredentialInfo = types.MapNull(types.StringType)
+	}
+	if data.CredentialValues.IsUnknown() {
+		data.CredentialValues = types.MapNull(types.StringType)
 	}
 	if data.CredentialInfoJSON.IsUnknown() {
 		data.CredentialInfoJSON = types.StringNull()
@@ -794,7 +818,11 @@ func finalizeCredentialRecoveryState(data *CredentialResourceModel, config Crede
 		data.CredentialValuesActive = types.BoolValue(false)
 		data.CredentialSource = types.StringValue("imported")
 	}
-	_ = config
+	return data
+}
+
+func finalizeCredentialRecoveryState(data *CredentialResourceModel, config CredentialResourceModel, metadata credentialPrivateMetadata) {
+	*data = credentialCreateStateFromConfig(config, metadata)
 }
 
 func reconcileCredentialState(ctx context.Context, data *CredentialResourceModel, remote credentialRemote, priorInfo, priorValues map[string]interface{}, metadata credentialPrivateMetadata) error {

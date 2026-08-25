@@ -268,6 +268,34 @@ func TestCredentialCreateRequestAlternativesAndModelDominance(t *testing.T) {
 	}
 }
 
+func TestCredentialCreateRejectsUnknownApplySourceBeforeAnyRequest(t *testing.T) {
+	t.Parallel()
+	requests := 0
+	api := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		requests++
+		http.Error(writer, "unexpected", http.StatusInternalServerError)
+	}))
+	defer api.Close()
+
+	schema := credentialTestSchema(t)
+	planned := credentialTestModel("unknown-apply-source", nil, map[string]string{"api_key": "secret"})
+	planned.ID = types.StringUnknown()
+	plan := credentialTestPlan(t, schema, planned)
+	applyConfig := planned
+	applyConfig.ModelID = types.StringUnknown()
+	config := credentialTestConfig(t, schema, applyConfig)
+	response := &resource.CreateResponse{State: tfsdk.State{Raw: plan.Raw, Schema: schema}}
+	(&CredentialResource{client: &Client{APIBase: api.URL, APIKey: "admin", HTTPClient: api.Client()}}).Create(
+		context.Background(), resource.CreateRequest{Config: config, Plan: plan}, response,
+	)
+	if !response.Diagnostics.HasError() {
+		t.Fatal("unknown apply-time model_id was treated as omitted")
+	}
+	if requests != 0 {
+		t.Fatalf("unknown apply-time source reached preflight or POST: requests=%d", requests)
+	}
+}
+
 func TestCredentialProtocolCreateSourcePlanningMatrix(t *testing.T) {
 	t.Parallel()
 	api := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -315,6 +343,243 @@ func TestCredentialProtocolCreateSourcePlanningMatrix(t *testing.T) {
 			}
 			if gotError := accessGroupProtocolDiagnosticsHaveError(response.Diagnostics); gotError != test.wantError {
 				t.Fatalf("plan diagnostics error=%t want=%t diagnostics=%v", gotError, test.wantError, response.Diagnostics)
+			}
+		})
+	}
+}
+
+func TestCredentialProtocolCreateFinalStateUsesResolvedApplyConfig(t *testing.T) {
+	// Each case exercises a stateful exact-name route and an immediate retry.
+	for _, test := range []struct {
+		name      string
+		ambiguous bool
+	}{
+		{name: "successful postflight"},
+		{name: "accepted create with lost response", ambiguous: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			credentialName := "resolved-apply-success"
+			if test.ambiguous {
+				credentialName = "resolved-apply-ambiguous"
+			}
+			created := false
+			gets := 0
+			posts := 0
+			collisions := 0
+			var requests []string
+			api := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				writer.Header().Set("Content-Type", "application/json")
+				requests = append(requests, request.Method+" "+request.RequestURI)
+				switch request.Method {
+				case http.MethodGet:
+					gets++
+					if !created {
+						http.NotFound(writer, request)
+						return
+					}
+					_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+						"credential_name": credentialName,
+						"credential_info": map[string]interface{}{
+							"owner":  "caller",
+							"remote": "authoritative",
+						},
+						"credential_values": map[string]interface{}{"api_key": "in****et"},
+					})
+				case http.MethodPost:
+					posts++
+					if created {
+						collisions++
+						http.Error(writer, `{"detail":"duplicate"}`, http.StatusConflict)
+						return
+					}
+					var body map[string]interface{}
+					if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+						t.Errorf("decode POST: %v", err)
+					}
+					info, _ := body["credential_info"].(map[string]interface{})
+					values, _ := body["credential_values"].(map[string]interface{})
+					if body["credential_name"] != credentialName || body["model_id"] != "resolved/model" ||
+						info["owner"] != "caller" || values["api_key"] != "inactive-secret" {
+						t.Errorf("POST did not use resolved apply config: %#v", body)
+					}
+					created = true
+					if test.ambiguous {
+						// LiteLLM accepted and committed the request, but the caller
+						// cannot consume the response. This is a dispatched/lost-
+						// response outcome even though the status is 2xx.
+						_, _ = writer.Write([]byte(`{"success":`))
+						return
+					}
+					_, _ = writer.Write([]byte(`{"success":true,"message":"created"}`))
+				default:
+					http.NotFound(writer, request)
+				}
+			}))
+			defer api.Close()
+
+			server, resourceType := credentialProtocolServer(t, api.URL)
+			ctx := context.Background()
+			legacyInfo := credentialProtocolStringMap(map[string]string{"owner": "caller"})
+			legacyValues := credentialProtocolStringMap(map[string]string{"api_key": "inactive-secret"})
+			nullState := credentialProtocolDynamicValue(t, resourceType, tftypes.NewValue(resourceType, nil))
+			planningConfig := credentialProtocolDynamicValue(t, resourceType, credentialProtocolValue(
+				resourceType,
+				credentialName,
+				nil,
+				tftypes.UnknownValue,
+				legacyInfo,
+				legacyValues,
+				nil,
+				nil,
+				nil,
+				nil,
+			))
+			proposed := credentialProtocolDynamicValue(t, resourceType, credentialProtocolValue(
+				resourceType,
+				credentialName,
+				tftypes.UnknownValue,
+				tftypes.UnknownValue,
+				legacyInfo,
+				legacyValues,
+				tftypes.UnknownValue,
+				tftypes.UnknownValue,
+				tftypes.UnknownValue,
+				tftypes.UnknownValue,
+			))
+			plan, err := server.PlanResourceChange(ctx, &tfprotov6.PlanResourceChangeRequest{
+				TypeName:         "litellm_credential",
+				Config:           planningConfig,
+				PriorState:       nullState,
+				ProposedNewState: proposed,
+			})
+			if err != nil || accessGroupProtocolDiagnosticsHaveError(plan.Diagnostics) {
+				t.Fatalf("plan resolved create: err=%v diagnostics=%v", err, plan.Diagnostics)
+			}
+			plannedValue, err := plan.PlannedState.Unmarshal(resourceType)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if plannedValue.IsFullyKnown() {
+				t.Fatal("test precondition failed: planned state unexpectedly fully known")
+			}
+			var plannedAttributes map[string]tftypes.Value
+			if err := plannedValue.As(&plannedAttributes); err != nil {
+				t.Fatal(err)
+			}
+			if plannedAttributes["model_id"].IsKnown() || plannedAttributes["credential_info_json"].IsKnown() || plannedAttributes["credential_values_json"].IsKnown() {
+				t.Fatalf("test precondition failed: planned apply-time values are known: %#v", plannedAttributes)
+			}
+
+			applyConfig := credentialProtocolReplace(t, resourceType, planningConfig, map[string]tftypes.Value{
+				"model_id": tftypes.NewValue(tftypes.String, "resolved/model"),
+			})
+			apply, err := server.ApplyResourceChange(ctx, &tfprotov6.ApplyResourceChangeRequest{
+				TypeName:       "litellm_credential",
+				Config:         applyConfig,
+				PriorState:     nullState,
+				PlannedState:   plan.PlannedState,
+				PlannedPrivate: plan.PlannedPrivate,
+			})
+			if err != nil {
+				t.Fatalf("apply resolved create: %v", err)
+			}
+			if gotError := accessGroupProtocolDiagnosticsHaveError(apply.Diagnostics); gotError != test.ambiguous {
+				t.Fatalf("apply diagnostics error=%t want=%t diagnostics=%v", gotError, test.ambiguous, apply.Diagnostics)
+			}
+			if apply.NewState == nil {
+				t.Fatal("apply returned no caller-known state")
+			}
+			stateValue, err := apply.NewState.Unmarshal(resourceType)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !stateValue.IsFullyKnown() {
+				t.Fatalf("apply returned protocol-invalid unknown state: %#v", stateValue)
+			}
+			var attributes map[string]tftypes.Value
+			if err := stateValue.As(&attributes); err != nil {
+				t.Fatal(err)
+			}
+			for attribute, want := range map[string]string{
+				"id":                credentialName,
+				"credential_name":   credentialName,
+				"model_id":          "resolved/model",
+				"credential_source": "model_id",
+			} {
+				var got string
+				if err := attributes[attribute].As(&got); err != nil || got != want {
+					t.Fatalf("%s=%q want=%q err=%v", attribute, got, want, err)
+				}
+			}
+			var active bool
+			if err := attributes["credential_values_active"].As(&active); err != nil || active {
+				t.Fatalf("credential_values_active=%t err=%v", active, err)
+			}
+			var stateInfo map[string]tftypes.Value
+			if err := attributes["credential_info"].As(&stateInfo); err != nil {
+				t.Fatalf("decode configured info: %v", err)
+			}
+			var owner string
+			if err := stateInfo["owner"].As(&owner); err != nil || owner != "caller" {
+				t.Fatalf("configured info owner=%q err=%v", owner, err)
+			}
+			var stateValues map[string]tftypes.Value
+			if err := attributes["credential_values"].As(&stateValues); err != nil {
+				t.Fatalf("decode configured values: %v", err)
+			}
+			var secret string
+			if err := stateValues["api_key"].As(&secret); err != nil || secret != "inactive-secret" {
+				t.Fatalf("write-only config was not preserved: secret=%q err=%v", secret, err)
+			}
+			if !attributes["credential_values_json"].IsNull() {
+				t.Fatalf("omitted write-only JSON was not retained as known null: %#v", attributes)
+			}
+			if test.ambiguous {
+				if !attributes["credential_info_json"].IsNull() {
+					t.Fatalf("ambiguous state claimed unverified remote metadata: %#v", attributes)
+				}
+				var privateEnvelope map[string]string
+				if err := json.Unmarshal(apply.Private, &privateEnvelope); err != nil {
+					t.Fatalf("decode uncertain private envelope: %v", err)
+				}
+				encodedMarker, err := base64.StdEncoding.DecodeString(privateEnvelope[credentialPrivateMetadataKey])
+				if err != nil {
+					t.Fatalf("decode uncertain marker: %v", err)
+				}
+				metadata, ok := decodeCredentialPrivateMetadata(encodedMarker)
+				if !ok || !metadata.UncertainOwnership || metadata.AllRemoteOwned {
+					t.Fatalf("ambiguous state did not retain the uncertain marker: %#v", metadata)
+				}
+			} else {
+				var infoJSON string
+				if err := attributes["credential_info_json"].As(&infoJSON); err != nil || infoJSON != `{"owner":"caller","remote":"authoritative"}` {
+					t.Fatalf("authoritative info JSON=%q err=%v", infoJSON, err)
+				}
+			}
+
+			// Re-applying the stale create cannot dispatch a second POST. Exact-name
+			// preflight observes the one committed object and fails as a collision.
+			retry, err := server.ApplyResourceChange(ctx, &tfprotov6.ApplyResourceChangeRequest{
+				TypeName:       "litellm_credential",
+				Config:         applyConfig,
+				PriorState:     nullState,
+				PlannedState:   plan.PlannedState,
+				PlannedPrivate: plan.PlannedPrivate,
+			})
+			if err != nil || !accessGroupProtocolDiagnosticsHaveError(retry.Diagnostics) {
+				t.Fatalf("retry did not fail exact-name preflight: err=%v diagnostics=%v", err, retry.Diagnostics)
+			}
+			if !created || posts != 1 || collisions != 0 || gets != 3 {
+				t.Fatalf("create retry orphan/collision safety: created=%t posts=%d collisions=%d gets=%d requests=%v", created, posts, collisions, gets, requests)
+			}
+			wantRequests := []string{
+				"GET /credentials/by_name/" + credentialName,
+				"POST /credentials",
+				"GET /credentials/by_name/" + credentialName,
+				"GET /credentials/by_name/" + credentialName,
+			}
+			if !reflect.DeepEqual(requests, wantRequests) {
+				t.Fatalf("request sequence=%v want=%v", requests, wantRequests)
 			}
 		})
 	}
