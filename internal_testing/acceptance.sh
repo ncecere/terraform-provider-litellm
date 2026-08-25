@@ -42,12 +42,25 @@ run_case() {
   sh "$REPO_ROOT/internal_testing/smoke.sh" "$REPO_ROOT" "$@"
 }
 
+run_credential_update_case() {
+  printf '\n===== ACCEPTANCE: credential_update =====\n'
+  SMOKE_CREDENTIAL_UPDATE=1 sh "$REPO_ROOT/internal_testing/smoke.sh" "$REPO_ROOT" resources credential_update.tf
+}
+
+run_credential_import_case() {
+  printf '\n===== ACCEPTANCE: credential_import =====\n'
+  SMOKE_CREDENTIAL_IMPORT=1 sh "$REPO_ROOT/internal_testing/smoke.sh" "$REPO_ROOT" resources credential_import.tf
+}
+
 # Explicit coverage table. litellm_project is enterprise-only and intentionally
 # excluded; every other registered resource has a lifecycle case here.
 run_case access_group resources model_minimal.tf,access_group_minimal.tf
 run_case agent resources agent_minimal.tf,agent_bedrock_agentcore.tf datasources agent.tf,agents_list.tf
 run_case budget resources budget_minimal.tf
-run_case credential resources credential_minimal.tf
+run_case credential_values resources credential_minimal.tf,credential_full.tf datasources credential_minimal.tf,credential_full.tf
+run_case credential_model resources credential_model.tf datasources credential_by_model.tf
+run_credential_update_case
+run_credential_import_case
 run_case fallback resources fallback_minimal.tf
 run_case guardrail resources guardrail_minimal.tf
 run_case key resources key_minimal.tf,key_router_settings.tf,send_invite_email.tf datasources key.tf

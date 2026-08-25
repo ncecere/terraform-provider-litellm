@@ -128,8 +128,9 @@ func TestReadCredential(t *testing.T) {
 	t.Parallel()
 
 	server, client := jsonServer(t, map[string]interface{}{
-		"credential_name": "openai-prod",
-		"credential_info": map[string]interface{}{"env": "prod"},
+		"credential_name":   "openai-prod",
+		"credential_info":   map[string]interface{}{"env": "prod"},
+		"credential_values": map[string]interface{}{},
 	})
 	defer server.Close()
 
@@ -646,7 +647,9 @@ func TestReadCredentialWithRetrySucceedsFirstTry(t *testing.T) {
 	t.Parallel()
 
 	server, client := jsonServer(t, map[string]interface{}{
-		"credential_name": "cred-1",
+		"credential_name":   "cred-1",
+		"credential_info":   map[string]interface{}{},
+		"credential_values": map[string]interface{}{},
 	})
 	defer server.Close()
 

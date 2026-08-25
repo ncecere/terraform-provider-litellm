@@ -12,3 +12,7 @@ output "ds_credential_minimal_id" {
 output "ds_credential_minimal_info" {
   value = data.litellm_credential.minimal.credential_info
 }
+
+output "ds_credential_minimal_info_json" {
+  value = data.litellm_credential.minimal.credential_info_json
+}

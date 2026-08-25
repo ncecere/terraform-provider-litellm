@@ -2,20 +2,35 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
-	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+)
+
+const credentialPrivateMetadataKey = "credential_ownership_v1"
+
+const (
+	credentialPostflightAttempts = 4
+	credentialReadAttempts       = 8
 )
 
 var _ resource.Resource = &CredentialResource{}
 var _ resource.ResourceWithImportState = &CredentialResource{}
+var _ resource.ResourceWithModifyPlan = &CredentialResource{}
 
 func NewCredentialResource() resource.Resource {
 	return &CredentialResource{}
@@ -26,11 +41,40 @@ type CredentialResource struct {
 }
 
 type CredentialResourceModel struct {
-	ID               types.String `tfsdk:"id"`
-	CredentialName   types.String `tfsdk:"credential_name"`
-	ModelID          types.String `tfsdk:"model_id"`
-	CredentialInfo   types.Map    `tfsdk:"credential_info"`
-	CredentialValues types.Map    `tfsdk:"credential_values"`
+	ID                     types.String `tfsdk:"id"`
+	CredentialName         types.String `tfsdk:"credential_name"`
+	ModelID                types.String `tfsdk:"model_id"`
+	CredentialInfo         types.Map    `tfsdk:"credential_info"`
+	CredentialValues       types.Map    `tfsdk:"credential_values"`
+	CredentialInfoJSON     types.String `tfsdk:"credential_info_json"`
+	CredentialValuesJSON   types.String `tfsdk:"credential_values_json"`
+	CredentialValuesActive types.Bool   `tfsdk:"credential_values_active"`
+	CredentialSource       types.String `tfsdk:"credential_source"`
+}
+
+type credentialAPIResponse struct {
+	CredentialName   string          `json:"credential_name"`
+	CredentialInfo   json.RawMessage `json:"credential_info"`
+	CredentialValues json.RawMessage `json:"credential_values"`
+}
+
+type credentialRemote struct {
+	name   string
+	info   map[string]interface{}
+	values map[string]interface{}
+}
+
+type credentialMutationResponse struct {
+	Success *bool  `json:"success"`
+	Message string `json:"message"`
+}
+
+type credentialPrivateReader interface {
+	GetKey(context.Context, string) ([]byte, diag.Diagnostics)
+}
+
+type credentialPrivateWriter interface {
+	SetKey(context.Context, string, []byte) diag.Diagnostics
 }
 
 func (r *CredentialResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -38,8 +82,10 @@ func (r *CredentialResource) Metadata(ctx context.Context, req resource.Metadata
 }
 
 func (r *CredentialResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
+	jsonValidators := []validator.String{credentialJSONObjectValidator{}}
+	jsonPlanModifiers := []planmodifier.String{canonicalCredentialJSONPlanModifier{}}
 	resp.Schema = schema.Schema{
-		Description: "Manages a LiteLLM credential.",
+		Description: "Manages a LiteLLM credential with recursive selective ownership and additive heterogeneous JSON surfaces.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Description: "The unique identifier for this credential (same as credential_name).",
@@ -49,27 +95,56 @@ func (r *CredentialResource) Schema(ctx context.Context, req resource.SchemaRequ
 				},
 			},
 			"credential_name": schema.StringAttribute{
-				Description: "Name of the credential.",
+				Description: "Non-empty credential name. Empty names are rejected because LiteLLM can create them but cannot address them safely for refresh or deletion.",
 				Required:    true,
+				Validators: []validator.String{
+					stringvalidator.LengthAtLeast(1),
+				},
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
 			},
 			"model_id": schema.StringAttribute{
-				Description: "Model ID associated with this credential.",
+				Description: "Create-only model deployment ID. LiteLLM uses it in preference to configured credential values. Any change, including an unknown planned value, requires replacement.",
 				Optional:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
 			},
 			"credential_info": schema.MapAttribute{
-				Description: "Additional information about the credential.",
+				Description: "Legacy string-only credential metadata. Its public map(string), Optional, and Computed contract is preserved. Use credential_info_json for heterogeneous values.",
 				Optional:    true,
 				Computed:    true,
 				ElementType: types.StringType,
 			},
 			"credential_values": schema.MapAttribute{
-				Description: "Sensitive credential values (API keys, tokens, etc.).",
-				Required:    true,
+				Description: "Legacy string-only sensitive credential values. Its map(string) type and state representation are preserved while the argument is now optional so model-only configuration and metadata-only import are representable. Use credential_values_json for heterogeneous values.",
+				Optional:    true,
 				Sensitive:   true,
 				ElementType: types.StringType,
+			},
+			"credential_info_json": schema.StringAttribute{
+				Description:   "Canonical JSON object for heterogeneous credential metadata. Legacy and JSON keys are merged; overlapping keys must have exactly equal values.",
+				Optional:      true,
+				Computed:      true,
+				Validators:    jsonValidators,
+				PlanModifiers: jsonPlanModifiers,
+			},
+			"credential_values_json": schema.StringAttribute{
+				Description:   "Canonical JSON object for heterogeneous sensitive credential values. Legacy and JSON keys are merged; overlapping keys must have exactly equal values.",
+				Optional:      true,
+				Computed:      true,
+				Sensitive:     true,
+				Validators:    jsonValidators,
+				PlanModifiers: jsonPlanModifiers,
+			},
+			"credential_values_active": schema.BoolAttribute{
+				Description: "Whether configured credential_values and credential_values_json were the active create source. False when model_id won or the resource was imported metadata-only.",
+				Computed:    true,
+			},
+			"credential_source": schema.StringAttribute{
+				Description: "Effective ownership source: credential_values, model_id, or imported.",
+				Computed:    true,
 			},
 		},
 	}
@@ -79,226 +154,758 @@ func (r *CredentialResource) Configure(ctx context.Context, req resource.Configu
 	if req.ProviderData == nil {
 		return
 	}
-
 	client, ok := req.ProviderData.(*Client)
 	if !ok {
-		resp.Diagnostics.AddError(
-			"Unexpected Resource Configure Type",
-			fmt.Sprintf("Expected *Client, got: %T.", req.ProviderData),
-		)
+		resp.Diagnostics.AddError("Unexpected Resource Configure Type", fmt.Sprintf("Expected *Client, got: %T.", req.ProviderData))
 		return
 	}
-
 	r.client = client
 }
 
-func (r *CredentialResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
-	var data CredentialResourceModel
-
-	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
+// ModifyPlan rejects clears that LiteLLM's shallow PATCH cannot consume and
+// records replacement safety without replacing either public map type.
+func (r *CredentialResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	if req.Plan.Raw.IsNull() {
+		return
+	}
+	var plan CredentialResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
-	credReq := r.buildCredentialRequest(ctx, &data)
-
-	if err := r.client.DoRequestWithResponse(ctx, "POST", "/credentials", credReq, nil); err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to create credential: %s", err))
-		return
-	}
-
-	// Set the ID to credential name
-	data.ID = data.CredentialName
-
-	// Read back for full state with retry (note: credential_values won't be returned for security).
-	// The retry handles eventual-consistency delays after creating a credential.
-	if err := r.readCredentialWithRetry(ctx, &data, 8); err != nil {
-		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Credential created but failed to read back: %s", err))
-	}
-
-	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
-}
-
-func (r *CredentialResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
-	var data CredentialResourceModel
-
-	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	if err := r.readCredentialWithRetry(ctx, &data, 8); err != nil {
-		if IsNotFoundError(err) {
-			resp.State.RemoveResource(ctx)
+	config := plan
+	if !req.Config.Raw.IsNull() {
+		resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+		if resp.Diagnostics.HasError() {
 			return
 		}
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read credential: %s", err))
-		return
 	}
 
-	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
-}
-
-func (r *CredentialResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var data CredentialResourceModel
-
-	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
-	if resp.Diagnostics.HasError() {
+	info, infoErr := buildCredentialConfiguredObject(ctx, config.CredentialInfo, config.CredentialInfoJSON)
+	values, valuesErr := buildCredentialConfiguredObject(ctx, config.CredentialValues, config.CredentialValuesJSON)
+	if infoErr != nil && !errors.Is(infoErr, errCredentialUnknown) {
+		resp.Diagnostics.AddError("Credential Attribute Conflict", credentialConflictDiagnostic(infoErr))
 		return
 	}
-
+	if valuesErr != nil && !errors.Is(valuesErr, errCredentialUnknown) {
+		resp.Diagnostics.AddError("Credential Attribute Conflict", credentialConflictDiagnostic(valuesErr))
+		return
+	}
+	if req.State.Raw.IsNull() {
+		if errors.Is(valuesErr, errCredentialUnknown) || config.ModelID.IsUnknown() {
+			return
+		}
+		if !credentialKnownModelSource(config.ModelID) && len(values.Object) == 0 {
+			resp.Diagnostics.AddError(
+				"Missing Credential Create Source",
+				"When model_id is omitted, credential_values and credential_values_json must merge to a non-empty object. LiteLLM v1.98 rejects an empty values-only object. Configure at least one value or use model_id.",
+			)
+		}
+		return
+	}
 	var state CredentialResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	// Preserve the ID
-	data.ID = state.ID
-
-	credReq := r.buildCredentialRequest(ctx, &data)
-
-	endpoint := fmt.Sprintf("/credentials/%s", data.CredentialName.ValueString())
-	if err := r.client.DoRequestWithResponse(ctx, "PATCH", endpoint, credReq, nil); err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to update credential: %s", err))
+	metadata, diagnostics := readCredentialPrivateMetadata(ctx, req.Private, state)
+	resp.Diagnostics.Append(diagnostics...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if metadata.Imported && credentialConfigHasSource(config) {
+		resp.Diagnostics.AddError(
+			"Unsafe Credential Source Adoption",
+			"This metadata-only import has remote credential values whose ownership and cleartext reconstructability are unknown. Adding credential_values, credential_values_json, or model_id could overwrite or replace unmanaged secrets, so the plan is rejected. Create a separately named credential or remove and re-import only after arranging explicit ownership outside this lifecycle.",
+		)
 		return
 	}
 
-	// Read back for full state
-	if err := r.readCredentialWithRetry(ctx, &data, 8); err != nil {
-		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Credential updated but failed to read back: %s", err))
+	if errors.Is(infoErr, errCredentialUnknown) || errors.Is(valuesErr, errCredentialUnknown) {
+		return
+	}
+	if credentialTopLevelKeyRemoved(credentialMetadataOwnership(metadata, false), info.UnionOwnership) ||
+		credentialTopLevelKeyRemoved(credentialMetadataOwnership(metadata, true), values.UnionOwnership) {
+		resp.Diagnostics.AddError(
+			"Unsafe Top-Level Credential Removal",
+			"LiteLLM v1.98 PATCH only merges top-level credential dictionaries, and JSON null is stored rather than consumed as a clear. The provider will not delete and recreate the credential because unmanaged keys or secrets could be lost. Keep the key configured, or create a new credential under a different name with the intended complete contents.",
+		)
+		return
 	}
 
-	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	replacementPaths := credentialReplacementPaths(state, plan)
+	if len(replacementPaths) != 0 {
+		metadata.ReplacementPending = true
+		if !metadata.AllRemoteOwned {
+			resp.Diagnostics.AddError(
+				"Unsafe Credential Replacement",
+				"The create-only model_id or credential_name change requires replacement, but the latest authoritative read did not prove that every remote metadata and secret key is Terraform-owned and reconstructable. Replacement is blocked to avoid deleting unmanaged credential data.",
+			)
+			return
+		}
+	}
+	if resp.Private != nil {
+		resp.Diagnostics.Append(writeCredentialPrivateMetadata(ctx, resp.Private, metadata)...)
+	}
 }
 
-func (r *CredentialResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
-	var data CredentialResourceModel
+func (r *CredentialResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	var plan CredentialResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	config := plan
+	if !req.Config.Raw.IsNull() {
+		resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+	}
 
+	createRequest, info, values, err := buildCredentialCreateRequest(ctx, config)
+	if err != nil {
+		resp.Diagnostics.AddError("Credential Request Error", credentialConflictDiagnostic(err))
+		return
+	}
+	metadata, err := inferCredentialPrivateMetadata(ctx, config)
+	if err != nil {
+		resp.Diagnostics.AddError("Credential Request Error", "The provider could not establish credential ownership safely.")
+		return
+	}
+	if metadata.ModelDominant && (values.LegacyConfigured || values.JSONConfigured) {
+		resp.Diagnostics.AddWarning(
+			"Configured Credential Values Are Inactive",
+			"LiteLLM gives model_id precedence during create. The configured legacy/JSON credential values are retained only for HCL compatibility, are marked inactive in state, and are not verified or claimed as applied.",
+		)
+	}
+
+	finalizeCredentialRecoveryState(&plan, config, metadata)
+	plan.ID = plan.CredentialName
+	if resp.Private != nil {
+		resp.Diagnostics.Append(writeCredentialPrivateMetadata(ctx, resp.Private, metadata)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+	}
+
+	var mutation credentialMutationResponse
+	accepted, mutationErr := r.client.doRequestWithResponse(ctx, http.MethodPost, "/credentials", createRequest, &mutation)
+	if !accepted {
+		resp.Diagnostics.AddError("Credential Create Error", "LiteLLM did not accept the credential create request.")
+		return
+	}
+	bodyErr := validateCredentialMutationResponse(mutation)
+	if mutationErr != nil {
+		bodyErr = mutationErr
+	}
+
+	remote, postflightErr := r.confirmCredentialMutation(ctx, config.CredentialName.ValueString(), func(remote credentialRemote) error {
+		if err := verifyCredentialPostflight(remote.info, map[string]interface{}{}, info.Object, emptyCredentialOwnership(), info.UnionOwnership, false); err != nil {
+			return err
+		}
+		if metadata.ModelDominant {
+			return nil
+		}
+		return verifyCredentialPostflight(remote.values, map[string]interface{}{}, values.Object, emptyCredentialOwnership(), values.UnionOwnership, true)
+	})
+	if postflightErr == nil {
+		metadata.AllRemoteOwned = credentialRemoteFullyOwned(remote.info, info.Object, info.UnionOwnership, false) &&
+			credentialRemoteFullyOwned(remote.values, values.Object, credentialMetadataOwnership(metadata, true), true)
+		if err := reconcileCredentialState(ctx, &plan, remote, info.Object, values.Object, metadata); err != nil {
+			postflightErr = err
+		}
+	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+	if resp.Private != nil {
+		resp.Diagnostics.Append(writeCredentialPrivateMetadata(ctx, resp.Private, metadata)...)
+	}
+	if bodyErr != nil {
+		resp.Diagnostics.AddError("Malformed Credential Create Response", "LiteLLM accepted the create request, but its response did not contain the required success result. Exact-name recovery state was retained so the credential cannot be orphaned.")
+	}
+	if postflightErr != nil {
+		resp.Diagnostics.AddError("Credential Create Postflight Failed", "LiteLLM accepted the create request, but the provider could not confirm the owned result through the authoritative by-name route. Exact-name recovery state was retained so a later refresh or destroy can recover it.")
+	}
+}
+
+// buildCredentialRequest is retained for source compatibility with focused
+// tests. Lifecycle code uses the error-returning create helper.
+func (r *CredentialResource) buildCredentialRequest(ctx context.Context, data *CredentialResourceModel) map[string]interface{} {
+	request, _, _, _ := buildCredentialCreateRequest(ctx, *data)
+	return request
+}
+
+func buildCredentialCreateRequest(ctx context.Context, data CredentialResourceModel) (map[string]interface{}, credentialConfiguredObject, credentialConfiguredObject, error) {
+	info, err := buildCredentialConfiguredObject(ctx, data.CredentialInfo, data.CredentialInfoJSON)
+	if err != nil {
+		return nil, credentialConfiguredObject{}, credentialConfiguredObject{}, err
+	}
+	values, err := buildCredentialConfiguredObject(ctx, data.CredentialValues, data.CredentialValuesJSON)
+	if err != nil {
+		return nil, credentialConfiguredObject{}, credentialConfiguredObject{}, err
+	}
+	modelPresent := credentialKnownModelSource(data.ModelID)
+	valuesPresent := values.LegacyConfigured || values.JSONConfigured
+	if !modelPresent && len(values.Object) == 0 {
+		return nil, credentialConfiguredObject{}, credentialConfiguredObject{}, errors.New("when model_id is omitted, credential_values and credential_values_json must merge to a non-empty object")
+	}
+	request := map[string]interface{}{
+		"credential_name": data.CredentialName.ValueString(),
+		"credential_info": info.Object,
+	}
+	if valuesPresent {
+		// With model_id, an explicitly configured empty object remains present
+		// and is accepted as an inactive source; it is not confused with omission.
+		request["credential_values"] = values.Object
+	}
+	if modelPresent {
+		request["model_id"] = data.ModelID.ValueString()
+	}
+	return request, info, values, nil
+}
+
+func (r *CredentialResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
+	var data CredentialResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	metadata, diagnostics := readCredentialPrivateMetadata(ctx, req.Private, data)
+	resp.Diagnostics.Append(diagnostics...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	priorInfo, err := credentialOwnedObjectFromSurfaces(ctx, data.CredentialInfo, data.CredentialInfoJSON, metadata.LegacyInfo, metadata.JSONInfo)
+	if err != nil {
+		resp.Diagnostics.AddError("Credential State Error", formatCredentialSafetyError(err))
+		return
+	}
+	priorValues, err := credentialOwnedObjectFromSurfaces(ctx, data.CredentialValues, data.CredentialValuesJSON, metadata.LegacyValues, metadata.JSONValues)
+	if err != nil && !metadata.ModelDominant {
+		resp.Diagnostics.AddError("Credential State Error", formatCredentialSafetyError(err))
+		return
+	}
 
-	endpoint := fmt.Sprintf("/credentials/%s", data.CredentialName.ValueString())
-	if err := r.client.DoRequestWithResponse(ctx, "DELETE", endpoint, nil, nil); err != nil {
-		if !IsNotFoundError(err) {
-			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to delete credential: %s", err))
+	name := data.CredentialName.ValueString()
+	if name == "" {
+		name = data.ID.ValueString()
+	}
+	remote, err := r.fetchCredentialByName(ctx, name)
+	if err != nil {
+		if IsAPIErrorStatus(err, http.StatusNotFound) {
+			resp.State.RemoveResource(ctx)
 			return
 		}
+		resp.Diagnostics.AddError("Credential Read Error", "LiteLLM did not return a valid credential from the exact by-name route.")
+		return
+	}
+	if remote.name != name {
+		resp.Diagnostics.AddError("Credential Read Error", "LiteLLM returned a credential identity that did not match the exact requested name.")
+		return
+	}
+	metadata.AllRemoteOwned = credentialRemoteFullyOwned(remote.info, priorInfo, credentialMetadataOwnership(metadata, false), false) &&
+		credentialRemoteFullyOwned(remote.values, priorValues, credentialMetadataOwnership(metadata, true), true)
+	if err := reconcileCredentialState(ctx, &data, remote, priorInfo, priorValues, metadata); err != nil {
+		resp.Diagnostics.AddError("Credential Read Safety Error", formatCredentialSafetyError(err))
+		return
+	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	if resp.Private != nil {
+		resp.Diagnostics.Append(writeCredentialPrivateMetadata(ctx, resp.Private, metadata)...)
+	}
+}
+
+func (r *CredentialResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	var plan CredentialResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	var state CredentialResourceModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	config := plan
+	if !req.Config.Raw.IsNull() {
+		resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+	}
+	plan.ID = state.ID
+
+	priorMetadata, diagnostics := readCredentialPrivateMetadata(ctx, req.Private, state)
+	resp.Diagnostics.Append(diagnostics...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	metadata, err := inferCredentialPrivateMetadata(ctx, config)
+	if err != nil {
+		resp.Diagnostics.AddError("Credential Update Safety Error", formatCredentialSafetyError(err))
+		return
+	}
+	metadata.Imported = priorMetadata.Imported
+	if priorMetadata.Imported && credentialConfigHasSource(config) {
+		resp.Diagnostics.AddError("Unsafe Credential Source Adoption", "A metadata-only import cannot adopt a values or model source while remote secret ownership and reconstructability remain unknown. No PATCH was sent.")
+		return
+	}
+	priorInfo, err := credentialOwnedObjectFromSurfaces(ctx, state.CredentialInfo, state.CredentialInfoJSON, priorMetadata.LegacyInfo, priorMetadata.JSONInfo)
+	if err != nil {
+		resp.Diagnostics.AddError("Credential Update Safety Error", formatCredentialSafetyError(err))
+		return
+	}
+	priorValues, err := credentialOwnedObjectFromSurfaces(ctx, state.CredentialValues, state.CredentialValuesJSON, priorMetadata.LegacyValues, priorMetadata.JSONValues)
+	if err != nil && !priorMetadata.ModelDominant {
+		resp.Diagnostics.AddError("Credential Update Safety Error", formatCredentialSafetyError(err))
+		return
+	}
+	desiredInfo, err := buildCredentialConfiguredObject(ctx, config.CredentialInfo, config.CredentialInfoJSON)
+	if err != nil {
+		resp.Diagnostics.AddError("Credential Update Safety Error", credentialConflictDiagnostic(err))
+		return
+	}
+	desiredValues, err := buildCredentialConfiguredObject(ctx, config.CredentialValues, config.CredentialValuesJSON)
+	if err != nil {
+		resp.Diagnostics.AddError("Credential Update Safety Error", credentialConflictDiagnostic(err))
+		return
+	}
+	if metadata.ModelDominant {
+		desiredValues.UnionOwnership = emptyCredentialOwnership()
+		desiredValues.Object = map[string]interface{}{}
+		if desiredValues.LegacyConfigured || desiredValues.JSONConfigured {
+			resp.Diagnostics.AddWarning("Configured Credential Values Are Inactive", "model_id remains the effective create source. Changes to configured legacy/JSON credential values are retained as inactive compatibility state and are not sent or claimed as applied.")
+		}
+	}
+
+	remoteBefore, err := r.fetchCredentialByName(ctx, state.CredentialName.ValueString())
+	if err != nil || remoteBefore.name != state.CredentialName.ValueString() {
+		resp.Diagnostics.AddError("Credential Update Preflight Failed", "The exact remote credential could not be read and validated before PATCH, so no mutation was sent.")
+		return
+	}
+	priorInfoOwnership := credentialMetadataOwnership(priorMetadata, false)
+	infoPatch, err := hydrateCredentialPatch(remoteBefore.info, priorInfo, desiredInfo.Object, priorInfoOwnership, desiredInfo.UnionOwnership, false)
+	if err == nil {
+		infoPatch, err = hydrateCredentialInfoTopLevel(remoteBefore.info, infoPatch, priorInfoOwnership, desiredInfo.UnionOwnership)
+	}
+	if err != nil {
+		resp.Diagnostics.AddError("Credential Update Safety Error", formatCredentialSafetyError(err))
+		return
+	}
+	valuesPatch, err := hydrateCredentialPatch(remoteBefore.values, priorValues, desiredValues.Object, credentialMetadataOwnership(priorMetadata, true), desiredValues.UnionOwnership, true)
+	if err != nil {
+		resp.Diagnostics.AddError("Credential Update Safety Error", formatCredentialSafetyError(err))
+		return
+	}
+	patch := map[string]interface{}{
+		"credential_name":   plan.CredentialName.ValueString(),
+		"credential_info":   infoPatch,
+		"credential_values": valuesPatch,
+	}
+
+	var mutation credentialMutationResponse
+	accepted, mutationErr := r.client.doRequestWithResponse(ctx, http.MethodPatch, credentialMutationPath(plan.CredentialName.ValueString()), patch, &mutation)
+	bodyErr := validateCredentialMutationResponse(mutation)
+	if mutationErr != nil {
+		bodyErr = mutationErr
+	}
+	remoteAfter, postflightErr := r.confirmCredentialMutation(ctx, plan.CredentialName.ValueString(), func(remote credentialRemote) error {
+		if err := verifyCredentialOwnedObject(remote.info, infoPatch, credentialOwnershipForObject(infoPatch), false); err != nil {
+			return err
+		}
+		if err := verifyCredentialNestedRemovals(remote.info, priorInfoOwnership, desiredInfo.UnionOwnership, true); err != nil {
+			return err
+		}
+		return verifyCredentialPostflight(remote.values, priorValues, desiredValues.Object, credentialMetadataOwnership(priorMetadata, true), desiredValues.UnionOwnership, true)
+	})
+	if postflightErr == nil {
+		metadata.AllRemoteOwned = credentialRemoteFullyOwned(remoteAfter.info, desiredInfo.Object, desiredInfo.UnionOwnership, false) &&
+			credentialRemoteFullyOwned(remoteAfter.values, desiredValues.Object, desiredValues.UnionOwnership, true)
+		if err := reconcileCredentialState(ctx, &plan, remoteAfter, desiredInfo.Object, desiredValues.Object, metadata); err != nil {
+			postflightErr = err
+		}
+	}
+	if postflightErr == nil {
+		resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+		if resp.Private != nil {
+			resp.Diagnostics.Append(writeCredentialPrivateMetadata(ctx, resp.Private, metadata)...)
+		}
+	} else {
+		// UpdateResponse.State is pre-populated from the plan. Restore the
+		// prior state explicitly so an unconfirmed PATCH is never claimed.
+		resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+	}
+	if !accepted {
+		resp.Diagnostics.AddError("Credential Update Error", "LiteLLM did not accept the credential PATCH. The authoritative postflight read was still performed.")
+	} else if bodyErr != nil {
+		resp.Diagnostics.AddError("Malformed Credential Update Response", "LiteLLM accepted the PATCH status, but its body did not contain the required success result. The authoritative postflight read was still performed.")
+	}
+	if postflightErr != nil {
+		resp.Diagnostics.AddError("Credential Update Postflight Failed", "The provider could not confirm every owned value, mask, and nested removal through the authoritative by-name route, so it did not claim the planned update in state.")
+	}
+}
+
+func (r *CredentialResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
+	var data CredentialResourceModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	metadata, diagnostics := readCredentialPrivateMetadata(ctx, req.Private, data)
+	resp.Diagnostics.Append(diagnostics...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if metadata.ReplacementPending {
+		priorInfo, infoErr := credentialOwnedObjectFromSurfaces(ctx, data.CredentialInfo, data.CredentialInfoJSON, metadata.LegacyInfo, metadata.JSONInfo)
+		priorValues, valuesErr := credentialOwnedObjectFromSurfaces(ctx, data.CredentialValues, data.CredentialValuesJSON, metadata.LegacyValues, metadata.JSONValues)
+		remote, readErr := r.fetchCredentialByName(ctx, data.CredentialName.ValueString())
+		if readErr != nil && !IsAPIErrorStatus(readErr, http.StatusNotFound) {
+			resp.Diagnostics.AddError("Unsafe Credential Replacement", "The exact credential could not be re-read before replacement deletion.")
+			return
+		}
+		if readErr == nil && (infoErr != nil || valuesErr != nil ||
+			!credentialRemoteFullyOwned(remote.info, priorInfo, credentialMetadataOwnership(metadata, false), false) ||
+			!credentialRemoteFullyOwned(remote.values, priorValues, credentialMetadataOwnership(metadata, true), true)) {
+			resp.Diagnostics.AddError("Unsafe Credential Replacement", "Replacement deletion was blocked because the current remote credential contains data that is not proven Terraform-owned and reconstructable.")
+			return
+		}
+	}
+
+	var mutation credentialMutationResponse
+	accepted, mutationErr := r.client.doRequestWithResponse(ctx, http.MethodDelete, credentialMutationPath(data.CredentialName.ValueString()), nil, &mutation)
+	bodyErr := validateCredentialMutationResponse(mutation)
+	if mutationErr != nil {
+		bodyErr = mutationErr
+	}
+	absenceErr := r.confirmCredentialAbsence(ctx, data.CredentialName.ValueString())
+	if !accepted && IsAPIErrorStatus(mutationErr, http.StatusNotFound) && absenceErr == nil {
+		return
+	}
+	if !accepted {
+		resp.Diagnostics.AddError("Credential Delete Error", "LiteLLM did not accept the credential DELETE. Exact absence was still checked through the authoritative by-name route.")
+	} else if bodyErr != nil {
+		resp.Diagnostics.AddError("Malformed Credential Delete Response", "LiteLLM accepted the DELETE status, but its body did not contain the required success result. Exact absence was still checked through the authoritative by-name route.")
+	}
+	if absenceErr != nil {
+		resp.Diagnostics.AddError("Credential Delete Postflight Failed", "The provider could not confirm exact credential absence through the authoritative by-name route, so Terraform must retain the resource in state.")
 	}
 }
 
 func (r *CredentialResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	if req.ID == "" {
+		resp.Diagnostics.AddError("Invalid Credential Import", "The credential import ID must be a non-empty exact credential name so refresh and delete remain addressable.")
+		return
+	}
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("credential_name"), req.ID)...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("model_id"), types.StringNull())...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("credential_info"), types.MapUnknown(types.StringType))...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("credential_values"), types.MapNull(types.StringType))...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("credential_info_json"), types.StringUnknown())...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("credential_values_json"), types.StringNull())...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("credential_values_active"), types.BoolValue(false))...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("credential_source"), types.StringValue("imported"))...)
+	metadata := credentialPrivateMetadata{
+		Version:        1,
+		Imported:       true,
+		LegacyInfo:     emptyCredentialOwnership(),
+		JSONInfo:       emptyCredentialOwnership(),
+		LegacyValues:   emptyCredentialOwnership(),
+		JSONValues:     emptyCredentialOwnership(),
+		ModelDominant:  false,
+		AllRemoteOwned: false,
+	}
+	if resp.Private != nil {
+		resp.Diagnostics.Append(writeCredentialPrivateMetadata(ctx, resp.Private, metadata)...)
+	}
 }
 
-func (r *CredentialResource) buildCredentialRequest(ctx context.Context, data *CredentialResourceModel) map[string]interface{} {
-	credReq := map[string]interface{}{
-		"credential_name": data.CredentialName.ValueString(),
+func readCredentialPrivateMetadata(ctx context.Context, private credentialPrivateReader, data CredentialResourceModel) (credentialPrivateMetadata, diag.Diagnostics) {
+	var diagnostics diag.Diagnostics
+	encoded, privateDiagnostics := private.GetKey(ctx, credentialPrivateMetadataKey)
+	diagnostics.Append(privateDiagnostics...)
+	if diagnostics.HasError() {
+		return credentialPrivateMetadata{}, diagnostics
 	}
-
-	// String fields - check IsNull, IsUnknown, and empty string
-	if !data.ModelID.IsNull() && !data.ModelID.IsUnknown() && data.ModelID.ValueString() != "" {
-		credReq["model_id"] = data.ModelID.ValueString()
+	if metadata, ok := decodeCredentialPrivateMetadata(encoded); ok {
+		return metadata, diagnostics
 	}
-
-	// Map fields - check IsNull, IsUnknown, and len > 0
-	if !data.CredentialInfo.IsNull() && !data.CredentialInfo.IsUnknown() {
-		var credInfo map[string]string
-		data.CredentialInfo.ElementsAs(ctx, &credInfo, false)
-		if len(credInfo) > 0 {
-			// Convert to map[string]interface{} for JSON
-			credInfoInterface := make(map[string]interface{})
-			for k, v := range credInfo {
-				credInfoInterface[k] = v
-			}
-			credReq["credential_info"] = credInfoInterface
-		}
+	metadata, err := inferCredentialPrivateMetadata(ctx, data)
+	if err != nil {
+		diagnostics.AddError("Credential Ownership Metadata Error", "Legacy credential ownership could not be inferred without changing its public state types.")
 	}
-
-	// credential_values is required, so we always include it if present
-	if !data.CredentialValues.IsNull() && !data.CredentialValues.IsUnknown() {
-		var credValues map[string]string
-		data.CredentialValues.ElementsAs(ctx, &credValues, false)
-		// Convert to map[string]interface{} for JSON
-		credValuesInterface := make(map[string]interface{})
-		for k, v := range credValues {
-			credValuesInterface[k] = v
-		}
-		credReq["credential_values"] = credValuesInterface
-	}
-
-	return credReq
+	return metadata, diagnostics
 }
 
-func (r *CredentialResource) readCredential(ctx context.Context, data *CredentialResourceModel) error {
-	credentialName := data.CredentialName.ValueString()
-	if credentialName == "" {
-		credentialName = data.ID.ValueString()
+func writeCredentialPrivateMetadata(ctx context.Context, private credentialPrivateWriter, metadata credentialPrivateMetadata) diag.Diagnostics {
+	var diagnostics diag.Diagnostics
+	encoded, err := encodeCredentialPrivateMetadata(metadata)
+	if err != nil {
+		diagnostics.AddError("Credential Ownership Metadata Error", "Credential ownership metadata could not be encoded safely.")
+		return diagnostics
 	}
+	diagnostics.Append(private.SetKey(ctx, credentialPrivateMetadataKey, encoded)...)
+	return diagnostics
+}
 
-	endpoint := fmt.Sprintf("/credentials/by_name/%s", credentialName)
-	if !data.ModelID.IsNull() && data.ModelID.ValueString() != "" {
-		endpoint += fmt.Sprintf("?model_id=%s", data.ModelID.ValueString())
+func finalizeCredentialRecoveryState(data *CredentialResourceModel, config CredentialResourceModel, metadata credentialPrivateMetadata) {
+	data.ID = data.CredentialName
+	if data.CredentialInfo.IsUnknown() {
+		data.CredentialInfo = types.MapNull(types.StringType)
 	}
-
-	var result map[string]interface{}
-	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
-		return err
+	if data.CredentialInfoJSON.IsUnknown() {
+		data.CredentialInfoJSON = types.StringNull()
 	}
-
-	// Update fields from response
-	if credName, ok := result["credential_name"].(string); ok {
-		data.CredentialName = types.StringValue(credName)
-		data.ID = types.StringValue(credName)
+	if data.CredentialValuesJSON.IsUnknown() {
+		data.CredentialValuesJSON = types.StringNull()
 	}
+	if metadata.ModelDominant {
+		data.CredentialValuesActive = types.BoolValue(false)
+		data.CredentialSource = types.StringValue("model_id")
+	} else {
+		data.CredentialValuesActive = types.BoolValue(true)
+		data.CredentialSource = types.StringValue("credential_values")
+	}
+	if metadata.Imported {
+		data.CredentialValuesActive = types.BoolValue(false)
+		data.CredentialSource = types.StringValue("imported")
+	}
+	_ = config
+}
 
-	// Handle credential_info - preserve null when API returns empty and config didn't specify
-	if credInfo, ok := result["credential_info"].(map[string]interface{}); ok && len(credInfo) > 0 {
-		infoMap := make(map[string]attr.Value)
-		for k, v := range credInfo {
-			if str, ok := v.(string); ok {
-				infoMap[k] = types.StringValue(str)
-			}
+func reconcileCredentialState(ctx context.Context, data *CredentialResourceModel, remote credentialRemote, priorInfo, priorValues map[string]interface{}, metadata credentialPrivateMetadata) error {
+	if remote.name == "" {
+		return errors.New("credential identity is empty")
+	}
+	var next CredentialResourceModel = *data
+	next.CredentialName = types.StringValue(remote.name)
+	next.ID = types.StringValue(remote.name)
+
+	if metadata.LegacyInfoConfigured {
+		projected, err := projectCredentialObject(remote.info, priorInfo, metadata.LegacyInfo, false)
+		if err != nil {
+			return err
 		}
-		data.CredentialInfo, _ = types.MapValue(types.StringType, infoMap)
-	} else if !data.CredentialInfo.IsNull() {
-		data.CredentialInfo, _ = types.MapValue(types.StringType, map[string]attr.Value{})
+		next.CredentialInfo, err = stringMapValueFromObject(projected)
+		if err != nil {
+			return err
+		}
+	} else {
+		var err error
+		next.CredentialInfo, err = stringMapValueFromObject(remote.info)
+		if err != nil {
+			return err
+		}
+	}
+	if metadata.JSONInfoConfigured {
+		projected, err := projectCredentialObject(remote.info, priorInfo, metadata.JSONInfo, false)
+		if err != nil {
+			return err
+		}
+		canonical, err := canonicalCredentialJSON(projected)
+		if err != nil {
+			return err
+		}
+		next.CredentialInfoJSON = types.StringValue(canonical)
+	} else {
+		canonical, err := canonicalCredentialJSON(remote.info)
+		if err != nil {
+			return err
+		}
+		next.CredentialInfoJSON = types.StringValue(canonical)
 	}
 
-	// Note: We don't update credential_values from the response for security reasons
-	// The API might not return sensitive values, and we want to preserve what's in state
-
+	if metadata.ModelDominant {
+		next.CredentialValuesActive = types.BoolValue(false)
+		next.CredentialSource = types.StringValue("model_id")
+	} else if metadata.Imported {
+		next.CredentialValues = types.MapNull(types.StringType)
+		next.CredentialValuesJSON = types.StringNull()
+		next.CredentialValuesActive = types.BoolValue(false)
+		next.CredentialSource = types.StringValue("imported")
+	} else {
+		if metadata.LegacyValuesConfigured {
+			projected, err := projectCredentialObject(remote.values, priorValues, metadata.LegacyValues, true)
+			if err != nil {
+				return err
+			}
+			next.CredentialValues, err = stringMapValueFromObject(projected)
+			if err != nil {
+				return err
+			}
+		} else {
+			next.CredentialValues = types.MapNull(types.StringType)
+		}
+		if metadata.JSONValuesConfigured {
+			projected, err := projectCredentialObject(remote.values, priorValues, metadata.JSONValues, true)
+			if err != nil {
+				return err
+			}
+			canonical, err := canonicalCredentialJSON(projected)
+			if err != nil {
+				return err
+			}
+			next.CredentialValuesJSON = types.StringValue(canonical)
+		} else {
+			next.CredentialValuesJSON = types.StringNull()
+		}
+		next.CredentialValuesActive = types.BoolValue(true)
+		next.CredentialSource = types.StringValue("credential_values")
+	}
+	*data = next
 	return nil
 }
 
-// readCredentialWithRetry retries the read operation with exponential backoff.
-// This handles eventual-consistency delays after creating a credential.
+func validateCredentialMutationResponse(response credentialMutationResponse) error {
+	if response.Success == nil || !*response.Success || response.Message == "" {
+		return errors.New("LiteLLM mutation response did not report success")
+	}
+	return nil
+}
+
+func (r *CredentialResource) fetchCredentialByName(ctx context.Context, name string) (credentialRemote, error) {
+	var result credentialAPIResponse
+	if err := r.client.DoRequestWithResponse(ctx, http.MethodGet, credentialByNamePath(name), nil, &result); err != nil {
+		return credentialRemote{}, err
+	}
+	return decodeCredentialResponse(result)
+}
+
+func decodeCredentialResponse(result credentialAPIResponse) (credentialRemote, error) {
+	if result.CredentialName == "" || len(result.CredentialInfo) == 0 || len(result.CredentialValues) == 0 {
+		return credentialRemote{}, errors.New("LiteLLM returned a malformed credential response")
+	}
+	info, err := decodeCredentialJSONObjectBytes(result.CredentialInfo)
+	if err != nil {
+		return credentialRemote{}, err
+	}
+	values, err := decodeCredentialJSONObjectBytes(result.CredentialValues)
+	if err != nil {
+		return credentialRemote{}, err
+	}
+	return credentialRemote{name: result.CredentialName, info: info, values: values}, nil
+}
+
+func (r *CredentialResource) confirmCredentialMutation(ctx context.Context, name string, verify func(credentialRemote) error) (credentialRemote, error) {
+	var lastErr error
+	for attempt := 0; attempt < credentialPostflightAttempts; attempt++ {
+		remote, err := r.fetchCredentialByName(ctx, name)
+		if err == nil {
+			if remote.name != name {
+				lastErr = errors.New("credential identity mismatch")
+			} else if err := verify(remote); err == nil {
+				return remote, nil
+			} else {
+				lastErr = err
+			}
+		} else {
+			lastErr = err
+			if !IsAPIErrorStatus(err, http.StatusNotFound) {
+				return credentialRemote{}, err
+			}
+		}
+		if attempt < credentialPostflightAttempts-1 {
+			if err := waitCredentialRetry(ctx, attempt); err != nil {
+				return credentialRemote{}, err
+			}
+		}
+	}
+	return credentialRemote{}, lastErr
+}
+
+func (r *CredentialResource) confirmCredentialAbsence(ctx context.Context, name string) error {
+	var lastErr error
+	for attempt := 0; attempt < credentialPostflightAttempts; attempt++ {
+		_, err := r.fetchCredentialByName(ctx, name)
+		if IsAPIErrorStatus(err, http.StatusNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		lastErr = errors.New("credential still exists")
+		if attempt < credentialPostflightAttempts-1 {
+			if err := waitCredentialRetry(ctx, attempt); err != nil {
+				return err
+			}
+		}
+	}
+	return lastErr
+}
+
+func waitCredentialRetry(ctx context.Context, attempt int) error {
+	delay := 100 * time.Millisecond * time.Duration(1<<attempt)
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(delay):
+		return nil
+	}
+}
+
+func (r *CredentialResource) readCredential(ctx context.Context, data *CredentialResourceModel) error {
+	metadata, err := inferCredentialPrivateMetadata(ctx, *data)
+	if err != nil {
+		return err
+	}
+	priorInfo, err := credentialOwnedObjectFromSurfaces(ctx, data.CredentialInfo, data.CredentialInfoJSON, metadata.LegacyInfo, metadata.JSONInfo)
+	if err != nil {
+		return err
+	}
+	priorValues, err := credentialOwnedObjectFromSurfaces(ctx, data.CredentialValues, data.CredentialValuesJSON, metadata.LegacyValues, metadata.JSONValues)
+	if err != nil && !metadata.ModelDominant {
+		return err
+	}
+	name := data.CredentialName.ValueString()
+	if name == "" {
+		name = data.ID.ValueString()
+	}
+	remote, err := r.fetchCredentialByName(ctx, name)
+	if err != nil {
+		return err
+	}
+	if remote.name != name {
+		return errors.New("LiteLLM returned a credential identity mismatch")
+	}
+	return reconcileCredentialState(ctx, data, remote, priorInfo, priorValues, metadata)
+}
+
 func (r *CredentialResource) readCredentialWithRetry(ctx context.Context, data *CredentialResourceModel, maxRetries int) error {
 	var err error
-	delay := 1 * time.Second
-	maxDelay := 10 * time.Second
-
-	for i := 0; i < maxRetries; i++ {
+	for attempt := 0; attempt < maxRetries; attempt++ {
 		err = r.readCredential(ctx, data)
 		if err == nil {
 			return nil
 		}
-
-		if !IsNotFoundError(err) {
+		if !IsAPIErrorStatus(err, http.StatusNotFound) {
 			return err
 		}
-
-		if i < maxRetries-1 {
-			time.Sleep(delay)
-			delay *= 2
-			if delay > maxDelay {
-				delay = maxDelay
+		if attempt < maxRetries-1 {
+			if waitErr := waitCredentialRetry(ctx, attempt); waitErr != nil {
+				return waitErr
 			}
 		}
 	}
-
 	return err
+}
+
+func credentialByNamePath(name string) string {
+	return "/credentials/by_name/" + escapeCredentialPathValue(name)
+}
+
+func credentialByModelPath(modelID string) string {
+	return "/credentials/by_model/" + escapeCredentialPathValue(modelID)
+}
+
+func credentialMutationPath(name string) string {
+	return "/credentials/" + escapeCredentialPathValue(name)
+}
+
+func escapeCredentialPathValue(value string) string {
+	escaped := url.PathEscape(value)
+	// Dot segments are legal text but unsafe as complete segments in proxies
+	// that normalize traversal before routing.
+	return strings.ReplaceAll(escaped, ".", "%2E")
 }

@@ -2,12 +2,15 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"time"
+	"net/http"
+	"regexp"
 
-	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -22,10 +25,11 @@ type CredentialDataSource struct {
 }
 
 type CredentialDataSourceModel struct {
-	ID             types.String `tfsdk:"id"`
-	CredentialName types.String `tfsdk:"credential_name"`
-	ModelID        types.String `tfsdk:"model_id"`
-	CredentialInfo types.Map    `tfsdk:"credential_info"`
+	ID                 types.String `tfsdk:"id"`
+	CredentialName     types.String `tfsdk:"credential_name"`
+	ModelID            types.String `tfsdk:"model_id"`
+	CredentialInfo     types.Map    `tfsdk:"credential_info"`
+	CredentialInfoJSON types.String `tfsdk:"credential_info_json"`
 }
 
 func (d *CredentialDataSource) Metadata(ctx context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
@@ -34,26 +38,35 @@ func (d *CredentialDataSource) Metadata(ctx context.Context, req datasource.Meta
 
 func (d *CredentialDataSource) Schema(ctx context.Context, req datasource.SchemaRequest, resp *datasource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "Retrieves information about a LiteLLM credential.",
+		Description: "Retrieves non-sensitive LiteLLM credential metadata by exact name or through the exact by-model route.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
-				Description: "The unique identifier for this credential (same as credential_name).",
+				Description: "Stable data source identifier (same as the configured credential_name).",
 				Computed:    true,
 			},
 			"credential_name": schema.StringAttribute{
-				Description: "Name of the credential to retrieve.",
+				Description: "Non-empty credential name for name lookup and stable Terraform identity for model lookup.",
 				Required:    true,
+				Validators: []validator.String{
+					stringvalidator.LengthAtLeast(1),
+				},
 			},
 			"model_id": schema.StringAttribute{
-				Description: "Model ID associated with this credential.",
+				Description: "Optional model deployment ID selecting /credentials/by_model/{model_id}. This LiteLLM route is not path-capable, so model IDs containing slash cannot be represented safely here.",
 				Optional:    true,
+				Validators: []validator.String{
+					stringvalidator.RegexMatches(regexp.MustCompile(`^[^/]*$`), "must not contain '/' because LiteLLM's by-model route uses one non-path URL segment"),
+				},
 			},
 			"credential_info": schema.MapAttribute{
-				Description: "Additional information about the credential.",
+				Description: "Legacy computed map(string) projection of top-level string metadata. Existing type and semantics are unchanged.",
 				Computed:    true,
 				ElementType: types.StringType,
 			},
-			// Note: credential_values are not exposed in data sources for security reasons
+			"credential_info_json": schema.StringAttribute{
+				Description: "Canonical full JSON metadata object, including heterogeneous nested values and exact numbers.",
+				Computed:    true,
+			},
 		},
 	}
 }
@@ -62,87 +75,79 @@ func (d *CredentialDataSource) Configure(ctx context.Context, req datasource.Con
 	if req.ProviderData == nil {
 		return
 	}
-
 	client, ok := req.ProviderData.(*Client)
 	if !ok {
-		resp.Diagnostics.AddError(
-			"Unexpected Data Source Configure Type",
-			fmt.Sprintf("Expected *Client, got: %T.", req.ProviderData),
-		)
+		resp.Diagnostics.AddError("Unexpected Data Source Configure Type", fmt.Sprintf("Expected *Client, got: %T.", req.ProviderData))
 		return
 	}
-
 	d.client = client
 }
 
 func (d *CredentialDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
 	var data CredentialDataSourceModel
-
 	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
 	credentialName := data.CredentialName.ValueString()
-	endpoint := fmt.Sprintf("/credentials/by_name/%s", credentialName)
-	if !data.ModelID.IsNull() && data.ModelID.ValueString() != "" {
-		endpoint += fmt.Sprintf("?model_id=%s", data.ModelID.ValueString())
+	endpoint := credentialByNamePath(credentialName)
+	lookupByModel := !data.ModelID.IsNull() && !data.ModelID.IsUnknown() && data.ModelID.ValueString() != ""
+	if lookupByModel {
+		endpoint = credentialByModelPath(data.ModelID.ValueString())
 	}
-
-	var result map[string]interface{}
-	if err := readCredentialDataSourceWithRetry(ctx, d.client, endpoint, &result, 8); err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read credential '%s': %s", credentialName, err))
+	var result credentialAPIResponse
+	if err := readCredentialDataSourceWithRetry(ctx, d.client, endpoint, &result, credentialReadAttempts); err != nil {
+		resp.Diagnostics.AddError("Credential Data Source Read Error", "LiteLLM did not return a valid credential from the selected exact lookup route.")
+		return
+	}
+	remote, err := decodeCredentialResponse(result)
+	if err != nil {
+		resp.Diagnostics.AddError("Credential Data Source Read Error", "LiteLLM returned a malformed credential object.")
+		return
+	}
+	if !lookupByModel && remote.name != credentialName {
+		resp.Diagnostics.AddError("Credential Data Source Read Error", "LiteLLM returned a credential identity that did not match the exact requested name.")
+		return
+	}
+	infoMap, err := stringMapValueFromObject(remote.info)
+	if err != nil {
+		resp.Diagnostics.AddError("Credential Data Source Read Error", "LiteLLM metadata could not be represented by the compatibility map.")
+		return
+	}
+	infoJSON, err := canonicalCredentialJSON(remote.info)
+	if err != nil {
+		resp.Diagnostics.AddError("Credential Data Source Read Error", "LiteLLM metadata could not be represented as canonical JSON.")
 		return
 	}
 
-	// Update fields from response
-	if credName, ok := result["credential_name"].(string); ok {
-		data.CredentialName = types.StringValue(credName)
-		data.ID = types.StringValue(credName)
-	}
-
-	// Handle credential_info
-	if credInfo, ok := result["credential_info"].(map[string]interface{}); ok {
-		infoMap := make(map[string]attr.Value)
-		for k, v := range credInfo {
-			if str, ok := v.(string); ok {
-				infoMap[k] = types.StringValue(str)
-			}
-		}
-		data.CredentialInfo, _ = types.MapValue(types.StringType, infoMap)
-	} else {
-		// Set empty map if no credential_info
-		data.CredentialInfo, _ = types.MapValue(types.StringType, map[string]attr.Value{})
-	}
-
-	// Note: We don't expose credential_values in data sources for security reasons
-
+	// By-model responses synthesize an unrelated credential_name. Preserve the
+	// configured name as the stable Terraform identity and public HCL value.
+	data.ID = types.StringValue(credentialName)
+	data.CredentialInfo = infoMap
+	data.CredentialInfoJSON = types.StringValue(infoJSON)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
-func readCredentialDataSourceWithRetry(ctx context.Context, client *Client, endpoint string, result *map[string]interface{}, maxRetries int) error {
+func readCredentialDataSourceWithRetry(ctx context.Context, client *Client, endpoint string, result *credentialAPIResponse, maxRetries int) error {
 	var err error
-	delay := 1 * time.Second
-	maxDelay := 10 * time.Second
-
-	for i := 0; i < maxRetries; i++ {
-		err = client.DoRequestWithResponse(ctx, "GET", endpoint, nil, result)
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		*result = credentialAPIResponse{}
+		err = client.DoRequestWithResponse(ctx, http.MethodGet, endpoint, nil, result)
 		if err == nil {
 			return nil
 		}
-
-		if !IsNotFoundError(err) {
+		if !IsAPIErrorStatus(err, http.StatusNotFound) {
 			return err
 		}
-
-		if i < maxRetries-1 {
-			time.Sleep(delay)
-			delay *= 2
-			if delay > maxDelay {
-				delay = maxDelay
+		if attempt < maxRetries-1 {
+			if waitErr := waitCredentialRetry(ctx, attempt); waitErr != nil {
+				return waitErr
 			}
 		}
 	}
-
+	if err == nil {
+		return errors.New("credential lookup failed without a response")
+	}
 	return err
 }

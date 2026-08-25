@@ -1,146 +1,42 @@
 # litellm_credential (Data Source)
 
-Retrieves information about an existing LiteLLM credential. This data source allows you to reference credentials that were created outside of Terraform or in other Terraform configurations.
+Reads non-sensitive LiteLLM credential metadata. Credential values are never exposed.
 
-## Example Usage
+## Lookup by name
 
 ```hcl
-# Retrieve an existing credential by name
-data "litellm_credential" "existing_openai" {
-  credential_name = "openai-production-key"
-}
-
-# Use the credential in a model resource
-resource "litellm_model" "gpt4_with_existing_cred" {
-  model_name          = "gpt-4-with-existing-cred"
-  custom_llm_provider = "openai"
-  base_model          = "gpt-4"
-  tier                = "paid"
-  mode                = "chat"
-  
-  # Reference the existing credential's info
-  additional_litellm_params = {
-    credential_name = data.litellm_credential.existing_openai.credential_name
-  }
+data "litellm_credential" "existing" {
+  credential_name = "team/openai production"
 }
 ```
 
-## Example Usage with Model ID
+This uses the exact `GET /credentials/by_name/{credential_name:path}` route. Names are safely escaped, including slash, percent, spaces, Unicode, query/fragment characters, and traversal-like text.
+
+## Lookup by model ID
 
 ```hcl
-# Retrieve a credential associated with a specific model
-data "litellm_credential" "model_specific_cred" {
-  credential_name = "claude-api-key"
-  model_id        = "claude-3-sonnet"
-}
-
-# Use in a vector store
-resource "litellm_vector_store" "knowledge_base" {
-  vector_store_name       = "claude-knowledge-base"
-  custom_llm_provider     = "anthropic"
-  litellm_credential_name = data.litellm_credential.model_specific_cred.credential_name
-  
-  vector_store_description = "Knowledge base using Claude credentials"
+data "litellm_credential" "deployment" {
+  # Stable Terraform identity; LiteLLM synthesizes another response name.
+  credential_name = "production-deployment-lookup"
+  model_id        = litellm_model.production.model_id
 }
 ```
 
-## Example Usage for Cross-Reference
+When `model_id` is non-empty, the provider uses LiteLLM v1.98's exact `GET /credentials/by_model/{model_id}` route. It is not an ignored query parameter on the by-name route. The route declares one ordinary path segment rather than a path-capable parameter, so this data source safely rejects model IDs containing `/`. This restriction applies only to the data-source route; the resource may send slash-containing `model_id` values in its JSON create body.
 
-```hcl
-# Get credential info to use in other resources
-data "litellm_credential" "shared_cred" {
-  credential_name = "shared-api-key"
-}
+LiteLLM's by-model response synthesizes `credential_name`. Terraform preserves the configured `credential_name` as both `id` and the public stable value.
 
-# Create multiple resources using the same credential
-resource "litellm_vector_store" "store_1" {
-  vector_store_name       = "store-1"
-  custom_llm_provider     = "pinecone"
-  litellm_credential_name = data.litellm_credential.shared_cred.credential_name
-  
-  vector_store_description = "First store using shared credential"
-}
+## Arguments
 
-resource "litellm_vector_store" "store_2" {
-  vector_store_name       = "store-2"
-  custom_llm_provider     = "pinecone"
-  litellm_credential_name = data.litellm_credential.shared_cred.credential_name
-  
-  vector_store_description = "Second store using shared credential"
-}
-```
+* `credential_name` - (Required) Non-empty exact name for by-name lookup and stable identity for by-model lookup.
+* `model_id` - (Optional) Model deployment ID selecting the by-model route. Slash is not representable by that route.
 
-## Argument Reference
+## Attributes
 
-The following arguments are supported:
+* `id` - Configured stable `credential_name`.
+* `credential_info` - Existing computed `map(string)` projection. Only top-level string values appear, preserving the original Terraform type.
+* `credential_info_json` - Additive canonical full JSON object. It includes nested objects, arrays, booleans, nulls, and exact JSON numbers.
 
-* `credential_name` - (Required) Name of the credential to retrieve.
-* `model_id` - (Optional) Model ID associated with this credential. Use this when the same credential name is used for different models.
+## Security
 
-## Attributes Reference
-
-In addition to all arguments above, the following attributes are exported:
-
-* `credential_info` - Map of additional non-sensitive information about the credential.
-
-## Security Note
-
-For security reasons, the `credential_values` (sensitive data like API keys) are not exposed through data sources. This prevents accidental exposure of sensitive information in Terraform plans and logs. If you need to access credential values, you should manage them through the resource directly or use external secret management systems.
-
-## Common Use Cases
-
-### 1. Cross-Stack References
-Use data sources to reference credentials created in other Terraform configurations or stacks:
-
-```hcl
-data "litellm_credential" "shared_openai" {
-  credential_name = "openai-shared-key"
-}
-
-resource "litellm_model" "gpt4" {
-  model_name          = "gpt-4-cross-stack"
-  custom_llm_provider = "openai"
-  base_model          = "gpt-4"
-  
-  additional_litellm_params = {
-    credential_reference = data.litellm_credential.shared_openai.credential_name
-  }
-}
-```
-
-### 2. Conditional Logic
-Use credential information for conditional resource creation:
-
-```hcl
-data "litellm_credential" "optional_cred" {
-  credential_name = var.credential_name
-}
-
-resource "litellm_vector_store" "conditional_store" {
-  count = length(data.litellm_credential.optional_cred.credential_info) > 0 ? 1 : 0
-  
-  vector_store_name       = "conditional-store"
-  custom_llm_provider     = "weaviate"
-  litellm_credential_name = data.litellm_credential.optional_cred.credential_name
-}
-```
-
-### 3. Validation and Verification
-Verify that required credentials exist before creating dependent resources:
-
-```hcl
-data "litellm_credential" "required_cred" {
-  credential_name = "production-api-key"
-}
-
-# This will fail if the credential doesn't exist
-resource "litellm_model" "production_model" {
-  model_name          = "production-gpt-4"
-  custom_llm_provider = "openai"
-  base_model          = "gpt-4"
-  
-  additional_litellm_params = {
-    credential_name = data.litellm_credential.required_cred.credential_name
-  }
-}
-```
+The API response's masked `credential_values` object is discarded. Neither a legacy map nor full JSON values output is exposed by this data source.

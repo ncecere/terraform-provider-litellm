@@ -1,95 +1,127 @@
 # litellm_credential (Resource)
 
-Manages a LiteLLM credential for storing sensitive authentication information. Credentials can be used to securely store API keys, tokens, and other sensitive data that can be referenced by models.
+Manages a LiteLLM credential while preserving the provider's original string-map interface. Terraform owns only configured keys, recursively. API- or operator-added keys are not silently adopted.
 
-## Example Usage
+## Compatibility and heterogeneous values
 
-### Minimal Example
+`credential_info` and `credential_values` remain `map(string)`. Existing references, outputs, and state therefore keep their original Terraform types. There is no state-version migration. `credential_values` is now optional, an additive loosening that permits model-only configuration and source-free metadata-only imports.
+
+LiteLLM v1.98 also accepts nested objects, arrays, booleans, nulls, and exact JSON numbers. Use the additive JSON-string attributes for those values:
 
 ```hcl
-resource "litellm_credential" "minimal" {
-  credential_name = "my-openai-cred"
+resource "litellm_credential" "full" {
+  credential_name = "azure-production"
 
   credential_info = {
-    "description" = "OpenAI API credential"
+    provider = "azure"
   }
+  credential_info_json = jsonencode({
+    provider    = "azure" # Equal overlap is allowed.
+    enabled     = true
+    retry_count = 3
+    labels      = ["production", "priority"]
+  })
 
+  credential_values_json = jsonencode({
+    api_key = var.azure_api_key
+    oauth = {
+      client_id     = var.azure_client_id
+      client_secret = var.azure_client_secret
+    }
+  })
+}
+```
+
+The JSON strings are validated as non-null objects and stored in deterministic compact form. Numbers are decoded with exact-number semantics rather than through `float64`.
+
+Legacy and JSON objects are merged recursively by key ownership. Disjoint keys are combined. An overlapping key is accepted only when both surfaces encode exactly the same value; conflicting overlap fails before any request. To migrate an existing key without changing its Terraform type:
+
+1. Add the same key/value to the JSON attribute.
+2. Apply while both surfaces agree.
+3. Remove the legacy copy, leaving the JSON copy as owner.
+
+This is a configuration migration between additive attributes, not a Terraform type or state migration.
+
+## Create sources
+
+LiteLLM accepts these create forms:
+
+### Values
+
+```hcl
+resource "litellm_credential" "values" {
+  credential_name = "provider-values"
   credential_values = {
-    "api_key" = "sk-your-api-key"
+    api_key = var.provider_api_key
   }
 }
 ```
 
-### Full Example with Model Reference
+When `model_id` is omitted, the merged legacy and JSON values object must be non-empty. LiteLLM v1.98 tests this object for truthiness and rejects a values-only `{}`. Omitted values, `credential_values = {}`, `credential_values_json = "{}"`, or any combination that still merges to an empty object therefore fails during planning rather than making a known-invalid request.
+
+### Model-derived values
 
 ```hcl
-resource "litellm_credential" "openai" {
-  credential_name = "openai-production"
-  model_id        = "gpt-4o"
-
-  credential_info = {
-    "provider"    = "openai"
-    "environment" = "production"
-  }
-
-  credential_values = {
-    "api_key" = var.openai_api_key
-    "org_id"  = var.openai_org_id
-  }
+resource "litellm_credential" "from_model" {
+  credential_name = "copied-deployment-values"
+  model_id        = litellm_model.production.model_id
 }
 ```
 
-### Azure OpenAI Credential
+`model_id` is a create-only body field and may contain `/`. It is never sent on PATCH. Any known or unknown `model_id` change uses the unconditional replacement plan modifier.
 
-```hcl
-resource "litellm_credential" "azure" {
-  credential_name = "azure-openai-cred"
+### Both fields
 
-  credential_info = {
-    "provider" = "azure"
-    "service"  = "openai"
-  }
+Configurations that set `model_id` together with omitted, empty, or non-empty legacy/JSON values are accepted. LiteLLM gives `model_id` precedence and replaces any supplied values with model-derived values. When values are configured, Terraform emits a warning, sets `credential_values_active = false`, and sets `credential_source = "model_id"`; configured compatibility values remain in state but are explicitly inactive and are not verified or claimed as applied.
 
-  credential_values = {
-    "api_key"     = var.azure_openai_key
-    "api_base"    = var.azure_openai_endpoint
-    "api_version" = "2024-02-15-preview"
-  }
-}
-```
+When values are the active source, `credential_values_active` is `true` and `credential_source` is `"credential_values"`.
 
-## Argument Reference
+## Arguments
 
-The following arguments are supported:
+* `credential_name` - (Required, Forces replacement) Exact credential name. It must be non-empty. LiteLLM can accept an empty POST name, but the resulting object cannot be addressed safely for refresh or deletion. Names are escaped exactly, including `/`, `%`, spaces, Unicode, `?`, `#`, and traversal-like text.
+* `credential_values` - (Optional, Sensitive) Original `map(string)` values surface. With no `model_id`, its merge with `credential_values_json` must be non-empty.
+* `credential_info` - (Optional, Computed) Original `map(string)` metadata surface.
+* `credential_values_json` - (Optional, Computed, Sensitive) Canonical heterogeneous JSON object.
+* `credential_info_json` - (Optional, Computed) Canonical heterogeneous JSON object.
+* `model_id` - (Optional, Forces replacement) Create-only model deployment source.
 
-### Required
+## Read and update safety
 
-* `credential_name` - (Required, ForceNew) Name of the credential. Changing this forces creation of a new resource.
-* `credential_values` - (Required, Sensitive) Map of sensitive credential values such as API keys and tokens. These values are **not** read back from the API and are preserved only in Terraform state.
+LiteLLM masks sensitive response leaves. The provider restores a prior owned value only when the returned mask exactly matches that same value. A mask is never adopted as a real secret.
 
-### Optional
+PATCH in LiteLLM v1.98 shallow-merges the two top-level dictionaries:
 
-* `model_id` - (Optional) Model ID of an existing model registered in LiteLLM to associate with this credential.
-* `credential_info` - (Optional, Computed) Map of additional non-sensitive metadata about the credential.
+* Configured leaves are owned recursively.
+* Unmanaged nested siblings are hydrated from the authoritative preflight GET before a containing object is patched.
+* Readable unmanaged top-level `credential_info` is also carried through PATCH because LiteLLM v1.98 can rebuild that dictionary before applying its shallow update; carrying it does not adopt it into Terraform ownership.
+* If an unmanaged nested sibling is masked and cannot be reconstructed, PATCH fails before mutation.
+* Planned object/scalar transitions that could discard unmanaged children fail before mutation.
+* Out-of-band atomic-to-object or object-to-atomic shape drift fails guarded projection/read, is never treated as fully owned, and blocks replacement deletion rather than adopting nested children.
+* Nested owned-key removal is verified after PATCH.
+* Omitted top-level keys are not cleared by PATCH. JSON null is stored as null; it is not a consumed clear.
 
-## Attribute Reference
+Because top-level removal cannot be proved safe, the provider reports a plan error instead of deleting and recreating the credential. Create-only replacement is allowed only when private ownership metadata and an authoritative delete preflight prove every remote key is Terraform-owned and reconstructable. This prevents replacement from destroying operator-added secrets.
 
-In addition to all arguments above, the following attributes are exported:
-
-* `id` - The identifier of the credential.
+PATCH and DELETE response bodies must contain LiteLLM's explicit `success: true` result. This matters because affected handlers can serialize an exception with HTTP 200. Every mutation also receives an authoritative exact-name postflight GET: updates verify owned values, masks, and removals; deletes verify exact 404 absence. An accepted create with a malformed response or failed read-back retains exact-name recovery state so it cannot become an orphan.
 
 ## Import
 
-Credentials can be imported using their name:
+Import uses only the exact credential name:
 
 ```shell
-terraform import litellm_credential.example "credential-name"
+terraform import litellm_credential.example 'team/openai credential%prod'
 ```
 
-~> **Note:** Because `credential_values` is sensitive and not returned by the API, imported credentials will have empty credential values in state. You must re-apply with the correct values after import.
+Import is deliberately metadata-only:
 
-## Security Considerations
+* Readable metadata populates `credential_info` and `credential_info_json` as computed output.
+* Masked `credential_values` are never adopted as owned state.
+* `model_id` remains null because stored credentials do not persist their create source.
+* `credential_source` is `"imported"`, and `credential_values_active` is false.
+* Omitted source configuration does not request replacement.
 
-* The `credential_values` field is marked as sensitive and will not be displayed in Terraform plan output or logs.
-* Credential values are not read back from the LiteLLM API for security reasons; they are preserved only in the Terraform state file.
-* Ensure your Terraform state backend is properly secured (e.g., encrypted at rest) when using this resource.
+Adding a values or model source after import is rejected when remote ownership/reconstructability is unknown. This is safer than deleting or overwriting an imported credential. Create a separately named managed credential when ownership cannot be proven.
+
+## Security
+
+Both values attributes are sensitive, but Terraform state still stores active configured secrets. Use an encrypted, access-controlled state backend. Provider diagnostics deliberately omit names, paths, keys, request values, and response bodies where they could expose credential material.
