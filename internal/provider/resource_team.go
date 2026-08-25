@@ -23,7 +23,12 @@ import (
 var _ resource.Resource = &TeamResource{}
 var _ resource.ResourceWithImportState = &TeamResource{}
 
+// LiteLLM v1.98 normalizes the four word aliases before computing reset times,
+// supports week units in both duration_in_seconds and standardized reset handling,
+// and rejects multi-month resets in its monthly reset handler.
 var budgetDurationPattern = regexp.MustCompile(`^([1-9][0-9]*(s|m|h|d|w)|1mo|hourly|daily|weekly|monthly)$`)
+
+const budgetDurationValidationMessage = `must be a positive integer with unit s, m, h, d, or w; one of hourly, daily, weekly, or monthly; or exactly 1mo`
 
 func NewTeamResource() resource.Resource {
 	return &TeamResource{}
@@ -174,20 +179,38 @@ func (r *TeamResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 				Optional:    true,
 			},
 			"tpm_limit_type": schema.StringAttribute{
-				Description: "Type of TPM limit: 'key' or 'team'. If 'team', TPM is shared across all keys for the team.",
+				Description: "Create-only TPM limit enforcement type. LiteLLM v1.98 accepts guaranteed_throughput or best_effort_throughput for new teams. Changing this value replaces the team.",
 				Optional:    true,
+				Validators: []validator.String{
+					stringvalidator.OneOf("guaranteed_throughput", "best_effort_throughput"),
+				},
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
 			},
 			"rpm_limit_type": schema.StringAttribute{
-				Description: "Type of RPM limit: 'key' or 'team'. If 'team', RPM is shared across all keys for the team.",
+				Description: "Create-only RPM limit enforcement type. LiteLLM v1.98 accepts guaranteed_throughput or best_effort_throughput for new teams. Changing this value replaces the team.",
 				Optional:    true,
+				Validators: []validator.String{
+					stringvalidator.OneOf("guaranteed_throughput", "best_effort_throughput"),
+				},
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
 			},
 			"max_budget": schema.Float64Attribute{
 				Description: "Maximum budget for the team.",
 				Optional:    true,
 			},
 			"budget_duration": schema.StringAttribute{
-				Description: "Budget reset duration.",
+				Description: "Recurring team budget reset interval. Accepts positive s, m, h, d, or w durations; hourly, daily, weekly, or monthly; or exactly 1mo.",
 				Optional:    true,
+				Validators: []validator.String{
+					stringvalidator.RegexMatches(
+						budgetDurationPattern,
+						budgetDurationValidationMessage,
+					),
+				},
 			},
 			"models": schema.ListAttribute{
 				Description: "List of models the team can access.",
@@ -247,12 +270,12 @@ func (r *TeamResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 				Optional:    true,
 			},
 			"team_member_budget_duration": schema.StringAttribute{
-				Description: "Default recurring budget reset interval for team memberships (for example, 30d or 24h). LiteLLM applies it to new/default memberships and may backfill memberships without a budget; private member overrides are preserved.",
+				Description: "Default recurring budget reset interval for team memberships. Accepts positive s, m, h, d, or w durations; hourly, daily, weekly, or monthly; or exactly 1mo. LiteLLM applies it to new/default memberships and may backfill memberships without a budget; private member overrides are preserved.",
 				Optional:    true,
 				Validators: []validator.String{
 					stringvalidator.RegexMatches(
 						budgetDurationPattern,
-						`must be hourly, daily, weekly, monthly, 1mo, or a positive integer with unit s, m, h, d, or w`,
+						budgetDurationValidationMessage,
 					),
 				},
 			},
@@ -393,7 +416,7 @@ func (r *TeamResource) Update(ctx context.Context, req resource.UpdateRequest, r
 	if data.TeamID.IsNull() || data.TeamID.IsUnknown() {
 		data.TeamID = state.ID
 	}
-	teamReq := r.buildTeamRequest(ctx, &data, data.ID.ValueString())
+	teamReq := r.buildTeamUpdateRequest(ctx, &data, data.ID.ValueString())
 	applyTeamNullableClears(teamReq, &state, &data)
 
 	// LiteLLM's team-default budget handler ignores explicit nulls whenever the
@@ -589,6 +612,17 @@ func (r *TeamResource) buildTeamRequest(ctx context.Context, data *TeamResourceM
 	} else if data.RouterSettings.IsNull() {
 		teamReq["router_settings"] = map[string]interface{}{}
 	}
+
+	return teamReq
+}
+
+func (r *TeamResource) buildTeamUpdateRequest(ctx context.Context, data *TeamResourceModel, teamID string) map[string]interface{} {
+	teamReq := r.buildTeamRequest(ctx, data, teamID)
+
+	// LiteLLM v1.98 only defines limit enforcement types on NewTeamRequest.
+	// UpdateTeamRequest ignores them, so changes are handled by replacement.
+	delete(teamReq, "tpm_limit_type")
+	delete(teamReq, "rpm_limit_type")
 
 	return teamReq
 }

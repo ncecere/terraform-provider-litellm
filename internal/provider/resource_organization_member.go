@@ -74,15 +74,13 @@ func (r *OrganizationMemberResource) Schema(ctx context.Context, req resource.Sc
 				},
 			},
 			"role": schema.StringAttribute{
-				Description: "The role of the member in the organization.",
+				Description: "The role of the member in the organization: org_admin, internal_user, or internal_user_viewer.",
 				Required:    true,
 				Validators: []validator.String{
 					stringvalidator.OneOf(
-						"proxy_admin",
-						"proxy_admin_viewer",
+						"org_admin",
 						"internal_user",
 						"internal_user_viewer",
-						"org_admin",
 					),
 				},
 			},

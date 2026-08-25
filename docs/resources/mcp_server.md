@@ -28,7 +28,7 @@ resource "litellm_mcp_server" "full" {
   url            = "https://api.github.com/mcp"
   transport      = "sse"
   spec_version   = "2024-11-05"
-  auth_type      = "none"
+  auth_type      = "bearer_token"
   allow_all_keys = true
 
   mcp_access_groups = ["dev_team"]
@@ -40,7 +40,7 @@ resource "litellm_mcp_server" "full" {
   }
 
   credentials = {
-    "token" = "my-token"
+    "auth_value" = "example-bearer-token"
   }
 
   static_headers = {
@@ -155,12 +155,12 @@ The following arguments are supported:
 - `alias` - (String) An alias for the server. **Must not contain hyphens.**
 - `description` - (String) A human-readable description of the MCP server.
 - `spec_version` - (String) The MCP specification version. Defaults to `"2024-11-05"`.
-- `auth_type` - (String) The authentication type. Defaults to `"none"`. Supported values: `none`, `bearer_token`, `bearer`, `basic`, `api_key`, `authorization`, `oauth2`. When using a value other than `"none"`, the API requires credentials to be provided.
+- `auth_type` - (String) The authentication type. Defaults to `"none"`. LiteLLM v1.98 accepts exactly `none`, `api_key`, `bearer_token`, `basic`, `authorization`, `oauth2`, `aws_sigv4`, `token`, `oauth2_token_exchange`, `oauth2_id_jag`, `true_passthrough`, or `oauth_delegate`. When using a value other than `"none"`, the selected mode may require credentials and additional endpoint-specific fields.
 - `mcp_access_groups` - (List of String) Access groups that are allowed to use this MCP server.
 - `command` - (String) Command to execute for `stdio` transport.
 - `args` - (List of String) Arguments to pass to the command for `stdio` transport.
 - `env` - (Map of String) Environment variables to set when running the MCP server.
-- `credentials` - (Map of String, Sensitive) Credentials for authenticating with the MCP server. This attribute is marked as sensitive and will not be displayed in plan output.
+- `credentials` - (Map of String, Sensitive) Credentials for authenticating with the MCP server. For static `api_key`, `bearer_token`, `basic`, `authorization`, and `token` modes, LiteLLM v1.98 reads the secret from `auth_value`; keys named `token` or `api_key` are ignored. OAuth2 uses fields such as `client_id` and `client_secret`. This attribute is marked as sensitive and will not be displayed in plan output.
 - `allowed_tools` - (List of String) List of tool names that are allowed to be used from this server.
 - `extra_headers` - (List of String) Extra header names to forward/include in requests. This matches the LiteLLM API schema.
 - `static_headers` - (Map of String) Static HTTP headers that are always included in requests.
@@ -196,6 +196,10 @@ In addition to all arguments above, the following attributes are exported:
 - `created_at` - Timestamp of when the MCP server was created.
 - `created_by` - The user or system that created the MCP server.
 
+## Migrating from `bearer`
+
+The earlier provider accepted `auth_type = "bearer"`, but LiteLLM v1.98 does not. Existing configurations must replace it with `auth_type = "bearer_token"` for bearer-token authentication, or `auth_type = "oauth2"` when configuring OAuth endpoints and client credentials. Leaving `bearer` in configuration now fails Terraform validation during planning. Imported/read state is not rewritten by configuration validation.
+
 ## Import
 
 MCP servers can be imported using their server ID:
@@ -221,8 +225,8 @@ Standard input/output communication. Used for local MCP servers or command-line 
 ## Notes
 
 - Server names and aliases must use underscores, not hyphens.
-- The `auth_type` field supports `none`, `bearer_token`, `bearer`, `basic`, `api_key`, `authorization`, and `oauth2`.
-- When using an `auth_type` other than `"none"`, provide authentication details via the `credentials` map.
+- The `auth_type` field accepts exactly `none`, `api_key`, `bearer_token`, `basic`, `authorization`, `oauth2`, `aws_sigv4`, `token`, `oauth2_token_exchange`, `oauth2_id_jag`, `true_passthrough`, or `oauth_delegate` under the LiteLLM v1.98 request contract. The legacy literal `bearer` is not supported.
+- For authenticated modes, provide the credentials and endpoint-specific fields required by the selected authentication type.
 - The `credentials` attribute is sensitive and will not appear in CLI output or state file in plain text.
 - Use `mcp_access_groups` to control which teams or users can access the MCP server tools.
 - Configure cost tracking through the `mcp_info.mcp_server_cost_info` block to monitor spending on MCP tool usage.

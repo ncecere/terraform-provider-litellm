@@ -30,7 +30,7 @@ output "id" {
 ## Argument Reference
 
 - `model` - (Required) The model name to get fallback configuration for.
-- `fallback_type` - (Optional) Type of fallback. Defaults to `general`. One of `general`, `context_window`, or `content_policy`.
+- `fallback_type` - (Optional) Type of fallback. Defaults to `general`. One of `general`, `context_window`, or `content_policy`; the exact case-sensitive LiteLLM v1.98 query enum is validated during planning.
 
 ## Attribute Reference
 

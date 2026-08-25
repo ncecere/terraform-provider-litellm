@@ -255,12 +255,18 @@ func (r *KeyResource) Schema(ctx context.Context, req resource.SchemaRequest, re
 				Computed:    true,
 			},
 			"tpm_limit_type": schema.StringAttribute{
-				Description: "Type of TPM limit: 'key' (default) or 'team'. If 'team', TPM is shared across all keys for the team.",
+				Description: "TPM limit enforcement type. LiteLLM v1.98 accepts guaranteed_throughput, best_effort_throughput, or dynamic for keys.",
 				Optional:    true,
+				Validators: []validator.String{
+					stringvalidator.OneOf("guaranteed_throughput", "best_effort_throughput", "dynamic"),
+				},
 			},
 			"rpm_limit_type": schema.StringAttribute{
-				Description: "Type of RPM limit: 'key' (default) or 'team'. If 'team', RPM is shared across all keys for the team.",
+				Description: "RPM limit enforcement type. LiteLLM v1.98 accepts guaranteed_throughput, best_effort_throughput, or dynamic for keys.",
 				Optional:    true,
+				Validators: []validator.String{
+					stringvalidator.OneOf("guaranteed_throughput", "best_effort_throughput", "dynamic"),
+				},
 			},
 			"budget_duration": schema.StringAttribute{
 				Description: "Budget reset duration (e.g., '30d', '1h').",

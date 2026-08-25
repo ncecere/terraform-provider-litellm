@@ -8,7 +8,7 @@ resource "litellm_mcp_server" "full" {
   url            = "https://example.com/mcp-full"
   transport      = "sse"
   spec_version   = "2024-11-05"
-  auth_type      = "bearer"
+  auth_type      = "bearer_token"
   allow_all_keys = true
 
   mcp_access_groups = ["test-access-group-full"]
@@ -20,12 +20,10 @@ resource "litellm_mcp_server" "full" {
   }
 
   credentials = {
-    "token" = "fake-bearer-token"
+    "auth_value" = "fake-bearer-token"
   }
 
-  extra_headers = {
-    "X-Custom-Header" = "custom-value"
-  }
+  extra_headers = ["X-Custom-Header"]
 
   static_headers = {
     "X-Static" = "static-value"

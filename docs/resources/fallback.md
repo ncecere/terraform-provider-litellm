@@ -62,6 +62,8 @@ resource "litellm_fallback" "content_policy" {
   - `context_window` - Used when the request exceeds the model's context window.
   - `content_policy` - Used for content policy violations.
 
+  The provider validates this exact, case-sensitive LiteLLM v1.98 request enum during planning.
+
 ## Attribute Reference
 
 In addition to all arguments above, the following attributes are exported:

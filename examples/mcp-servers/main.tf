@@ -41,11 +41,11 @@ resource "litellm_mcp_server" "github" {
   description  = "GitHub API integration for repository operations"
   url          = "https://api.github.com/mcp"
   transport    = "http"
-  auth_type    = "bearer"
+  auth_type    = "bearer_token"
   spec_version = "2024-11-05"
 
   credentials = {
-    "token" = var.github_token
+    "auth_value" = var.github_token
   }
 
   allowed_tools = [
@@ -55,9 +55,7 @@ resource "litellm_mcp_server" "github" {
     "create_issue"
   ]
 
-  extra_headers = {
-    "X-GitHub-Api-Version" = "2022-11-28"
-  }
+  extra_headers = ["X-GitHub-Api-Version"]
 
   mcp_access_groups = [litellm_team.developers.team_id]
   allow_all_keys    = false
@@ -89,10 +87,10 @@ resource "litellm_mcp_server" "zapier" {
   description = "Zapier workflow automation"
   url         = "https://actions.zapier.com/mcp/sse"
   transport   = "sse"
-  auth_type   = "bearer"
+  auth_type   = "bearer_token"
 
   credentials = {
-    "api_key" = var.zapier_api_key
+    "auth_value" = var.zapier_api_key
   }
 
   mcp_access_groups = [litellm_team.automation.team_id]
@@ -123,7 +121,7 @@ resource "litellm_mcp_server" "oauth_protected" {
   description = "Enterprise API with OAuth authentication"
   url         = "https://api.enterprise.com/mcp"
   transport   = "http"
-  auth_type   = "bearer"
+  auth_type   = "oauth2"
 
   authorization_url = "https://auth.enterprise.com/oauth/authorize"
   token_url         = "https://auth.enterprise.com/oauth/token"

@@ -24,6 +24,21 @@ var _ resource.Resource = &MCPServerResource{}
 var _ resource.ResourceWithImportState = &MCPServerResource{}
 var _ resource.ResourceWithUpgradeState = &MCPServerResource{}
 
+var mcpAuthTypesV198 = []string{
+	"none",
+	"api_key",
+	"bearer_token",
+	"basic",
+	"authorization",
+	"oauth2",
+	"aws_sigv4",
+	"token",
+	"oauth2_token_exchange",
+	"oauth2_id_jag",
+	"true_passthrough",
+	"oauth_delegate",
+}
+
 func NewMCPServerResource() resource.Resource {
 	return &MCPServerResource{}
 }
@@ -127,12 +142,12 @@ func (r *MCPServerResource) Schema(ctx context.Context, req resource.SchemaReque
 				Default:     stringdefault.StaticString("2024-11-05"),
 			},
 			"auth_type": schema.StringAttribute{
-				Description: "Authentication type (none, bearer_token, bearer, basic, api_key, authorization, oauth2).",
+				Description: "Authentication type accepted by the LiteLLM v1.98 MCP server request contract.",
 				Optional:    true,
 				Computed:    true,
 				Default:     stringdefault.StaticString("none"),
 				Validators: []validator.String{
-					stringvalidator.OneOf("none", "bearer_token", "bearer", "basic", "api_key", "authorization", "oauth2"),
+					stringvalidator.OneOf(mcpAuthTypesV198...),
 				},
 			},
 			"mcp_access_groups": schema.ListAttribute{

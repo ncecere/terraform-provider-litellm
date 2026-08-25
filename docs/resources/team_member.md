@@ -26,7 +26,7 @@ resource "litellm_team_member" "developer" {
 - `user_email` - (Required) The email address of the user.
 - `role` - (Required) The role of the user within the team. LiteLLM v1.98 supports `admin` or `user`.
 - `max_budget_in_team` - (Optional) The maximum budget allocated to this user within the team.
-- `budget_duration` - (Optional) Recurring reset interval for this member's budget, such as `30d`, `24h`, `1mo`, or `monthly`. It may be set without an explicit `max_budget_in_team` to override an inherited/default interval. LiteLLM manages `budget_reset_at` and subsequent resets; the provider sends this value directly through the native team-member API.
+- `budget_duration` - (Optional) Recurring reset interval for this member's budget. Use a positive integer followed by `s`, `m`, `h`, `d`, or `w` (for example, `30d`, `24h`, or `1w`); one of the exact aliases `hourly`, `daily`, `weekly`, or `monthly`; or exactly `1mo`. Zero values, other month counts such as `2mo` or `12mo`, case variants, and malformed aliases or units are rejected. It may be set without an explicit `max_budget_in_team` to override an inherited/default interval. LiteLLM manages `budget_reset_at` and subsequent resets; the provider sends this value directly through the native team-member API.
 
 ## Attribute Reference
 

@@ -169,13 +169,13 @@ The following arguments are supported:
 
 * `base_model` - (Required) string. The actual model identifier from the provider (e.g., "gpt-4", "claude-2").
 
-* `tier` - (Optional) string. The usage tier for this model. Valid values are `"free"` or `"paid"`. Default: `"free"`.
+* `tier` - (Optional) string. The usage tier for this model. LiteLLM v1.98 accepts exactly `"free"` or `"paid"`; the provider validates the value during planning. Default: `"free"`.
 
 * `team_id` - (Optional) string. Associate the model with a specific team.
 
 * `access_groups` - (Optional) list(string). List of access groups this model belongs to. Teams and keys with access to these groups can use this model. See [LiteLLM Access Groups](https://docs.litellm.ai/docs/proxy/model_access_groups) for more details.
 
-* `mode` - (Optional) string. The intended use of the model. Valid values (aligned with LiteLLM proxy API):
+* `mode` - (Optional) string. The intended use of the model. LiteLLM v1.98 keeps this request field extensible rather than declaring an endpoint enum; common values include:
   * `chat`
   * `completion`
   * `embedding`
@@ -194,7 +194,7 @@ The following arguments are supported:
 
 * `rpm` - (Optional) integer. Requests per minute limit for this model.
 
-* `reasoning_effort` - (Optional) string. Configures the model's reasoning effort level. Valid values are:
+* `reasoning_effort` - (Optional) string. Configures the provider-specific reasoning effort level. Common values are:
   * `low`
   * `medium`
   * `high`
