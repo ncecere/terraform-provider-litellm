@@ -312,7 +312,12 @@ func applyOrganizationMemberResponseWithBudgetConfirmation(data *OrganizationMem
 	return true, nil
 }
 
-func validateOrganizationMemberAddResponse(response organizationMemberAddAPIResponse, data *OrganizationMemberResourceModel) (organizationMemberAPIModel, error) {
+// validateOrganizationMemberAddResponseStructure proves the canonical identity
+// returned by a successful mutation without deciding whether it matches the
+// requested identity. LiteLLM can resolve a requested ID A through the supplied
+// email to canonical ID B. That mismatch is still an apply error, but B is the
+// only safe identity for partial state once this envelope is structurally valid.
+func validateOrganizationMemberAddResponseStructure(response organizationMemberAddAPIResponse, data *OrganizationMemberResourceModel) (organizationMemberAPIModel, error) {
 	if response.OrganizationID != data.OrganizationID.ValueString() {
 		return organizationMemberAPIModel{}, fmt.Errorf("add response organization_id does not match the requested organization")
 	}
@@ -321,30 +326,47 @@ func validateOrganizationMemberAddResponse(response organizationMemberAddAPIResp
 	}
 	member := response.UpdatedOrganizationMemberships[0]
 	if err := validateOrganizationMember(member); err != nil {
-		return member, err
+		return organizationMemberAPIModel{}, err
 	}
 	if member.OrganizationID != response.OrganizationID {
-		return member, fmt.Errorf("updated membership organization_id does not match the add response")
+		return organizationMemberAPIModel{}, fmt.Errorf("updated membership organization_id does not match the add response")
 	}
-	if response.UpdatedUsers[0].UserID == "" || response.UpdatedUsers[0].UserID != member.UserID {
-		return member, fmt.Errorf("updated user and membership user_id values are missing or inconsistent")
+	updatedUser := response.UpdatedUsers[0]
+	if updatedUser.UserID == "" || updatedUser.UserID != member.UserID {
+		return organizationMemberAPIModel{}, fmt.Errorf("updated user and membership user_id values are missing or inconsistent")
 	}
+
 	userID, userEmail, _ := organizationMemberIdentity(data)
-	if userID != "" && member.UserID != userID {
-		return member, fmt.Errorf("add response user_id does not match the requested user_id")
+	// Email is authoritative only for an email-only create or the documented
+	// ID-then-email fallback. When the requested ID itself was returned, LiteLLM
+	// gave that ID precedence and may ignore the supplied email.
+	if userID == "" || member.UserID != userID {
+		if userEmail == "" || updatedUser.UserEmail == nil || *updatedUser.UserEmail != userEmail {
+			return organizationMemberAPIModel{}, fmt.Errorf("add response user_email does not match the requested email identity")
+		}
 	}
-	if userID == "" && (response.UpdatedUsers[0].UserEmail == nil || *response.UpdatedUsers[0].UserEmail != userEmail) {
-		return member, fmt.Errorf("add response user_email does not match the requested email identity")
-	}
+
 	validated := *data
 	// member_add does not persist the requested budget. Validate its response
 	// from that null post-add baseline so an omitted nested relation can never
 	// inherit the plan, even in temporary validation state.
 	validated.MaxBudgetInOrganization = types.Float64Null()
 	if err := applyOrganizationMemberResponse(&validated, member); err != nil {
-		return member, fmt.Errorf("invalid updated membership: %w", err)
+		return organizationMemberAPIModel{}, fmt.Errorf("invalid updated membership: %w", err)
 	}
-	if validated.Role.ValueString() != data.Role.ValueString() {
+	return member, nil
+}
+
+func validateOrganizationMemberAddResponse(response organizationMemberAddAPIResponse, data *OrganizationMemberResourceModel) (organizationMemberAPIModel, error) {
+	member, err := validateOrganizationMemberAddResponseStructure(response, data)
+	if err != nil {
+		return organizationMemberAPIModel{}, err
+	}
+	userID, _, _ := organizationMemberIdentity(data)
+	if userID != "" && member.UserID != userID {
+		return member, fmt.Errorf("add response user_id does not match the requested user_id")
+	}
+	if *member.UserRole != data.Role.ValueString() {
 		return member, fmt.Errorf("updated membership user_role does not match the requested role")
 	}
 	return member, nil
@@ -527,21 +549,37 @@ func (r *OrganizationMemberResource) Create(ctx context.Context, req resource.Cr
 		owned.UserID = types.StringNull()
 	}
 	var member organizationMemberAPIModel
+	var structuralErr error
 	var validationErr error
 	if addErr == nil {
-		member, validationErr = validateOrganizationMemberAddResponse(addResponse, &data)
+		member, structuralErr = validateOrganizationMemberAddResponseStructure(addResponse, &data)
+		if structuralErr == nil {
+			_, validationErr = validateOrganizationMemberAddResponse(addResponse, &data)
+		} else {
+			validationErr = structuralErr
+		}
 	}
 	if addErr == nil && validationErr == nil {
 		owned.UserID = types.StringValue(member.UserID)
 		owned.ID = types.StringValue(fmt.Sprintf("%s:%s", owned.OrganizationID.ValueString(), member.UserID))
 		owned.Role = types.StringValue(*member.UserRole)
 	} else {
-		if !owned.UserID.IsNull() && !owned.UserID.IsUnknown() && owned.UserID.ValueString() != "" {
-			owned.ID = types.StringValue(fmt.Sprintf("%s:%s", owned.OrganizationID.ValueString(), owned.UserID.ValueString()))
-		} else {
-			// Temporary legacy-compatible recovery identity. A successful read
-			// canonicalizes it to organization_id:user_id.
+		switch {
+		case addErr == nil && structuralErr == nil:
+			// The response proves LiteLLM mutated canonical member B even when B
+			// differs from requested ID A. Preserve B before recovery; retaining A
+			// would make the next Read look up the wrong member and drop owned state.
+			owned.UserID = types.StringValue(member.UserID)
+			owned.ID = types.StringValue(fmt.Sprintf("%s:%s", owned.OrganizationID.ValueString(), member.UserID))
+			owned.Role = types.StringValue(*member.UserRole)
+		case !owned.UserEmail.IsNull() && !owned.UserEmail.IsUnknown() && owned.UserEmail.ValueString() != "":
+			// A malformed or ambiguous response cannot prove any returned ID. Do
+			// not guess from the requested ID when email remains a safe recovery
+			// path; retain a known-null identity for the next Read.
+			owned.UserID = types.StringNull()
 			owned.ID = types.StringValue(fmt.Sprintf("%s:%s", owned.OrganizationID.ValueString(), owned.UserEmail.ValueString()))
+		case !owned.UserID.IsNull() && !owned.UserID.IsUnknown() && owned.UserID.ValueString() != "":
+			owned.ID = types.StringValue(fmt.Sprintf("%s:%s", owned.OrganizationID.ValueString(), owned.UserID.ValueString()))
 		}
 		recovered, _, recoverErr := r.recoverOwnedOrganizationMember(ctx, owned)
 		if recoverErr == nil {
@@ -552,10 +590,13 @@ func (r *OrganizationMemberResource) Create(ctx context.Context, req resource.Cr
 		if responseErr == nil {
 			responseErr = validationErr
 		}
-		resp.Diagnostics.AddError(
-			"Malformed Organization Member Add Response",
-			fmt.Sprintf("LiteLLM accepted the add, so the membership was retained in state, but its response did not match the v1.98.0 contract: %s", organizationMemberDiagnosticError(responseErr)),
-		)
+		title := "Malformed Organization Member Add Response"
+		detail := fmt.Sprintf("LiteLLM accepted the add, so the membership was retained in state, but its response did not match the v1.98.0 contract: %s", organizationMemberDiagnosticError(responseErr))
+		if addErr == nil && structuralErr == nil {
+			title = "Organization Member Add Verification Failed"
+			detail = fmt.Sprintf("LiteLLM accepted the add and returned a structurally valid canonical membership, which was retained in state, but it did not match the requested configuration: %s", organizationMemberDiagnosticError(responseErr))
+		}
+		resp.Diagnostics.AddError(title, detail)
 		return
 	}
 
