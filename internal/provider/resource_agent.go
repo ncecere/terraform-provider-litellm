@@ -454,6 +454,12 @@ func (r *AgentResource) Update(ctx context.Context, req resource.UpdateRequest, 
 	}
 	planned.ID = state.ID
 
+	if err := validateAgentModelSkillIdentities(planned, state, config); err != nil {
+		resp.Private = req.Private
+		resp.State = req.State
+		resp.Diagnostics.AddError("Invalid Agent Skill Identity", err.Error())
+		return
+	}
 	if err := validateAgentUpdateClears(planned, state, config, importedFields); err != nil {
 		resp.Private = req.Private
 		resp.State = req.State
@@ -476,12 +482,11 @@ func (r *AgentResource) Update(ctx context.Context, req resource.UpdateRequest, 
 		// This GET intentionally occurs after secret hydration and immediately
 		// before request construction. The replacement card is based only on this
 		// authoritative response, never stale Terraform state.
-		fresh := emptyKnownAgentResourceModel()
-		fresh.ID = state.ID
-		if err := r.readAgentWithOwnership(ctx, &fresh, true, nil); err != nil || fresh.AgentCard == nil || !fresh.AgentName.Equal(state.AgentName) || !agentCardPreservesImportedLeaves(fresh, importedFields) {
+		fresh, err := r.sampleFreshAgentCard(ctx, state, importedFields, 8)
+		if err != nil {
 			resp.Private = req.Private
 			resp.State = req.State
-			resp.Diagnostics.AddError("Agent Update Preflight Failed", "The provider could not authoritatively preserve the complete current agent card before mutation. The agent was not changed.")
+			resp.Diagnostics.AddError("Agent Update Preflight Failed", "The provider could not authoritatively preserve the complete current agent card through bounded fresh-worker sampling before mutation. The agent was not changed.")
 			return
 		}
 		wirePlanned.AgentCard = overlayAgentCardWire(fresh, planned, state, config, importedFields)
@@ -642,7 +647,7 @@ func (r *AgentResource) hydrateAgentUpdateFieldsWithOwnership(ctx context.Contex
 
 	endpoint := fmt.Sprintf("/v1/agents/%s", url.PathEscape(data.ID.ValueString()))
 	var result map[string]interface{}
-	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
+	if err := r.client.doFreshRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
 		return err
 	}
 	if err := validateImportedObjectIdentity(true, "agent", result, "agent_id", data.ID.ValueString()); err != nil {
@@ -689,6 +694,9 @@ func (r *AgentResource) hydrateAgentUpdateFieldsWithOwnership(ctx context.Contex
 // --- Build request ---
 
 func (r *AgentResource) buildAgentRequest(data *AgentResourceModel) (map[string]interface{}, error) {
+	if err := validateAgentModelSkillIdentities(*data); err != nil {
+		return nil, err
+	}
 	req := map[string]interface{}{
 		"agent_name": data.AgentName.ValueString(),
 	}
@@ -758,8 +766,9 @@ func (r *AgentResource) buildAgentRequest(data *AgentResourceModel) (map[string]
 			}
 		}
 
-		// Skills
-		if len(data.AgentCard.Skills) > 0 {
+		// Skills. A non-nil empty list is an explicit complete-list replacement;
+		// omission leaves the remote list untouched.
+		if data.AgentCard.Skills != nil {
 			skills := make([]map[string]interface{}, 0, len(data.AgentCard.Skills))
 			for _, s := range data.AgentCard.Skills {
 				skill := map[string]interface{}{
@@ -951,12 +960,20 @@ func reconcileAgentStringMapWithOwnership(current types.Map, raw map[string]inte
 		}
 		marker := agentLeaf(prefix, key)
 		prior, priorPresent := configured[key]
+		scope := agentScopeParams
+		if prefix == agentFieldStaticHeaders {
+			scope = agentScopeStaticHeaders
+		}
 		ownedByAPI := importAll || apiOwned[marker]
-		if !priorPresent && !ownedByAPI {
-			// A newly observed unconfigured key is API-owned and remains
-			// drift-visible on subsequent reads.
+		if !priorPresent && !ownedByAPI && apiOwned[scope] {
 			apiOwned[marker] = true
 			ownedByAPI = true
+		}
+		if !priorPresent && isMaskedAgentAPIValue(key, rawValue) && (importAll || apiOwned[scope] || current.IsUnknown()) {
+			return current, fmt.Errorf("masked agent map value is not recoverable; use a PROXY_ADMIN credential")
+		}
+		if !priorPresent && !ownedByAPI {
+			continue
 		}
 		if isMaskedAgentAPIValue(key, rawValue) {
 			if !priorPresent {
@@ -970,6 +987,14 @@ func reconcileAgentStringMapWithOwnership(current types.Map, raw map[string]inte
 			value = prior
 		}
 		observed[key] = types.StringValue(value)
+	}
+	for key := range configured {
+		if _, present := raw[key]; !present && apiOwned[agentLeaf(prefix, key)] {
+			delete(apiOwned, agentLeaf(prefix, key))
+		}
+	}
+	if len(observed) == 0 && current.IsNull() {
+		return current, nil
 	}
 	if stringMapMatchesAttrValues(current, observed) {
 		return current, nil
@@ -992,12 +1017,20 @@ func (r *AgentResource) readAgentWithNumericOwnership(ctx context.Context, data 
 }
 
 func (r *AgentResource) readAgentWithOwnership(ctx context.Context, data *AgentResourceModel, imported bool, apiOwned agentFieldSet) error {
+	return r.readAgentWithOwnershipTransport(ctx, data, imported, apiOwned, false)
+}
+
+func (r *AgentResource) readAgentFreshWithOwnership(ctx context.Context, data *AgentResourceModel, imported bool, apiOwned agentFieldSet) error {
+	return r.readAgentWithOwnershipTransport(ctx, data, imported, apiOwned, true)
+}
+
+func (r *AgentResource) readAgentWithOwnershipTransport(ctx context.Context, data *AgentResourceModel, imported bool, apiOwned agentFieldSet, freshConnection bool) error {
 	if apiOwned == nil {
 		apiOwned = agentFieldSet{}
 	}
 	agentID := data.ID.ValueString()
 	manageAgentCard := imported || data.AgentCard != nil
-	manageObjectPermission := imported || data.ObjectPermission != nil
+	manageObjectPermission := imported || data.ObjectPermission != nil || apiOwned[agentScopePermission]
 	if agentID == "" {
 		return fmt.Errorf("agent ID is empty, cannot read agent")
 	}
@@ -1005,7 +1038,13 @@ func (r *AgentResource) readAgentWithOwnership(ctx context.Context, data *AgentR
 	endpoint := fmt.Sprintf("/v1/agents/%s", url.PathEscape(agentID))
 
 	var result map[string]interface{}
-	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
+	var err error
+	if freshConnection {
+		err = r.client.doFreshRequestWithResponse(ctx, "GET", endpoint, nil, &result)
+	} else {
+		err = r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result)
+	}
+	if err != nil {
 		return err
 	}
 	if err := validateImportedObjectIdentity(true, "agent", result, "agent_id", agentID); err != nil {
@@ -1132,6 +1171,7 @@ func (r *AgentResource) readAgentWithOwnership(ctx context.Context, data *AgentR
 		}
 	} else if !objectPermissionPresent || rawObjectPermission == nil {
 		reconcileAbsentAgentMCPToolPermissions(data)
+		delete(apiOwned, agentFieldPermissionTools)
 	} else {
 		return invalidAgentMCPToolPermissionsResponseError{}
 	}
@@ -1194,11 +1234,20 @@ func (r *AgentResource) readAgentCard(cardRaw map[string]interface{}, data *Agen
 	// may accept unsupported flags but omit them from subsequent reads; an
 	// omitted managed key therefore means false, not "preserve planned state".
 	capsRaw, hasCapabilities := cardRaw["capabilities"].(map[string]interface{})
-	if populateAll && hasCapabilities {
+	if populateAll && hasCapabilities && len(capsRaw) > 0 {
 		card.Capabilities = &AgentCapabilitiesModel{
-			Streaming:              types.BoolValue(agentCapabilityValue(capsRaw, "streaming")),
-			PushNotifications:      types.BoolValue(agentCapabilityValue(capsRaw, "pushNotifications")),
-			StateTransitionHistory: types.BoolValue(agentCapabilityValue(capsRaw, "stateTransitionHistory")),
+			Streaming:              types.BoolNull(),
+			PushNotifications:      types.BoolNull(),
+			StateTransitionHistory: types.BoolNull(),
+		}
+		if value, present := capsRaw["streaming"].(bool); present {
+			card.Capabilities.Streaming = types.BoolValue(value)
+		}
+		if value, present := capsRaw["pushNotifications"].(bool); present {
+			card.Capabilities.PushNotifications = types.BoolValue(value)
+		}
+		if value, present := capsRaw["stateTransitionHistory"].(bool); present {
+			card.Capabilities.StateTransitionHistory = types.BoolValue(value)
 		}
 	} else if !populateAll && card.Capabilities != nil {
 		if !card.Capabilities.Streaming.IsNull() {
@@ -1213,7 +1262,7 @@ func (r *AgentResource) readAgentCard(cardRaw map[string]interface{}, data *Agen
 	}
 
 	// Provider
-	if provRaw, ok := cardRaw["provider"].(map[string]interface{}); ok && (populateAll || card.Provider != nil) {
+	if provRaw, ok := cardRaw["provider"].(map[string]interface{}); ok && (!populateAll || len(provRaw) > 0) && (populateAll || card.Provider != nil) {
 		if card.Provider == nil {
 			card.Provider = &AgentProviderModel{}
 		}
@@ -1269,7 +1318,11 @@ func (r *AgentResource) readAgentCard(cardRaw map[string]interface{}, data *Agen
 				skills = append(skills, skill)
 			}
 		}
-		card.Skills = skills
+		if populateAll && len(skills) == 0 {
+			card.Skills = nil
+		} else {
+			card.Skills = skills
+		}
 	} else if !populateAll && card.Skills != nil {
 		card.Skills = []AgentSkillModel{}
 	}
@@ -1293,28 +1346,34 @@ func (r *AgentResource) reconcileAgentCardWithOwnership(cardRaw map[string]inter
 	out := cloneAgentResourceModel(*data).AgentCard
 	reconcileString := func(field string, target *types.String, remote types.String) {
 		old := *target
-		if old.IsNull() && !remote.IsNull() {
-			apiOwned[field] = true
+		if old.IsNull() && !apiOwned[field] {
+			return
 		}
 		if !apiOwned[field] && !old.IsNull() && !old.IsUnknown() && !remote.IsNull() && !remote.IsUnknown() && old.ValueString() == remote.ValueString() {
 			return
 		}
 		*target = remote
+		if apiOwned[field] && remote.IsNull() {
+			delete(apiOwned, field)
+		}
 	}
 	reconcileBool := func(field string, target *types.Bool, remote types.Bool) {
 		old := *target
-		if old.IsNull() && !remote.IsNull() {
-			apiOwned[field] = true
+		if old.IsNull() && !apiOwned[field] {
+			return
 		}
 		if !apiOwned[field] && old.Equal(remote) {
 			return
 		}
 		*target = remote
+		if apiOwned[field] && remote.IsNull() {
+			delete(apiOwned, field)
+		}
 	}
 	reconcileList := func(field string, target *types.List, remote types.List, setLike bool) {
 		old := *target
-		if old.IsNull() && !remote.IsNull() {
-			apiOwned[field] = true
+		if old.IsNull() && !apiOwned[field] {
+			return
 		}
 		equal := old.Equal(remote)
 		if setLike {
@@ -1324,6 +1383,9 @@ func (r *AgentResource) reconcileAgentCardWithOwnership(cardRaw map[string]inter
 			return
 		}
 		*target = remote
+		if apiOwned[field] && remote.IsNull() {
+			delete(apiOwned, field)
+		}
 	}
 	reconcileString(agentFieldCardName, &out.Name, observed.Name)
 	reconcileString(agentFieldCardURL, &out.URL, observed.URL)
@@ -1337,10 +1399,18 @@ func (r *AgentResource) reconcileAgentCardWithOwnership(cardRaw map[string]inter
 	reconcileString(agentFieldCardDocumentation, &out.DocumentationURL, observed.DocumentationURL)
 	reconcileBool(agentFieldCardAuthenticated, &out.SupportsAuthenticatedExtendedCard, observed.SupportsAuthenticatedExtendedCard)
 
-	if prior.Capabilities == nil && observed.Capabilities != nil {
+	capsRaw, _ := cardRaw["capabilities"].(map[string]interface{})
+	if prior.Capabilities == nil && observed.Capabilities != nil && apiOwned[agentScopeCardCapabilities] {
 		out.Capabilities = observed.Capabilities
-		apiOwned[agentFieldCardCapStreaming], apiOwned[agentFieldCardCapPush], apiOwned[agentFieldCardCapHistory] = true, true, true
+		for field, wire := range map[string]string{agentFieldCardCapStreaming: "streaming", agentFieldCardCapPush: "pushNotifications", agentFieldCardCapHistory: "stateTransitionHistory"} {
+			if _, present := capsRaw[wire]; present {
+				apiOwned[field] = true
+			}
+		}
 	} else if prior.Capabilities != nil {
+		capabilitiesTerraformOwned := (!prior.Capabilities.Streaming.IsNull() && !apiOwned[agentFieldCardCapStreaming]) ||
+			(!prior.Capabilities.PushNotifications.IsNull() && !apiOwned[agentFieldCardCapPush]) ||
+			(!prior.Capabilities.StateTransitionHistory.IsNull() && !apiOwned[agentFieldCardCapHistory])
 		if out.Capabilities == nil {
 			out.Capabilities = &AgentCapabilitiesModel{}
 		}
@@ -1348,10 +1418,15 @@ func (r *AgentResource) reconcileAgentCardWithOwnership(cardRaw map[string]inter
 		if observed.Capabilities != nil {
 			remote = observed.Capabilities
 		}
-		capsRaw, _ := cardRaw["capabilities"].(map[string]interface{})
 		reconcileCapability := func(field, wire string, target *types.Bool, value types.Bool) {
 			_, explicitlyPresent := capsRaw[wire]
-			if target.IsNull() && !apiOwned[field] && !explicitlyPresent {
+			if !target.IsNull() && !target.IsUnknown() && !apiOwned[field] && !explicitlyPresent {
+				value = types.BoolValue(false)
+			}
+			if target.IsNull() && !apiOwned[field] && apiOwned[agentScopeCardCapabilities] && explicitlyPresent {
+				apiOwned[field] = true
+			}
+			if target.IsNull() && !apiOwned[field] {
 				return
 			}
 			reconcileBool(field, target, value)
@@ -1359,17 +1434,23 @@ func (r *AgentResource) reconcileAgentCardWithOwnership(cardRaw map[string]inter
 		reconcileCapability(agentFieldCardCapStreaming, "streaming", &out.Capabilities.Streaming, remote.Streaming)
 		reconcileCapability(agentFieldCardCapPush, "pushNotifications", &out.Capabilities.PushNotifications, remote.PushNotifications)
 		reconcileCapability(agentFieldCardCapHistory, "stateTransitionHistory", &out.Capabilities.StateTransitionHistory, remote.StateTransitionHistory)
+		if capsRaw == nil && apiOwned[agentScopeCardCapabilities] && !capabilitiesTerraformOwned {
+			out.Capabilities = nil
+		}
 	}
-	if prior.Provider == nil && observed.Provider != nil {
+	provRaw, _ := cardRaw["provider"].(map[string]interface{})
+	if prior.Provider == nil && observed.Provider != nil && apiOwned[agentScopeCardProvider] {
 		provider := *observed.Provider
 		out.Provider = &provider
-		if !provider.Organization.IsNull() {
+		if _, present := provRaw["organization"]; present && !provider.Organization.IsNull() {
 			apiOwned[agentFieldCardProviderOrg] = true
 		}
-		if !provider.URL.IsNull() {
+		if _, present := provRaw["url"]; present && !provider.URL.IsNull() {
 			apiOwned[agentFieldCardProviderURL] = true
 		}
 	} else if prior.Provider != nil {
+		providerTerraformOwned := (!prior.Provider.Organization.IsNull() && !apiOwned[agentFieldCardProviderOrg]) ||
+			(!prior.Provider.URL.IsNull() && !apiOwned[agentFieldCardProviderURL])
 		if out.Provider == nil {
 			out.Provider = &AgentProviderModel{}
 		}
@@ -1377,8 +1458,21 @@ func (r *AgentResource) reconcileAgentCardWithOwnership(cardRaw map[string]inter
 		if observed.Provider != nil {
 			remote = observed.Provider
 		}
+		if out.Provider.Organization.IsNull() && !apiOwned[agentFieldCardProviderOrg] && apiOwned[agentScopeCardProvider] {
+			if _, present := provRaw["organization"]; present {
+				apiOwned[agentFieldCardProviderOrg] = true
+			}
+		}
+		if out.Provider.URL.IsNull() && !apiOwned[agentFieldCardProviderURL] && apiOwned[agentScopeCardProvider] {
+			if _, present := provRaw["url"]; present {
+				apiOwned[agentFieldCardProviderURL] = true
+			}
+		}
 		reconcileString(agentFieldCardProviderOrg, &out.Provider.Organization, remote.Organization)
 		reconcileString(agentFieldCardProviderURL, &out.Provider.URL, remote.URL)
+		if provRaw == nil && apiOwned[agentScopeCardProvider] && !providerTerraformOwned {
+			out.Provider = nil
+		}
 	}
 
 	remoteByID := map[string]AgentSkillModel{}
@@ -1391,6 +1485,9 @@ func (r *AgentResource) reconcileAgentCardWithOwnership(cardRaw map[string]inter
 		id := old.ID.ValueString()
 		remote, present := remoteByID[id]
 		if !present {
+			for _, leaf := range []string{"id", "name", "description", "tags", "examples", "input_modes", "output_modes"} {
+				delete(apiOwned, agentSkillLeaf(id, leaf))
+			}
 			continue
 		}
 		current := old
@@ -1411,12 +1508,19 @@ func (r *AgentResource) reconcileAgentCardWithOwnership(cardRaw map[string]inter
 	}
 	slices.Sort(newIDs)
 	for _, id := range newIDs {
+		if !apiOwned[agentScopeCardSkills] {
+			continue
+		}
 		skills = append(skills, remoteByID[id])
 		for _, leaf := range []string{"id", "name", "description", "tags", "examples", "input_modes", "output_modes"} {
 			apiOwned[agentSkillLeaf(id, leaf)] = true
 		}
 	}
-	out.Skills = skills
+	if prior.Skills == nil && len(skills) == 0 {
+		out.Skills = nil
+	} else {
+		out.Skills = skills
+	}
 	data.AgentCard = out
 	return nil
 }
@@ -1582,6 +1686,20 @@ func (r *AgentResource) readObjectPermissionWithOwnership(permRaw map[string]int
 		return r.readObjectPermission(permRaw, data)
 	}
 	if data.ObjectPermission == nil {
+		if !apiOwned[agentScopePermission] {
+			return nil
+		}
+		if err := r.readObjectPermission(permRaw, data); err != nil {
+			return err
+		}
+		for field, wire := range map[string]string{
+			agentFieldPermissionServers: "mcp_servers", agentFieldPermissionGroups: "mcp_access_groups",
+			agentFieldPermissionTools: "mcp_tool_permissions", agentFieldPermissionModels: "models", agentFieldPermissionAgents: "agents",
+		} {
+			if value, present := permRaw[wire]; present && value != nil {
+				apiOwned[field] = true
+			}
+		}
 		return nil
 	}
 	remote := emptyKnownAgentResourceModel()
@@ -1593,17 +1711,28 @@ func (r *AgentResource) readObjectPermissionWithOwnership(permRaw map[string]int
 	}
 	current := data.ObjectPermission
 	copyList := func(field, wire string, target *types.List, observed types.List) {
-		if raw, present := permRaw[wire]; present && raw != nil && (apiOwned[field] || !target.IsNull()) {
-			*target = observed
+		if raw, present := permRaw[wire]; present && raw != nil {
+			if target.IsNull() && !apiOwned[field] && apiOwned[agentScopePermission] {
+				apiOwned[field] = true
+			}
+			if apiOwned[field] || !target.IsNull() {
+				*target = observed
+			}
 		}
 	}
 	copyList(agentFieldPermissionServers, "mcp_servers", &current.MCPServers, remote.ObjectPermission.MCPServers)
 	copyList(agentFieldPermissionGroups, "mcp_access_groups", &current.MCPAccessGroups, remote.ObjectPermission.MCPAccessGroups)
 	copyList(agentFieldPermissionModels, "models", &current.Models, remote.ObjectPermission.Models)
 	copyList(agentFieldPermissionAgents, "agents", &current.Agents, remote.ObjectPermission.Agents)
+	if current.MCPToolPermissions.IsNull() && !apiOwned[agentFieldPermissionTools] && apiOwned[agentScopePermission] {
+		if value, present := permRaw["mcp_tool_permissions"]; present && value != nil {
+			apiOwned[agentFieldPermissionTools] = true
+		}
+	}
 	if apiOwned[agentFieldPermissionTools] || !current.MCPToolPermissions.IsNull() {
 		if remote.ObjectPermission.MCPToolPermissions.IsNull() {
 			reconcileAbsentAgentMCPToolPermissions(data)
+			delete(apiOwned, agentFieldPermissionTools)
 		} else {
 			observed, err := decodeConfiguredAgentMCPToolPermissions(remote.ObjectPermission.MCPToolPermissions)
 			if err != nil {

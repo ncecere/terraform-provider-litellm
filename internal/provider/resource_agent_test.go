@@ -681,7 +681,7 @@ func TestReadAgentCardLeavesUnmanagedCapabilityNull(t *testing.T) {
 	}
 }
 
-func TestReadAgentCardImportPopulatesMissingCapabilitiesAsFalse(t *testing.T) {
+func TestReadAgentCardImportAdoptsOnlyVisibleCapabilities(t *testing.T) {
 	t.Parallel()
 
 	resource := &AgentResource{}
@@ -693,7 +693,7 @@ func TestReadAgentCardImportPopulatesMissingCapabilitiesAsFalse(t *testing.T) {
 	if data.AgentCard == nil || data.AgentCard.Capabilities == nil {
 		t.Fatal("import did not populate capabilities")
 	}
-	if !data.AgentCard.Capabilities.Streaming.ValueBool() || data.AgentCard.Capabilities.PushNotifications.ValueBool() || data.AgentCard.Capabilities.StateTransitionHistory.ValueBool() {
+	if !data.AgentCard.Capabilities.Streaming.ValueBool() || !data.AgentCard.Capabilities.PushNotifications.IsNull() || !data.AgentCard.Capabilities.StateTransitionHistory.IsNull() {
 		t.Fatalf("unexpected imported capabilities: %#v", data.AgentCard.Capabilities)
 	}
 }

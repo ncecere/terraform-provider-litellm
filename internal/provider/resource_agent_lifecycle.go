@@ -111,6 +111,16 @@ const (
 	agentFieldPermissionTools   = "object_permission.mcp_tool_permissions"
 	agentFieldPermissionModels  = "object_permission.models"
 	agentFieldPermissionAgents  = "object_permission.agents"
+
+	// Structural scope markers let imported collections adopt later API-side
+	// additions without treating a configured child as ownership of its siblings.
+	// They deliberately do not share the leaf prefixes used by removal checks.
+	agentScopeParams           = "__api_scope.litellm_params"
+	agentScopeStaticHeaders    = "__api_scope.static_headers"
+	agentScopeCardCapabilities = "__api_scope.agent_card.capabilities"
+	agentScopeCardProvider     = "__api_scope.agent_card.provider"
+	agentScopeCardSkills       = "__api_scope.agent_card.skills"
+	agentScopePermission       = "__api_scope.object_permission"
 )
 
 func agentLeaf(prefix, value string) string {
@@ -240,12 +250,49 @@ func agentConfiguredFields(data AgentResourceModel) agentFieldSet {
 
 func agentImportedFieldsFromState(data AgentResourceModel) agentFieldSet {
 	all := agentConfiguredFields(data)
-	// Ownership is leaf-scoped. Structural parent markers would incorrectly
-	// transfer API-owned siblings when one child is configured.
+	// Ownership is leaf-scoped. The distinct structural markers allow later API
+	// additions to imported collections without transferring sibling ownership.
 	for _, parent := range []string{agentFieldParams, agentFieldStaticHeaders, agentFieldCard, agentFieldCardCapabilities, agentFieldCardProvider, agentFieldCardSkills, agentFieldPermission} {
 		delete(all, parent)
 	}
+	all[agentScopeParams] = true
+	all[agentScopeStaticHeaders] = true
+	all[agentScopePermission] = true
+	if data.AgentCard != nil {
+		all[agentScopeCardCapabilities] = true
+		all[agentScopeCardProvider] = true
+		all[agentScopeCardSkills] = true
+	}
 	return all
+}
+
+func validateAgentSkillModels(skills []AgentSkillModel) error {
+	seen := make(map[string]struct{}, len(skills))
+	for _, skill := range skills {
+		if skill.ID.IsNull() || skill.ID.IsUnknown() {
+			return fmt.Errorf("agent card skills contain an invalid skill identity")
+		}
+		id := skill.ID.ValueString()
+		if strings.TrimSpace(id) == "" || id != strings.TrimSpace(id) {
+			return fmt.Errorf("agent card skills contain an invalid skill identity")
+		}
+		if _, duplicate := seen[id]; duplicate {
+			return fmt.Errorf("agent card skills contain duplicate skill identities")
+		}
+		seen[id] = struct{}{}
+	}
+	return nil
+}
+
+func validateAgentModelSkillIdentities(models ...AgentResourceModel) error {
+	for _, model := range models {
+		if model.AgentCard != nil && model.AgentCard.Skills != nil {
+			if err := validateAgentSkillModels(model.AgentCard.Skills); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (r *AgentResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
@@ -257,6 +304,10 @@ func (r *AgentResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanR
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
 	if resp.Diagnostics.HasError() {
+		return
+	}
+	if err := validateAgentModelSkillIdentities(state, plan, config); err != nil {
+		resp.Diagnostics.AddError("Invalid Agent Skill Identity", err.Error())
 		return
 	}
 	imported, diagnostics := readAgentImportedFields(ctx, req.Private)
@@ -526,6 +577,7 @@ func validateAgentCardResponse(card map[string]interface{}, requiredIdentity boo
 		if !ok {
 			return fmt.Errorf("agent read response contains a malformed agent card")
 		}
+		seenSkillIDs := make(map[string]struct{}, len(skills))
 		for _, rawSkill := range skills {
 			skill, ok := rawSkill.(map[string]interface{})
 			if !ok {
@@ -533,9 +585,13 @@ func validateAgentCardResponse(card map[string]interface{}, requiredIdentity boo
 			}
 			skillID, idOK := skill["id"].(string)
 			skillName, skillNameOK := skill["name"].(string)
-			if !idOK || skillID == "" || !skillNameOK || skillName == "" {
+			if !idOK || strings.TrimSpace(skillID) == "" || skillID != strings.TrimSpace(skillID) || !skillNameOK || strings.TrimSpace(skillName) == "" {
 				return fmt.Errorf("agent read response contains a malformed agent card")
 			}
+			if _, duplicate := seenSkillIDs[skillID]; duplicate {
+				return fmt.Errorf("agent read response contains duplicate agent skill identities")
+			}
+			seenSkillIDs[skillID] = struct{}{}
 			for _, field := range []string{"id", "name", "description"} {
 				if value, present := skill[field]; present && value != nil {
 					if _, ok := value.(string); !ok {
@@ -561,46 +617,86 @@ func validReturnedAgentID(result map[string]interface{}) (string, bool) {
 	return raw, true
 }
 
-// recoverCreatedAgent is deliberately ambiguity-safe: list and every same-name
-// candidate must be structurally readable, and exactly one authoritative GET
-// must match the complete configured create fingerprint.
-func (r *AgentResource) recoverCreatedAgent(ctx context.Context, planned, config AgentResourceModel) (string, error) {
-	if planned.AgentName.IsNull() || planned.AgentName.IsUnknown() || strings.TrimSpace(planned.AgentName.ValueString()) == "" {
-		return "", fmt.Errorf("agent create recovery was inconclusive")
+func waitAgentFreshSample(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	select {
+	case <-ctx.Done():
+		timer.Stop()
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
-	items, err := fetchTopLevelListObjects(ctx, r.client, "/v1/agents", "agent item")
+}
+
+func fetchFreshAgentListObjects(ctx context.Context, client *Client) ([]map[string]interface{}, error) {
+	var raw json.RawMessage
+	if err := client.doFreshRequestWithResponse(ctx, "GET", "/v1/agents", nil, &raw); err != nil {
+		return nil, err
+	}
+	items, err := decodeTopLevelList(raw, "/v1/agents")
 	if err != nil {
+		return nil, err
+	}
+	return decodeListObjects(items, "/v1/agents", "agent item")
+}
+
+// recoverCreatedAgent samples independent connections because a successful
+// create can be accepted by one v1.98 worker before another worker can list it.
+// Candidate identity is the union across all valid samples; ambiguity or one
+// malformed/error sample fails closed.
+func (r *AgentResource) recoverCreatedAgent(ctx context.Context, planned, config AgentResourceModel) (string, error) {
+	if planned.AgentName.IsNull() || planned.AgentName.IsUnknown() || strings.TrimSpace(planned.AgentName.ValueString()) == "" || validateAgentModelSkillIdentities(planned, config) != nil {
 		return "", fmt.Errorf("agent create recovery was inconclusive")
 	}
-	matches := make([]string, 0, 1)
-	for _, item := range items {
-		name, ok := item["agent_name"].(string)
-		if !ok || strings.TrimSpace(name) == "" {
+	candidates := map[string]struct{}{}
+	delay := 250 * time.Millisecond
+	for attempt := 0; attempt < 8; attempt++ {
+		items, err := fetchFreshAgentListObjects(ctx, r.client)
+		if err != nil {
 			return "", fmt.Errorf("agent create recovery was inconclusive")
 		}
-		if name != planned.AgentName.ValueString() {
-			continue
+		for _, item := range items {
+			name, ok := item["agent_name"].(string)
+			id, idOK := validReturnedAgentID(item)
+			if !ok || strings.TrimSpace(name) == "" || name != strings.TrimSpace(name) || !idOK {
+				return "", fmt.Errorf("agent create recovery was inconclusive")
+			}
+			if name == planned.AgentName.ValueString() {
+				candidates[id] = struct{}{}
+				if len(candidates) > 1 {
+					return "", fmt.Errorf("agent create recovery was ambiguous")
+				}
+			}
 		}
-		id, ok := validReturnedAgentID(item)
-		if !ok {
-			return "", fmt.Errorf("agent create recovery was inconclusive")
-		}
-		candidatePlan := cloneAgentResourceModel(planned)
-		candidatePlan.ID = types.StringValue(id)
-		observed := emptyKnownAgentResourceModel()
-		observed.ID = types.StringValue(id)
-		if err := r.readAgentWithOwnership(ctx, &observed, true, nil); err != nil {
-			return "", fmt.Errorf("agent create recovery was inconclusive")
-		}
-		resolveAgentUnknowns(&observed)
-		if len(agentMutationMismatches(candidatePlan, AgentResourceModel{}, config, nil, observed)) == 0 && !agentResourceHasUnknowns(observed) {
-			matches = append(matches, id)
+		if attempt < 7 {
+			if err := waitAgentFreshSample(ctx, delay); err != nil {
+				return "", fmt.Errorf("agent create recovery was inconclusive")
+			}
+			delay *= 2
+			if delay > 2*time.Second {
+				delay = 2 * time.Second
+			}
 		}
 	}
-	if len(matches) != 1 {
+	if len(candidates) != 1 {
 		return "", fmt.Errorf("agent create recovery was ambiguous")
 	}
-	return matches[0], nil
+	var id string
+	for candidate := range candidates {
+		id = candidate
+	}
+	candidatePlan := cloneAgentResourceModel(planned)
+	candidatePlan.ID = types.StringValue(id)
+	observed := emptyKnownAgentResourceModel()
+	observed.ID = types.StringValue(id)
+	if err := r.readAgentFreshWithOwnership(ctx, &observed, true, nil); err != nil {
+		return "", fmt.Errorf("agent create recovery was inconclusive")
+	}
+	resolveAgentUnknowns(&observed)
+	if validateAgentModelSkillIdentities(candidatePlan, config, observed) != nil || len(agentMutationMismatches(candidatePlan, AgentResourceModel{}, config, nil, observed)) != 0 || agentResourceHasUnknowns(observed) {
+		return "", fmt.Errorf("agent create recovery was inconclusive")
+	}
+	return id, nil
 }
 
 func agentStringMapSemanticallyEqual(left, right types.Map) bool {
@@ -641,6 +737,9 @@ func agentStringListSetEqual(left, right types.List) bool {
 }
 
 func validateAgentUpdateClears(plan, state, config AgentResourceModel, imported agentFieldSet) error {
+	if err := validateAgentModelSkillIdentities(plan, state, config); err != nil {
+		return err
+	}
 	configured := agentConfiguredFields(config)
 	stateFields := agentConfiguredFields(state)
 	knownNullMap := func(value types.Map) bool { return value.IsNull() && !value.IsUnknown() }
@@ -680,11 +779,20 @@ func validateAgentUpdateClears(plan, state, config AgentResourceModel, imported 
 	if state.AgentCard.Capabilities != nil && plan.AgentCard.Capabilities == nil && (imported[agentFieldCardCapStreaming] || imported[agentFieldCardCapPush] || imported[agentFieldCardCapHistory]) {
 		return fmt.Errorf("the complete capabilities block cannot be removed while it contains API-owned leaves")
 	}
-	if len(state.AgentCard.Skills) > 0 && plan.AgentCard.Skills != nil && len(plan.AgentCard.Skills) == 0 && !agentSkillsEqual(state.AgentCard.Skills, plan.AgentCard.Skills) {
-		if agentFieldSetHasPrefix(imported, agentFieldCardSkills+"[") {
-			return fmt.Errorf("the complete skills list cannot be removed while it contains API-owned leaves")
+	if config.AgentCard.Skills != nil {
+		configuredSkillIDs := make(map[string]struct{}, len(config.AgentCard.Skills))
+		for _, skill := range config.AgentCard.Skills {
+			configuredSkillIDs[skill.ID.ValueString()] = struct{}{}
 		}
-		return fmt.Errorf("LiteLLM v1.98 replaces an empty skills list with its default chat skill, so skills cannot be cleared safely.")
+		for _, skill := range state.AgentCard.Skills {
+			id := skill.ID.ValueString()
+			if _, retained := configuredSkillIDs[id]; retained {
+				continue
+			}
+			if agentFieldSetHasPrefix(imported, agentLeaf(agentFieldCardSkills, id)+".") {
+				return fmt.Errorf("an agent skill cannot be removed while it contains API-owned leaves; configure or transfer every leaf first")
+			}
+		}
 	}
 	if state.AgentCard.Provider != nil && plan.AgentCard.Provider == nil {
 		if imported[agentFieldCardProviderOrg] || imported[agentFieldCardProviderURL] {
@@ -773,55 +881,44 @@ func agentCardUpdateTouched(plan, state, config AgentResourceModel, imported age
 }
 
 func agentCardPreservesImportedLeaves(fresh AgentResourceModel, imported agentFieldSet) bool {
-	card := fresh.AgentCard
-	if card == nil {
-		return !agentFieldSetHasPrefix(imported, "agent_card.")
+	_ = imported
+	// A fresh, validated omission is authoritative absence, not a preservation
+	// failure. Structural scope can re-adopt a leaf if it later reappears.
+	return fresh.AgentCard != nil && validateAgentModelSkillIdentities(fresh) == nil && !agentResourceHasUnknowns(fresh)
+}
+
+func (r *AgentResource) sampleFreshAgentCard(ctx context.Context, state AgentResourceModel, imported agentFieldSet, maxAttempts int) (AgentResourceModel, error) {
+	if maxAttempts < 2 {
+		maxAttempts = 2
 	}
-	knownString := func(field string, value types.String) bool {
-		return !imported[field] || (!value.IsNull() && !value.IsUnknown())
-	}
-	knownList := func(field string, value types.List) bool {
-		return !imported[field] || (!value.IsNull() && !value.IsUnknown())
-	}
-	knownBool := func(field string, value types.Bool) bool {
-		return !imported[field] || (!value.IsNull() && !value.IsUnknown())
-	}
-	if !knownString(agentFieldCardName, card.Name) || !knownString(agentFieldCardURL, card.URL) || !knownString(agentFieldCardDescription, card.Description) || !knownString(agentFieldCardVersion, card.Version) || !knownString(agentFieldCardProtocol, card.ProtocolVersion) || !knownList(agentFieldCardInputModes, card.DefaultInputModes) || !knownList(agentFieldCardOutputModes, card.DefaultOutputModes) || !knownString(agentFieldCardTransport, card.PreferredTransport) || !knownString(agentFieldCardIcon, card.IconURL) || !knownString(agentFieldCardDocumentation, card.DocumentationURL) || !knownBool(agentFieldCardAuthenticated, card.SupportsAuthenticatedExtendedCard) {
-		return false
-	}
-	if imported[agentFieldCardCapStreaming] || imported[agentFieldCardCapPush] || imported[agentFieldCardCapHistory] {
-		if card.Capabilities == nil || !knownBool(agentFieldCardCapStreaming, card.Capabilities.Streaming) || !knownBool(agentFieldCardCapPush, card.Capabilities.PushNotifications) || !knownBool(agentFieldCardCapHistory, card.Capabilities.StateTransitionHistory) {
-			return false
+	delay := 250 * time.Millisecond
+	var previous AgentResourceModel
+	matched := false
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		candidate := emptyKnownAgentResourceModel()
+		candidate.ID = state.ID
+		if err := r.readAgentFreshWithOwnership(ctx, &candidate, true, nil); err == nil &&
+			candidate.AgentCard != nil && candidate.AgentName.Equal(state.AgentName) &&
+			validateAgentModelSkillIdentities(candidate) == nil && agentCardPreservesImportedLeaves(candidate, imported) {
+			if matched && reflect.DeepEqual(previous.AgentCard, candidate.AgentCard) {
+				return candidate, nil
+			}
+			previous = candidate
+			matched = true
+		} else {
+			matched = false
 		}
-	}
-	if imported[agentFieldCardProviderOrg] || imported[agentFieldCardProviderURL] {
-		if card.Provider == nil || !knownString(agentFieldCardProviderOrg, card.Provider.Organization) || !knownString(agentFieldCardProviderURL, card.Provider.URL) {
-			return false
-		}
-	}
-	preservedSkillLeaves := agentFieldSet{}
-	for _, skill := range card.Skills {
-		id := skill.ID.ValueString()
-		for _, leaf := range []struct {
-			name  string
-			known bool
-		}{
-			{"id", !skill.ID.IsNull() && !skill.ID.IsUnknown()}, {"name", !skill.Name.IsNull() && !skill.Name.IsUnknown()},
-			{"description", !skill.Description.IsNull() && !skill.Description.IsUnknown()}, {"tags", !skill.Tags.IsNull() && !skill.Tags.IsUnknown()},
-			{"examples", !skill.Examples.IsNull() && !skill.Examples.IsUnknown()}, {"input_modes", !skill.InputModes.IsNull() && !skill.InputModes.IsUnknown()},
-			{"output_modes", !skill.OutputModes.IsNull() && !skill.OutputModes.IsUnknown()},
-		} {
-			if leaf.known {
-				preservedSkillLeaves[agentSkillLeaf(id, leaf.name)] = true
+		if attempt < maxAttempts-1 {
+			if err := waitAgentFreshSample(ctx, delay); err != nil {
+				return AgentResourceModel{}, err
+			}
+			delay *= 2
+			if delay > 2*time.Second {
+				delay = 2 * time.Second
 			}
 		}
 	}
-	for field := range imported {
-		if strings.HasPrefix(field, agentFieldCardSkills+"[") && !preservedSkillLeaves[field] {
-			return false
-		}
-	}
-	return true
+	return AgentResourceModel{}, fmt.Errorf("agent card preflight did not converge")
 }
 
 func overlayAgentCardWire(fresh, plan, state, config AgentResourceModel, imported agentFieldSet) *AgentCardModel {
@@ -913,7 +1010,7 @@ func overlayAgentCardWire(fresh, plan, state, config AgentResourceModel, importe
 			seen[id] = true
 		}
 		for _, remote := range wire.Skills {
-			if !seen[remote.ID.ValueString()] && agentFieldSetHasPrefix(imported, agentLeaf(agentFieldCardSkills, remote.ID.ValueString())+".") {
+			if !seen[remote.ID.ValueString()] && (imported[agentScopeCardSkills] || agentFieldSetHasPrefix(imported, agentLeaf(agentFieldCardSkills, remote.ID.ValueString())+".")) {
 				merged = append(merged, remote)
 			}
 		}
@@ -1021,6 +1118,9 @@ func (r *AgentResource) buildAgentUpdateRequest(plan, state, config *AgentResour
 }
 
 func (r *AgentResource) confirmAgentMutation(ctx context.Context, planned, prior, config AgentResourceModel, imported agentFieldSet, maxAttempts int) (AgentResourceModel, error) {
+	if err := validateAgentModelSkillIdentities(planned, prior, config); err != nil {
+		return AgentResourceModel{}, err
+	}
 	if maxAttempts < 2 {
 		maxAttempts = 2
 	}
@@ -1031,10 +1131,10 @@ func (r *AgentResource) confirmAgentMutation(ctx context.Context, planned, prior
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		observed := emptyKnownAgentResourceModel()
 		observed.ID = planned.ID
-		err := r.readAgentWithOwnership(ctx, &observed, true, nil)
+		err := r.readAgentFreshWithOwnership(ctx, &observed, true, nil)
 		if err == nil {
 			resolveAgentUnknowns(&observed)
-			if len(agentMutationMismatches(planned, prior, config, imported, observed)) == 0 && !agentResourceHasUnknowns(observed) {
+			if validateAgentModelSkillIdentities(observed) == nil && len(agentMutationMismatches(planned, prior, config, imported, observed)) == 0 && !agentResourceHasUnknowns(observed) {
 				consecutive++
 				lastConfirmed = reconcileConfirmedAgentState(planned, observed, config, prior, imported)
 				if consecutive >= 2 {
@@ -1148,13 +1248,17 @@ func compareAgentCard(mismatches *[]string, planned, prior, config AgentResource
 	check(agentFieldCardTransport, planned.AgentCard.PreferredTransport.Equal(observed.AgentCard.PreferredTransport), observed.AgentCard.PreferredTransport.IsNull())
 	check(agentFieldCardIcon, planned.AgentCard.IconURL.Equal(observed.AgentCard.IconURL), observed.AgentCard.IconURL.IsNull())
 	check(agentFieldCardDocumentation, planned.AgentCard.DocumentationURL.Equal(observed.AgentCard.DocumentationURL), observed.AgentCard.DocumentationURL.IsNull())
-	check(agentFieldCardAuthenticated, planned.AgentCard.SupportsAuthenticatedExtendedCard.Equal(observed.AgentCard.SupportsAuthenticatedExtendedCard), observed.AgentCard.SupportsAuthenticatedExtendedCard.IsNull() || !observed.AgentCard.SupportsAuthenticatedExtendedCard.ValueBool())
+	authEqual := planned.AgentCard.SupportsAuthenticatedExtendedCard.Equal(observed.AgentCard.SupportsAuthenticatedExtendedCard) ||
+		(!planned.AgentCard.SupportsAuthenticatedExtendedCard.IsNull() && !planned.AgentCard.SupportsAuthenticatedExtendedCard.IsUnknown() && !planned.AgentCard.SupportsAuthenticatedExtendedCard.ValueBool() && observed.AgentCard.SupportsAuthenticatedExtendedCard.IsNull())
+	check(agentFieldCardAuthenticated, authEqual, observed.AgentCard.SupportsAuthenticatedExtendedCard.IsNull() || !observed.AgentCard.SupportsAuthenticatedExtendedCard.ValueBool())
 	plannedCapabilities, observedCapabilities := planned.AgentCard.Capabilities, observed.AgentCard.Capabilities
 	capabilityCheck := func(field string, plannedValue, observedValue types.Bool) {
 		configuredValue := configured[field]
 		clearedValue := priorFields[field] && !configuredValue && !imported[field]
 		observedClear := observedValue.IsNull() || (!observedValue.IsUnknown() && !observedValue.ValueBool())
-		if (configuredValue && !plannedValue.Equal(observedValue)) || (clearedValue && !observedClear) {
+		configuredEqual := plannedValue.Equal(observedValue) ||
+			(!plannedValue.IsNull() && !plannedValue.IsUnknown() && !plannedValue.ValueBool() && observedValue.IsNull())
+		if (configuredValue && !configuredEqual) || (clearedValue && !observedClear) {
 			*mismatches = append(*mismatches, field)
 		}
 	}
@@ -1273,15 +1377,23 @@ func agentSkillsEqual(left, right []AgentSkillModel) bool {
 	}
 	rightByID := make(map[string]AgentSkillModel, len(right))
 	for _, skill := range right {
-		if skill.ID.IsNull() || skill.ID.IsUnknown() || rightByID[skill.ID.ValueString()].ID.ValueString() != "" {
+		if skill.ID.IsNull() || skill.ID.IsUnknown() || strings.TrimSpace(skill.ID.ValueString()) == "" || skill.ID.ValueString() != strings.TrimSpace(skill.ID.ValueString()) {
+			return false
+		}
+		if _, duplicate := rightByID[skill.ID.ValueString()]; duplicate {
 			return false
 		}
 		rightByID[skill.ID.ValueString()] = skill
 	}
+	seenLeft := map[string]struct{}{}
 	for _, l := range left {
-		if l.ID.IsNull() || l.ID.IsUnknown() {
+		if l.ID.IsNull() || l.ID.IsUnknown() || strings.TrimSpace(l.ID.ValueString()) == "" || l.ID.ValueString() != strings.TrimSpace(l.ID.ValueString()) {
 			return false
 		}
+		if _, duplicate := seenLeft[l.ID.ValueString()]; duplicate {
+			return false
+		}
+		seenLeft[l.ID.ValueString()] = struct{}{}
 		r, ok := rightByID[l.ID.ValueString()]
 		if !ok || !l.Name.Equal(r.Name) || !l.Description.Equal(r.Description) ||
 			!agentStringListSetEqual(l.Tags, r.Tags) || !l.Examples.Equal(r.Examples) || !l.InputModes.Equal(r.InputModes) || !l.OutputModes.Equal(r.OutputModes) {
