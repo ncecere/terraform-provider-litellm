@@ -92,7 +92,8 @@ internal_testing/
     key_minimal.tf
     key_full.tf
     key_service_account.tf
-    key_block_minimal.tf       # blocks the minimal key (destructive)
+    key_block_minimal.tf       # blocks the minimal key via legacy stateful input
+    key_block_hash.tf          # blocks a distinct key via hash-only identity
     team_minimal.tf
     team_full.tf
     team_block_minimal.tf      # blocks the minimal team (destructive)
