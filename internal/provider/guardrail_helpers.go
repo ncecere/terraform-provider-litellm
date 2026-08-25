@@ -87,22 +87,13 @@ func guardrailModeFromAPI(params map[string]interface{}) (string, bool, error) {
 	if !exists || value == nil {
 		return "", false, nil
 	}
+	if err := validateGuardrailModeValue(value); err != nil {
+		return "", false, fmt.Errorf("guardrail response field %q must be a mode string, string array, or valid Mode object", "litellm_params.mode")
+	}
 	if text, ok := value.(string); ok {
-		if text == "" {
-			return "", false, fmt.Errorf("guardrail response field %q must be non-empty", "litellm_params.mode")
-		}
 		return text, true, nil
 	}
-	items, ok := value.([]interface{})
-	if !ok || len(items) == 0 {
-		return "", false, fmt.Errorf("guardrail response field %q must be a string or non-empty string array", "litellm_params.mode")
-	}
-	for _, item := range items {
-		if text, ok := item.(string); !ok || text == "" {
-			return "", false, fmt.Errorf("guardrail response field %q must contain only non-empty strings", "litellm_params.mode")
-		}
-	}
-	encoded, err := json.Marshal(items)
+	encoded, err := json.Marshal(value)
 	if err != nil {
 		return "", false, fmt.Errorf("guardrail response field %q could not be encoded", "litellm_params.mode")
 	}

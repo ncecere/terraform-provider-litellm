@@ -53,10 +53,17 @@ The following arguments are supported:
 
 - `guardrail_name` - (String) A unique name for the guardrail.
 - `guardrail` - (String) The guardrail provider to use. Supported values include `aporia`, `bedrock`, `lakera`, and others supported by LiteLLM.
-- `mode` - (String) When the guardrail is applied. Must be one of:
-  - `pre_call` - Validates input before the LLM request is sent.
-  - `during_call` - Checks content during streaming responses.
-  - `post_call` - Validates output after the LLM response is received.
+- `mode` - (String) When the guardrail is applied. Accepts one mode string (for example `pre_call`, `during_call`, `post_call`, or `logging_only`), a JSON array of mode strings, or a JSON `Mode` object. A `Mode` object requires `tags`, mapping each request tag to a mode string or string array, and may include `default` as a mode string or string array. JSON forms are validated, sent as native arrays/objects, and preserve semantically equivalent configured formatting on read-back.
+
+  ```hcl
+  mode = jsonencode({
+    tags = {
+      trusted = "logging_only"
+      risky   = ["pre_call", "post_call"]
+    }
+    default = "pre_call"
+  })
+  ```
 
 ### Optional
 

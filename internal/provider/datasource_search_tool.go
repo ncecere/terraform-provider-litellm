@@ -108,6 +108,11 @@ func (d *SearchToolDataSource) Read(ctx context.Context, req datasource.ReadRequ
 		return
 	}
 
+	if err := validateSearchToolAPIObject(result, searchToolID); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+
 	// Update fields from response
 	if stID, ok := result["search_tool_id"].(string); ok {
 		data.SearchToolID = types.StringValue(stID)
@@ -136,8 +141,9 @@ func (d *SearchToolDataSource) Read(ctx context.Context, req datasource.ReadRequ
 		}
 	}
 
-	if searchToolInfo, ok := result["search_tool_info"].(string); ok {
-		data.SearchToolInfo = types.StringValue(searchToolInfo)
+	if err := updateJSONObjectStringState(&data.SearchToolInfo, result, "search_tool_info", true); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)

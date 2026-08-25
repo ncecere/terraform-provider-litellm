@@ -195,7 +195,10 @@ full/by-name and by-model data sources, a two-apply nested update/removal case,
 and a real source-free metadata-only import using a slash/percent/Unicode
 identity. Protocol tests additionally prove that imported masked values remain
 absent and unowned and that adding an unproven values or model source fails
-before PATCH, deletion, or replacement.
+before PATCH, deletion, or replacement. Semantic JSON coverage includes native
+structured guardrail modes, full search-tool objects, budget single/list data
+sources, empty-object projection, and no-drift read-back after LiteLLM
+canonicalizes object formatting.
 
 The matrix is restricted to a disposable loopback LiteLLM v1.98.0 backend and
 requires two opt-in values before it performs destructive lifecycle tests:

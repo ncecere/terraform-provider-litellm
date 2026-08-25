@@ -29,9 +29,9 @@ output "guardrail_info" {
 * `guardrail_id` - The guardrail ID.
 * `guardrail_name` - Human-readable name for the guardrail.
 * `guardrail` - The guardrail integration type (e.g., "aporia", "bedrock", "lakera").
-* `mode` - When to apply the guardrail (e.g., "pre_call", "post_call", "during_call", or a JSON array of modes).
+* `mode` - When to apply the guardrail: a mode string, canonical JSON string array, or canonical JSON `Mode` object with tag-specific routing.
 * `default_on` - Whether the guardrail is enabled by default for all requests.
-* `litellm_params` - Sensitive JSON string containing additional provider-specific parameters. LiteLLM v1.98 returns credential-bearing values as masked placeholders; this data source does not recover plaintext.
+* `litellm_params` - Sensitive canonical JSON object string containing additional provider-specific parameters. Empty additional parameters are represented as `{}` rather than null. LiteLLM v1.98 returns credential-bearing values as masked placeholders; this data source does not recover plaintext.
 * `guardrail_info` - JSON string containing additional guardrail metadata.
 * `created_at` - Creation timestamp.
 * `updated_at` - Last update timestamp.

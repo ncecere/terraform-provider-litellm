@@ -144,13 +144,11 @@ func guardrailListItemFromAPI(raw map[string]interface{}) (GuardrailListItemMode
 		item.DefaultOn = types.BoolValue(defaultOn)
 	}
 	additional := guardrailAdditionalParams(observed.Params)
-	if len(additional) > 0 {
-		encoded, err := canonicalGuardrailJSONObject(additional, "litellm_params")
-		if err != nil {
-			return item, err
-		}
-		item.LitellmParams = types.StringValue(encoded)
+	encoded, err := canonicalGuardrailJSONObject(additional, "litellm_params")
+	if err != nil {
+		return item, err
 	}
+	item.LitellmParams = types.StringValue(encoded)
 	if observed.CreatedAt != nil {
 		item.CreatedAt = types.StringValue(*observed.CreatedAt)
 	}

@@ -51,7 +51,7 @@ The following arguments are supported:
 * `tpm_limit` - (Optional) Tokens per minute limit.
 * `rpm_limit` - (Optional) Requests per minute limit.
 * `budget_duration` - (Optional) Duration for the budget cycle (e.g., `"30d"`, `"7d"`, `"1h"`).
-* `model_max_budget` - (Optional) A JSON string defining per-model budget limits. The API expects a specific nested object format per model. This feature may require a LiteLLM Enterprise license.
+* `model_max_budget` - (Optional) A JSON object string mapping model names to LiteLLM `BudgetConfig` objects. Supported nested fields are `max_budget` (alias `budget_limit`), `budget_duration` (alias `time_period`), `tpm_limit`, and `rpm_limit`. Unknown fields, conflicting aliases, non-object model values, malformed JSON, and wrong root shapes are rejected before mutation. API canonicalization of aliases, key order, whitespace, or equivalent exact number notation does not cause drift. This feature may require a LiteLLM Enterprise license.
 
 ## Attribute Reference
 
@@ -77,4 +77,6 @@ terraform import litellm_budget.example <budget-id>
 - The `soft_budget` triggers alerts but does not block requests.
 - The `max_budget` is a hard limit that blocks requests when exceeded.
 - The `budget_duration` determines when the spend counter resets.
-- The `model_max_budget` attribute accepts a JSON string; the exact nested object format expected by LiteLLM may require a LiteLLM Enterprise license.
+- The `model_max_budget` attribute accepts an object JSON string and validates every nested `BudgetConfig`. Use `jsonencode()` where possible. Empty `{}` is an explicit owned empty object; omission relinquishes Terraform ownership and does not promise an API clear. Historical finite scalar HCL remains valid only while unchanged; new or changed scalars are rejected, structured migration is allowed, and unrelated updates omit the unchanged legacy value.
+- Although v1.98 applies alias precedence when both spellings are present, the provider rejects `max_budget` with `budget_limit` and `budget_duration` with `time_period` because accepting contradictory values would hide one configured value during canonical read-back.
+- Per-model controls may require a LiteLLM Enterprise license.

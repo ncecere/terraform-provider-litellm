@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
@@ -123,15 +122,24 @@ func (d *BudgetDataSource) Read(ctx context.Context, req datasource.ReadRequest,
 		return
 	}
 
-	if len(results) == 0 {
-		resp.Diagnostics.AddError("Not Found", fmt.Sprintf("Budget not found: %s", budgetID))
+	if len(results) != 1 {
+		if len(results) == 0 {
+			resp.Diagnostics.AddError("Not Found", fmt.Sprintf("Budget not found: %s", budgetID))
+		} else {
+			resp.Diagnostics.AddError("Invalid API Response", "Budget lookup did not return exactly one object.")
+		}
 		return
 	}
 
 	result := results[0]
+	actualBudgetID, ok := result["budget_id"].(string)
+	if !ok || actualBudgetID == "" || actualBudgetID != budgetID {
+		resp.Diagnostics.AddError("Invalid API Response", "Budget response identity did not match the requested budget.")
+		return
+	}
 
 	// Populate the data model
-	data.ID = types.StringValue(budgetID)
+	data.ID = types.StringValue(actualBudgetID)
 
 	for _, field := range []struct {
 		name   string
@@ -164,10 +172,9 @@ func (d *BudgetDataSource) Read(ctx context.Context, req datasource.ReadRequest,
 	if budgetResetAt, ok := result["budget_reset_at"].(string); ok {
 		data.BudgetResetAt = types.StringValue(budgetResetAt)
 	}
-	if modelMaxBudget, ok := result["model_max_budget"].(map[string]interface{}); ok && len(modelMaxBudget) > 0 {
-		if jsonBytes, err := json.Marshal(modelMaxBudget); err == nil {
-			data.ModelMaxBudget = types.StringValue(string(jsonBytes))
-		}
+	if err := updateModelBudgetStringState(&data.ModelMaxBudget, result, "model_max_budget", true); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)

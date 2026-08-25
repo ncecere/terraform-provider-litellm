@@ -3,7 +3,6 @@ package provider
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -72,7 +71,7 @@ func (r *GuardrailResource) Schema(ctx context.Context, req resource.SchemaReque
 				Required:    true,
 			},
 			"mode": schema.StringAttribute{
-				Description: "When to apply the guardrail. Can be a single value or JSON array (e.g., 'pre_call', 'post_call', 'during_call', '[\"pre_call\", \"post_call\"]').",
+				Description: "When to apply the guardrail. Accepts a mode string, a JSON string array, or a JSON Mode object with required tags and optional default routing.",
 				Required:    true,
 				Validators:  []validator.String{guardrailModeStringValidator{}},
 			},
@@ -267,17 +266,11 @@ func (r *GuardrailResource) buildGuardrailRequest(ctx context.Context, data *Gua
 		"guardrail": data.Guardrail.ValueString(),
 	}
 
-	// Parse mode - can be string or array
-	modeStr := strings.TrimSpace(data.Mode.ValueString())
-	if strings.HasPrefix(modeStr, "[") {
-		var modeArray []string
-		if err := decodeJSONUseNumber([]byte(modeStr), &modeArray); err != nil {
-			return nil, fmt.Errorf("invalid mode: JSON array must contain only strings")
-		}
-		litellmParams["mode"] = modeArray
-	} else {
-		litellmParams["mode"] = modeStr
+	mode, err := decodeConfiguredGuardrailMode(data.Mode.ValueString())
+	if err != nil {
+		return nil, fmt.Errorf("invalid mode configuration")
 	}
+	litellmParams["mode"] = mode
 
 	// Boolean fields - check IsNull and IsUnknown
 	if !data.DefaultOn.IsNull() && !data.DefaultOn.IsUnknown() {
@@ -398,7 +391,9 @@ func (r *GuardrailResource) readGuardrail(ctx context.Context, data *GuardrailRe
 	data.GuardrailID = types.StringValue(observed.ID)
 	data.GuardrailName = types.StringValue(observed.Name)
 	data.Guardrail = types.StringValue(guardrail)
-	data.Mode = types.StringValue(mode)
+	if data.Mode.IsNull() || data.Mode.IsUnknown() || !jsonSemanticallyEqual(data.Mode.ValueString(), mode) {
+		data.Mode = types.StringValue(mode)
+	}
 	if observed.CreatedAt == nil {
 		data.CreatedAt = types.StringNull()
 	} else {

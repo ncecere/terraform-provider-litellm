@@ -134,7 +134,7 @@ func (r *TagResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanReq
 		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("id"), types.StringUnknown())...)
 	}
 	if knownString(config.ModelMaxBudget) && (!knownString(state.ModelMaxBudget) || !jsonSemanticallyEqual(config.ModelMaxBudget.ValueString(), state.ModelMaxBudget.ValueString())) {
-		legacy, err := configuredTagModelBudgetIsLegacy(config.ModelMaxBudget)
+		legacy, err := configuredModelBudgetIsLegacy(config.ModelMaxBudget)
 		if err != nil {
 			resp.Diagnostics.AddAttributeError(path.Root("model_max_budget"), "Invalid Tag Model Budget", err.Error())
 		} else if legacy {
@@ -842,7 +842,7 @@ func buildTagBudgetUpdateRequest(plan, state *TagResourceModel) (map[string]inte
 		if plan.ModelMaxBudget.IsNull() {
 			return nil, false, fmt.Errorf("model_max_budget cannot be cleared because LiteLLM v1.98 rejects both null and an empty object")
 		} else {
-			legacy, err := configuredTagModelBudgetIsLegacy(plan.ModelMaxBudget)
+			legacy, err := configuredModelBudgetIsLegacy(plan.ModelMaxBudget)
 			if err != nil {
 				return nil, false, err
 			}
@@ -980,7 +980,7 @@ func tagCreateFieldMismatch(desired, actual *TagResourceModel) (string, bool) {
 		if field.name == "model_max_budget" {
 			desiredString, desiredOK := field.desired.(types.String)
 			actualString, actualOK := field.actual.(types.String)
-			if desiredOK && actualOK && knownString(desiredString) && knownString(actualString) && jsonSemanticallyEqual(desiredString.ValueString(), actualString.ValueString()) {
+			if desiredOK && actualOK && knownString(desiredString) && knownString(actualString) && modelBudgetSemanticallyEqual(desiredString.ValueString(), actualString.ValueString()) {
 				continue
 			}
 		}

@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -85,7 +84,7 @@ func (r *SearchToolResource) Schema(ctx context.Context, req resource.SchemaRequ
 				Optional:    true,
 			},
 			"search_tool_info": schema.StringAttribute{
-				Description: "Additional search tool configuration as a JSON object string.",
+				Description: "Additional search tool configuration as a validated JSON object string.",
 				Optional:    true,
 				Validators:  []validator.String{jsonShapeStringValidator{shape: '{'}},
 			},
@@ -139,14 +138,19 @@ func (r *SearchToolResource) Create(ctx context.Context, req resource.CreateRequ
 	if nested, ok := result["search_tool"].(map[string]interface{}); ok {
 		searchToolResult = nested
 	}
-	if searchToolID, ok := searchToolResult["search_tool_id"].(string); ok {
+	if searchToolID, ok := searchToolResult["search_tool_id"].(string); ok && searchToolID != "" {
 		data.SearchToolID = types.StringValue(searchToolID)
 		data.ID = types.StringValue(searchToolID)
+	} else {
+		resp.Diagnostics.AddError("Invalid API Response", "LiteLLM accepted the search tool create but did not return a recoverable search_tool_id.")
+		return
 	}
 
-	// Read back for full state
 	if err := r.readSearchTool(ctx, &data); err != nil {
-		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Search tool created but failed to read back: %s", err))
+		recovery := SearchToolResourceModel{ID: data.ID, SearchToolID: data.SearchToolID}
+		resp.Diagnostics.Append(resp.State.Set(ctx, &recovery)...)
+		resp.Diagnostics.AddError("Search Tool Create Not Confirmed", fmt.Sprintf("Search tool created but authoritative read-back failed: %s", err))
+		return
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
@@ -213,9 +217,9 @@ func (r *SearchToolResource) Update(ctx context.Context, req resource.UpdateRequ
 		return
 	}
 
-	// Read back for full state
 	if err := r.readSearchTool(ctx, &data); err != nil {
-		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Search tool updated but failed to read back: %s", err))
+		resp.Diagnostics.AddError("Search Tool Update Not Confirmed", fmt.Sprintf("Search tool updated but authoritative read-back failed: %s", err))
+		return
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
@@ -308,20 +312,8 @@ func (r *SearchToolResource) readSearchToolWithNumericOwnership(ctx context.Cont
 	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
 		return err
 	}
-	if err := validateImportedObjectIdentity(imported, "search tool", result, "search_tool_id", searchToolID); err != nil {
+	if err := validateSearchToolAPIObject(result, searchToolID); err != nil {
 		return err
-	}
-	if err := requireImportedStringField(imported, "search tool", result, "search_tool_name"); err != nil {
-		return err
-	}
-	if imported {
-		litellmParams, err := requireImportedObjectField(true, "search tool", result, "litellm_params")
-		if err != nil {
-			return err
-		}
-		if err := requireImportedStringField(true, "search tool", litellmParams, "search_provider"); err != nil {
-			return err
-		}
 	}
 
 	// Update fields from response
@@ -353,13 +345,36 @@ func (r *SearchToolResource) readSearchToolWithNumericOwnership(ctx context.Cont
 		// Note: API key is not read back for security reasons
 	}
 
-	if searchToolInfo, ok := result["search_tool_info"].(string); ok {
-		data.SearchToolInfo = types.StringValue(searchToolInfo)
-	} else if searchToolInfoMap, ok := result["search_tool_info"].(map[string]interface{}); ok && len(searchToolInfoMap) > 0 {
-		if jsonBytes, err := json.Marshal(searchToolInfoMap); err == nil {
-			data.SearchToolInfo = types.StringValue(string(jsonBytes))
-		}
+	searchToolInfoOwned := imported || (!data.SearchToolInfo.IsNull() && !data.SearchToolInfo.IsUnknown())
+	if err := updateJSONObjectStringState(&data.SearchToolInfo, result, "search_tool_info", searchToolInfoOwned); err != nil {
+		return err
+	}
+	if !searchToolInfoOwned && data.SearchToolInfo.IsUnknown() {
+		data.SearchToolInfo = types.StringNull()
 	}
 
+	return nil
+}
+
+func validateSearchToolAPIObject(result map[string]interface{}, expectedID string) error {
+	actualID, ok := result["search_tool_id"].(string)
+	if !ok || actualID == "" {
+		return fmt.Errorf("search tool response omitted required search_tool_id")
+	}
+	if actualID != expectedID {
+		return fmt.Errorf("search tool response identity did not match the requested search tool")
+	}
+	name, ok := result["search_tool_name"].(string)
+	if !ok || name == "" {
+		return fmt.Errorf("search tool response omitted required search_tool_name")
+	}
+	litellmParams, ok := result["litellm_params"].(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("search tool response omitted required litellm_params object")
+	}
+	provider, ok := litellmParams["search_provider"].(string)
+	if !ok || provider == "" {
+		return fmt.Errorf("search tool response omitted required litellm_params.search_provider")
+	}
 	return nil
 }

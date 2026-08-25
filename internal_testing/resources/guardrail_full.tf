@@ -4,8 +4,13 @@
 resource "litellm_guardrail" "full" {
   guardrail_name = "test-guardrail-full"
   guardrail      = "bedrock"
-  mode           = "pre_call"
-  default_on     = true
+  mode = jsonencode({
+    tags = {
+      acceptance = "pre_call"
+    }
+    default = ["pre_call", "post_call"]
+  })
+  default_on = true
 
   litellm_params = jsonencode({
     "guardrailIdentifier" = "test-guardrail-id"

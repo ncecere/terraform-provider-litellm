@@ -164,14 +164,12 @@ func (d *GuardrailDataSource) Read(ctx context.Context, req datasource.ReadReque
 			data.DefaultOn = types.BoolValue(defaultOn)
 		}
 		additional := guardrailAdditionalParams(observed.Params)
-		if len(additional) > 0 {
-			encoded, err := canonicalGuardrailJSONObject(additional, "litellm_params")
-			if err != nil {
-				resp.Diagnostics.AddError("Invalid API Response", err.Error())
-				return
-			}
-			data.LitellmParams = types.StringValue(encoded)
+		encoded, err := canonicalGuardrailJSONObject(additional, "litellm_params")
+		if err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", err.Error())
+			return
 		}
+		data.LitellmParams = types.StringValue(encoded)
 	}
 	if observed.Info != nil {
 		encoded, err := canonicalGuardrailJSONObject(observed.Info, "guardrail_info")
