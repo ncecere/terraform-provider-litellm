@@ -19,7 +19,7 @@ data "litellm_unified_access_groups" "all" {}
   * `access_mcp_server_ids`
   * `access_agent_ids`
   * `assigned_team_ids`
-  * `assigned_key_ids`
+  * `assigned_key_ids` - Hash-shaped values from the access-group row only; the list data source does not confirm the corresponding key rows.
   * `created_at`
   * `created_by`
   * `updated_at`

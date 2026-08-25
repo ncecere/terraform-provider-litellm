@@ -360,7 +360,10 @@ func TestBuildUnifiedAccessGroupRequest(t *testing.T) {
 	}
 
 	// includeOptionalName=true path
-	req := buildUnifiedAccessGroupRequest(context.Background(), data, true)
+	req, err := buildUnifiedAccessGroupRequest(context.Background(), data, true)
+	if err != nil {
+		t.Fatalf("build unified access group request: %v", err)
+	}
 	if req["access_group_name"] != "ag-1" {
 		t.Errorf("access_group_name = %v", req["access_group_name"])
 	}
@@ -369,7 +372,10 @@ func TestBuildUnifiedAccessGroupRequest(t *testing.T) {
 	}
 
 	// includeOptionalName=false with a set name still includes it (non-empty).
-	req2 := buildUnifiedAccessGroupRequest(context.Background(), data, false)
+	req2, err := buildUnifiedAccessGroupRequest(context.Background(), data, false)
+	if err != nil {
+		t.Fatalf("build unified access group request: %v", err)
+	}
 	if req2["access_group_name"] != "ag-1" {
 		t.Errorf("access_group_name (false path) = %v", req2["access_group_name"])
 	}

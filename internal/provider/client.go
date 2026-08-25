@@ -70,7 +70,7 @@ func (c *Client) executeRequest(request *http.Request) (*http.Response, error) {
 		if response != nil && response.Body != nil {
 			_ = response.Body.Close()
 		}
-		return nil, safeTransportFailure(err)
+		return nil, safeDispatchedTransportFailure(err)
 	}
 	return response, nil
 }
@@ -129,7 +129,7 @@ func (c *Client) doRequestWithResponse(ctx context.Context, method, requestPath 
 
 	if !accepted {
 		if readErr != nil {
-			return false, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "failed to read LiteLLM error response", identity: safeErrorIdentity(readErr)}
+			return false, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "failed to read LiteLLM error response", identity: safeErrorIdentity(readErr), temporary: safeTemporaryResponseFailure(readErr)}
 		}
 		notFound, fallbackNotReady := classifyRawErrorBody(bodyBytes)
 		detail, detailOmitted := "", true
@@ -149,7 +149,7 @@ func (c *Client) doRequestWithResponse(ctx context.Context, method, requestPath 
 	}
 
 	if readErr != nil {
-		return true, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "failed to read LiteLLM response", identity: safeErrorIdentity(readErr)}
+		return true, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "failed to read LiteLLM response", identity: safeErrorIdentity(readErr), temporary: safeTemporaryResponseFailure(readErr)}
 	}
 	if truncated {
 		return true, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "LiteLLM response exceeded the provider safety limit"}

@@ -60,7 +60,7 @@ func unifiedAccessGroupDataSourceAttributes(requireID bool) map[string]schema.At
 		"access_mcp_server_ids": schema.ListAttribute{Description: "MCP server IDs this access group grants access to.", Computed: true, ElementType: types.StringType},
 		"access_agent_ids":      schema.ListAttribute{Description: "Agent IDs this access group grants access to.", Computed: true, ElementType: types.StringType},
 		"assigned_team_ids":     schema.ListAttribute{Description: "Team IDs assigned to this access group.", Computed: true, ElementType: types.StringType},
-		"assigned_key_ids":      schema.ListAttribute{Description: "Key IDs assigned to this access group.", Computed: true, ElementType: types.StringType},
+		"assigned_key_ids":      schema.ListAttribute{Description: "Hash-shaped key IDs reported on the access-group row. This data source does not confirm the corresponding key rows.", Computed: true, ElementType: types.StringType},
 		"created_at":            schema.StringAttribute{Description: "Timestamp when the access group was created.", Computed: true},
 		"created_by":            schema.StringAttribute{Description: "User who created the access group.", Computed: true},
 		"updated_at":            schema.StringAttribute{Description: "Timestamp when the access group was last updated.", Computed: true},
@@ -104,7 +104,7 @@ func (d *UnifiedAccessGroupDataSource) Read(ctx context.Context, req datasource.
 	data.AccessMCPServerIDs = resourceData.AccessMCPServerIDs
 	data.AccessAgentIDs = resourceData.AccessAgentIDs
 	data.AssignedTeamIDs = resourceData.AssignedTeamIDs
-	data.AssignedKeyIDs = resourceData.AssignedKeyIDs
+	setSafeAssignedKeyListFromResponse(&data.AssignedKeyIDs, result["assigned_key_ids"])
 	data.CreatedAt = resourceData.CreatedAt
 	data.CreatedBy = resourceData.CreatedBy
 	data.UpdatedAt = resourceData.UpdatedAt
