@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"sort"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -11,8 +12,39 @@ import (
 
 const (
 	modelImportedPrivateKey         = "model_imported_v1"
+	modelImportedFieldsPrivateKey   = "model_imported_fields_v1"
 	modelTopThinkingOwnedPrivateKey = "model_top_thinking_owned_v1"
 )
+
+func decodeModelImportedFields(raw []byte) map[string]struct{} {
+	fields := make(map[string]struct{})
+	if len(raw) == 0 {
+		return fields
+	}
+	var names []string
+	if err := json.Unmarshal(raw, &names); err != nil {
+		return fields
+	}
+	for _, name := range names {
+		if name != "" {
+			fields[name] = struct{}{}
+		}
+	}
+	return fields
+}
+
+func encodeModelImportedFields(fields map[string]struct{}) []byte {
+	if len(fields) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(fields))
+	for name := range fields {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	raw, _ := json.Marshal(names)
+	return raw
+}
 
 // LiteLLM v1.98.0 injects this complete set into litellm_params for models
 // created without additional_litellm_params. Older provider state has no

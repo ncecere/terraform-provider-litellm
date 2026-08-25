@@ -30,6 +30,7 @@ import (
 // Ensure provider defined types fully satisfy framework interfaces.
 var _ resource.Resource = &ModelResource{}
 var _ resource.ResourceWithImportState = &ModelResource{}
+var _ resource.ResourceWithModifyPlan = &ModelResource{}
 
 func NewModelResource() resource.Resource {
 	return &ModelResource{}
@@ -41,8 +42,12 @@ type ModelResource struct {
 }
 
 type modelReadOwnership struct {
-	imported         bool
-	topThinkingOwned bool
+	imported             bool
+	importedFields       map[string]struct{}
+	topThinkingOwned     bool
+	clearedFields        map[string]struct{}
+	durablyClearedFields map[string]struct{}
+	freshConnection      bool
 }
 
 // ModelResourceModel describes the resource data model.
@@ -111,14 +116,17 @@ func (r *ModelResource) Schema(ctx context.Context, req resource.SchemaRequest, 
 			"tpm": schema.Int64Attribute{
 				Description: "Tokens per minute limit.",
 				Optional:    true,
+				Computed:    true,
 			},
 			"rpm": schema.Int64Attribute{
 				Description: "Requests per minute limit.",
 				Optional:    true,
+				Computed:    true,
 			},
 			"reasoning_effort": schema.StringAttribute{
 				Description: "Reasoning effort level (low, medium, high).",
 				Optional:    true,
+				Computed:    true,
 			},
 			"thinking_enabled": schema.BoolAttribute{
 				Description: "Enable thinking/reasoning mode.",
@@ -144,10 +152,12 @@ func (r *ModelResource) Schema(ctx context.Context, req resource.SchemaRequest, 
 			"model_api_base": schema.StringAttribute{
 				Description: "Base URL for the model API.",
 				Optional:    true,
+				Computed:    true,
 			},
 			"api_version": schema.StringAttribute{
 				Description: "API version (e.g., for Azure OpenAI).",
 				Optional:    true,
+				Computed:    true,
 			},
 			"base_model": schema.StringAttribute{
 				Description: "The base model name from the provider.",
@@ -165,6 +175,7 @@ func (r *ModelResource) Schema(ctx context.Context, req resource.SchemaRequest, 
 			"team_id": schema.StringAttribute{
 				Description: "Team ID to associate with this model.",
 				Optional:    true,
+				Computed:    true,
 			},
 			"mode": schema.StringAttribute{
 				Description: "Model mode. Supported values: chat, completion, embedding, audio_speech, audio_transcription, image_generation, video_generation, batch, rerank, realtime, responses, ocr, moderation.",
@@ -177,30 +188,37 @@ func (r *ModelResource) Schema(ctx context.Context, req resource.SchemaRequest, 
 			"litellm_credential_name": schema.StringAttribute{
 				Description: "Name of the credential to use for this model. References a credential created via litellm_credential resource.",
 				Optional:    true,
+				Computed:    true,
 			},
 			"input_cost_per_million_tokens": schema.Float64Attribute{
 				Description: "Input cost per million tokens.",
 				Optional:    true,
+				Computed:    true,
 			},
 			"output_cost_per_million_tokens": schema.Float64Attribute{
 				Description: "Output cost per million tokens.",
 				Optional:    true,
+				Computed:    true,
 			},
 			"input_cost_per_pixel": schema.Float64Attribute{
 				Description: "Input cost per pixel.",
 				Optional:    true,
+				Computed:    true,
 			},
 			"output_cost_per_pixel": schema.Float64Attribute{
 				Description: "Output cost per pixel.",
 				Optional:    true,
+				Computed:    true,
 			},
 			"input_cost_per_second": schema.Float64Attribute{
 				Description: "Input cost per second.",
 				Optional:    true,
+				Computed:    true,
 			},
 			"output_cost_per_second": schema.Float64Attribute{
 				Description: "Output cost per second.",
 				Optional:    true,
+				Computed:    true,
 			},
 			"aws_access_key_id": schema.StringAttribute{
 				Description: "AWS access key ID for Bedrock.",
@@ -215,6 +233,7 @@ func (r *ModelResource) Schema(ctx context.Context, req resource.SchemaRequest, 
 			"aws_region_name": schema.StringAttribute{
 				Description: "AWS region name for Bedrock.",
 				Optional:    true,
+				Computed:    true,
 			},
 			"aws_session_name": schema.StringAttribute{
 				Description: "AWS session name for Bedrock.",
@@ -313,6 +332,206 @@ func (r *ModelResource) Configure(ctx context.Context, req resource.ConfigureReq
 	r.client = client
 }
 
+func (r *ModelResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	if req.Plan.Raw.IsNull() || req.State.Raw.IsNull() {
+		return
+	}
+
+	var plan, state, config ModelResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	marker, diagnostics := req.Private.GetKey(ctx, modelImportedFieldsPrivateKey)
+	resp.Diagnostics.Append(diagnostics...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	importedFields := decodeModelImportedFields(marker)
+	forceOwnershipUpdate := false
+
+	stringFields := []struct {
+		name                string
+		plan, state, config *types.String
+	}{
+		{"model_api_base", &plan.ModelAPIBase, &state.ModelAPIBase, &config.ModelAPIBase},
+		{"api_version", &plan.APIVersion, &state.APIVersion, &config.APIVersion},
+		{"reasoning_effort", &plan.ReasoningEffort, &state.ReasoningEffort, &config.ReasoningEffort},
+		{"aws_region_name", &plan.AWSRegionName, &state.AWSRegionName, &config.AWSRegionName},
+		{"litellm_credential_name", &plan.LiteLLMCredentialName, &state.LiteLLMCredentialName, &config.LiteLLMCredentialName},
+		{"mode", &plan.Mode, &state.Mode, &config.Mode},
+		{"team_id", &plan.TeamID, &state.TeamID, &config.TeamID},
+	}
+	for _, field := range stringFields {
+		_, imported := importedFields[field.name]
+		if imported {
+			if field.config.IsNull() {
+				*field.plan = *field.state
+				continue
+			}
+			if field.config.IsUnknown() {
+				continue
+			}
+			delete(importedFields, field.name)
+			if field.plan.Equal(*field.state) {
+				forceOwnershipUpdate = true
+			}
+			continue
+		}
+		if field.config.IsNull() && field.state.IsNull() {
+			*field.plan = *field.state
+			continue
+		}
+		if field.config.IsNull() && !field.state.IsNull() && !field.state.IsUnknown() && field.name != "mode" && field.name != "team_id" {
+			*field.plan = types.StringNull()
+		}
+	}
+
+	intFields := []struct {
+		name                string
+		plan, state, config *types.Int64
+	}{
+		{"tpm", &plan.TPM, &state.TPM, &config.TPM},
+		{"rpm", &plan.RPM, &state.RPM, &config.RPM},
+	}
+	for _, field := range intFields {
+		_, imported := importedFields[field.name]
+		if imported {
+			if field.config.IsNull() {
+				*field.plan = *field.state
+				continue
+			}
+			if field.config.IsUnknown() {
+				continue
+			}
+			delete(importedFields, field.name)
+			if field.plan.Equal(*field.state) {
+				forceOwnershipUpdate = true
+			}
+			continue
+		}
+		if field.config.IsNull() && field.state.IsNull() {
+			*field.plan = *field.state
+			continue
+		}
+		if field.config.IsNull() && !field.state.IsNull() && !field.state.IsUnknown() {
+			*field.plan = types.Int64Unknown()
+		}
+	}
+
+	floatFields := []struct {
+		name                string
+		plan, state, config *types.Float64
+	}{
+		{"input_cost_per_million_tokens", &plan.InputCostPerMillionTokens, &state.InputCostPerMillionTokens, &config.InputCostPerMillionTokens},
+		{"output_cost_per_million_tokens", &plan.OutputCostPerMillionTokens, &state.OutputCostPerMillionTokens, &config.OutputCostPerMillionTokens},
+		{"input_cost_per_pixel", &plan.InputCostPerPixel, &state.InputCostPerPixel, &config.InputCostPerPixel},
+		{"output_cost_per_pixel", &plan.OutputCostPerPixel, &state.OutputCostPerPixel, &config.OutputCostPerPixel},
+		{"input_cost_per_second", &plan.InputCostPerSecond, &state.InputCostPerSecond, &config.InputCostPerSecond},
+		{"output_cost_per_second", &plan.OutputCostPerSecond, &state.OutputCostPerSecond, &config.OutputCostPerSecond},
+	}
+	for _, field := range floatFields {
+		_, imported := importedFields[field.name]
+		if imported {
+			if field.config.IsNull() {
+				*field.plan = *field.state
+				continue
+			}
+			if field.config.IsUnknown() {
+				continue
+			}
+			delete(importedFields, field.name)
+			if field.plan.Equal(*field.state) {
+				forceOwnershipUpdate = true
+			}
+			continue
+		}
+		if field.config.IsNull() && field.state.IsNull() {
+			*field.plan = *field.state
+			continue
+		}
+		if field.config.IsNull() && !field.state.IsNull() && !field.state.IsUnknown() {
+			switch field.name {
+			case "input_cost_per_million_tokens", "output_cost_per_million_tokens":
+				*field.plan = types.Float64Null()
+			default:
+				*field.plan = types.Float64Unknown()
+			}
+		}
+	}
+
+	if !config.AdditionalLiteLLMParams.IsNull() && !config.AdditionalLiteLLMParams.IsUnknown() {
+		delete(importedFields, "additional_litellm_params.thinking")
+		delete(importedFields, "additional_litellm_params.merge_reasoning_content_in_choices")
+	}
+
+	if _, imported := importedFields["access_groups"]; imported {
+		switch {
+		case config.AccessGroups.IsNull():
+			plan.AccessGroups = state.AccessGroups
+		case !config.AccessGroups.IsUnknown():
+			delete(importedFields, "access_groups")
+			if plan.AccessGroups.Equal(state.AccessGroups) {
+				forceOwnershipUpdate = true
+			}
+		}
+	}
+
+	// LiteLLM v1.98 merges these fields and has no semantic clear sentinel.
+	// Replacement is safer than publishing null state while the old limit,
+	// inferred mode, or non-token pricing remains active.
+	for _, field := range []struct {
+		name   string
+		remove bool
+	}{
+		{"tpm", config.TPM.IsNull() && !state.TPM.IsNull() && !state.TPM.IsUnknown()},
+		{"rpm", config.RPM.IsNull() && !state.RPM.IsNull() && !state.RPM.IsUnknown()},
+		{"input_cost_per_pixel", config.InputCostPerPixel.IsNull() && !state.InputCostPerPixel.IsNull() && !state.InputCostPerPixel.IsUnknown()},
+		{"output_cost_per_pixel", config.OutputCostPerPixel.IsNull() && !state.OutputCostPerPixel.IsNull() && !state.OutputCostPerPixel.IsUnknown()},
+		{"input_cost_per_second", config.InputCostPerSecond.IsNull() && !state.InputCostPerSecond.IsNull() && !state.InputCostPerSecond.IsUnknown()},
+		{"output_cost_per_second", config.OutputCostPerSecond.IsNull() && !state.OutputCostPerSecond.IsNull() && !state.OutputCostPerSecond.IsUnknown()},
+		{"mode", config.Mode.IsNull() && !state.Mode.IsNull() && !state.Mode.IsUnknown()},
+	} {
+		_, imported := importedFields[field.name]
+		if field.remove && !imported {
+			if field.name == "mode" {
+				// Optional+Computed would otherwise retain state, leaving no public
+				// diff for Terraform to attach replacement to.
+				plan.Mode = types.StringUnknown()
+			}
+			resp.RequiresReplace = append(resp.RequiresReplace, path.Root(field.name))
+		}
+	}
+	if _, imported := importedFields["team_id"]; !imported && config.TeamID.IsNull() && !state.TeamID.IsNull() && !state.TeamID.IsUnknown() {
+		plan.TeamID = types.StringUnknown()
+	}
+	if !plan.TeamID.Equal(state.TeamID) {
+		if _, imported := importedFields["team_id"]; !imported {
+			resp.RequiresReplace = append(resp.RequiresReplace, path.Root("team_id"))
+		}
+	}
+
+	// Optional+Computed collections otherwise retain prior state when omitted.
+	// A non-imported, previously configured value is owned and omission clears it.
+	if config.AccessGroups.IsNull() && !state.AccessGroups.IsNull() && !state.AccessGroups.IsUnknown() && len(state.AccessGroups.Elements()) > 0 {
+		if _, imported := importedFields["access_groups"]; !imported {
+			plan.AccessGroups = types.ListValueMust(types.StringType, []attr.Value{})
+		}
+	}
+
+	if forceOwnershipUpdate {
+		plan.ID = types.StringUnknown()
+	}
+	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelImportedFieldsPrivateKey, encodeModelImportedFields(importedFields))...)
+}
+
 func (r *ModelResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var data ModelResourceModel
 
@@ -393,6 +612,8 @@ func (r *ModelResource) Read(ctx context.Context, req resource.ReadRequest, resp
 	priorModelInfo := data.AdditionalModelInfo
 	importedMarker, privateDiags := req.Private.GetKey(ctx, modelImportedPrivateKey)
 	resp.Diagnostics.Append(privateDiags...)
+	importedFieldsMarker, importedFieldsDiags := req.Private.GetKey(ctx, modelImportedFieldsPrivateKey)
+	resp.Diagnostics.Append(importedFieldsDiags...)
 	topThinkingMarker, topThinkingDiags := req.Private.GetKey(ctx, modelTopThinkingOwnedPrivateKey)
 	resp.Diagnostics.Append(topThinkingDiags...)
 	if resp.Diagnostics.HasError() {
@@ -406,8 +627,10 @@ func (r *ModelResource) Read(ctx context.Context, req resource.ReadRequest, resp
 		topThinkingOwned = !data.ThinkingEnabled.IsNull() && !data.ThinkingEnabled.IsUnknown() && data.ThinkingEnabled.ValueBool()
 	}
 
+	importedFields := decodeModelImportedFields(importedFieldsMarker)
 	err := r.readModelWithRetryOwnership(ctx, &data, 8, modelReadOwnership{
 		imported:         imported,
+		importedFields:   importedFields,
 		topThinkingOwned: topThinkingOwned,
 	})
 	if err != nil {
@@ -438,6 +661,11 @@ func (r *ModelResource) Read(ctx context.Context, req resource.ReadRequest, resp
 	if !resp.Diagnostics.HasError() && resp.Private != nil {
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelTopThinkingOwnedPrivateKey, []byte(strconv.FormatBool(topThinkingOwned)))...)
 		if imported {
+			fields := importedFields
+			for name := range modelImportedFieldsFromState(data) {
+				fields[name] = struct{}{}
+			}
+			resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelImportedFieldsPrivateKey, encodeModelImportedFields(fields))...)
 			resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelImportedPrivateKey, nil)...)
 		}
 	}
@@ -481,21 +709,55 @@ func (r *ModelResource) Update(ctx context.Context, req resource.UpdateRequest, 
 
 	var state ModelResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	priorThinkingMarker, priorThinkingDiags := req.Private.GetKey(ctx, modelTopThinkingOwnedPrivateKey)
+	resp.Diagnostics.Append(priorThinkingDiags...)
+	importedFieldsMarker, importedFieldsDiags := req.Private.GetKey(ctx, modelImportedFieldsPrivateKey)
+	resp.Diagnostics.Append(importedFieldsDiags...)
 	if resp.Diagnostics.HasError() {
 		return
+	}
+	priorTopThinkingOwned := string(priorThinkingMarker) == "true"
+	if len(priorThinkingMarker) == 0 {
+		priorTopThinkingOwned = !state.ThinkingEnabled.IsNull() && !state.ThinkingEnabled.IsUnknown() && state.ThinkingEnabled.ValueBool()
 	}
 
 	data.ID = state.ID
 	plannedData := data
+	clearedFields := modelClearedFields(plannedData, state, priorTopThinkingOwned)
+	patchVerifiedClears, readbackClears := partitionModelClears(clearedFields)
+	var durablyClearedFields map[string]struct{}
 
-	// Use PATCH endpoint for partial updates
-	if err := r.patchModel(ctx, &data); err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to update model: %s", err))
-		return
+	// A configured-equal imported field uses an unknown ID only to force a
+	// read-backed ownership transition. Avoid a mutation when no API field changed.
+	if modelAPIFieldsChanged(data, state) {
+		patchResult, err := r.patchModel(ctx, &data, &state, topThinkingOwned, priorTopThinkingOwned)
+		if err != nil {
+			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to update model: %s", err))
+			return
+		}
+		if len(patchVerifiedClears) > 0 {
+			if err := verifyModelPatchClears(patchResult, patchVerifiedClears); err != nil {
+				resp.Diagnostics.AddError("Model Clear Not Confirmed", err.Error())
+				return
+			}
+			durablyClearedFields = patchVerifiedClears
+		}
 	}
 
-	if err := r.readModelAfterUpdateWithOwnership(ctx, &data, plannedData, state, 8, modelReadOwnership{topThinkingOwned: topThinkingOwned}); err != nil {
-		resp.Diagnostics.AddError("Model Update Not Yet Consistent", fmt.Sprintf("LiteLLM accepted the model update but did not return the planned values before the consistency timeout: %s", err))
+	ownership := modelReadOwnership{
+		importedFields:       decodeModelImportedFields(importedFieldsMarker),
+		topThinkingOwned:     topThinkingOwned,
+		clearedFields:        readbackClears,
+		durablyClearedFields: durablyClearedFields,
+		freshConnection:      true,
+	}
+	// v1.98 model reads can lag durable writes across workers for several seconds.
+	if err := r.readModelAfterUpdateWithOwnership(ctx, &data, plannedData, state, 24, ownership); err != nil {
+		if len(readbackClears) > 0 {
+			resp.Diagnostics.AddError("Model Clear Readback Not Yet Consistent", fmt.Sprintf("LiteLLM accepted the model update, but bounded fresh-worker reads did not return the decrypted cleared values before the consistency timeout. Terraform retained prior state so a retry can confirm worker-cache convergence: %s", err))
+		} else {
+			resp.Diagnostics.AddError("Model Update Not Yet Consistent", fmt.Sprintf("LiteLLM accepted the model update but did not return the planned values before the consistency timeout: %s", err))
+		}
 		return
 	}
 
@@ -526,6 +788,7 @@ func (r *ModelResource) ImportState(ctx context.Context, req resource.ImportStat
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 	if resp.Private != nil {
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelImportedPrivateKey, []byte("true"))...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelImportedFieldsPrivateKey, nil)...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelTopThinkingOwnedPrivateKey, []byte("false"))...)
 	}
 }
@@ -698,7 +961,13 @@ func (r *ModelResource) readModelWithOwnership(ctx context.Context, data *ModelR
 	endpoint := fmt.Sprintf("/model/info?litellm_model_id=%s", data.ID.ValueString())
 
 	var rawResult map[string]interface{}
-	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &rawResult); err != nil {
+	var err error
+	if ownership.freshConnection {
+		err = r.client.doFreshRequestWithResponse(ctx, "GET", endpoint, nil, &rawResult)
+	} else {
+		err = r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &rawResult)
+	}
+	if err != nil {
 		return err
 	}
 
@@ -781,7 +1050,21 @@ func (r *ModelResource) readModelWithOwnership(ctx context.Context, data *ModelR
 		data.ModelName = types.StringValue(modelName)
 	}
 
-	if litellmParams, ok := result["litellm_params"].(map[string]interface{}); ok {
+	litellmParams, hasLiteLLMParams := result["litellm_params"].(map[string]interface{})
+	modelInfo, hasModelInfo := result["model_info"].(map[string]interface{})
+	if len(ownership.clearedFields) > 0 {
+		if !hasLiteLLMParams {
+			litellmParams = map[string]interface{}{}
+		}
+		if !hasModelInfo {
+			modelInfo = map[string]interface{}{}
+		}
+		if err := verifyModelClears(litellmParams, modelInfo, ownership.clearedFields); err != nil {
+			return err
+		}
+	}
+
+	if hasLiteLLMParams {
 		// Update top-level attributes from API response.
 		// For optional attributes (tpm, rpm, merge_reasoning_content_in_choices),
 		// only update if the attribute was set in the config (!IsNull).
@@ -791,11 +1074,32 @@ func (r *ModelResource) readModelWithOwnership(ctx context.Context, data *ModelR
 		if provider, ok := litellmParams["custom_llm_provider"].(string); ok && provider != "" {
 			data.CustomLLMProvider = types.StringValue(provider)
 		}
-		if apiBase, ok := litellmParams["api_base"].(string); ok && apiBase != "" {
-			data.ModelAPIBase = types.StringValue(apiBase)
-		}
-		if apiVersion, ok := litellmParams["api_version"].(string); ok && apiVersion != "" {
-			data.APIVersion = types.StringValue(apiVersion)
+		for _, field := range []struct {
+			name      string
+			target    *types.String
+			sensitive bool
+		}{
+			{"api_key", &data.ModelAPIKey, true},
+			{"api_base", &data.ModelAPIBase, false},
+			{"api_version", &data.APIVersion, false},
+			{"reasoning_effort", &data.ReasoningEffort, false},
+			{"aws_access_key_id", &data.AWSAccessKeyID, true},
+			{"aws_secret_access_key", &data.AWSSecretAccessKey, true},
+			{"aws_region_name", &data.AWSRegionName, false},
+			{"aws_session_name", &data.AWSSessionName, true},
+			{"aws_role_name", &data.AWSRoleName, true},
+			{"vertex_project", &data.VertexProject, true},
+			{"vertex_location", &data.VertexLocation, true},
+			{"vertex_credentials", &data.VertexCredentials, true},
+			{"litellm_credential_name", &data.LiteLLMCredentialName, false},
+		} {
+			if _, cleared := ownership.durablyClearedFields[field.name]; cleared {
+				continue
+			}
+			owned := ownership.imported || (!field.target.IsNull() && !field.target.IsUnknown())
+			if err := updateModelStringFromAPI(field.target, litellmParams, field.name, owned, field.sensitive); err != nil {
+				return err
+			}
 		}
 		tpmOwned := ownership.imported || (!data.TPM.IsNull() && !data.TPM.IsUnknown())
 		if err := updateInt64FromAPI(&data.TPM, litellmParams, tpmOwned, tpmOwned, "tpm"); err != nil {
@@ -827,7 +1131,8 @@ func (r *ModelResource) readModelWithOwnership(ctx context.Context, data *ModelR
 		// Request construction writes top-level thinking first and additional
 		// parameters last. Mirror that precedence: an owned additional key is
 		// authoritative while top-level state remains byte-for-byte unchanged.
-		if ownership.topThinkingOwned && !additionalThinkingOwned {
+		_, thinkingDurablyCleared := ownership.durablyClearedFields["thinking"]
+		if ownership.topThinkingOwned && !additionalThinkingOwned && !thinkingDurablyCleared {
 			enabled := false
 			if thinkingPresence == apiValuePresent {
 				typeValue, exists := thinking["type"]
@@ -848,12 +1153,6 @@ func (r *ModelResource) readModelWithOwnership(ctx context.Context, data *ModelR
 					data.ThinkingBudgetTokens = types.Int64Null()
 				}
 			}
-		}
-		if awsRegion, ok := litellmParams["aws_region_name"].(string); ok && awsRegion != "" {
-			data.AWSRegionName = types.StringValue(awsRegion)
-		}
-		if credName, ok := litellmParams["litellm_credential_name"].(string); ok && credName != "" {
-			data.LiteLLMCredentialName = types.StringValue(credName)
 		}
 		// Read back cost attributes. The API stores costs per token while the
 		// resource exposes them per million tokens, so scale on the way back.
@@ -885,30 +1184,31 @@ func (r *ModelResource) readModelWithOwnership(ctx context.Context, data *ModelR
 
 		// Handle additional_litellm_params map - preserve state when API omits custom params.
 		knownLiteLLMParams := map[string]struct{}{
-			"custom_llm_provider":     {},
-			"model":                   {},
-			"input_cost_per_token":    {},
-			"output_cost_per_token":   {},
-			"tpm":                     {},
-			"rpm":                     {},
-			"api_key":                 {},
-			"api_base":                {},
-			"api_version":             {},
-			"reasoning_effort":        {},
-			"thinking":                {},
-			"aws_access_key_id":       {},
-			"aws_secret_access_key":   {},
-			"aws_region_name":         {},
-			"aws_session_name":        {},
-			"aws_role_name":           {},
-			"vertex_project":          {},
-			"vertex_location":         {},
-			"vertex_credentials":      {},
-			"litellm_credential_name": {},
-			"input_cost_per_pixel":    {},
-			"output_cost_per_pixel":   {},
-			"input_cost_per_second":   {},
-			"output_cost_per_second":  {},
+			"custom_llm_provider":                {},
+			"model":                              {},
+			"input_cost_per_token":               {},
+			"output_cost_per_token":              {},
+			"tpm":                                {},
+			"rpm":                                {},
+			"api_key":                            {},
+			"api_base":                           {},
+			"api_version":                        {},
+			"reasoning_effort":                   {},
+			"thinking":                           {},
+			"merge_reasoning_content_in_choices": {},
+			"aws_access_key_id":                  {},
+			"aws_secret_access_key":              {},
+			"aws_region_name":                    {},
+			"aws_session_name":                   {},
+			"aws_role_name":                      {},
+			"vertex_project":                     {},
+			"vertex_location":                    {},
+			"vertex_credentials":                 {},
+			"litellm_credential_name":            {},
+			"input_cost_per_pixel":               {},
+			"output_cost_per_pixel":              {},
+			"input_cost_per_second":              {},
+			"output_cost_per_second":             {},
 		}
 
 		// Build a set of keys the user configured in additional_litellm_params.
@@ -927,6 +1227,10 @@ func (r *ModelResource) readModelWithOwnership(ctx context.Context, data *ModelR
 			}
 		}
 
+		additionalParamsOwned := !data.AdditionalLiteLLMParamsConfigured.IsNull() && !data.AdditionalLiteLLMParamsConfigured.IsUnknown() && data.AdditionalLiteLLMParamsConfigured.ValueBool()
+		if data.AdditionalLiteLLMParamsConfigured.IsNull() || data.AdditionalLiteLLMParamsConfigured.IsUnknown() {
+			additionalParamsOwned = len(inferLegacyConfiguredAdditionalParamKeys(data.AdditionalLiteLLMParams)) > 0
+		}
 		additionalParams := make(map[string]attr.Value)
 		for key, rawValue := range litellmParams {
 			// Skip "known" params (handled by top-level attributes) UNLESS the
@@ -935,7 +1239,9 @@ func (r *ModelResource) readModelWithOwnership(ctx context.Context, data *ModelR
 			// adopt that complete document through additional parameters.
 			if _, isKnown := knownLiteLLMParams[key]; isKnown {
 				_, inState := stateKeys[key]
-				if !inState && !(ownership.imported && key == "thinking") {
+				_, importedDocument := ownership.importedFields["additional_litellm_params."+key]
+				importAdoptsDocument := (ownership.imported || importedDocument) && (key == "thinking" || key == "merge_reasoning_content_in_choices")
+				if (!inState || !additionalParamsOwned) && !importAdoptsDocument {
 					continue
 				}
 			}
@@ -1012,6 +1318,9 @@ func (r *ModelResource) readModelWithOwnership(ctx context.Context, data *ModelR
 		if filterByState {
 			priorParams := data.AdditionalLiteLLMParams.Elements()
 			for k := range stateKeys {
+				if _, dedicated := knownLiteLLMParams[k]; dedicated && !additionalParamsOwned {
+					continue
+				}
 				if _, present := additionalParams[k]; !present {
 					if prior, ok := priorParams[k]; ok {
 						additionalParams[k] = prior
@@ -1027,7 +1336,6 @@ func (r *ModelResource) readModelWithOwnership(ctx context.Context, data *ModelR
 		data.AdditionalLiteLLMParams, _ = types.MapValue(types.StringType, map[string]attr.Value{})
 	}
 
-	modelInfo, hasModelInfo := result["model_info"].(map[string]interface{})
 	if hasModelInfo {
 		if baseModel, ok := modelInfo["base_model"].(string); ok && baseModel != "" {
 			data.BaseModel = types.StringValue(baseModel)
@@ -1036,12 +1344,9 @@ func (r *ModelResource) readModelWithOwnership(ctx context.Context, data *ModelR
 			data.Tier = types.StringValue(tier)
 		}
 		if mode, ok := modelInfo["mode"].(string); ok && mode != "" {
-			// Only update mode from the API when the user configured it or it
-			// was previously set (not null).  This prevents an API-inferred
-			// mode (e.g. "video_generation") from appearing when the user
-			// didn't set it, which would cause "was null, but now ..." errors.
-			// During Import, mode will be Unknown, so we always populate it.
-			if !data.Mode.IsNull() {
+			// API-inferred mode is unmanaged on create/refresh. Import adopts it;
+			// configured state remains authoritative until explicitly replaced.
+			if ownership.imported || (!data.Mode.IsNull() && !data.Mode.IsUnknown()) {
 				data.Mode = types.StringValue(mode)
 			}
 		}
@@ -1051,14 +1356,15 @@ func (r *ModelResource) readModelWithOwnership(ctx context.Context, data *ModelR
 		// Read access_groups from model_info
 		// The API may not echo back access_groups, so only update if the API
 		// actually returns them. If the API is silent, preserve the current value.
-		if accessGroups, ok := modelInfo["access_groups"].([]interface{}); ok && len(accessGroups) > 0 {
+		_, accessGroupsDurablyCleared := ownership.durablyClearedFields["access_groups"]
+		if accessGroups, ok := modelInfo["access_groups"].([]interface{}); ok && len(accessGroups) > 0 && !accessGroupsDurablyCleared {
 			groupStrings := make([]string, 0, len(accessGroups))
 			for _, g := range accessGroups {
 				if groupStr, ok := g.(string); ok {
 					groupStrings = append(groupStrings, groupStr)
 				}
 			}
-			if len(groupStrings) > 0 {
+			if len(groupStrings) > 0 && (ownership.imported || (!data.AccessGroups.IsNull() && !data.AccessGroups.IsUnknown())) {
 				listValue, diags := types.ListValueFrom(ctx, types.StringType, groupStrings)
 				if !diags.HasError() {
 					data.AccessGroups = listValue
@@ -1107,8 +1413,12 @@ func (r *ModelResource) readModelWithOwnership(ctx context.Context, data *ModelR
 	// Wildcard routes (e.g. openai/*) may not have a mode set in the API
 	// response, which would leave the attribute Unknown and cause:
 	//   "provider still indicated an unknown value for litellm_model.*.mode"
-	if data.Mode.IsUnknown() {
-		data.Mode = types.StringNull()
+	finalizeModelComputedDefaults(data)
+	if data.ThinkingEnabled.IsNull() || data.ThinkingEnabled.IsUnknown() {
+		data.ThinkingEnabled = types.BoolValue(false)
+	}
+	if data.ThinkingBudgetTokens.IsNull() || data.ThinkingBudgetTokens.IsUnknown() {
+		data.ThinkingBudgetTokens = types.Int64Value(1024)
 	}
 
 	return nil
@@ -1120,12 +1430,20 @@ func (r *ModelResource) readModelWithOwnership(ctx context.Context, data *ModelR
 // uses readModelAfterUpdate instead and verifies changed costs stabilize before
 // publishing state. Ordinary Read remains authoritative for out-of-band drift.
 func reassertPlannedCosts(data *ModelResourceModel, planned *ModelResourceModel) {
-	data.InputCostPerMillionTokens = planned.InputCostPerMillionTokens
-	data.OutputCostPerMillionTokens = planned.OutputCostPerMillionTokens
-	data.InputCostPerPixel = planned.InputCostPerPixel
-	data.OutputCostPerPixel = planned.OutputCostPerPixel
-	data.InputCostPerSecond = planned.InputCostPerSecond
-	data.OutputCostPerSecond = planned.OutputCostPerSecond
+	for _, field := range []struct {
+		state, plan *types.Float64
+	}{
+		{&data.InputCostPerMillionTokens, &planned.InputCostPerMillionTokens},
+		{&data.OutputCostPerMillionTokens, &planned.OutputCostPerMillionTokens},
+		{&data.InputCostPerPixel, &planned.InputCostPerPixel},
+		{&data.OutputCostPerPixel, &planned.OutputCostPerPixel},
+		{&data.InputCostPerSecond, &planned.InputCostPerSecond},
+		{&data.OutputCostPerSecond, &planned.OutputCostPerSecond},
+	} {
+		if !field.plan.IsUnknown() {
+			*field.state = *field.plan
+		}
+	}
 }
 
 // readBackCost returns the refreshed value for a cost attribute, scaled
@@ -1198,9 +1516,85 @@ func stringifyAPIValue(rawValue interface{}) (attr.Value, bool) {
 	}
 }
 
+func modelImportedFieldsFromState(data ModelResourceModel) map[string]struct{} {
+	fields := make(map[string]struct{})
+	for _, field := range []struct {
+		name  string
+		value types.String
+	}{
+		{"model_api_base", data.ModelAPIBase},
+		{"api_version", data.APIVersion},
+		{"reasoning_effort", data.ReasoningEffort},
+		{"aws_region_name", data.AWSRegionName},
+		{"litellm_credential_name", data.LiteLLMCredentialName},
+		{"mode", data.Mode},
+		{"team_id", data.TeamID},
+	} {
+		if !field.value.IsNull() && !field.value.IsUnknown() {
+			fields[field.name] = struct{}{}
+		}
+	}
+	for _, field := range []struct {
+		name  string
+		value types.Int64
+	}{
+		{"tpm", data.TPM}, {"rpm", data.RPM},
+	} {
+		if !field.value.IsNull() && !field.value.IsUnknown() {
+			fields[field.name] = struct{}{}
+		}
+	}
+	for _, field := range []struct {
+		name  string
+		value types.Float64
+	}{
+		{"input_cost_per_million_tokens", data.InputCostPerMillionTokens},
+		{"output_cost_per_million_tokens", data.OutputCostPerMillionTokens},
+		{"input_cost_per_pixel", data.InputCostPerPixel},
+		{"output_cost_per_pixel", data.OutputCostPerPixel},
+		{"input_cost_per_second", data.InputCostPerSecond},
+		{"output_cost_per_second", data.OutputCostPerSecond},
+	} {
+		if !field.value.IsNull() && !field.value.IsUnknown() {
+			fields[field.name] = struct{}{}
+		}
+	}
+	if !data.AdditionalLiteLLMParams.IsNull() && !data.AdditionalLiteLLMParams.IsUnknown() {
+		for _, key := range []string{"thinking", "merge_reasoning_content_in_choices"} {
+			if _, exists := data.AdditionalLiteLLMParams.Elements()[key]; exists {
+				fields["additional_litellm_params."+key] = struct{}{}
+			}
+		}
+	}
+	// Optional+Computed access_groups resolves to an empty list during import.
+	// Keep that list import-owned too, so later remote additions remain unmanaged
+	// until the user explicitly configures this argument.
+	fields["access_groups"] = struct{}{}
+	return fields
+}
+
 func finalizeModelComputedDefaults(data *ModelResourceModel) {
-	if data.Mode.IsUnknown() {
-		data.Mode = types.StringNull()
+	for _, target := range []*types.String{
+		&data.ModelAPIBase, &data.APIVersion, &data.ReasoningEffort,
+		&data.TeamID, &data.Mode, &data.LiteLLMCredentialName, &data.AWSRegionName,
+	} {
+		if target.IsUnknown() {
+			*target = types.StringNull()
+		}
+	}
+	for _, target := range []*types.Int64{&data.TPM, &data.RPM} {
+		if target.IsUnknown() {
+			*target = types.Int64Null()
+		}
+	}
+	for _, target := range []*types.Float64{
+		&data.InputCostPerMillionTokens, &data.OutputCostPerMillionTokens,
+		&data.InputCostPerPixel, &data.OutputCostPerPixel,
+		&data.InputCostPerSecond, &data.OutputCostPerSecond,
+	} {
+		if target.IsUnknown() {
+			*target = types.Float64Null()
+		}
 	}
 	if data.AccessGroups.IsUnknown() {
 		data.AccessGroups, _ = types.ListValue(types.StringType, []attr.Value{})
@@ -1337,109 +1731,280 @@ func changedModelFieldsNotConverged(planned, prior, observed ModelResourceModel)
 	return stale
 }
 
-// patchModel uses the PATCH /model/{model_id}/update endpoint for partial updates
-func (r *ModelResource) patchModel(ctx context.Context, data *ModelResourceModel) error {
+func modelAPIFieldsChanged(planned, prior ModelResourceModel) bool {
+	plannedValue := reflect.ValueOf(planned)
+	priorValue := reflect.ValueOf(prior)
+	modelType := plannedValue.Type()
+	for i := 0; i < plannedValue.NumField(); i++ {
+		name := modelType.Field(i).Tag.Get("tfsdk")
+		if name == "id" || name == "additional_litellm_params_configured" || name == "additional_model_info_configured" {
+			continue
+		}
+		plannedAttr, plannedOK := plannedValue.Field(i).Interface().(attr.Value)
+		priorAttr, priorOK := priorValue.Field(i).Interface().(attr.Value)
+		if plannedOK && priorOK && !plannedAttr.IsUnknown() && !plannedAttr.Equal(priorAttr) {
+			return true
+		}
+	}
+	return false
+}
+
+func modelClearedFields(planned, prior ModelResourceModel, topThinkingOwned bool) map[string]struct{} {
+	cleared := make(map[string]struct{})
+	for _, field := range []struct {
+		name           string
+		planned, prior types.String
+	}{
+		{"api_key", planned.ModelAPIKey, prior.ModelAPIKey},
+		{"api_base", planned.ModelAPIBase, prior.ModelAPIBase},
+		{"api_version", planned.APIVersion, prior.APIVersion},
+		{"aws_access_key_id", planned.AWSAccessKeyID, prior.AWSAccessKeyID},
+		{"aws_secret_access_key", planned.AWSSecretAccessKey, prior.AWSSecretAccessKey},
+		{"aws_region_name", planned.AWSRegionName, prior.AWSRegionName},
+		{"aws_session_name", planned.AWSSessionName, prior.AWSSessionName},
+		{"aws_role_name", planned.AWSRoleName, prior.AWSRoleName},
+		{"vertex_project", planned.VertexProject, prior.VertexProject},
+		{"vertex_location", planned.VertexLocation, prior.VertexLocation},
+		{"vertex_credentials", planned.VertexCredentials, prior.VertexCredentials},
+		{"litellm_credential_name", planned.LiteLLMCredentialName, prior.LiteLLMCredentialName},
+		{"reasoning_effort", planned.ReasoningEffort, prior.ReasoningEffort},
+		{"mode", planned.Mode, prior.Mode},
+	} {
+		if field.planned.IsNull() && !field.prior.IsNull() && !field.prior.IsUnknown() {
+			cleared[field.name] = struct{}{}
+		}
+	}
+	for _, field := range []struct {
+		name           string
+		planned, prior types.Float64
+	}{
+		{"input_cost_per_token", planned.InputCostPerMillionTokens, prior.InputCostPerMillionTokens},
+		{"output_cost_per_token", planned.OutputCostPerMillionTokens, prior.OutputCostPerMillionTokens},
+		{"input_cost_per_pixel", planned.InputCostPerPixel, prior.InputCostPerPixel},
+		{"output_cost_per_pixel", planned.OutputCostPerPixel, prior.OutputCostPerPixel},
+		{"input_cost_per_second", planned.InputCostPerSecond, prior.InputCostPerSecond},
+		{"output_cost_per_second", planned.OutputCostPerSecond, prior.OutputCostPerSecond},
+	} {
+		if field.planned.IsNull() && !field.prior.IsNull() && !field.prior.IsUnknown() {
+			cleared[field.name] = struct{}{}
+		}
+	}
+	if topThinkingOwned && !prior.ThinkingEnabled.IsNull() && prior.ThinkingEnabled.ValueBool() && !planned.ThinkingEnabled.ValueBool() {
+		cleared["thinking"] = struct{}{}
+	}
+	if !prior.MergeReasoningContentInChoices.IsNull() && prior.MergeReasoningContentInChoices.ValueBool() && (planned.MergeReasoningContentInChoices.IsNull() || (!planned.MergeReasoningContentInChoices.IsUnknown() && !planned.MergeReasoningContentInChoices.ValueBool())) {
+		cleared["merge_reasoning_content_in_choices"] = struct{}{}
+	}
+	if !prior.AccessGroups.IsNull() && !prior.AccessGroups.IsUnknown() && len(prior.AccessGroups.Elements()) > 0 && !planned.AccessGroups.IsUnknown() && len(planned.AccessGroups.Elements()) == 0 {
+		cleared["access_groups"] = struct{}{}
+	}
+	return cleared
+}
+
+func updateModelStringFromAPI(target *types.String, object map[string]interface{}, field string, owned, sensitive bool) error {
+	if !owned {
+		return nil
+	}
+	value, presence, err := apiValueAt(object, field)
+	if err != nil {
+		return err
+	}
+	if presence == apiValueAbsent {
+		if sensitive {
+			return nil
+		}
+		*target = types.StringNull()
+		return nil
+	}
+	if presence == apiValueNull {
+		*target = types.StringNull()
+		return nil
+	}
+	text, ok := value.(string)
+	if !ok {
+		return fmt.Errorf("invalid response field %q: expected a string", field)
+	}
+	if text == "" {
+		*target = types.StringNull()
+		return nil
+	}
+	if sensitive && isMaskedAPIString(text) {
+		return nil
+	}
+	*target = types.StringValue(text)
+	return nil
+}
+
+func partitionModelClears(cleared map[string]struct{}) (patchVerified, readback map[string]struct{}) {
+	patchVerified = make(map[string]struct{})
+	readback = make(map[string]struct{})
+	for field := range cleared {
+		switch field {
+		case "api_key", "api_base", "api_version", "reasoning_effort",
+			"aws_access_key_id", "aws_secret_access_key", "aws_region_name", "aws_session_name", "aws_role_name",
+			"vertex_project", "vertex_location", "vertex_credentials", "litellm_credential_name":
+			// PATCH returns encrypted-at-rest string values. Only a fresh
+			// decrypted read can prove the clear without trusting ciphertext.
+			readback[field] = struct{}{}
+		default:
+			patchVerified[field] = struct{}{}
+		}
+	}
+	return patchVerified, readback
+}
+
+func verifyModelPatchClears(result map[string]interface{}, cleared map[string]struct{}) error {
+	litellmParams, paramsOK := result["litellm_params"].(map[string]interface{})
+	modelInfo, infoOK := result["model_info"].(map[string]interface{})
+	if !paramsOK || !infoOK {
+		return fmt.Errorf("LiteLLM accepted the model update but did not return the authoritative litellm_params and model_info documents needed to verify requested clears; Terraform retained prior state")
+	}
+	return verifyModelClears(litellmParams, modelInfo, cleared)
+}
+
+func verifyModelClears(litellmParams, modelInfo map[string]interface{}, cleared map[string]struct{}) error {
+	for field := range cleared {
+		switch field {
+		case "mode", "access_groups":
+			value, present := modelInfo[field]
+			if !present || value == nil {
+				continue
+			}
+			if field == "mode" {
+				if text, ok := value.(string); ok && text == "" {
+					continue
+				}
+			} else if list, ok := value.([]interface{}); ok && len(list) == 0 {
+				continue
+			}
+			return fmt.Errorf("model_info.%s remains set after LiteLLM accepted its clear", field)
+		case "thinking":
+			value, present := litellmParams[field]
+			if !present || value == nil {
+				continue
+			}
+			document, ok := value.(map[string]interface{})
+			if ok {
+				kind, _ := document["type"].(string)
+				if kind == "disabled" {
+					continue
+				}
+			}
+			return fmt.Errorf("litellm_params.thinking remains enabled after LiteLLM accepted its clear")
+		case "merge_reasoning_content_in_choices":
+			value, present := litellmParams[field]
+			if !present || value == nil || value == false {
+				continue
+			}
+			return fmt.Errorf("litellm_params.%s remains enabled after LiteLLM accepted its clear", field)
+		case "reasoning_effort":
+			value, present := litellmParams[field]
+			if !present || value == nil || value == "" || value == "none" {
+				continue
+			}
+			return fmt.Errorf("litellm_params.reasoning_effort remains enabled after LiteLLM accepted its clear")
+		case "input_cost_per_token", "output_cost_per_token", "input_cost_per_pixel", "output_cost_per_pixel", "input_cost_per_second", "output_cost_per_second":
+			if value, present := litellmParams[field]; !present || value == nil {
+				continue
+			}
+			return fmt.Errorf("litellm_params.%s remains set after LiteLLM accepted its clear", field)
+		default:
+			value, present := litellmParams[field]
+			if !present || value == nil || value == "" {
+				continue
+			}
+			return fmt.Errorf("litellm_params.%s remains set after LiteLLM accepted its clear", field)
+		}
+	}
+	return nil
+}
+
+func setModelPatchString(target map[string]interface{}, key string, planned, prior types.String) {
+	if !planned.IsNull() && !planned.IsUnknown() {
+		target[key] = planned.ValueString()
+		return
+	}
+	if planned.IsNull() && !prior.IsNull() && !prior.IsUnknown() {
+		target[key] = ""
+	}
+}
+
+func setModelPatchCost(target map[string]interface{}, key string, planned, prior types.Float64, scale float64, clearable bool) {
+	if !planned.IsNull() && !planned.IsUnknown() {
+		target[key] = planned.ValueFloat64() / scale
+		return
+	}
+	if clearable && planned.IsNull() && !prior.IsNull() && !prior.IsUnknown() {
+		// LiteLLM v1.98 recognizes explicit null only for SPECIAL_MODEL_INFO_PARAMS.
+		target[key] = nil
+	}
+}
+
+// patchModel uses the PATCH /model/{model_id}/update endpoint for partial updates.
+func (r *ModelResource) patchModel(ctx context.Context, data, prior *ModelResourceModel, topThinkingOwned, priorTopThinkingOwned bool) (map[string]interface{}, error) {
 	modelID := data.ID.ValueString()
 	customLLMProvider := data.CustomLLMProvider.ValueString()
 	baseModel := data.BaseModel.ValueString()
 	modelName := fmt.Sprintf("%s/%s", customLLMProvider, baseModel)
 
-	// Build litellm_params for the patch request.
-	// NOTE: LiteLLM PATCH API merges litellm_params (via dict.update), it does not replace them.
-	// Parameters removed from config will NOT be removed from the API.
-	// To fully remove a parameter, the model must be recreated (e.g. terraform apply -replace=...).
+	// LiteLLM v1.98 shallow-merges both documents. Use only endpoint-proven
+	// semantic sentinels here; unsupported removals are replacement-planned.
 	litellmParams := map[string]interface{}{
 		"custom_llm_provider": customLLMProvider,
 		"model":               modelName,
 	}
 
-	// Add cost parameters
-	if !data.InputCostPerMillionTokens.IsNull() && !data.InputCostPerMillionTokens.IsUnknown() {
-		litellmParams["input_cost_per_token"] = data.InputCostPerMillionTokens.ValueFloat64() / 1000000.0
-	}
-	if !data.OutputCostPerMillionTokens.IsNull() && !data.OutputCostPerMillionTokens.IsUnknown() {
-		litellmParams["output_cost_per_token"] = data.OutputCostPerMillionTokens.ValueFloat64() / 1000000.0
-	}
+	setModelPatchCost(litellmParams, "input_cost_per_token", data.InputCostPerMillionTokens, prior.InputCostPerMillionTokens, 1000000.0, true)
+	setModelPatchCost(litellmParams, "output_cost_per_token", data.OutputCostPerMillionTokens, prior.OutputCostPerMillionTokens, 1000000.0, true)
 
-	// Add optional parameters
-	if !data.TPM.IsNull() && !data.TPM.IsUnknown() && data.TPM.ValueInt64() > 0 {
+	// Zero is a real deny-all limit, not a clear sentinel.
+	if !data.TPM.IsNull() && !data.TPM.IsUnknown() {
 		litellmParams["tpm"] = data.TPM.ValueInt64()
 	}
-	if !data.RPM.IsNull() && !data.RPM.IsUnknown() && data.RPM.ValueInt64() > 0 {
+	if !data.RPM.IsNull() && !data.RPM.IsUnknown() {
 		litellmParams["rpm"] = data.RPM.ValueInt64()
 	}
-	if !data.ModelAPIKey.IsNull() && !data.ModelAPIKey.IsUnknown() && data.ModelAPIKey.ValueString() != "" {
-		litellmParams["api_key"] = data.ModelAPIKey.ValueString()
-	}
-	if !data.ModelAPIBase.IsNull() && !data.ModelAPIBase.IsUnknown() && data.ModelAPIBase.ValueString() != "" {
-		litellmParams["api_base"] = data.ModelAPIBase.ValueString()
-	}
-	if !data.APIVersion.IsNull() && !data.APIVersion.IsUnknown() && data.APIVersion.ValueString() != "" {
-		litellmParams["api_version"] = data.APIVersion.ValueString()
-	}
-	if !data.ReasoningEffort.IsNull() && !data.ReasoningEffort.IsUnknown() && data.ReasoningEffort.ValueString() != "" {
+	setModelPatchString(litellmParams, "api_key", data.ModelAPIKey, prior.ModelAPIKey)
+	setModelPatchString(litellmParams, "api_base", data.ModelAPIBase, prior.ModelAPIBase)
+	setModelPatchString(litellmParams, "api_version", data.APIVersion, prior.APIVersion)
+	if !data.ReasoningEffort.IsNull() && !data.ReasoningEffort.IsUnknown() {
 		litellmParams["reasoning_effort"] = data.ReasoningEffort.ValueString()
+	} else if data.ReasoningEffort.IsNull() && !prior.ReasoningEffort.IsNull() && !prior.ReasoningEffort.IsUnknown() {
+		litellmParams["reasoning_effort"] = "none"
 	}
 	if !data.MergeReasoningContentInChoices.IsNull() && !data.MergeReasoningContentInChoices.IsUnknown() {
 		litellmParams["merge_reasoning_content_in_choices"] = data.MergeReasoningContentInChoices.ValueBool()
+	} else if data.MergeReasoningContentInChoices.IsNull() && !prior.MergeReasoningContentInChoices.IsNull() && !prior.MergeReasoningContentInChoices.IsUnknown() {
+		litellmParams["merge_reasoning_content_in_choices"] = false
 	}
 
-	// Thinking configuration
-	if !data.ThinkingEnabled.IsNull() && !data.ThinkingEnabled.IsUnknown() && data.ThinkingEnabled.ValueBool() {
-		litellmParams["thinking"] = map[string]interface{}{
-			"type":          "enabled",
-			"budget_tokens": data.ThinkingBudgetTokens.ValueInt64(),
+	if topThinkingOwned || priorTopThinkingOwned {
+		if topThinkingOwned && data.ThinkingEnabled.ValueBool() {
+			litellmParams["thinking"] = map[string]interface{}{
+				"type":          "enabled",
+				"budget_tokens": data.ThinkingBudgetTokens.ValueInt64(),
+			}
+		} else {
+			litellmParams["thinking"] = map[string]interface{}{"type": "disabled"}
 		}
 	}
 
-	// AWS parameters
-	if !data.AWSAccessKeyID.IsNull() && !data.AWSAccessKeyID.IsUnknown() && data.AWSAccessKeyID.ValueString() != "" {
-		litellmParams["aws_access_key_id"] = data.AWSAccessKeyID.ValueString()
-	}
-	if !data.AWSSecretAccessKey.IsNull() && !data.AWSSecretAccessKey.IsUnknown() && data.AWSSecretAccessKey.ValueString() != "" {
-		litellmParams["aws_secret_access_key"] = data.AWSSecretAccessKey.ValueString()
-	}
-	if !data.AWSRegionName.IsNull() && !data.AWSRegionName.IsUnknown() && data.AWSRegionName.ValueString() != "" {
-		litellmParams["aws_region_name"] = data.AWSRegionName.ValueString()
-	}
-	if !data.AWSSessionName.IsNull() && !data.AWSSessionName.IsUnknown() && data.AWSSessionName.ValueString() != "" {
-		litellmParams["aws_session_name"] = data.AWSSessionName.ValueString()
-	}
-	if !data.AWSRoleName.IsNull() && !data.AWSRoleName.IsUnknown() && data.AWSRoleName.ValueString() != "" {
-		litellmParams["aws_role_name"] = data.AWSRoleName.ValueString()
-	}
+	setModelPatchString(litellmParams, "aws_access_key_id", data.AWSAccessKeyID, prior.AWSAccessKeyID)
+	setModelPatchString(litellmParams, "aws_secret_access_key", data.AWSSecretAccessKey, prior.AWSSecretAccessKey)
+	setModelPatchString(litellmParams, "aws_region_name", data.AWSRegionName, prior.AWSRegionName)
+	setModelPatchString(litellmParams, "aws_session_name", data.AWSSessionName, prior.AWSSessionName)
+	setModelPatchString(litellmParams, "aws_role_name", data.AWSRoleName, prior.AWSRoleName)
+	setModelPatchString(litellmParams, "vertex_project", data.VertexProject, prior.VertexProject)
+	setModelPatchString(litellmParams, "vertex_location", data.VertexLocation, prior.VertexLocation)
+	setModelPatchString(litellmParams, "vertex_credentials", data.VertexCredentials, prior.VertexCredentials)
+	setModelPatchString(litellmParams, "litellm_credential_name", data.LiteLLMCredentialName, prior.LiteLLMCredentialName)
 
-	// Vertex parameters
-	if !data.VertexProject.IsNull() && !data.VertexProject.IsUnknown() && data.VertexProject.ValueString() != "" {
-		litellmParams["vertex_project"] = data.VertexProject.ValueString()
-	}
-	if !data.VertexLocation.IsNull() && !data.VertexLocation.IsUnknown() && data.VertexLocation.ValueString() != "" {
-		litellmParams["vertex_location"] = data.VertexLocation.ValueString()
-	}
-	if !data.VertexCredentials.IsNull() && !data.VertexCredentials.IsUnknown() && data.VertexCredentials.ValueString() != "" {
-		litellmParams["vertex_credentials"] = data.VertexCredentials.ValueString()
-	}
+	setModelPatchCost(litellmParams, "input_cost_per_pixel", data.InputCostPerPixel, prior.InputCostPerPixel, 1.0, false)
+	setModelPatchCost(litellmParams, "output_cost_per_pixel", data.OutputCostPerPixel, prior.OutputCostPerPixel, 1.0, false)
+	setModelPatchCost(litellmParams, "input_cost_per_second", data.InputCostPerSecond, prior.InputCostPerSecond, 1.0, false)
+	setModelPatchCost(litellmParams, "output_cost_per_second", data.OutputCostPerSecond, prior.OutputCostPerSecond, 1.0, false)
 
-	// Credential reference
-	if !data.LiteLLMCredentialName.IsNull() && !data.LiteLLMCredentialName.IsUnknown() && data.LiteLLMCredentialName.ValueString() != "" {
-		litellmParams["litellm_credential_name"] = data.LiteLLMCredentialName.ValueString()
-	}
-
-	// Cost per pixel/second
-	if !data.InputCostPerPixel.IsNull() && !data.InputCostPerPixel.IsUnknown() {
-		litellmParams["input_cost_per_pixel"] = data.InputCostPerPixel.ValueFloat64()
-	}
-	if !data.OutputCostPerPixel.IsNull() && !data.OutputCostPerPixel.IsUnknown() {
-		litellmParams["output_cost_per_pixel"] = data.OutputCostPerPixel.ValueFloat64()
-	}
-	if !data.InputCostPerSecond.IsNull() && !data.InputCostPerSecond.IsUnknown() {
-		litellmParams["input_cost_per_second"] = data.InputCostPerSecond.ValueFloat64()
-	}
-	if !data.OutputCostPerSecond.IsNull() && !data.OutputCostPerSecond.IsUnknown() {
-		litellmParams["output_cost_per_second"] = data.OutputCostPerSecond.ValueFloat64()
-	}
-
-	// Add additional_litellm_params to the request.
+	// Additional-map removals remain replacement-only via their plan modifiers.
 	// NOTE: LiteLLM PATCH API merges litellm_params (via dict.update), it does not replace them.
 	// Parameters removed from config will NOT be removed from the API.
 	// To fully remove a parameter, the model must be recreated (e.g. terraform apply -replace=...).
@@ -1451,30 +2016,25 @@ func (r *ModelResource) patchModel(ctx context.Context, data *ModelResourceModel
 		}
 	}
 
-	// Build model_info for the PATCH request
+	// Build model_info for the PATCH request.
 	modelInfo := map[string]interface{}{
 		"base_model": baseModel,
 	}
 
-	// Only add optional model_info fields if they have values
 	if !data.Tier.IsNull() && !data.Tier.IsUnknown() && data.Tier.ValueString() != "" {
 		modelInfo["tier"] = data.Tier.ValueString()
 	}
-	if !data.Mode.IsNull() && !data.Mode.IsUnknown() && data.Mode.ValueString() != "" {
-		modelInfo["mode"] = data.Mode.ValueString()
-	}
+	setModelPatchString(modelInfo, "mode", data.Mode, prior.Mode)
 	if !data.TeamID.IsNull() && !data.TeamID.IsUnknown() && data.TeamID.ValueString() != "" {
 		modelInfo["team_id"] = data.TeamID.ValueString()
 		modelInfo["team_public_model_name"] = data.ModelName.ValueString()
 	}
 
-	// Add access_groups to model_info if specified
+	// Empty access_groups is the endpoint-supported authorization clear.
 	if !data.AccessGroups.IsNull() && !data.AccessGroups.IsUnknown() {
 		var accessGroups []string
 		data.AccessGroups.ElementsAs(ctx, &accessGroups, false)
-		if len(accessGroups) > 0 {
-			modelInfo["access_groups"] = accessGroups
-		}
+		modelInfo["access_groups"] = accessGroups
 	}
 
 	// Add additional_model_info to the request. Like additional_litellm_params,
@@ -1495,7 +2055,11 @@ func (r *ModelResource) patchModel(ctx context.Context, data *ModelResourceModel
 	}
 
 	endpoint := fmt.Sprintf("/model/%s/update", modelID)
-	return r.client.DoRequestWithResponse(ctx, "PATCH", endpoint, patchReq, nil)
+	var result map[string]interface{}
+	if err := r.client.DoRequestWithResponse(ctx, "PATCH", endpoint, patchReq, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 // normalizeNumericString normalises a string that represents a number into a
