@@ -129,7 +129,7 @@ func (c *Client) doRequestWithResponse(ctx context.Context, method, requestPath 
 
 	if !accepted {
 		if readErr != nil {
-			return false, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "failed to read LiteLLM error response", identity: safeErrorIdentity(readErr), temporary: safeTemporaryResponseFailure(readErr)}
+			return false, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "failed to read LiteLLM error response", identity: safeErrorIdentity(readErr), retryable: safeTemporaryResponseFailure(readErr)}
 		}
 		notFound, fallbackNotReady := classifyRawErrorBody(bodyBytes)
 		detail, detailOmitted := "", true
@@ -149,7 +149,7 @@ func (c *Client) doRequestWithResponse(ctx context.Context, method, requestPath 
 	}
 
 	if readErr != nil {
-		return true, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "failed to read LiteLLM response", identity: safeErrorIdentity(readErr), temporary: safeTemporaryResponseFailure(readErr)}
+		return true, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "failed to read LiteLLM response", identity: safeErrorIdentity(readErr), retryable: safeTemporaryResponseFailure(readErr)}
 	}
 	if truncated {
 		return true, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "LiteLLM response exceeded the provider safety limit"}
@@ -158,7 +158,7 @@ func (c *Client) doRequestWithResponse(ctx context.Context, method, requestPath 
 		return true, nil
 	}
 	if err := json.Unmarshal(bodyBytes, result); err != nil {
-		return true, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "failed to decode LiteLLM response as JSON", identity: safeErrorIdentity(err)}
+		return true, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "failed to decode LiteLLM response as JSON", identity: safeErrorIdentity(err), retryable: true}
 	}
 	return true, nil
 }

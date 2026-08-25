@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -20,6 +22,12 @@ type failingReadCloser struct{ err error }
 
 func (r failingReadCloser) Read([]byte) (int, error) { return 0, r.err }
 func (r failingReadCloser) Close() error             { return nil }
+
+type temporaryTransportTestError struct{}
+
+func (temporaryTransportTestError) Error() string   { return "temporary detail must be discarded" }
+func (temporaryTransportTestError) Timeout() bool   { return false }
+func (temporaryTransportTestError) Temporary() bool { return true }
 
 func TestClientSensitiveEchoResponsesAreOmitted(t *testing.T) {
 	t.Parallel()
@@ -258,6 +266,40 @@ func TestClientTransportErrorOmitsURLAndCause(t *testing.T) {
 	}
 	if unwrapped := errors.Unwrap(err); unwrapped != nil {
 		t.Fatalf("generic transport error retained raw cause: %v", unwrapped)
+	}
+}
+
+func TestClientTransportRetryCategoryIsSafeAndNarrow(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		cause     error
+		category  safeTransportRetryCategory
+		retryable bool
+	}{
+		{name: "deadline", cause: context.DeadlineExceeded, category: safeTransportRetryTimeout, retryable: true},
+		{name: "temporary", cause: temporaryTransportTestError{}, category: safeTransportRetryTemporary, retryable: true},
+		{name: "connection reset", cause: fmt.Errorf("wrapped: %w", syscall.ECONNRESET), category: safeTransportRetryConnectionReset, retryable: true},
+		{name: "certificate", cause: x509.UnknownAuthorityError{}, category: safeTransportRetryNone},
+		{name: "configuration", cause: errors.New("invalid proxy configuration with secret"), category: safeTransportRetryNone},
+		{name: "cancellation", cause: context.Canceled, category: safeTransportRetryNone},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := safeTransportFailure(&url.Error{Op: "Get", URL: "https://example.invalid/?token=secret", Err: test.cause})
+			var safeErr *safeTransportError
+			if !errors.As(err, &safeErr) {
+				t.Fatalf("safeTransportFailure returned %T", err)
+			}
+			if safeErr.retryCategory != test.category || safeErr.Retryable() != test.retryable {
+				t.Fatalf("category=%v retryable=%t, want %v/%t", safeErr.retryCategory, safeErr.Retryable(), test.category, test.retryable)
+			}
+			rawCauseRetained := test.cause != context.Canceled && test.cause != context.DeadlineExceeded && errors.Unwrap(err) == test.cause
+			if strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), "example.invalid") || rawCauseRetained {
+				t.Fatalf("safe retry classification retained raw transport detail: %#v", err)
+			}
+		})
 	}
 }
 

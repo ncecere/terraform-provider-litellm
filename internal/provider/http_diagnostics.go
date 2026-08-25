@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"unicode"
 	"unicode/utf8"
 )
@@ -42,18 +43,28 @@ type requestSafety struct {
 	secrets         []string
 }
 
+type safeTransportRetryCategory uint8
+
+const (
+	safeTransportRetryNone safeTransportRetryCategory = iota
+	safeTransportRetryTimeout
+	safeTransportRetryTemporary
+	safeTransportRetryConnectionReset
+)
+
 type safeTransportError struct {
-	kind       string
-	identity   error
-	timeout    bool
-	temporary  bool
-	dispatched bool
+	kind          string
+	identity      error
+	timeout       bool
+	retryCategory safeTransportRetryCategory
+	dispatched    bool
 }
 
 func (e *safeTransportError) Error() string   { return e.kind }
 func (e *safeTransportError) Unwrap() error   { return e.identity }
 func (e *safeTransportError) Timeout() bool   { return e.timeout }
-func (e *safeTransportError) Temporary() bool { return e.temporary }
+func (e *safeTransportError) Temporary() bool { return e.Retryable() }
+func (e *safeTransportError) Retryable() bool { return e.retryCategory != safeTransportRetryNone }
 
 // safeDispatchedTransportFailure records that an HTTP transport was given the
 // request. Unless the failure proves a terminal TLS/protocol problem, a create
@@ -72,7 +83,7 @@ type safeResponseError struct {
 	requestID  string
 	kind       string
 	identity   error
-	temporary  bool
+	retryable  bool
 }
 
 func (e *safeResponseError) Error() string {
@@ -86,13 +97,13 @@ func (e *safeResponseError) Error() string {
 	return message
 }
 func (e *safeResponseError) Unwrap() error   { return e.identity }
-func (e *safeResponseError) Temporary() bool { return e.temporary }
+func (e *safeResponseError) Temporary() bool { return e.retryable }
 
 func safeTransportFailure(err error) error {
 	kind := "LiteLLM HTTP transport request failed"
 	var identity error
 	timedOut := false
-	temporary := false
+	retryCategory := safeTransportRetryNone
 	switch {
 	case errors.Is(err, context.Canceled):
 		kind = "LiteLLM HTTP request was canceled"
@@ -101,27 +112,31 @@ func safeTransportFailure(err error) error {
 		kind = "LiteLLM HTTP request timed out"
 		identity = context.DeadlineExceeded
 		timedOut = true
-		temporary = true
+		retryCategory = safeTransportRetryTimeout
 	default:
 		var netErr net.Error
 		var certErr x509.UnknownAuthorityError
 		var hostErr x509.HostnameError
+		var invalidCertErr x509.CertificateInvalidError
+		var rootsErr x509.SystemRootsError
+		var verificationErr *tls.CertificateVerificationError
 		var recordErr tls.RecordHeaderError
 		switch {
-		case errors.As(err, &certErr), errors.As(err, &hostErr), errors.As(err, &recordErr):
-			// Certificate, hostname, and protocol/configuration failures require
-			// operator action and must never consume a retry budget.
+		case errors.As(err, &certErr), errors.As(err, &hostErr), errors.As(err, &invalidCertErr), errors.As(err, &rootsErr), errors.As(err, &verificationErr), errors.As(err, &recordErr):
+			// TLS verification and local trust/configuration failures are terminal.
 			kind = "LiteLLM TLS verification failed"
 		case errors.As(err, &netErr) && netErr.Timeout():
 			kind = "LiteLLM HTTP request timed out"
 			identity = context.DeadlineExceeded
 			timedOut = true
-			temporary = true
+			retryCategory = safeTransportRetryTimeout
 		case errors.As(err, &netErr) && netErr.Temporary():
-			temporary = true
+			retryCategory = safeTransportRetryTemporary
+		case errors.Is(err, syscall.ECONNRESET):
+			retryCategory = safeTransportRetryConnectionReset
 		}
 	}
-	return &safeTransportError{kind: kind, identity: identity, timeout: timedOut, temporary: temporary}
+	return &safeTransportError{kind: kind, identity: identity, timeout: timedOut, retryCategory: retryCategory}
 }
 
 func safeTemporaryResponseFailure(err error) bool {
@@ -132,7 +147,7 @@ func safeTemporaryResponseFailure(err error) bool {
 		return true
 	}
 	var netErr net.Error
-	return errors.As(err, &netErr) && (netErr.Timeout() || netErr.Temporary())
+	return errors.As(err, &netErr) && (netErr.Timeout() || netErr.Temporary() || errors.Is(err, syscall.ECONNRESET))
 }
 
 func safeErrorIdentity(err error) error {
