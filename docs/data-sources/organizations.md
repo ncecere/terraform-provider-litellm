@@ -30,7 +30,7 @@ data "litellm_organizations" "matching" {
 
 ## Attribute Reference
 
-* `id` - Placeholder identifier.
+* `id` - Stable historical identifier (`organizations`), unchanged by filters.
 * `organizations` - List of organization objects, each containing:
   * `organization_id` - The unique identifier.
   * `organization_alias` - The human-readable alias.
@@ -38,4 +38,6 @@ data "litellm_organizations" "matching" {
   * `spend` - Current spend.
   * `tpm_limit` - Tokens per minute limit.
   * `rpm_limit` - Requests per minute limit.
-  * `blocked` - Whether the organization is blocked.
+  * `blocked` - Compatibility field reported as `false`; LiteLLM v1.98 does not return organization-level blocked state.
+
+Results are sorted deterministically by organization ID. The v1.98 `/organization/list` endpoint is unpaginated, so the provider makes one escaped, single-snapshot request.

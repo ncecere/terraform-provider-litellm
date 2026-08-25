@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
@@ -81,7 +82,7 @@ func (d *MCPServersListDataSource) Schema(ctx context.Context, req datasource.Sc
 							Computed:    true,
 						},
 						"spec_version": schema.StringAttribute{
-							Description: "MCP specification version.",
+							Description: "Compatibility field. LiteLLM v1.98 does not return an MCP specification version.",
 							Computed:    true,
 						},
 						"auth_type": schema.StringAttribute{
@@ -136,37 +137,24 @@ func (d *MCPServersListDataSource) Read(ctx context.Context, req datasource.Read
 		return
 	}
 
-	endpoint := "/v1/mcp/server"
-
-	var result []interface{}
-	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
-		// Try parsing as object with data field
-		var objResult map[string]interface{}
-		if err2 := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &objResult); err2 != nil {
-			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to list MCP servers: %s", err))
-			return
-		}
-		if dataArr, ok := objResult["data"].([]interface{}); ok {
-			result = dataArr
-		} else if serversArr, ok := objResult["servers"].([]interface{}); ok {
-			result = serversArr
-		}
+	const endpoint = "/v1/mcp/server"
+	result, err := fetchTopLevelListObjects(ctx, d.client, endpoint, "MCP server item")
+	if err != nil {
+		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to list MCP servers: %s", err))
+		return
 	}
 
-	// Set placeholder ID
 	data.ID = types.StringValue("mcp_servers")
-
 	data.MCPServers = make([]MCPServerListItem, 0, len(result))
-	for _, s := range result {
-		serverMap, ok := s.(map[string]interface{})
-		if !ok {
-			continue
-		}
+	for _, serverMap := range result {
 
 		item := MCPServerListItem{}
 
-		if serverID, ok := serverMap["server_id"].(string); ok {
+		if serverID, ok := serverMap["server_id"].(string); ok && serverID != "" {
 			item.ServerID = types.StringValue(serverID)
+		} else {
+			resp.Diagnostics.AddError("Invalid API Response", "/v1/mcp/server returned a server object without server_id")
+			return
 		}
 		if serverName, ok := serverMap["server_name"].(string); ok {
 			item.ServerName = types.StringValue(serverName)
@@ -206,6 +194,9 @@ func (d *MCPServersListDataSource) Read(ctx context.Context, req datasource.Read
 
 		data.MCPServers = append(data.MCPServers, item)
 	}
+	sort.SliceStable(data.MCPServers, func(i, j int) bool {
+		return data.MCPServers[i].ServerID.ValueString() < data.MCPServers[j].ServerID.ValueString()
+	})
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }

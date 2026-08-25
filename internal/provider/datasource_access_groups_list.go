@@ -88,36 +88,20 @@ func (d *AccessGroupsListDataSource) Read(ctx context.Context, req datasource.Re
 		return
 	}
 
-	var rawResult interface{}
-	if err := d.client.DoRequestWithResponse(ctx, "GET", "/access_group/list", nil, &rawResult); err != nil {
+	groups, err := fetchEnvelopeListObjects(ctx, d.client, "/access_group/list", "access_groups", "access group item")
+	if err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to list access groups: %s", err))
 		return
 	}
 
-	var rawGroups []interface{}
-	if result, ok := rawResult.(map[string]interface{}); ok {
-		if groups, ok := result["access_groups"].([]interface{}); ok {
-			rawGroups = groups
-		} else {
-			// Older shape: {"group-name": ["model-a", "model-b"]}
-			for accessGroup, models := range result {
-				rawGroups = append(rawGroups, map[string]interface{}{
-					"access_group": accessGroup,
-					"model_names":  models,
-				})
-			}
-		}
-	}
-
-	accessGroups := make([]AccessGroupListItemModel, 0, len(rawGroups))
-	for _, rawGroup := range rawGroups {
-		groupMap, ok := rawGroup.(map[string]interface{})
-		if !ok {
-			continue
-		}
+	accessGroups := make([]AccessGroupListItemModel, 0, len(groups))
+	for _, groupMap := range groups {
 		item := AccessGroupListItemModel{}
-		if accessGroup, ok := groupMap["access_group"].(string); ok {
+		if accessGroup, ok := groupMap["access_group"].(string); ok && accessGroup != "" {
 			item.AccessGroup = types.StringValue(accessGroup)
+		} else {
+			resp.Diagnostics.AddError("Invalid API Response", "/access_group/list returned an access group object without access_group")
+			return
 		}
 
 		modelNames, err := reconcileAccessGroupModelNames(ctx, types.ListNull(types.StringType), groupMap["model_names"])

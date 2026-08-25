@@ -42,7 +42,7 @@ data "litellm_models" "team_models" {
 
 ## Attribute Reference
 
-* `id` - Placeholder identifier.
+* `id` - Stable historical identifier (`models`), unchanged by filters.
 * `models` - List of model objects, each containing:
   * `id` - The unique identifier of the model.
   * `model_name` - The name of the model configuration.
@@ -51,3 +51,8 @@ data "litellm_models" "team_models" {
   * `tier` - The usage tier (free, paid).
   * `mode` - The model mode.
   * `team_id` - Team ID associated with this model.
+
+## Notes
+
+- The Terraform argument remains `team_id`; the provider sends LiteLLM v1.98's exact `teamId` query parameter.
+- Results are decoded from the canonical `data` envelope and sorted deterministically by model identity. `data` may be an array or, in LiteLLM's `user_model` mode, one model object normalized to a one-item list.

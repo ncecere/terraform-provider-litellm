@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
@@ -134,8 +135,8 @@ func (d *TagsListDataSource) Read(ctx context.Context, req datasource.ReadReques
 		return
 	}
 
-	var results []map[string]interface{}
-	if err := d.client.DoRequestWithResponse(ctx, "GET", "/tag/list", nil, &results); err != nil {
+	results, err := fetchTopLevelListObjects(ctx, d.client, "/tag/list", "tag item")
+	if err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to list tags: %s", err))
 		return
 	}
@@ -144,41 +145,53 @@ func (d *TagsListDataSource) Read(ctx context.Context, req datasource.ReadReques
 	for _, result := range results {
 		tag := TagListItemModel{}
 
-		if name, ok := result["name"].(string); ok {
+		if name, ok := result["name"].(string); ok && name != "" {
 			tag.Name = types.StringValue(name)
+		} else {
+			resp.Diagnostics.AddError("Invalid API Response", "/tag/list returned a tag object without name")
+			return
 		}
 		if description, ok := result["description"].(string); ok {
 			tag.Description = types.StringValue(description)
 		}
-		if budgetID, ok := result["budget_id"].(string); ok {
+		budgetMap := nestedListObject(result, "litellm_budget_table")
+		if budgetID, ok := budgetMap["budget_id"].(string); ok {
 			tag.BudgetID = types.StringValue(budgetID)
 		}
-		if maxBudget, ok := result["max_budget"].(float64); ok {
+		if maxBudget, ok := budgetMap["max_budget"].(float64); ok {
 			tag.MaxBudget = types.Float64Value(maxBudget)
 		}
-		if softBudget, ok := result["soft_budget"].(float64); ok {
+		if softBudget, ok := budgetMap["soft_budget"].(float64); ok {
 			tag.SoftBudget = types.Float64Value(softBudget)
 		}
-		if maxParallel, ok := result["max_parallel_requests"].(float64); ok {
+		if maxParallel, ok := budgetMap["max_parallel_requests"].(float64); ok {
 			tag.MaxParallelRequests = types.Int64Value(int64(maxParallel))
 		}
-		if tpmLimit, ok := result["tpm_limit"].(float64); ok {
+		if tpmLimit, ok := budgetMap["tpm_limit"].(float64); ok {
 			tag.TPMLimit = types.Int64Value(int64(tpmLimit))
 		}
-		if rpmLimit, ok := result["rpm_limit"].(float64); ok {
+		if rpmLimit, ok := budgetMap["rpm_limit"].(float64); ok {
 			tag.RPMLimit = types.Int64Value(int64(rpmLimit))
 		}
-		if budgetDuration, ok := result["budget_duration"].(string); ok {
+		if budgetDuration, ok := budgetMap["budget_duration"].(string); ok {
 			tag.BudgetDuration = types.StringValue(budgetDuration)
 		}
 
 		// Handle models list
 		if models, ok := result["models"].([]interface{}); ok {
-			modelsList := make([]attr.Value, 0, len(models))
-			for _, m := range models {
-				if str, ok := m.(string); ok {
-					modelsList = append(modelsList, types.StringValue(str))
+			modelNames := make([]string, 0, len(models))
+			for _, model := range models {
+				name, ok := model.(string)
+				if !ok {
+					resp.Diagnostics.AddError("Invalid API Response", "/tag/list returned a non-string models entry")
+					return
 				}
+				modelNames = append(modelNames, name)
+			}
+			sort.Strings(modelNames)
+			modelsList := make([]attr.Value, 0, len(modelNames))
+			for _, name := range modelNames {
+				modelsList = append(modelsList, types.StringValue(name))
 			}
 			tag.Models, _ = types.ListValue(types.StringType, modelsList)
 		} else {
@@ -186,7 +199,7 @@ func (d *TagsListDataSource) Read(ctx context.Context, req datasource.ReadReques
 		}
 
 		// Handle model_max_budget
-		if modelMaxBudget, ok := result["model_max_budget"].(map[string]interface{}); ok && len(modelMaxBudget) > 0 {
+		if modelMaxBudget, ok := budgetMap["model_max_budget"].(map[string]interface{}); ok && len(modelMaxBudget) > 0 {
 			if jsonBytes, err := json.Marshal(modelMaxBudget); err == nil {
 				tag.ModelMaxBudget = types.StringValue(string(jsonBytes))
 			}
@@ -194,6 +207,9 @@ func (d *TagsListDataSource) Read(ctx context.Context, req datasource.ReadReques
 
 		tags = append(tags, tag)
 	}
+	sort.SliceStable(tags, func(i, j int) bool {
+		return tags[i].Name.ValueString() < tags[j].Name.ValueString()
+	})
 
 	data.ID = types.StringValue("tags")
 	data.Tags = tags

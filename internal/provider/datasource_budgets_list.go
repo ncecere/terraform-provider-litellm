@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
@@ -34,6 +35,9 @@ type BudgetListItemModel struct {
 	RPMLimit            types.Int64   `tfsdk:"rpm_limit"`
 	BudgetDuration      types.String  `tfsdk:"budget_duration"`
 	ModelMaxBudget      types.String  `tfsdk:"model_max_budget"`
+	BudgetResetAt       types.String  `tfsdk:"budget_reset_at"`
+	CreatedAt           types.String  `tfsdk:"created_at"`
+	UpdatedAt           types.String  `tfsdk:"updated_at"`
 }
 
 func (d *BudgetsListDataSource) Metadata(ctx context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
@@ -85,6 +89,18 @@ func (d *BudgetsListDataSource) Schema(ctx context.Context, req datasource.Schem
 							Description: "JSON string for per-model budget configuration.",
 							Computed:    true,
 						},
+						"budget_reset_at": schema.StringAttribute{
+							Description: "Timestamp when the budget will next reset.",
+							Computed:    true,
+						},
+						"created_at": schema.StringAttribute{
+							Description: "Timestamp when the budget was created.",
+							Computed:    true,
+						},
+						"updated_at": schema.StringAttribute{
+							Description: "Timestamp when the budget was last updated.",
+							Computed:    true,
+						},
 					},
 				},
 			},
@@ -117,8 +133,8 @@ func (d *BudgetsListDataSource) Read(ctx context.Context, req datasource.ReadReq
 		return
 	}
 
-	var results []map[string]interface{}
-	if err := d.client.DoRequestWithResponse(ctx, "GET", "/budget/list", nil, &results); err != nil {
+	results, err := fetchTopLevelListObjects(ctx, d.client, "/budget/list", "budget item")
+	if err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to list budgets: %s", err))
 		return
 	}
@@ -127,8 +143,11 @@ func (d *BudgetsListDataSource) Read(ctx context.Context, req datasource.ReadReq
 	for _, result := range results {
 		budget := BudgetListItemModel{}
 
-		if budgetID, ok := result["budget_id"].(string); ok {
+		if budgetID, ok := result["budget_id"].(string); ok && budgetID != "" {
 			budget.BudgetID = types.StringValue(budgetID)
+		} else {
+			resp.Diagnostics.AddError("Invalid API Response", "/budget/list returned a budget object without budget_id")
+			return
 		}
 		if maxBudget, ok := result["max_budget"].(float64); ok {
 			budget.MaxBudget = types.Float64Value(maxBudget)
@@ -153,9 +172,21 @@ func (d *BudgetsListDataSource) Read(ctx context.Context, req datasource.ReadReq
 				budget.ModelMaxBudget = types.StringValue(string(jsonBytes))
 			}
 		}
+		if value, ok := result["budget_reset_at"].(string); ok {
+			budget.BudgetResetAt = types.StringValue(value)
+		}
+		if value, ok := result["created_at"].(string); ok {
+			budget.CreatedAt = types.StringValue(value)
+		}
+		if value, ok := result["updated_at"].(string); ok {
+			budget.UpdatedAt = types.StringValue(value)
+		}
 
 		budgets = append(budgets, budget)
 	}
+	sort.SliceStable(budgets, func(i, j int) bool {
+		return budgets[i].BudgetID.ValueString() < budgets[j].BudgetID.ValueString()
+	})
 
 	data.ID = types.StringValue("budgets")
 	data.Budgets = budgets

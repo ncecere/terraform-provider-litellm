@@ -64,7 +64,7 @@ The following attributes are exported:
   * `description` - Server description.
   * `url` - Server URL.
   * `transport` - Transport type (http, sse, stdio).
-  * `spec_version` - MCP specification version.
+  * `spec_version` - Compatibility field; LiteLLM v1.98 does not return an MCP specification version.
   * `auth_type` - Authentication type.
   * `status` - Current status.
   * `allow_all_keys` - Whether all keys are allowed.

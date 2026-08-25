@@ -2,7 +2,10 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/url"
+	"sort"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
@@ -30,6 +33,10 @@ type UserListItem struct {
 	RPMLimit  types.Int64   `tfsdk:"rpm_limit"`
 }
 
+func (item UserListItem) listItemIdentity() string {
+	return item.UserID.ValueString()
+}
+
 type UsersListDataSourceModel struct {
 	ID       types.String   `tfsdk:"id"`
 	UserRole types.String   `tfsdk:"user_role"`
@@ -45,7 +52,7 @@ func (d *UsersListDataSource) Schema(ctx context.Context, req datasource.SchemaR
 		Description: "Retrieves a list of LiteLLM users.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
-				Description: "Placeholder identifier.",
+				Description: "Stable historical identifier for this data source.",
 				Computed:    true,
 			},
 			"user_role": schema.StringAttribute{
@@ -121,64 +128,114 @@ func (d *UsersListDataSource) Read(ctx context.Context, req datasource.ReadReque
 		return
 	}
 
-	endpoint := "/user/list"
-	if !data.UserRole.IsNull() && data.UserRole.ValueString() != "" {
-		endpoint = fmt.Sprintf("/user/list?user_role=%s", data.UserRole.ValueString())
-	}
-
-	var result map[string]interface{}
-	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to list users: %s", err))
+	filters := userListFilters(data.UserRole)
+	users, err := listUsers(ctx, d.client, filters)
+	if err != nil {
+		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to list users: %s", safeListDiagnostic(err, filters)))
 		return
 	}
 
-	// Set placeholder ID
 	data.ID = types.StringValue("users")
-
-	// Parse the response
-	var usersData []interface{}
-	if users, ok := result["users"].([]interface{}); ok {
-		usersData = users
-	} else if dataArr, ok := result["data"].([]interface{}); ok {
-		usersData = dataArr
-	}
-
-	data.Users = make([]UserListItem, 0, len(usersData))
-	for _, u := range usersData {
-		userMap, ok := u.(map[string]interface{})
-		if !ok {
-			continue
-		}
-
-		item := UserListItem{}
-
-		if userID, ok := userMap["user_id"].(string); ok {
-			item.UserID = types.StringValue(userID)
-		}
-		if alias, ok := userMap["user_alias"].(string); ok {
-			item.UserAlias = types.StringValue(alias)
-		}
-		if email, ok := userMap["user_email"].(string); ok {
-			item.UserEmail = types.StringValue(email)
-		}
-		if role, ok := userMap["user_role"].(string); ok {
-			item.UserRole = types.StringValue(role)
-		}
-		if maxBudget, ok := userMap["max_budget"].(float64); ok {
-			item.MaxBudget = types.Float64Value(maxBudget)
-		}
-		if spend, ok := userMap["spend"].(float64); ok {
-			item.Spend = types.Float64Value(spend)
-		}
-		if tpmLimit, ok := userMap["tpm_limit"].(float64); ok {
-			item.TPMLimit = types.Int64Value(int64(tpmLimit))
-		}
-		if rpmLimit, ok := userMap["rpm_limit"].(float64); ok {
-			item.RPMLimit = types.Int64Value(int64(rpmLimit))
-		}
-
-		data.Users = append(data.Users, item)
-	}
-
+	data.Users = users
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+}
+
+func userListFilters(userRole types.String) url.Values {
+	filters := url.Values{}
+	// The Terraform argument keeps its existing user_role name, while LiteLLM
+	// v1.98's exact query parameter is role.
+	addKnownStringFilter(filters, "role", userRole)
+	return filters
+}
+
+type userListWirePage struct {
+	Users      json.RawMessage `json:"users"`
+	Total      *int            `json:"total"`
+	Page       *int            `json:"page"`
+	PageSize   *int            `json:"page_size"`
+	TotalPages *int            `json:"total_pages"`
+}
+
+func listUsers(ctx context.Context, client *Client, filters url.Values) ([]UserListItem, error) {
+	users, err := collectNumberedPages(ctx, "/user/list", func(ctx context.Context, page int) (numberedListPage[UserListItem], error) {
+		query := cloneURLValues(filters)
+		query.Set("page", fmt.Sprintf("%d", page))
+		query.Set("page_size", "100") // LiteLLM v1.98 endpoint maximum.
+		query.Set("sort_by", "user_id")
+		query.Set("sort_order", "asc")
+
+		var wire userListWirePage
+		if err := client.DoRequestWithResponse(ctx, "GET", endpointWithQuery("/user/list", query), nil, &wire); err != nil {
+			return numberedListPage[UserListItem]{}, err
+		}
+		if wire.Total == nil || wire.Page == nil || wire.PageSize == nil || wire.TotalPages == nil {
+			return numberedListPage[UserListItem]{}, fmt.Errorf("/user/list response omitted required pagination metadata")
+		}
+		if *wire.PageSize != 100 {
+			return numberedListPage[UserListItem]{}, fmt.Errorf("/user/list did not honor the requested page_size")
+		}
+		rawItems, err := decodeNamedList(wire.Users, "/user/list", "users")
+		if err != nil {
+			return numberedListPage[UserListItem]{}, err
+		}
+		items := make([]UserListItem, 0, len(rawItems))
+		for _, rawItem := range rawItems {
+			item, err := decodeUserListItem(rawItem)
+			if err != nil {
+				return numberedListPage[UserListItem]{}, err
+			}
+			items = append(items, item)
+		}
+		return numberedListPage[UserListItem]{
+			Items:      items,
+			Number:     *wire.Page,
+			TotalPages: *wire.TotalPages,
+			TotalCount: *wire.Total,
+		}, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	sort.SliceStable(users, func(i, j int) bool {
+		if users[i].UserID.ValueString() != users[j].UserID.ValueString() {
+			return users[i].UserID.ValueString() < users[j].UserID.ValueString()
+		}
+		return users[i].UserEmail.ValueString() < users[j].UserEmail.ValueString()
+	})
+	return users, nil
+}
+
+func decodeUserListItem(rawItem json.RawMessage) (UserListItem, error) {
+	userMap, err := decodeListObject(rawItem, "/user/list", "user item")
+	if err != nil {
+		return UserListItem{}, err
+	}
+	userID, ok := userMap["user_id"].(string)
+	if !ok || userID == "" {
+		return UserListItem{}, fmt.Errorf("/user/list returned a user object without user_id")
+	}
+	item := UserListItem{UserID: types.StringValue(userID)}
+	if alias, ok := userMap["user_alias"].(string); ok {
+		item.UserAlias = types.StringValue(alias)
+	}
+	if email, ok := userMap["user_email"].(string); ok {
+		item.UserEmail = types.StringValue(email)
+	}
+	if role, ok := userMap["user_role"].(string); ok {
+		item.UserRole = types.StringValue(role)
+	}
+	if maxBudget, ok := userMap["max_budget"].(float64); ok {
+		item.MaxBudget = types.Float64Value(maxBudget)
+	}
+	if spend, ok := userMap["spend"].(float64); ok {
+		item.Spend = types.Float64Value(spend)
+	}
+	if tpmLimit, ok := userMap["tpm_limit"].(float64); ok {
+		item.TPMLimit = types.Int64Value(int64(tpmLimit))
+	}
+	if rpmLimit, ok := userMap["rpm_limit"].(float64); ok {
+		item.RPMLimit = types.Int64Value(int64(rpmLimit))
+	}
+	return item, nil
 }

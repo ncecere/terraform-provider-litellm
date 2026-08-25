@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
@@ -126,31 +127,20 @@ func (d *AgentsListDataSource) Read(ctx context.Context, req datasource.ReadRequ
 		return
 	}
 
-	var result []map[string]interface{}
-	if err := d.client.DoRequestWithResponse(ctx, "GET", "/v1/agents", nil, &result); err != nil {
-		// The API may return a top-level array or an object with a key.
-		// Try unwrapping if needed.
-		var wrapped map[string]interface{}
-		if err2 := d.client.DoRequestWithResponse(ctx, "GET", "/v1/agents", nil, &wrapped); err2 == nil {
-			if agents, ok := wrapped["agents"].([]interface{}); ok {
-				for _, a := range agents {
-					if m, ok := a.(map[string]interface{}); ok {
-						result = append(result, m)
-					}
-				}
-			}
-		}
-		if result == nil {
-			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to list agents: %s", err))
-			return
-		}
+	result, err := fetchTopLevelListObjects(ctx, d.client, "/v1/agents", "agent item")
+	if err != nil {
+		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to list agents: %s", err))
+		return
 	}
 
 	agents := make([]AgentListItemModel, 0, len(result))
 	for _, item := range result {
 		agent := AgentListItemModel{}
-		if v, ok := item["agent_id"].(string); ok {
+		if v, ok := item["agent_id"].(string); ok && v != "" {
 			agent.AgentID = types.StringValue(v)
+		} else {
+			resp.Diagnostics.AddError("Invalid API Response", "/v1/agents returned an agent object without agent_id")
+			return
 		}
 		if v, ok := item["agent_name"].(string); ok {
 			agent.AgentName = types.StringValue(v)
@@ -184,6 +174,9 @@ func (d *AgentsListDataSource) Read(ctx context.Context, req datasource.ReadRequ
 		}
 		agents = append(agents, agent)
 	}
+	sort.SliceStable(agents, func(i, j int) bool {
+		return agents[i].AgentID.ValueString() < agents[j].AgentID.ValueString()
+	})
 
 	data.ID = types.StringValue("agents-list")
 	data.Agents = agents

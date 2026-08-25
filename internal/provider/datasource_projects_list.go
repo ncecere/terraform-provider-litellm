@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
@@ -121,8 +122,8 @@ func (d *ProjectsListDataSource) Read(ctx context.Context, req datasource.ReadRe
 		return
 	}
 
-	var result []map[string]interface{}
-	if err := d.client.DoRequestWithResponse(ctx, "GET", "/project/list", nil, &result); err != nil {
+	result, err := fetchTopLevelListObjects(ctx, d.client, "/project/list", "project item")
+	if err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to list projects: %s", err))
 		return
 	}
@@ -130,8 +131,11 @@ func (d *ProjectsListDataSource) Read(ctx context.Context, req datasource.ReadRe
 	projects := make([]ProjectListItemModel, 0, len(result))
 	for _, item := range result {
 		project := ProjectListItemModel{}
-		if v, ok := item["project_id"].(string); ok {
+		if v, ok := item["project_id"].(string); ok && v != "" {
 			project.ProjectID = types.StringValue(v)
+		} else {
+			resp.Diagnostics.AddError("Invalid API Response", "/project/list returned a project object without project_id")
+			return
 		}
 		if v, ok := item["project_alias"].(string); ok {
 			project.ProjectAlias = types.StringValue(v)
@@ -162,6 +166,9 @@ func (d *ProjectsListDataSource) Read(ctx context.Context, req datasource.ReadRe
 		}
 		projects = append(projects, project)
 	}
+	sort.SliceStable(projects, func(i, j int) bool {
+		return projects[i].ProjectID.ValueString() < projects[j].ProjectID.ValueString()
+	})
 
 	data.ID = types.StringValue("projects-list")
 	data.Projects = projects

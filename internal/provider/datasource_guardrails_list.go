@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
@@ -117,13 +118,11 @@ func (d *GuardrailsListDataSource) Read(ctx context.Context, req datasource.Read
 		return
 	}
 
-	var rawResult interface{}
-	if err := d.client.DoRequestWithResponse(ctx, "GET", "/guardrails/list", nil, &rawResult); err != nil {
+	results, err := fetchEnvelopeListObjects(ctx, d.client, "/guardrails/list", "guardrails", "guardrail item")
+	if err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to list guardrails: %s", err))
 		return
 	}
-
-	results := parseGuardrailsListResult(rawResult)
 	guardrails := make([]GuardrailListItemModel, 0, len(results))
 	for _, result := range results {
 		guardrail := GuardrailListItemModel{}
@@ -131,8 +130,11 @@ func (d *GuardrailsListDataSource) Read(ctx context.Context, req datasource.Read
 		if guardrailID, ok := result["guardrail_id"].(string); ok {
 			guardrail.GuardrailID = types.StringValue(guardrailID)
 		}
-		if name, ok := result["guardrail_name"].(string); ok {
+		if name, ok := result["guardrail_name"].(string); ok && name != "" {
 			guardrail.GuardrailName = types.StringValue(name)
+		} else {
+			resp.Diagnostics.AddError("Invalid API Response", "/guardrails/list returned a guardrail object without guardrail_name")
+			return
 		}
 		if createdAt, ok := result["created_at"].(string); ok {
 			guardrail.CreatedAt = types.StringValue(createdAt)
@@ -175,29 +177,17 @@ func (d *GuardrailsListDataSource) Read(ctx context.Context, req datasource.Read
 
 		guardrails = append(guardrails, guardrail)
 	}
+	sort.SliceStable(guardrails, func(i, j int) bool {
+		leftID := guardrails[i].GuardrailID.ValueString()
+		rightID := guardrails[j].GuardrailID.ValueString()
+		if leftID != rightID {
+			return leftID < rightID
+		}
+		return guardrails[i].GuardrailName.ValueString() < guardrails[j].GuardrailName.ValueString()
+	})
 
 	data.ID = types.StringValue("guardrails")
 	data.Guardrails = guardrails
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
-}
-
-func parseGuardrailsListResult(rawResult interface{}) []map[string]interface{} {
-	var rawGuardrails []interface{}
-	switch typed := rawResult.(type) {
-	case []interface{}:
-		rawGuardrails = typed
-	case map[string]interface{}:
-		if guardrails, ok := typed["guardrails"].([]interface{}); ok {
-			rawGuardrails = guardrails
-		}
-	}
-
-	results := make([]map[string]interface{}, 0, len(rawGuardrails))
-	for _, item := range rawGuardrails {
-		if guardrail, ok := item.(map[string]interface{}); ok {
-			results = append(results, guardrail)
-		}
-	}
-	return results
 }

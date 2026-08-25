@@ -1,29 +1,31 @@
 package provider
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
-func TestParsePromptsListResultWrappedObject(t *testing.T) {
+func TestDecodePromptsListExactEnvelope(t *testing.T) {
 	t.Parallel()
 
-	result := parsePromptsListResult(map[string]interface{}{
-		"prompts": []interface{}{
-			map[string]interface{}{"prompt_id": "test-prompt"},
-		},
-	})
-
-	if len(result) != 1 || result[0]["prompt_id"] != "test-prompt" {
-		t.Fatalf("unexpected prompts result: %#v", result)
+	items, err := decodeEnvelopeList(json.RawMessage(`{"prompts":[{"prompt_id":"test-prompt"}]}`), "/prompts/list", "prompts")
+	if err != nil {
+		t.Fatalf("decodeEnvelopeList() error = %v", err)
+	}
+	objects, err := decodeListObjects(items, "/prompts/list", "prompt item")
+	if err != nil {
+		t.Fatalf("decodeListObjects() error = %v", err)
+	}
+	if len(objects) != 1 || objects[0]["prompt_id"] != "test-prompt" {
+		t.Fatalf("unexpected prompts result: %#v", objects)
 	}
 }
 
-func TestParsePromptsListResultArray(t *testing.T) {
+func TestDecodePromptsListRejectsLegacyArrayShape(t *testing.T) {
 	t.Parallel()
 
-	result := parsePromptsListResult([]interface{}{
-		map[string]interface{}{"prompt_id": "test-prompt"},
-	})
-
-	if len(result) != 1 || result[0]["prompt_id"] != "test-prompt" {
-		t.Fatalf("unexpected prompts result: %#v", result)
+	_, err := decodeEnvelopeList(json.RawMessage(`[{"prompt_id":"test-prompt"}]`), "/prompts/list", "prompts")
+	if err == nil {
+		t.Fatal("decodeEnvelopeList() accepted unsupported array response")
 	}
 }
