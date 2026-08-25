@@ -2,15 +2,15 @@
 # All attributes populated
 
 resource "litellm_organization" "full" {
-  organization_alias = "test-org-full"
-  max_budget         = 1000.0
-  tpm_limit          = 200000
-  rpm_limit          = 2000
-  budget_duration    = "30d"
-  blocked            = false
+  organization_alias    = "test-org-full"
+  max_budget            = 1000.0
+  soft_budget           = 800.0
+  tpm_limit             = 200000
+  rpm_limit             = 2000
+  max_parallel_requests = 50
+  budget_duration       = "30d"
 
   models = ["gpt-4o", "gpt-4o-mini"]
-  tags   = ["testing", "full"]
 
   metadata = {
     "environment" = "testing"

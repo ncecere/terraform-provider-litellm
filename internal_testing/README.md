@@ -105,6 +105,10 @@ internal_testing/
     user_full.tf
     organization_minimal.tf
     organization_full.tf
+    organization_compatibility_defaults.tf
+    project_minimal.tf              # Enterprise-only
+    project_full.tf                 # Enterprise-only nested-budget coverage
+    project_budget_clear.tf         # two-apply set-to-clear fixture
     organization_member_minimal.tf
     organization_member_full.tf
     budget_minimal.tf
@@ -136,6 +140,7 @@ internal_testing/
     key.tf
     team.tf
     organization.tf
+    project.tf                      # Enterprise-only
     user.tf
     budget.tf
     credential_minimal.tf
@@ -152,6 +157,7 @@ internal_testing/
     keys_list.tf
     teams_list.tf
     organizations_list.tf
+    projects_list.tf                # Enterprise-only
     users_list.tf
     budgets_list.tf
     tags_list.tf
@@ -255,6 +261,13 @@ rm provider.tf variables.tf terraform.tfvars
 - Data sources reference resources from the `resources/` files. To use them,
   both the resource file and data source file must be in the same working
   directory.
+- Project resource/data-source fixtures require LiteLLM Enterprise and are not
+  part of the default 22-resource acceptance matrix. `project_budget_clear.tf`
+  is a two-apply fixture: apply its default first, then apply with
+  `-var='clear_project_budget=true'` to verify explicit budget and reset clears.
+- `organization_compatibility_defaults.tf` proves only the deprecated harmless
+  `blocked = false` and `tags = []` compatibility values. Non-default values are
+  intentionally rejected because LiteLLM v1.98 cannot persist them.
 - Provider credentials can also be set via environment variables instead of
   tfvars:
   ```bash

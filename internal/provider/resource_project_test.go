@@ -128,9 +128,9 @@ func TestReadProject_PopulatesState(t *testing.T) {
 			"description":   "A test project",
 			"team_id":       "team-456",
 			"models":        []interface{}{"gpt-4o"},
-			"tags":          []interface{}{"production"},
 			"metadata": map[string]interface{}{
 				"env":             "prod",
+				"tags":            []interface{}{"production"},
 				"model_rpm_limit": map[string]interface{}{"gpt-4o": float64(100)},
 				"model_tpm_limit": map[string]interface{}{"gpt-4o": float64(10000)},
 			},
@@ -153,6 +153,8 @@ func TestReadProject_PopulatesState(t *testing.T) {
 
 	data := ProjectResourceModel{
 		ID:             types.StringValue("proj-abc-123"),
+		ProjectAlias:   types.StringValue("configured-project"),
+		Description:    types.StringValue("configured description"),
 		Models:         types.ListUnknown(types.StringType),
 		Tags:           types.ListUnknown(types.StringType),
 		Metadata:       types.MapUnknown(types.StringType),

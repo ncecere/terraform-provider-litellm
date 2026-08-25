@@ -12,13 +12,9 @@ import (
 
 var _ datasource.DataSource = &ProjectsListDataSource{}
 
-func NewProjectsListDataSource() datasource.DataSource {
-	return &ProjectsListDataSource{}
-}
+func NewProjectsListDataSource() datasource.DataSource { return &ProjectsListDataSource{} }
 
-type ProjectsListDataSource struct {
-	client *Client
-}
+type ProjectsListDataSource struct{ client *Client }
 
 type ProjectsListDataSourceModel struct {
 	ID       types.String           `tfsdk:"id"`
@@ -26,90 +22,66 @@ type ProjectsListDataSourceModel struct {
 }
 
 type ProjectListItemModel struct {
-	ProjectID    types.String  `tfsdk:"project_id"`
-	ProjectAlias types.String  `tfsdk:"project_alias"`
-	Description  types.String  `tfsdk:"description"`
-	TeamID       types.String  `tfsdk:"team_id"`
-	Blocked      types.Bool    `tfsdk:"blocked"`
-	Spend        types.Float64 `tfsdk:"spend"`
-	CreatedAt    types.String  `tfsdk:"created_at"`
-	UpdatedAt    types.String  `tfsdk:"updated_at"`
-	CreatedBy    types.String  `tfsdk:"created_by"`
-	UpdatedBy    types.String  `tfsdk:"updated_by"`
+	ProjectID           types.String  `tfsdk:"project_id"`
+	ProjectAlias        types.String  `tfsdk:"project_alias"`
+	Description         types.String  `tfsdk:"description"`
+	TeamID              types.String  `tfsdk:"team_id"`
+	Blocked             types.Bool    `tfsdk:"blocked"`
+	Spend               types.Float64 `tfsdk:"spend"`
+	BudgetID            types.String  `tfsdk:"budget_id"`
+	MaxBudget           types.Float64 `tfsdk:"max_budget"`
+	SoftBudget          types.Float64 `tfsdk:"soft_budget"`
+	BudgetDuration      types.String  `tfsdk:"budget_duration"`
+	TPMLimit            types.Int64   `tfsdk:"tpm_limit"`
+	RPMLimit            types.Int64   `tfsdk:"rpm_limit"`
+	MaxParallelRequests types.Int64   `tfsdk:"max_parallel_requests"`
+	ModelRPMLimit       types.Map     `tfsdk:"model_rpm_limit"`
+	ModelTPMLimit       types.Map     `tfsdk:"model_tpm_limit"`
+	CreatedAt           types.String  `tfsdk:"created_at"`
+	UpdatedAt           types.String  `tfsdk:"updated_at"`
+	CreatedBy           types.String  `tfsdk:"created_by"`
+	UpdatedBy           types.String  `tfsdk:"updated_by"`
 }
 
-func (d *ProjectsListDataSource) Metadata(ctx context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
+func (d *ProjectsListDataSource) Metadata(_ context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
 	resp.TypeName = req.ProviderTypeName + "_projects"
 }
 
-func (d *ProjectsListDataSource) Schema(ctx context.Context, req datasource.SchemaRequest, resp *datasource.SchemaResponse) {
-	resp.Schema = schema.Schema{
-		Description: "Fetches a list of all LiteLLM Projects.",
-		Attributes: map[string]schema.Attribute{
-			"id": schema.StringAttribute{
-				Description: "Placeholder identifier for this data source.",
-				Computed:    true,
-			},
-			"projects": schema.ListNestedAttribute{
-				Description: "List of projects.",
-				Computed:    true,
-				NestedObject: schema.NestedAttributeObject{
-					Attributes: map[string]schema.Attribute{
-						"project_id": schema.StringAttribute{
-							Description: "The unique project ID.",
-							Computed:    true,
-						},
-						"project_alias": schema.StringAttribute{
-							Description: "Human-friendly name for the project.",
-							Computed:    true,
-						},
-						"description": schema.StringAttribute{
-							Description: "Description of the project.",
-							Computed:    true,
-						},
-						"team_id": schema.StringAttribute{
-							Description: "The team ID this project belongs to.",
-							Computed:    true,
-						},
-						"blocked": schema.BoolAttribute{
-							Description: "Whether the project is blocked.",
-							Computed:    true,
-						},
-						"spend": schema.Float64Attribute{
-							Description: "Total spend for this project.",
-							Computed:    true,
-						},
-						"created_at": schema.StringAttribute{
-							Description: "Timestamp when the project was created.",
-							Computed:    true,
-						},
-						"updated_at": schema.StringAttribute{
-							Description: "Timestamp when the project was last updated.",
-							Computed:    true,
-						},
-						"created_by": schema.StringAttribute{
-							Description: "User who created the project.",
-							Computed:    true,
-						},
-						"updated_by": schema.StringAttribute{
-							Description: "User who last updated the project.",
-							Computed:    true,
-						},
-					},
-				},
-			},
-		},
+func (d *ProjectsListDataSource) Schema(_ context.Context, _ datasource.SchemaRequest, resp *datasource.SchemaResponse) {
+	attributes := map[string]schema.Attribute{
+		"project_id":            schema.StringAttribute{Description: "Project ID.", Computed: true},
+		"project_alias":         schema.StringAttribute{Description: "Project alias.", Computed: true},
+		"description":           schema.StringAttribute{Description: "Project description.", Computed: true},
+		"team_id":               schema.StringAttribute{Description: "Parent team ID.", Computed: true},
+		"blocked":               schema.BoolAttribute{Description: "Whether the project is blocked.", Computed: true},
+		"spend":                 schema.Float64Attribute{Description: "Project spend.", Computed: true},
+		"budget_id":             schema.StringAttribute{Description: "Associated budget ID.", Computed: true},
+		"max_budget":            schema.Float64Attribute{Description: "Maximum hard budget.", Computed: true},
+		"soft_budget":           schema.Float64Attribute{Description: "Soft budget alert threshold.", Computed: true},
+		"budget_duration":       schema.StringAttribute{Description: "Budget reset duration.", Computed: true},
+		"tpm_limit":             schema.Int64Attribute{Description: "Tokens per minute limit.", Computed: true},
+		"rpm_limit":             schema.Int64Attribute{Description: "Requests per minute limit.", Computed: true},
+		"max_parallel_requests": schema.Int64Attribute{Description: "Maximum parallel requests.", Computed: true},
+		"model_rpm_limit":       schema.MapAttribute{Description: "Per-model RPM limits.", Computed: true, ElementType: types.Int64Type},
+		"model_tpm_limit":       schema.MapAttribute{Description: "Per-model TPM limits.", Computed: true, ElementType: types.Int64Type},
+		"created_at":            schema.StringAttribute{Description: "Creation timestamp.", Computed: true},
+		"updated_at":            schema.StringAttribute{Description: "Last update timestamp.", Computed: true},
+		"created_by":            schema.StringAttribute{Description: "Creating user.", Computed: true},
+		"updated_by":            schema.StringAttribute{Description: "Last updating user.", Computed: true},
 	}
+	resp.Schema = schema.Schema{Description: "Fetches LiteLLM projects with authoritative nested budget inventories.", Attributes: map[string]schema.Attribute{
+		"id":       schema.StringAttribute{Description: "Stable data source identifier.", Computed: true},
+		"projects": schema.ListNestedAttribute{Description: "Projects.", Computed: true, NestedObject: schema.NestedAttributeObject{Attributes: attributes}},
+	}}
 }
 
-func (d *ProjectsListDataSource) Configure(ctx context.Context, req datasource.ConfigureRequest, resp *datasource.ConfigureResponse) {
+func (d *ProjectsListDataSource) Configure(_ context.Context, req datasource.ConfigureRequest, resp *datasource.ConfigureResponse) {
 	if req.ProviderData == nil {
 		return
 	}
 	client, ok := req.ProviderData.(*Client)
 	if !ok {
-		resp.Diagnostics.AddError("Unexpected DataSource Configure Type",
-			fmt.Sprintf("Expected *Client, got: %T.", req.ProviderData))
+		resp.Diagnostics.AddError("Unexpected DataSource Configure Type", fmt.Sprintf("Expected *Client, got: %T.", req.ProviderData))
 		return
 	}
 	d.client = client
@@ -121,58 +93,100 @@ func (d *ProjectsListDataSource) Read(ctx context.Context, req datasource.ReadRe
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
 	result, err := fetchTopLevelListObjects(ctx, d.client, "/project/list", "project item")
 	if err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to list projects: %s", err))
 		return
 	}
-
 	projects := make([]ProjectListItemModel, 0, len(result))
-	for _, item := range result {
-		project := ProjectListItemModel{}
-		if v, ok := item["project_id"].(string); ok && v != "" {
-			project.ProjectID = types.StringValue(v)
-		} else {
+	for _, object := range result {
+		projectID, ok := object["project_id"].(string)
+		if !ok || projectID == "" {
 			resp.Diagnostics.AddError("Invalid API Response", "/project/list returned a project object without project_id")
 			return
 		}
-		if v, ok := item["project_alias"].(string); ok {
-			project.ProjectAlias = types.StringValue(v)
-		}
-		if v, ok := item["description"].(string); ok {
-			project.Description = types.StringValue(v)
-		}
-		if v, ok := item["team_id"].(string); ok {
-			project.TeamID = types.StringValue(v)
-		}
-		if v, ok := item["blocked"].(bool); ok {
-			project.Blocked = types.BoolValue(v)
-		}
-		if err := updateFloat64FromAPI(&project.Spend, item, true, true, "spend"); err != nil {
+		table, err := parseBudgetTable(object)
+		if err != nil {
 			resp.Diagnostics.AddError("Invalid API Response", err.Error())
 			return
 		}
-		if v, ok := item["created_at"].(string); ok {
-			project.CreatedAt = types.StringValue(v)
+		project := ProjectListItemModel{ProjectID: types.StringValue(projectID)}
+		for _, field := range []struct {
+			name   string
+			target *types.String
+		}{
+			{"project_alias", &project.ProjectAlias}, {"description", &project.Description}, {"team_id", &project.TeamID}, {"created_at", &project.CreatedAt}, {"updated_at", &project.UpdatedAt}, {"created_by", &project.CreatedBy}, {"updated_by", &project.UpdatedBy},
+		} {
+			if err := updateNullableString(field.target, object, field.name); err != nil {
+				resp.Diagnostics.AddError("Invalid API Response", err.Error())
+				return
+			}
 		}
-		if v, ok := item["updated_at"].(string); ok {
-			project.UpdatedAt = types.StringValue(v)
+		if blocked, presence, err := apiValueAt(object, "blocked"); err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", err.Error())
+			return
+		} else if presence == apiValuePresent {
+			value, ok := blocked.(bool)
+			if !ok {
+				resp.Diagnostics.AddError("Invalid API Response", "invalid response field blocked: expected a boolean")
+				return
+			}
+			project.Blocked = types.BoolValue(value)
+		} else {
+			project.Blocked = types.BoolNull()
 		}
-		if v, ok := item["created_by"].(string); ok {
-			project.CreatedBy = types.StringValue(v)
+		if err := updateFloat64FromAPI(&project.Spend, object, true, true, "spend"); err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", err.Error())
+			return
 		}
-		if v, ok := item["updated_by"].(string); ok {
-			project.UpdatedBy = types.StringValue(v)
+		budgetID, presence, err := budgetTableID(object, table)
+		if err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", err.Error())
+			return
+		}
+		if presence == apiValuePresent {
+			project.BudgetID = types.StringValue(budgetID)
+		} else {
+			project.BudgetID = types.StringNull()
+		}
+		for _, field := range []struct {
+			name   string
+			target *types.Float64
+		}{
+			{"max_budget", &project.MaxBudget}, {"soft_budget", &project.SoftBudget},
+		} {
+			if err := updateBudgetFloat64(field.target, table, true, true, field.name); err != nil {
+				resp.Diagnostics.AddError("Invalid API Response", err.Error())
+				return
+			}
+		}
+		for _, field := range []struct {
+			name   string
+			target *types.Int64
+		}{
+			{"tpm_limit", &project.TPMLimit}, {"rpm_limit", &project.RPMLimit}, {"max_parallel_requests", &project.MaxParallelRequests},
+		} {
+			if err := updateBudgetInt64(field.target, table, true, true, field.name); err != nil {
+				resp.Diagnostics.AddError("Invalid API Response", err.Error())
+				return
+			}
+		}
+		if err := updateBudgetDuration(&project.BudgetDuration, table, true, true); err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", err.Error())
+			return
+		}
+		if err := updateInt64MapFromAPI(&project.ModelRPMLimit, object, true, true, "metadata", "model_rpm_limit"); err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", err.Error())
+			return
+		}
+		if err := updateInt64MapFromAPI(&project.ModelTPMLimit, object, true, true, "metadata", "model_tpm_limit"); err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", err.Error())
+			return
 		}
 		projects = append(projects, project)
 	}
-	sort.SliceStable(projects, func(i, j int) bool {
-		return projects[i].ProjectID.ValueString() < projects[j].ProjectID.ValueString()
-	})
-
+	sort.SliceStable(projects, func(i, j int) bool { return projects[i].ProjectID.ValueString() < projects[j].ProjectID.ValueString() })
 	data.ID = types.StringValue("projects-list")
 	data.Projects = projects
-
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }

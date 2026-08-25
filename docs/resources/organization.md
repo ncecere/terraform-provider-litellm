@@ -1,6 +1,6 @@
 # litellm_organization (Resource)
 
-Manages organizations in LiteLLM. Organizations provide a way to group teams and users together under a shared budget and set of permissions.
+Manages a LiteLLM organization. Organizations group teams and users under shared model access and budget controls.
 
 ## Example Usage
 
@@ -12,22 +12,21 @@ resource "litellm_organization" "minimal" {
 }
 ```
 
-### Full Configuration
+### Full Supported Configuration
 
 ```hcl
 resource "litellm_organization" "full" {
-  organization_alias = "enterprise-org"
-  max_budget         = 1000.0
-  tpm_limit          = 200000
-  rpm_limit          = 2000
-  budget_duration    = "30d"
-  blocked            = false
-
-  models = ["gpt-4o", "gpt-4o-mini"]
-  tags   = ["testing", "full"]
+  organization_alias   = "enterprise-org"
+  models               = ["gpt-4o", "gpt-4o-mini"]
+  max_budget           = 1000.0
+  soft_budget          = 800.0
+  tpm_limit            = 200000
+  rpm_limit            = 2000
+  max_parallel_requests = 50
+  budget_duration      = "30d"
 
   metadata = {
-    "environment" = "testing"
+    environment = "production"
   }
 
   model_rpm_limit = {
@@ -40,71 +39,62 @@ resource "litellm_organization" "full" {
 }
 ```
 
-### Organization with Teams
+### Deprecated Compatibility Defaults
 
 ```hcl
-resource "litellm_organization" "company" {
-  organization_alias = "company-org"
-  max_budget         = 5000.0
-}
+resource "litellm_organization" "legacy_compatible" {
+  organization_alias = "legacy-compatible"
 
-resource "litellm_team" "dev_team" {
-  team_alias      = "development"
-  organization_id = litellm_organization.company.organization_id
-  max_budget      = 1000.0
-}
-
-resource "litellm_team" "prod_team" {
-  team_alias      = "production"
-  organization_id = litellm_organization.company.organization_id
-  max_budget      = 3000.0
+  # Accepted as deprecated no-ops for old configurations only.
+  blocked = false
+  tags    = []
 }
 ```
 
-## Argument Reference
+Do not configure `blocked = true` or non-empty `tags`. LiteLLM v1.98 has no organization columns that persist those values, and the provider rejects new non-default values rather than reporting false success. Use project/team blocking and organization `metadata` as appropriate.
 
-The following arguments are supported:
+## Argument Reference
 
 ### Required
 
-- `organization_alias` - (String) A human-readable alias for the organization. Must be unique.
+- `organization_alias` - (String) Human-readable organization alias.
 
 ### Optional
 
-- `organization_id` - (String, ForceNew) The unique identifier for the organization. If not provided, one will be generated automatically. Changing this forces creation of a new resource.
-- `models` - (List of String) List of model names the organization is allowed to use.
-- `budget_id` - (String) The ID of an existing budget to associate with this organization.
-- `max_budget` - (Float64) Maximum budget allowed for the organization.
-- `tpm_limit` - (Int64) Tokens per minute limit for the organization.
-- `rpm_limit` - (Int64) Requests per minute limit for the organization.
-- `model_rpm_limit` - (Map of Int64) Per-model requests per minute limits. LiteLLM v1.98 merges this metadata map, so adding or changing keys updates in place. Removing a known Terraform-owned key is blocked during planning.
-- `model_tpm_limit` - (Map of Int64) Per-model tokens per minute limits. LiteLLM v1.98 merges this metadata map, so adding or changing keys updates in place. Removing a known Terraform-owned key is blocked during planning.
-- `budget_duration` - (String) Duration of the budget window (e.g., `"30d"`, `"1h"`, `"7d"`).
-- `metadata` - (Map of String) Metadata associated with the organization. Values are strings; use `jsonencode()` for complex values (objects, arrays) — they will be sent as native JSON to the API.
-- `blocked` - (Bool) Whether the organization is blocked from making requests.
-- `tags` - (List of String) Tags associated with the organization.
+- `organization_id` - (String, ForceNew) Caller-selected ID. LiteLLM generates one when omitted.
+- `models` - (List of String) Models the organization may use. Configure `[]` to clear the list.
+- `budget_id` - (String) Existing budget to use during creation. Reassociating an existing organization is blocked because v1.98 has no safe convergent reassociation lifecycle.
+- `max_budget` - (Float64) Hard budget limit.
+- `soft_budget` - (Float64) Budget alert threshold.
+- `tpm_limit` - (Int64) Tokens-per-minute limit.
+- `rpm_limit` - (Int64) Requests-per-minute limit.
+- `max_parallel_requests` - (Int64) Concurrent request limit.
+- `model_rpm_limit` - (Map of Int64) Per-model RPM limits stored in organization metadata.
+- `model_tpm_limit` - (Map of Int64) Per-model TPM limits stored in organization metadata.
+- `budget_duration` - (String) Reset duration such as `"30d"`, `"1h"`, or `"7d"`.
+- `metadata` - (Map of String) Organization metadata. Use `jsonencode()` for complex values.
+- `blocked` - (Bool, Deprecated) Compatibility-only. `false` is a no-op; new `true` configuration is rejected.
+- `tags` - (List of String, Deprecated) Compatibility-only. `[]` is a no-op; new non-empty configuration is rejected.
 
 ## Attribute Reference
 
-In addition to all arguments above, the following attributes are exported:
-
-- `id` - The unique identifier for the organization (same as `organization_id`).
-- `created_at` - Timestamp of when the organization was created.
+- `id` - Organization ID, equal to `organization_id`.
+- `created_at` - Creation timestamp.
 
 ## Import
-
-Organizations can be imported using their organization ID:
 
 ```shell
 terraform import litellm_organization.example <organization-id>
 ```
 
-## Notes
+The first authoritative import read adopts visible nested budget values, including `budget_id` and exact integer limits above `2^53`. The imported `budget_id` may remain omitted from configuration without producing a plan. After it is explicitly configured and successfully applied, even to the same value, its import omission permission is consumed and later omission is rejected as an unsupported configured removal. Normal lifecycle reads do not adopt unconfigured API defaults.
 
-- Organizations are the top-level entity in LiteLLM's hierarchy.
-- Teams belong to organizations.
-- Budget limits at the organization level apply to all teams within it.
-- The `metadata` attribute is a map of strings. Use `jsonencode()` for complex values (objects, arrays) — they will be sent as native JSON to the API.
-- LiteLLM stores per-model RPM and TPM limits inside organization metadata. The provider reads those reserved keys through `model_rpm_limit` and `model_tpm_limit`; do not duplicate them in `metadata`.
-- LiteLLM v1.98 treats an empty per-model limit object as a merge no-op, not a clear. When a known Terraform-owned key is removed, including a nonempty-to-empty transition, the provider fails the plan before any API call while refreshed state still contains that key. It never replaces or deletes the organization automatically: v1.98 organization deletion cascades to dependent teams, memberships, and keys. Restore the key to continue managing the organization. If removal is necessary, coordinate the migration outside this resource, then run a normal refresh so authoritative state confirms the key is absent; the provider then retires that key's private ownership and omitted configuration is a no-op. A plan with `-refresh=false` remains blocked while stale state still contains the key. Import is safe and does not establish removal ownership, but it is not a substitute for refreshing an already-managed organization's migration.
-- Imported, upgraded, unknown, omitted, and otherwise unconfigured per-model maps do not establish removal ownership and do not produce this plan error. Adds and value changes remain in-place updates. This resource intentionally has no opt-in destructive-cascade mode.
+## Budget and Drift Semantics
+
+- LiteLLM v1.98 returns organization budget controls through `litellm_budget_table`; similarly named top-level fields are not authoritative. Structured `model_max_budget` is deferred because its GenericBudgetConfig values cannot be represented accurately as `map(float64)`.
+- Configured/imported budget values detect out-of-band changes and explicit remote nulls. Removing or changing a configured `budget_id` is rejected; an import-provenance marker permits omission only for an imported association.
+- An existing `budget_id` cannot be combined with budget limits or duration during create because v1.98 strips or ignores those controls against the shared budget. An absent or null relation clears owned state; malformed relations fail without publishing partial state.
+- Scalar and duration removal uses v1.98's transactional `/v2/organization/{id}` merge-patch endpoint with explicit `null` clears. Duration changes also recompute, or clear, the server reset timestamp.
+- Per-model RPM/TPM keys use the same endpoint's complete metadata replacement, allowing owned keys to clear without replacing the organization. Unrelated metadata already visible in state is preserved.
+- The provider never replaces or deletes an organization merely to clear a budget or metadata key; organization deletion cascades to dependent teams, memberships, and keys.
+- `budget_reset_at` is server-managed and is not exposed by the v1.98 organization response model. The provider initializes it when a configured duration is created and updates it when duration changes.

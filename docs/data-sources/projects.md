@@ -1,27 +1,33 @@
 # litellm_projects Data Source
 
-Fetches a list of all LiteLLM Projects.
+Fetches LiteLLM Projects with authoritative nested budget inventories.
 
 ## Example Usage
 
 ```hcl
 data "litellm_projects" "all" {}
 
-output "project_names" {
-  value = [for p in data.litellm_projects.all.projects : p.project_alias]
+output "project_budgets" {
+  value = {
+    for project in data.litellm_projects.all.projects :
+    project.project_id => project.max_budget
+  }
 }
 ```
 
 ## Attribute Reference
 
-* `projects` - List of projects. Each project has the following attributes:
-  * `project_id` - The unique project ID.
-  * `project_alias` - Human-friendly name for the project.
-  * `description` - Description of the project.
-  * `team_id` - The team ID this project belongs to.
-  * `blocked` - Whether the project is blocked.
-  * `spend` - Total spend for this project.
-  * `created_at` - Timestamp when the project was created.
-  * `updated_at` - Timestamp when the project was last updated.
-  * `created_by` - User who created the project.
-  * `updated_by` - User who last updated the project.
+- `id` - Stable data-source identifier.
+- `projects` - Deterministically ID-sorted objects containing:
+  - `project_id` / `project_alias` / `description` / `team_id`
+  - `blocked` / `spend`
+  - `budget_id`
+  - `max_budget` / `soft_budget`
+  - `budget_duration`
+  - `tpm_limit` / `rpm_limit`
+  - `max_parallel_requests`
+  - `model_rpm_limit` / `model_tpm_limit`
+  - `created_at` / `updated_at`
+  - `created_by` / `updated_by`
+
+Every exposed budget value is decoded from `litellm_budget_table`. Structured `model_max_budget` remains deferred rather than being flattened inaccurately. Null/absent relations produce null inventory values; malformed relations or inconsistent budget IDs fail the whole snapshot. Exact integer limits above `2^53` are preserved.
