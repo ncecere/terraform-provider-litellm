@@ -183,9 +183,13 @@ func (r *ProjectResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, projectImportedAliasPrivateKey, []byte("true"))...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, projectImportedDescriptionPrivateKey, []byte("true"))...)
 	}
-	planImportedOmissionOwnership(ctx, organizationProjectBudgetOwnershipPendingPrivateKey, importedBudget, !config.BudgetID.IsNull(), resp)
-	planImportedOmissionOwnership(ctx, projectAliasOwnershipPendingPrivateKey, importedAlias, !config.ProjectAlias.IsNull(), resp)
-	planImportedOmissionOwnership(ctx, projectDescriptionOwnershipPendingPrivateKey, importedDescription, !config.Description.IsNull(), resp)
+	budgetTransition := planImportedOmissionOwnership(ctx, organizationProjectBudgetOwnershipPendingPrivateKey, importedBudget, config.BudgetID, resp)
+	aliasTransition := planImportedOmissionOwnership(ctx, projectAliasOwnershipPendingPrivateKey, importedAlias, config.ProjectAlias, resp)
+	descriptionTransition := planImportedOmissionOwnership(ctx, projectDescriptionOwnershipPendingPrivateKey, importedDescription, config.Description, resp)
+	forceImportedOwnershipUpdate(ctx, "created_at",
+		(budgetTransition && state.BudgetID.Equal(config.BudgetID)) ||
+			(aliasTransition && state.ProjectAlias.Equal(config.ProjectAlias)) ||
+			(descriptionTransition && state.Description.Equal(config.Description)), resp)
 }
 
 func (r *ProjectResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {

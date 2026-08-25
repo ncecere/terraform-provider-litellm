@@ -133,7 +133,8 @@ func (r *OrganizationResource) ModifyPlan(ctx context.Context, req resource.Modi
 		}
 	}
 	if hasState && !resp.Diagnostics.HasError() {
-		planImportedOmissionOwnership(ctx, organizationProjectBudgetOwnershipPendingPrivateKey, importedBudget, !config.BudgetID.IsNull(), resp)
+		budgetTransition := planImportedOmissionOwnership(ctx, organizationProjectBudgetOwnershipPendingPrivateKey, importedBudget, config.BudgetID, resp)
+		forceImportedOwnershipUpdate(ctx, "created_at", budgetTransition && state.BudgetID.Equal(config.BudgetID), resp)
 	}
 }
 

@@ -60,18 +60,32 @@ func preserveOrganizationProjectBudgetID(ctx context.Context, resourceName strin
 	}
 }
 
-// planImportedOmissionOwnership records an explicit HCL ownership transition
-// as pending in planned private state while retaining the import permission.
-// Apply can persist partial private state on failure, so only a successful,
-// authoritative Update may remove the permission. Omission cancels a pending
-// transition retained from an earlier failed apply.
-func planImportedOmissionOwnership(ctx context.Context, pendingKey string, imported bool, configured bool, resp *resource.ModifyPlanResponse) {
+// planImportedOmissionOwnership records an explicit, known HCL ownership
+// transition as pending in planned private state while retaining the import
+// permission. Apply can persist partial private state on failure, so only a
+// successful, authoritative Update may remove the permission. Omission cancels
+// a pending transition retained from an earlier failed apply.
+func planImportedOmissionOwnership(ctx context.Context, pendingKey string, imported bool, config types.String, resp *resource.ModifyPlanResponse) bool {
+	transitioning := imported && knownString(config)
 	if resp.Private == nil {
-		return
+		return transitioning
 	}
-	if imported && configured {
+	if transitioning {
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, pendingKey, []byte("true"))...)
-		return
+		return true
 	}
 	resp.Diagnostics.Append(resp.Private.SetKey(ctx, pendingKey, nil)...)
+	return false
+}
+
+// forceImportedOwnershipUpdate makes an otherwise private-only ownership
+// transition visible to Terraform. Resource ModifyPlan runs after attribute
+// plan modifiers, so replacing a harmless computed timestamp with unknown
+// produces an Update without changing the public schema or requiring
+// replacement. Update resolves the timestamp through its authoritative read.
+func forceImportedOwnershipUpdate(ctx context.Context, timestamp string, force bool, resp *resource.ModifyPlanResponse) {
+	if !force || resp.Diagnostics.HasError() {
+		return
+	}
+	resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root(timestamp), types.StringUnknown())...)
 }
