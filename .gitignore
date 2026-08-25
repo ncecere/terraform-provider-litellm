@@ -35,8 +35,9 @@ override.tf.json
 .terraformrc
 terraform.rc
 
-# Binary files
+# Binary and release-package files
 terraform-provider-litellm
+/dist/
 
 # IDE and editor files
 .idea/

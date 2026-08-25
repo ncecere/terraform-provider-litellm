@@ -27,7 +27,7 @@ go build -o terraform-provider-litellm
 provider_dir=$(python3 -c 'import json, os; print(json.dumps(os.getcwd()))')
 cat > internal_testing/.dev.tfrc <<EOF
 provider_installation {
-  dev_overrides { "ncecere/litellm" = $provider_dir }
+  dev_overrides { "registry.terraform.io/ncecere/litellm" = $provider_dir }
   direct {}
 }
 EOF

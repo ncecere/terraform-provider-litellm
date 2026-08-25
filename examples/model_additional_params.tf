@@ -21,12 +21,12 @@ resource "litellm_model" "with_additional" {
 
   # Additional parameters not exposed as first-class arguments
   additional_litellm_params = {
-    "use_fine_tune"          = "true"                           # becomes boolean true
-    "max_context"            = "16384"                          # becomes integer 16384
-    "temperature_scale"      = "0.75"                           # becomes float 0.75
-    "experimental_feature"   = "enabled"                        # stays string "enabled"
-    "complex_config"         = "{\"nested\": {\"value\": 42}}"  # parsed as JSON object
-    "additional_drop_params" = "[\"reasoningEffort\"]"          # removes reasoningEffort parameter
+    "use_fine_tune"          = "true"                          # becomes boolean true
+    "max_context"            = "16384"                         # becomes integer 16384
+    "temperature_scale"      = "0.75"                          # becomes float 0.75
+    "experimental_feature"   = "enabled"                       # stays string "enabled"
+    "complex_config"         = "{\"nested\": {\"value\": 42}}" # parsed as JSON object
+    "additional_drop_params" = "[\"reasoningEffort\"]"         # removes reasoningEffort parameter
     # You may also pass non-string values (they will be passed through unchanged)
     # "raw_flag" = true
   }

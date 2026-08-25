@@ -1,7 +1,9 @@
 terraform {
+  required_version = ">= 1.0.0"
+
   required_providers {
     litellm = {
-      source = "ncecere/litellm"
+      source = "registry.terraform.io/ncecere/litellm"
     }
   }
 }

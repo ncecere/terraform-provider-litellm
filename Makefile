@@ -1,7 +1,7 @@
 HOSTNAME ?= registry.terraform.io
-NAMESPACE ?= local
+NAMESPACE ?= ncecere
 NAME ?= litellm
-VERSION ?= 1.0.0
+VERSION ?= 2.0.1
 OS_ARCH ?= $(shell go env GOOS)_$(shell go env GOARCH)
 
 default: install
