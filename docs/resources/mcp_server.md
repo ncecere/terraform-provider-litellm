@@ -155,7 +155,7 @@ The following arguments are supported:
 - `alias` - (String) An alias for the server. **Must not contain hyphens.**
 - `description` - (String) A human-readable description of the MCP server.
 - `spec_version` - (String) The MCP specification version. Defaults to `"2024-11-05"`.
-- `auth_type` - (String) The authentication type. Defaults to `"none"`. Supported values: `none`, `bearer_token`, `bearer`, `basic`, `api_key`, `authorization`, `oauth2`. When using a value other than `"none"`, the API requires credentials to be provided.
+- `auth_type` - (String) The authentication type. Defaults to `"none"`. LiteLLM v1.98 accepts exactly `none`, `api_key`, `bearer_token`, `basic`, `authorization`, `oauth2`, `aws_sigv4`, `token`, `oauth2_token_exchange`, `oauth2_id_jag`, `true_passthrough`, or `oauth_delegate`. When using a value other than `"none"`, the selected mode may require credentials and additional endpoint-specific fields.
 - `mcp_access_groups` - (List of String) Access groups that are allowed to use this MCP server.
 - `command` - (String) Command to execute for `stdio` transport.
 - `args` - (List of String) Arguments to pass to the command for `stdio` transport.
@@ -197,6 +197,8 @@ In addition to all arguments above, the following attributes are exported:
 - `created_by` - The user or system that created the MCP server.
 
 ## Import
+
+The earlier provider accepted `bearer`, but the LiteLLM v1.98 MCP request type does not. Use `bearer_token` for bearer-token authentication. The expanded v1.98 modes listed above are now accepted by Terraform. Imported/read state is not rewritten by configuration validation.
 
 MCP servers can be imported using their server ID:
 

@@ -69,7 +69,7 @@ The following arguments are supported:
 ### Optional
 
 * `dotprompt_content` - (Optional) The dotprompt-formatted content for the prompt. Supports YAML frontmatter for model configuration and Mustache-style `{{variable}}` template syntax.
-* `prompt_type` - (Optional) The type of prompt storage (e.g., `"db"` for database-stored prompts).
+* `prompt_type` - (Optional) The prompt definition location. LiteLLM v1.98 accepts exactly `"config"` or `"db"`.
 * `api_base` - (Optional) API base URL for the prompt manager endpoint.
 * `api_key` - (Optional, Sensitive) API key for authenticating with the prompt manager endpoint.
 * `provider_specific_query_params` - (Optional) Provider-specific query parameters to pass through.

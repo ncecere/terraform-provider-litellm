@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/hashicorp/terraform-plugin-framework-validators/mapvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -148,10 +149,13 @@ func (r *ModelResource) Schema(ctx context.Context, req resource.SchemaRequest, 
 				Required:    true,
 			},
 			"tier": schema.StringAttribute{
-				Description: "Model tier (free, paid, etc.).",
+				Description: "Model tier: free or paid.",
 				Optional:    true,
 				Computed:    true,
 				Default:     stringdefault.StaticString("free"),
+				Validators: []validator.String{
+					stringvalidator.OneOf("free", "paid"),
+				},
 			},
 			"team_id": schema.StringAttribute{
 				Description: "Team ID to associate with this model.",

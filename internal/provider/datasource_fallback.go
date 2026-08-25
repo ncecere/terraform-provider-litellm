@@ -6,9 +6,11 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -46,9 +48,12 @@ func (d *FallbackDataSource) Schema(ctx context.Context, req datasource.SchemaRe
 				Required:    true,
 			},
 			"fallback_type": schema.StringAttribute{
-				Description: "Type of fallback: 'general', 'context_window', or 'content_policy'. Defaults to 'general'.",
+				Description: "Type of fallback: general, context_window, or content_policy. Defaults to general.",
 				Optional:    true,
 				Computed:    true,
+				Validators: []validator.String{
+					stringvalidator.OneOf("general", "context_window", "content_policy"),
+				},
 			},
 			"fallback_models": schema.ListAttribute{
 				Description: "List of fallback model names in order of priority.",

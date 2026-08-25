@@ -6,12 +6,14 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -67,10 +69,13 @@ func (r *FallbackResource) Schema(ctx context.Context, req resource.SchemaReques
 				ElementType: types.StringType,
 			},
 			"fallback_type": schema.StringAttribute{
-				Description: "Type of fallback: 'general' (default), 'context_window', or 'content_policy'.",
+				Description: "Type of fallback: general (default), context_window, or content_policy.",
 				Optional:    true,
 				Computed:    true,
 				Default:     stringdefault.StaticString("general"),
+				Validators: []validator.String{
+					stringvalidator.OneOf("general", "context_window", "content_policy"),
+				},
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},

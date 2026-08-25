@@ -232,9 +232,9 @@ The following arguments are supported:
 
 * `rpm_limit` - (Optional) Requests per minute limit.
 
-* `tpm_limit_type` - (Optional) Type of TPM limit enforcement (e.g., `"best_effort_throughput"`, `"guaranteed_throughput"`).
+* `tpm_limit_type` - (Optional) Type of TPM limit enforcement. LiteLLM v1.98 accepts exactly `"guaranteed_throughput"`, `"best_effort_throughput"`, or `"dynamic"` for key requests.
 
-* `rpm_limit_type` - (Optional) Type of RPM limit enforcement (e.g., `"best_effort_throughput"`, `"guaranteed_throughput"`).
+* `rpm_limit_type` - (Optional) Type of RPM limit enforcement. LiteLLM v1.98 accepts exactly `"guaranteed_throughput"`, `"best_effort_throughput"`, or `"dynamic"` for key requests.
 
 * `budget_duration` - (Optional) Duration for the budget (e.g., `"30d"`, `"7d"`).
 
@@ -317,6 +317,10 @@ Hash import initializes `key_wo_version` to `"1"`; the configuration must initia
 Switching an existing stateful `key` resource to `key_wo` replaces the key and removes plaintext from the current state. Historical local backups or remote-state versions may still contain the old value and must be expired or purged according to the backend's retention controls.
 
 ## Upgrade Notes
+
+### LiteLLM v1.98 rate-limit types
+
+The earlier provider documentation suggested `"key"` and `"team"`, but LiteLLM v1.98 rejects both in `/key/generate` and `/key/update`. Replace an explicitly configured old value with `"best_effort_throughput"`, `"guaranteed_throughput"`, or `"dynamic"` according to the desired enforcement behavior. The validator applies to configuration, not API read-back, so import and refresh can still preserve a legacy server value until the configuration is migrated.
 
 ### v1.1.0 → v1.2.0: Hashed Resource ID
 

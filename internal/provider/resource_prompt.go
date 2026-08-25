@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -90,8 +92,11 @@ func (r *PromptResource) Schema(ctx context.Context, req resource.SchemaRequest,
 				Optional:    true,
 			},
 			"prompt_type": schema.StringAttribute{
-				Description: "Type of prompt: 'config' or 'db'.",
+				Description: "Type of prompt: config or db.",
 				Optional:    true,
+				Validators: []validator.String{
+					stringvalidator.OneOf("config", "db"),
+				},
 			},
 		},
 	}

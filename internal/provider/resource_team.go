@@ -23,7 +23,7 @@ import (
 var _ resource.Resource = &TeamResource{}
 var _ resource.ResourceWithImportState = &TeamResource{}
 
-var budgetDurationPattern = regexp.MustCompile(`^([1-9][0-9]*(s|m|h|d|w)|1mo|hourly|daily|weekly|monthly)$`)
+var budgetDurationPattern = regexp.MustCompile(`^([1-9][0-9]*(s|m|h|d|w|mo)|hourly|daily|weekly|monthly)$`)
 
 func NewTeamResource() resource.Resource {
 	return &TeamResource{}
@@ -174,12 +174,18 @@ func (r *TeamResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 				Optional:    true,
 			},
 			"tpm_limit_type": schema.StringAttribute{
-				Description: "Type of TPM limit: 'key' or 'team'. If 'team', TPM is shared across all keys for the team.",
+				Description: "TPM limit enforcement type. LiteLLM v1.98 accepts guaranteed_throughput or best_effort_throughput for teams.",
 				Optional:    true,
+				Validators: []validator.String{
+					stringvalidator.OneOf("guaranteed_throughput", "best_effort_throughput"),
+				},
 			},
 			"rpm_limit_type": schema.StringAttribute{
-				Description: "Type of RPM limit: 'key' or 'team'. If 'team', RPM is shared across all keys for the team.",
+				Description: "RPM limit enforcement type. LiteLLM v1.98 accepts guaranteed_throughput or best_effort_throughput for teams.",
 				Optional:    true,
+				Validators: []validator.String{
+					stringvalidator.OneOf("guaranteed_throughput", "best_effort_throughput"),
+				},
 			},
 			"max_budget": schema.Float64Attribute{
 				Description: "Maximum budget for the team.",
@@ -252,7 +258,7 @@ func (r *TeamResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 				Validators: []validator.String{
 					stringvalidator.RegexMatches(
 						budgetDurationPattern,
-						`must be hourly, daily, weekly, monthly, 1mo, or a positive integer with unit s, m, h, d, or w`,
+						`must be hourly, daily, weekly, monthly, or a positive integer with unit s, m, h, d, w, or mo`,
 					),
 				},
 			},

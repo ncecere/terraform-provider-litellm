@@ -81,7 +81,7 @@ func (r *TeamMemberResource) Schema(ctx context.Context, req resource.SchemaRequ
 				Validators: []validator.String{
 					stringvalidator.RegexMatches(
 						budgetDurationPattern,
-						`must be hourly, daily, weekly, monthly, 1mo, or a positive integer with unit s, m, h, d, or w`,
+						`must be hourly, daily, weekly, monthly, or a positive integer with unit s, m, h, d, w, or mo`,
 					),
 				},
 			},
