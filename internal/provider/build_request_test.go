@@ -153,10 +153,11 @@ func TestBuildTagRequest(t *testing.T) {
 
 	r := &TagResource{}
 	data := &TagResourceModel{
-		Name:        types.StringValue("prod"),
-		Description: types.StringValue("production tag"),
-		Models:      stringListValue("gpt-4o", "gpt-4o-mini"),
-		MaxBudget:   types.Float64Value(50),
+		Name:           types.StringValue("prod"),
+		Description:    types.StringValue("production tag"),
+		Models:         stringListValue("gpt-4o", "gpt-4o-mini"),
+		MaxBudget:      types.Float64Value(50),
+		ModelMaxBudget: types.StringValue(`{"legacy":2.5}`),
 	}
 
 	req, err := r.buildTagRequest(context.Background(), data)
@@ -173,6 +174,10 @@ func TestBuildTagRequest(t *testing.T) {
 	models, ok := req["models"].([]string)
 	if !ok || len(models) != 2 || models[0] != "gpt-4o" {
 		t.Errorf("models = %#v", req["models"])
+	}
+	modelBudget, ok := req["model_max_budget"].(map[string]interface{})
+	if !ok || modelBudget["legacy"] == nil {
+		t.Errorf("legacy create model budget = %#v", req["model_max_budget"])
 	}
 }
 

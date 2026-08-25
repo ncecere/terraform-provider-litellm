@@ -88,6 +88,7 @@ func TestReadTag(t *testing.T) {
 			"description": "production",
 			"budget_id":   "b-1",
 			"litellm_budget_table": map[string]interface{}{
+				"budget_id":             "b-1",
 				"max_budget":            50.75,
 				"max_parallel_requests": int64(9007199254740993),
 				"tpm_limit":             int64(math.MinInt64),

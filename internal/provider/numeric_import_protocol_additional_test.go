@@ -83,7 +83,7 @@ func TestAdditionalNumericImportProtocolsAdoptOnceAndTransitionMarker(t *testing
 		case "/project/info":
 			_, _ = writer.Write([]byte(`{"project_id":"project-import","project_alias":"imported project","team_id":"team-owner","litellm_budget_table":{"tpm_limit":9007199254740993,"model_max_budget":{}},"metadata":{"model_rpm_limit":{},"model_tpm_limit":{}}}`))
 		case "/tag/info":
-			_, _ = writer.Write([]byte(`{"tag-import":{"name":"tag-import","litellm_budget_table":{"tpm_limit":9007199254740993,"model_max_budget":{}}}}`))
+			_, _ = writer.Write([]byte(`{"tag-import":{"name":"tag-import","litellm_budget_table":{"budget_id":"tag-budget","tpm_limit":9007199254740993,"model_max_budget":{}}}}`))
 		case "/team/info":
 			if request.URL.Query().Get("team_id") == "team-member-import" {
 				_, _ = writer.Write([]byte(`{"team_id":"team-member-import","team_info":{"team_id":"team-member-import","team_alias":"member team","members_with_roles":[{"user_id":"member-import","role":"user"}]},"team_memberships":[{"user_id":"member-import","team_id":"team-member-import","budget_id":"member-budget","litellm_budget_table":{"budget_id":"member-budget","max_budget":42.5,"budget_duration":null}}]}`))

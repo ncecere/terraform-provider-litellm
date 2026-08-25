@@ -46,4 +46,10 @@ This data source has no required arguments.
   * `tpm_limit` - Maximum tokens per minute.
   * `rpm_limit` - Maximum requests per minute.
   * `budget_duration` - Duration for budget reset.
-  * `model_max_budget` - JSON string of per-model budget configuration.
+  * `model_max_budget` - Canonical JSON object mapping model names to LiteLLM `GenericBudgetConfig` objects.
+
+## LiteLLM v1.98 Behavior
+
+Stored tags expose budget fields through the nested `litellm_budget_table` relation. Missing relations and null fields become Terraform null; empty model maps remain `"{}"`; malformed relations or fields fail the complete read. TPM/RPM integers are decoded exactly, models and tags are sorted deterministically, and single/list budget projections use the same decoder. Historical finite numeric scalar model budgets created through earlier provider examples remain readable as a compatibility exception; all other entries must be valid `GenericBudgetConfig` objects.
+
+`/tag/list` can also return dynamic names reconstructed from historical spend. Those items have no stored budget relation and therefore return null budget fields. A deleted, historically used name can reappear this way. LiteLLM does not include tag spend in this response, so no authoritative `spend` attribute is available.

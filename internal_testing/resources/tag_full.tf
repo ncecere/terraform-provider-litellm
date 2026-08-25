@@ -12,7 +12,10 @@ resource "litellm_tag" "full" {
   rpm_limit             = 500
   budget_duration       = "30d"
   model_max_budget = jsonencode({
-    "gpt-4o" = 250.0
+    "gpt-4o" = {
+      max_budget      = 250.0
+      budget_duration = "30d"
+    }
   })
 }
 
