@@ -133,6 +133,7 @@ internal_testing/
     search_tool_minimal.tf
     search_tool_full.tf
     agent_minimal.tf
+    agent_mcp_tool_permissions.tf # map(string) JSON-array wire bridge
     unified_access_group_minimal.tf
 
   datasources/                 # one file per data source
@@ -197,8 +198,8 @@ identity. Protocol tests additionally prove that imported masked values remain
 absent and unowned and that adding an unproven values or model source fails
 before PATCH, deletion, or replacement. Semantic JSON coverage includes native
 structured guardrail modes, full search-tool objects, budget single/list data
-sources, empty-object projection, and no-drift read-back after LiteLLM
-canonicalizes object formatting.
+sources, agent MCP tool-permission JSON arrays, empty-object projection, and
+no-drift read-back after LiteLLM canonicalizes object formatting.
 
 The matrix is restricted to a disposable loopback LiteLLM v1.98.0 backend and
 requires two opt-in values before it performs destructive lifecycle tests:

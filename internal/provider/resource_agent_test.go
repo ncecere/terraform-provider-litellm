@@ -59,7 +59,10 @@ func TestBuildAgentRequest_BedrockAgentCore(t *testing.T) {
 		}),
 	}
 
-	request := (&AgentResource{}).buildAgentRequest(data)
+	request, err := (&AgentResource{}).buildAgentRequest(data)
+	if err != nil {
+		t.Fatalf("build AgentCore request: %v", err)
+	}
 	card := request["agent_card_params"].(map[string]interface{})
 	if card["url"] != "" || card["protocolVersion"] != "1.0" {
 		t.Fatalf("AgentCore card = %#v, want empty URL and protocolVersion 1.0", card)
@@ -165,7 +168,10 @@ func TestHydrateUnmanagedAgentUpdateFieldsPreservesRemoteSecrets(t *testing.T) {
 	if got := data.StaticHeaders.Elements()["is_public"].(types.String).ValueString(); got != "legitimate-header-value" {
 		t.Fatalf("legitimate static header is_public = %q", got)
 	}
-	request := resource.buildAgentRequest(&data)
+	request, err := resource.buildAgentRequest(&data)
+	if err != nil {
+		t.Fatalf("build hydrated request: %v", err)
+	}
 	params := request["litellm_params"].(map[string]interface{})
 	if _, present := params["is_public"]; present {
 		t.Fatalf("update request included synthetic is_public: %#v", params)
@@ -213,7 +219,10 @@ func TestHydrateMaskedPlannedAgentValuesPreservesRealChanges(t *testing.T) {
 	if got := params["model"].(types.String).ValueString(); got != "planned-new-model" {
 		t.Fatalf("genuine planned model update was overwritten: %q", got)
 	}
-	request := resource.buildAgentRequest(&data)
+	request, err := resource.buildAgentRequest(&data)
+	if err != nil {
+		t.Fatalf("build masked request: %v", err)
+	}
 	requestParams := request["litellm_params"].(map[string]interface{})
 	if requestParams["api_key"] != "real-api-key-value" || requestParams["model"] != "planned-new-model" {
 		t.Fatalf("update request params = %#v", requestParams)
@@ -262,7 +271,10 @@ func TestBuildAgentRequest_Minimal(t *testing.T) {
 		},
 	}
 
-	req := r.buildAgentRequest(data)
+	req, err := r.buildAgentRequest(data)
+	if err != nil {
+		t.Fatalf("build minimal request: %v", err)
+	}
 
 	if req["agent_name"] != "test-agent" {
 		t.Errorf("expected agent_name 'test-agent', got %v", req["agent_name"])
@@ -350,7 +362,10 @@ func TestBuildAgentRequest_Full(t *testing.T) {
 		ExtraHeaders: stringListValue("Authorization"),
 	}
 
-	req := r.buildAgentRequest(data)
+	req, err := r.buildAgentRequest(data)
+	if err != nil {
+		t.Fatalf("build full request: %v", err)
+	}
 
 	if req["agent_name"] != "full-agent" {
 		t.Errorf("expected agent_name 'full-agent', got %v", req["agent_name"])

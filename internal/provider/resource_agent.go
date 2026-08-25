@@ -13,6 +13,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -305,9 +306,10 @@ func (r *AgentResource) Schema(ctx context.Context, req resource.SchemaRequest, 
 						ElementType: types.StringType,
 					},
 					"mcp_tool_permissions": schema.MapAttribute{
-						Description: "Per-MCP-server tool permissions (map of server ID to list of allowed tools, JSON-encoded).",
+						Description: "Per-MCP-server tool permissions. The public type remains map(string): each value must be a JSON array containing only tool-name strings, such as jsonencode([\"list_issues\"]). Empty arrays and an empty map are valid explicit clears.",
 						Optional:    true,
 						ElementType: types.StringType,
+						Validators:  []validator.Map{agentMCPToolPermissionsValidator{}},
 					},
 					"models": schema.ListAttribute{
 						Description: "Model IDs the agent can use.",
@@ -345,7 +347,11 @@ func (r *AgentResource) Create(ctx context.Context, req resource.CreateRequest, 
 		return
 	}
 
-	agentReq := r.buildAgentRequest(&data)
+	agentReq, err := r.buildAgentRequest(&data)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid MCP Tool Permissions", "The agent MCP tool permissions could not be converted to the LiteLLM request shape. Each map value must be a JSON array containing only strings.")
+		return
+	}
 
 	var result map[string]interface{}
 	if err := r.client.DoRequestWithResponse(ctx, "POST", "/v1/agents", agentReq, &result); err != nil {
@@ -353,16 +359,43 @@ func (r *AgentResource) Create(ctx context.Context, req resource.CreateRequest, 
 		return
 	}
 
+	confirmedAgentID := types.StringNull()
 	if agentID, ok := result["agent_id"].(string); ok {
-		data.ID = types.StringValue(agentID)
+		confirmedAgentID = types.StringValue(agentID)
+		data.ID = confirmedAgentID
 	}
+	planned := cloneAgentResourceModel(data)
 
-	// Read back for full state
+	// Read back for full state.
 	if err := r.readAgent(ctx, &data); err != nil {
+		if isInvalidAgentMCPToolPermissionsResponse(err) {
+			setAgentIdentityOnlyCreateState(ctx, resp, confirmedAgentID)
+			resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned malformed MCP tool permissions. The response was rejected without exposing permission content.")
+			return
+		}
+		if agentMCPToolPermissionsOwned(planned) {
+			setAgentIdentityOnlyCreateState(ctx, resp, confirmedAgentID)
+			resp.Diagnostics.AddError("Agent MCP Tool Permissions Not Confirmed", "LiteLLM accepted the agent create, but read-back did not confirm the requested MCP tool permissions. Only the confirmed agent identity was retained for recovery.")
+			return
+		}
 		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Agent created but failed to read back: %s", err))
+	} else if !agentMCPToolPermissionsConfirmed(planned, data) {
+		setAgentIdentityOnlyCreateState(ctx, resp, confirmedAgentID)
+		resp.Diagnostics.AddError("Agent MCP Tool Permissions Not Confirmed", "LiteLLM accepted the agent create but did not return the requested MCP tool permissions. Only the confirmed agent identity was retained for recovery.")
+		return
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+}
+
+func setAgentIdentityOnlyCreateState(ctx context.Context, resp *resource.CreateResponse, confirmedAgentID types.String) {
+	partial := AgentResourceModel{
+		ID:            confirmedAgentID,
+		LiteLLMParams: types.MapNull(types.StringType),
+		StaticHeaders: types.MapNull(types.StringType),
+		ExtraHeaders:  types.ListNull(types.StringType),
+	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, &partial)...)
 }
 
 func (r *AgentResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -408,7 +441,11 @@ func (r *AgentResource) Update(ctx context.Context, req resource.UpdateRequest, 
 		return
 	}
 
-	agentReq := r.buildAgentRequest(&data)
+	agentReq, err := r.buildAgentRequest(&data)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid MCP Tool Permissions", "The agent MCP tool permissions could not be converted to the LiteLLM request shape. Each map value must be a JSON array containing only strings.")
+		return
+	}
 
 	endpoint := fmt.Sprintf("/v1/agents/%s", url.PathEscape(data.ID.ValueString()))
 	if err := r.client.DoRequestWithResponse(ctx, "PUT", endpoint, agentReq, nil); err != nil {
@@ -416,6 +453,7 @@ func (r *AgentResource) Update(ctx context.Context, req resource.UpdateRequest, 
 		return
 	}
 
+	planned := cloneAgentResourceModel(data)
 	changedCapabilities := changedAgentCapabilityFieldsNotConverged(data, state, state)
 	if len(changedCapabilities) > 0 {
 		if err := r.readAgentCapabilitiesAfterUpdate(ctx, &data, data, state, 8); err != nil {
@@ -423,7 +461,19 @@ func (r *AgentResource) Update(ctx context.Context, req resource.UpdateRequest, 
 			return
 		}
 	} else if err := r.readAgent(ctx, &data); err != nil {
+		if isInvalidAgentMCPToolPermissionsResponse(err) {
+			resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned malformed MCP tool permissions. The response was rejected without exposing permission content.")
+			return
+		}
+		if agentMCPToolPermissionsOwned(planned) {
+			resp.Diagnostics.AddError("Agent MCP Tool Permissions Not Confirmed", "LiteLLM accepted the agent update, but read-back did not confirm the requested MCP tool permissions. Prior Terraform state was retained for recovery.")
+			return
+		}
 		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Agent updated but failed to read back: %s", err))
+	}
+	if !resp.Diagnostics.HasError() && !agentMCPToolPermissionsConfirmed(planned, data) {
+		resp.Diagnostics.AddError("Agent MCP Tool Permissions Not Confirmed", "LiteLLM accepted the agent update but did not return the requested MCP tool permissions. Prior Terraform state was retained for recovery.")
+		return
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
@@ -539,7 +589,7 @@ func (r *AgentResource) hydrateUnmanagedAgentUpdateFields(ctx context.Context, d
 
 // --- Build request ---
 
-func (r *AgentResource) buildAgentRequest(data *AgentResourceModel) map[string]interface{} {
+func (r *AgentResource) buildAgentRequest(data *AgentResourceModel) (map[string]interface{}, error) {
 	req := map[string]interface{}{
 		"agent_name": data.AgentName.ValueString(),
 	}
@@ -669,16 +719,13 @@ func (r *AgentResource) buildAgentRequest(data *AgentResourceModel) map[string]i
 			perm["agents"] = listToStringSlice(data.ObjectPermission.Agents)
 		}
 		if !data.ObjectPermission.MCPToolPermissions.IsNull() && !data.ObjectPermission.MCPToolPermissions.IsUnknown() {
-			// MCPToolPermissions is map(string) where values are JSON-encoded arrays
-			toolPerms := map[string]interface{}{}
-			for k, v := range data.ObjectPermission.MCPToolPermissions.Elements() {
-				if sv, ok := v.(types.String); ok {
-					toolPerms[k] = sv.ValueString()
-				}
+			toolPerms, err := decodeConfiguredAgentMCPToolPermissions(data.ObjectPermission.MCPToolPermissions)
+			if err != nil {
+				return nil, err
 			}
-			if len(toolPerms) > 0 {
-				perm["mcp_tool_permissions"] = toolPerms
-			}
+			// Preserve an explicitly configured empty map. LiteLLM distinguishes
+			// omission from an empty object when permissions are being cleared.
+			perm["mcp_tool_permissions"] = toolPerms
 		}
 		if len(perm) > 0 {
 			req["object_permission"] = perm
@@ -715,7 +762,7 @@ func (r *AgentResource) buildAgentRequest(data *AgentResourceModel) map[string]i
 		req["extra_headers"] = listToStringSlice(data.ExtraHeaders)
 	}
 
-	return req
+	return req, nil
 }
 
 // reconcileAgentStringMap keeps configured map keys selectively owned while
@@ -895,9 +942,18 @@ func (r *AgentResource) readAgentWithNumericOwnership(ctx context.Context, data 
 		r.readAgentCard(cardRaw, data)
 	}
 
-	// Object permission
-	if permRaw, ok := result["object_permission"].(map[string]interface{}); ok {
-		r.readObjectPermission(permRaw, data)
+	// Object permission. A null or omitted object makes its MCP tool
+	// permission absent, but must not alter the other independently scoped
+	// nested fields.
+	rawObjectPermission, objectPermissionPresent := result["object_permission"]
+	if permRaw, ok := rawObjectPermission.(map[string]interface{}); ok {
+		if err := r.readObjectPermission(permRaw, data); err != nil {
+			return err
+		}
+	} else if !objectPermissionPresent || rawObjectPermission == nil {
+		reconcileAbsentAgentMCPToolPermissions(data)
+	} else {
+		return invalidAgentMCPToolPermissionsResponseError{}
 	}
 
 	return nil
@@ -1188,9 +1244,16 @@ func cloneAgentResourceModel(source AgentResourceModel) AgentResourceModel {
 	return cloned
 }
 
-func (r *AgentResource) readObjectPermission(permRaw map[string]interface{}, data *AgentResourceModel) {
+func (r *AgentResource) readObjectPermission(permRaw map[string]interface{}, data *AgentResourceModel) error {
+	populateAll := data.ObjectPermission == nil
 	if data.ObjectPermission == nil {
-		data.ObjectPermission = &AgentObjectPermissionModel{}
+		data.ObjectPermission = &AgentObjectPermissionModel{
+			MCPServers:         types.ListNull(types.StringType),
+			MCPAccessGroups:    types.ListNull(types.StringType),
+			MCPToolPermissions: types.MapNull(types.StringType),
+			Models:             types.ListNull(types.StringType),
+			Agents:             types.ListNull(types.StringType),
+		}
 	}
 	perm := data.ObjectPermission
 
@@ -1206,13 +1269,43 @@ func (r *AgentResource) readObjectPermission(permRaw map[string]interface{}, dat
 	if v, ok := permRaw["agents"].([]interface{}); ok {
 		perm.Agents = interfaceSliceToStringList(v)
 	}
-	if v, ok := permRaw["mcp_tool_permissions"].(map[string]interface{}); ok {
-		toolMap := map[string]attr.Value{}
-		for k, val := range v {
-			toolMap[k] = types.StringValue(fmt.Sprintf("%v", val))
-		}
-		perm.MCPToolPermissions, _ = types.MapValue(types.StringType, toolMap)
+
+	rawToolPermissions, present := permRaw["mcp_tool_permissions"]
+	if !present || rawToolPermissions == nil {
+		reconcileAbsentAgentMCPToolPermissions(data)
+		return nil
 	}
+	observed, err := decodeObservedAgentMCPToolPermissions(rawToolPermissions)
+	if err != nil {
+		return err
+	}
+	// A configured non-null map owns the field, including an explicit empty
+	// map. A nil block is import/API-owned and adopts deterministic JSON.
+	owned := !perm.MCPToolPermissions.IsNull() && !perm.MCPToolPermissions.IsUnknown()
+	if !owned && !populateAll {
+		return nil
+	}
+	perm.MCPToolPermissions, err = reconcileAgentMCPToolPermissions(perm.MCPToolPermissions, observed)
+	return err
+}
+
+// reconcileAbsentAgentMCPToolPermissions applies authoritative absence without
+// disturbing sibling object_permission fields. An explicit empty map is the
+// successful clear representation and remains stable. Any nonempty prior map
+// becomes null so apply consistency checks and ordinary refresh expose that
+// LiteLLM did not retain the requested permission.
+func reconcileAbsentAgentMCPToolPermissions(data *AgentResourceModel) {
+	if data.ObjectPermission == nil {
+		return
+	}
+	current := data.ObjectPermission.MCPToolPermissions
+	if current.IsNull() {
+		return
+	}
+	if !current.IsUnknown() && len(current.Elements()) == 0 {
+		return
+	}
+	data.ObjectPermission.MCPToolPermissions = types.MapNull(types.StringType)
 }
 
 // --- Helpers ---

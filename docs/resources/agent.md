@@ -119,8 +119,15 @@ resource "litellm_agent" "full" {
 
   object_permission {
     models      = ["gpt-4o", "gpt-4o-mini"]
-    mcp_servers = ["mcp-server-1"]
+    mcp_servers = ["mcp-server-1", "mcp-server-2"]
     agents      = ["other-agent-id"]
+
+    # This attribute intentionally remains map(string) for state and HCL
+    # compatibility. Each value is a JSON array of tool-name strings.
+    mcp_tool_permissions = {
+      "mcp-server-1" = jsonencode(["list_issues", "get_issue"])
+      "mcp-server-2" = "[]"
+    }
   }
 }
 ```
@@ -179,7 +186,7 @@ Configured capability values are read authoritatively. If LiteLLM accepts a flag
 
 * `mcp_servers` - (Optional) List of MCP server IDs the agent can access.
 * `mcp_access_groups` - (Optional) List of MCP access groups the agent belongs to.
-* `mcp_tool_permissions` - (Optional) Map of MCP server ID to allowed tools (JSON-encoded).
+* `mcp_tool_permissions` - (Optional) `map(string)` of MCP server ID to allowed tools. Each map value must be a valid JSON array containing only strings; use `jsonencode(["tool_a", "tool_b"])`. Empty arrays (`"[]"`) and an explicit empty map (`{}`) are valid and are sent to LiteLLM to clear the corresponding permissions. Do not pass a JSON object for the whole map or a Terraform list as an individual value.
 * `models` - (Optional) List of model IDs the agent can use.
 * `agents` - (Optional) List of other agent IDs this agent can invoke.
 
@@ -200,6 +207,12 @@ terraform import litellm_agent.example <agent-id>
 ```
 
 Import and Read should use a LiteLLM `PROXY_ADMIN` credential when agent configuration contains secrets. LiteLLM masks `litellm_params` and omits `static_headers` for lower-privilege readers; the provider rejects an import that would otherwise store an unrecoverable masked value. Before every PUT, a proxy-admin preflight rehydrates unmanaged parameter/header fields so an earlier redacted import cannot erase remote credentials.
+
+Imported `mcp_tool_permissions` values are stored as deterministic compact JSON arrays, for example `["list_issues","get_issue"]`. For configured values, the provider preserves the existing JSON spelling when LiteLLM returns the same ordered string array, avoiding whitespace-only drift. API `null` or omission means the permission is absent: an explicit empty-map clear remains stable, while a prior nonempty map is removed from state so Terraform reports a rejected apply or subsequent drift. Older state containing the provider's former invalid rendering (for example `[tool_a tool_b]`) is repaired from a valid API read; it is rejected before any mutation if it cannot first be repaired. Present malformed API permission values fail the read without changing state. After a successful create or update, null, omitted, or different permissions fail explicitly instead of relying on Terraform's generic consistency check: creates retain only the confirmed agent ID for recovery, while updates retain prior state.
+
+## Upgrade Note: MCP Tool Permission JSON Values
+
+The public `mcp_tool_permissions` schema remains `map(string)`; there is no state migration, address change, or import syntax change. Every existing configured value must be a JSON string array. Use `jsonencode(...)` when possible. Omitting the attribute leaves it unmanaged within a configured `object_permission` block, while `mcp_tool_permissions = {}` explicitly clears the complete tool-permission map.
 
 ## Upgrade Note: Sensitive Agent Maps
 

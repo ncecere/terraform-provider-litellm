@@ -61,7 +61,7 @@ run_credential_import_case() {
 # Explicit coverage table. litellm_project is enterprise-only and intentionally
 # excluded; every other registered resource has a lifecycle case here.
 run_case access_group resources model_access_group.tf,access_group_minimal.tf
-run_case agent resources agent_minimal.tf,agent_bedrock_agentcore.tf datasources agent.tf,agents_list.tf
+run_case agent resources mcp_server_minimal.tf,agent_minimal.tf,agent_bedrock_agentcore.tf,agent_mcp_tool_permissions.tf datasources agent.tf,agents_list.tf
 run_case budget resources budget_minimal.tf datasources budget.tf,budgets_list.tf
 run_case credential_values resources credential_minimal.tf,credential_full.tf datasources credential_minimal.tf,credential_full.tf
 run_case credential_model resources credential_model.tf datasources credential_by_model.tf
