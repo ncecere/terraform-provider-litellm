@@ -89,44 +89,54 @@ func (c *Client) DoRequest(ctx context.Context, method, requestPath string, body
 // Response reads are bounded and every returned error is safe to include in a
 // Terraform diagnostic.
 func (c *Client) DoRequestWithResponse(ctx context.Context, method, requestPath string, body interface{}, result interface{}) error {
+	_, err := c.doRequestWithResponse(ctx, method, requestPath, body, result)
+	return err
+}
+
+// doRequestWithResponse is the single bounded, redacted response path used by
+// callers that also need to know whether LiteLLM accepted a mutation before a
+// success body failed validation. accepted is true only for an HTTP 2xx
+// response; it does not imply that the bounded body was readable or valid JSON.
+func (c *Client) doRequestWithResponse(ctx context.Context, method, requestPath string, body interface{}, result interface{}) (accepted bool, err error) {
 	request, safety, err := c.prepareRequest(ctx, method, requestPath, body)
 	if err != nil {
-		return err
+		return false, err
 	}
 	response, err := c.executeRequest(request)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer response.Body.Close()
 
+	accepted = response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices
 	requestID := safeRequestID(response.Header, safety)
 	limit := maxSuccessResponseBody
-	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+	if !accepted {
 		limit = maxErrorResponseBody
 	}
 	if response.ContentLength > limit {
-		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-			return &APIError{
+		if !accepted {
+			return false, &APIError{
 				StatusCode:    response.StatusCode,
 				RequestID:     requestID,
 				DetailOmitted: true,
 				BodyTruncated: true,
 			}
 		}
-		return &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "LiteLLM response exceeded the provider safety limit"}
+		return true, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "LiteLLM response exceeded the provider safety limit"}
 	}
 	bodyBytes, truncated, readErr := readBoundedBody(response.Body, limit)
 
-	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+	if !accepted {
 		if readErr != nil {
-			return &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "failed to read LiteLLM error response", identity: safeErrorIdentity(readErr)}
+			return false, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "failed to read LiteLLM error response", identity: safeErrorIdentity(readErr)}
 		}
 		notFound, fallbackNotReady := classifyRawErrorBody(bodyBytes)
 		detail, detailOmitted := "", true
 		if !truncated {
 			detail, detailOmitted = safeResponseDetail(bodyBytes, response.Header.Get("Content-Type"), safety)
 		}
-		return &APIError{
+		return false, &APIError{
 			StatusCode:       response.StatusCode,
 			Body:             detail,
 			RequestID:        requestID,
@@ -139,18 +149,18 @@ func (c *Client) DoRequestWithResponse(ctx context.Context, method, requestPath 
 	}
 
 	if readErr != nil {
-		return &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "failed to read LiteLLM response", identity: safeErrorIdentity(readErr)}
+		return true, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "failed to read LiteLLM response", identity: safeErrorIdentity(readErr)}
 	}
 	if truncated {
-		return &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "LiteLLM response exceeded the provider safety limit"}
+		return true, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "LiteLLM response exceeded the provider safety limit"}
 	}
 	if result == nil || len(bodyBytes) == 0 || string(bodyBytes) == "null" {
-		return nil
+		return true, nil
 	}
 	if err := json.Unmarshal(bodyBytes, result); err != nil {
-		return &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "failed to decode LiteLLM response as JSON", identity: safeErrorIdentity(err)}
+		return true, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "failed to decode LiteLLM response as JSON", identity: safeErrorIdentity(err)}
 	}
-	return nil
+	return true, nil
 }
 
 // IsAPIErrorStatus reports whether an error came from an HTTP API response
