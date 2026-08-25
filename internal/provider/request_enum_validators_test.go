@@ -246,7 +246,7 @@ func TestMCPAuthTypesMatchExactLiteLLMV198RequestContract(t *testing.T) {
 	}
 }
 
-func TestShippedMCPServerAuthTypeLiteralsPassProviderValidation(t *testing.T) {
+func TestShippedMCPServerHCLMatchesV198AuthContracts(t *testing.T) {
 	t.Parallel()
 
 	_, testFile, _, ok := runtime.Caller(0)
@@ -260,7 +260,7 @@ func TestShippedMCPServerAuthTypeLiteralsPassProviderValidation(t *testing.T) {
 		"examples/mcp-servers/main.tf":                  false,
 		"internal_testing/resources/mcp_server_full.tf": false,
 	}
-	checked := 0
+	checked, credentialMapsChecked := 0, 0
 
 	for _, directory := range []string{"examples", "internal_testing/resources"} {
 		err := filepath.WalkDir(filepath.Join(repoRoot, directory), func(path string, entry fs.DirEntry, walkErr error) error {
@@ -308,6 +308,47 @@ func TestShippedMCPServerAuthTypeLiteralsPassProviderValidation(t *testing.T) {
 				if validateStringValue(context.Background(), validators, types.StringValue(literal)) {
 					t.Errorf("%s resource %q uses unsupported auth_type %q", relativePath, block.Labels[1], literal)
 				}
+
+				credentialKeys := []string{}
+				credentials, hasCredentials := block.Body.Attributes["credentials"]
+				if hasCredentials {
+					object, ok := credentials.Expr.(*hclsyntax.ObjectConsExpr)
+					if !ok {
+						t.Errorf("%s resource %q credentials must be a literal object, got %T", relativePath, block.Labels[1], credentials.Expr)
+					} else {
+						for _, item := range object.Items {
+							key, keyDiagnostics := item.KeyExpr.Value(nil)
+							if keyDiagnostics.HasErrors() || !key.IsKnown() || key.IsNull() || key.Type() != cty.String {
+								t.Errorf("%s resource %q credentials key must be a literal string: %s", relativePath, block.Labels[1], keyDiagnostics.Error())
+								continue
+							}
+							credentialKeys = append(credentialKeys, key.AsString())
+						}
+					}
+					slices.Sort(credentialKeys)
+					credentialMapsChecked++
+				}
+
+				switch literal {
+				case "none":
+					if hasCredentials {
+						t.Errorf("%s resource %q configures credentials for auth_type none: %q", relativePath, block.Labels[1], credentialKeys)
+					}
+				case "bearer_token":
+					if !hasCredentials {
+						t.Errorf("%s resource %q is a bearer-token example without credentials.auth_value", relativePath, block.Labels[1])
+					} else if !slices.Equal(credentialKeys, []string{"auth_value"}) {
+						t.Errorf("%s resource %q bearer_token credentials keys = %q, want exactly [auth_value]; token and api_key are ignored by LiteLLM v1.98", relativePath, block.Labels[1], credentialKeys)
+					}
+				case "oauth2":
+					if hasCredentials && !slices.Equal(credentialKeys, []string{"client_id", "client_secret"}) {
+						t.Errorf("%s resource %q oauth2 credentials keys = %q, want [client_id client_secret]", relativePath, block.Labels[1], credentialKeys)
+					}
+				case "api_key", "basic", "authorization", "token":
+					if hasCredentials && !slices.Equal(credentialKeys, []string{"auth_value"}) {
+						t.Errorf("%s resource %q %s credentials keys = %q, want [auth_value]", relativePath, block.Labels[1], literal, credentialKeys)
+					}
+				}
 				checked++
 				if _, required := requiredFiles[relativePath]; required {
 					requiredFiles[relativePath] = true
@@ -322,6 +363,9 @@ func TestShippedMCPServerAuthTypeLiteralsPassProviderValidation(t *testing.T) {
 
 	if checked == 0 {
 		t.Fatal("no shipped MCP auth_type literals were validated")
+	}
+	if credentialMapsChecked == 0 {
+		t.Fatal("no shipped MCP credentials maps were validated")
 	}
 	for path, found := range requiredFiles {
 		if !found {
@@ -339,6 +383,10 @@ func TestBudgetDurationValidatorsMatchLiteLLMRuntimeContract(t *testing.T) {
 		validators []validator.String
 	}{
 		{
+			name:       "team budget",
+			validators: resourceStringValidators(t, &TeamResource{}, "budget_duration"),
+		},
+		{
 			name:       "team default member budget",
 			validators: resourceStringValidators(t, &TeamResource{}, "team_member_budget_duration"),
 		},
@@ -349,15 +397,21 @@ func TestBudgetDurationValidatorsMatchLiteLLMRuntimeContract(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			for _, value := range []string{"1s", "60s", "1m", "15m", "1h", "24h", "1d", "30d", "1mo"} {
+			for _, value := range []string{
+				"1s", "60s", "1m", "15m", "1h", "24h", "1d", "30d", "1w", "52w",
+				"hourly", "daily", "weekly", "monthly", "1mo",
+			} {
 				if validateStringValue(ctx, test.validators, types.StringValue(value)) {
 					t.Errorf("valid duration %q produced a validation error", value)
 				}
 			}
 			for _, value := range []string{
-				"0s", "0m", "0h", "0d", "01d", "1w",
-				"0mo", "2mo", "12mo", "mo", "-1mo", "1month",
-				"1MO", "1Mo", "2MO", "30D", "monthly", "daily", "",
+				"0", "0s", "0m", "0h", "0d", "0w", "0mo", "00s", "01d",
+				"2mo", "12mo", "mo", "-1mo", "+1mo",
+				"1S", "1M", "1H", "1D", "1W", "1MO", "1Mo", "2MO", "30D",
+				"Hourly", "DAILY", "Weekly", "MONTHLY",
+				"hour", "day", "week", "month", "biweekly", "1", "1y", "1ms",
+				"1month", "1.5h", "1h30m", "1m0", " hourly", "monthly ", "",
 			} {
 				if !validateStringValue(ctx, test.validators, types.StringValue(value)) {
 					t.Errorf("invalid duration %q did not produce a validation error", value)

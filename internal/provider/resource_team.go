@@ -23,7 +23,12 @@ import (
 var _ resource.Resource = &TeamResource{}
 var _ resource.ResourceWithImportState = &TeamResource{}
 
-var budgetDurationPattern = regexp.MustCompile(`^([1-9][0-9]*(s|m|h|d)|1mo)$`)
+// LiteLLM v1.98 normalizes the four word aliases before computing reset times,
+// supports week units in both duration_in_seconds and standardized reset handling,
+// and rejects multi-month resets in its monthly reset handler.
+var budgetDurationPattern = regexp.MustCompile(`^([1-9][0-9]*(s|m|h|d|w)|1mo|hourly|daily|weekly|monthly)$`)
+
+const budgetDurationValidationMessage = `must be a positive integer with unit s, m, h, d, or w; one of hourly, daily, weekly, or monthly; or exactly 1mo`
 
 func NewTeamResource() resource.Resource {
 	return &TeamResource{}
@@ -198,8 +203,14 @@ func (r *TeamResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 				Optional:    true,
 			},
 			"budget_duration": schema.StringAttribute{
-				Description: "Budget reset duration.",
+				Description: "Recurring team budget reset interval. Accepts positive s, m, h, d, or w durations; hourly, daily, weekly, or monthly; or exactly 1mo.",
 				Optional:    true,
+				Validators: []validator.String{
+					stringvalidator.RegexMatches(
+						budgetDurationPattern,
+						budgetDurationValidationMessage,
+					),
+				},
 			},
 			"models": schema.ListAttribute{
 				Description: "List of models the team can access.",
@@ -259,12 +270,12 @@ func (r *TeamResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 				Optional:    true,
 			},
 			"team_member_budget_duration": schema.StringAttribute{
-				Description: "Default recurring budget reset interval for team memberships (for example, 30d, 24h, or 1mo). LiteLLM applies it to new/default memberships and may backfill memberships without a budget; private member overrides are preserved.",
+				Description: "Default recurring budget reset interval for team memberships. Accepts positive s, m, h, d, or w durations; hourly, daily, weekly, or monthly; or exactly 1mo. LiteLLM applies it to new/default memberships and may backfill memberships without a budget; private member overrides are preserved.",
 				Optional:    true,
 				Validators: []validator.String{
 					stringvalidator.RegexMatches(
 						budgetDurationPattern,
-						`must be a positive integer with unit s, m, h, or d, or exactly 1mo`,
+						budgetDurationValidationMessage,
 					),
 				},
 			},

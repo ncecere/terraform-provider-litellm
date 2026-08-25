@@ -20,7 +20,7 @@ resource "litellm_mcp_server" "full" {
   }
 
   credentials = {
-    "token" = "fake-bearer-token"
+    "auth_value" = "fake-bearer-token"
   }
 
   extra_headers = ["X-Custom-Header"]

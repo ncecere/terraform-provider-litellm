@@ -28,7 +28,7 @@ resource "litellm_mcp_server" "full" {
   url            = "https://api.github.com/mcp"
   transport      = "sse"
   spec_version   = "2024-11-05"
-  auth_type      = "none"
+  auth_type      = "bearer_token"
   allow_all_keys = true
 
   mcp_access_groups = ["dev_team"]
@@ -40,7 +40,7 @@ resource "litellm_mcp_server" "full" {
   }
 
   credentials = {
-    "token" = "my-token"
+    "auth_value" = "example-bearer-token"
   }
 
   static_headers = {
@@ -160,7 +160,7 @@ The following arguments are supported:
 - `command` - (String) Command to execute for `stdio` transport.
 - `args` - (List of String) Arguments to pass to the command for `stdio` transport.
 - `env` - (Map of String) Environment variables to set when running the MCP server.
-- `credentials` - (Map of String, Sensitive) Credentials for authenticating with the MCP server. This attribute is marked as sensitive and will not be displayed in plan output.
+- `credentials` - (Map of String, Sensitive) Credentials for authenticating with the MCP server. For static `api_key`, `bearer_token`, `basic`, `authorization`, and `token` modes, LiteLLM v1.98 reads the secret from `auth_value`; keys named `token` or `api_key` are ignored. OAuth2 uses fields such as `client_id` and `client_secret`. This attribute is marked as sensitive and will not be displayed in plan output.
 - `allowed_tools` - (List of String) List of tool names that are allowed to be used from this server.
 - `extra_headers` - (List of String) Extra header names to forward/include in requests. This matches the LiteLLM API schema.
 - `static_headers` - (Map of String) Static HTTP headers that are always included in requests.

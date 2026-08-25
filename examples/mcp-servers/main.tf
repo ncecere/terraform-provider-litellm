@@ -45,7 +45,7 @@ resource "litellm_mcp_server" "github" {
   spec_version = "2024-11-05"
 
   credentials = {
-    "token" = var.github_token
+    "auth_value" = var.github_token
   }
 
   allowed_tools = [
@@ -90,7 +90,7 @@ resource "litellm_mcp_server" "zapier" {
   auth_type   = "bearer_token"
 
   credentials = {
-    "api_key" = var.zapier_api_key
+    "auth_value" = var.zapier_api_key
   }
 
   mcp_access_groups = [litellm_team.automation.team_id]

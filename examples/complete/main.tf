@@ -301,7 +301,7 @@ resource "litellm_mcp_server" "github" {
   auth_type   = "bearer_token"
 
   credentials = {
-    "token" = var.github_token
+    "auth_value" = var.github_token
   }
 
   allowed_tools = ["read_file", "list_repos", "search_code"]
