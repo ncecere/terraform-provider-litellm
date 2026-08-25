@@ -62,7 +62,7 @@ func resourceLiteLLMTeamMemberCreate(d *schema.ResourceData, m interface{}) erro
 		"max_budget_in_team": d.Get("max_budget_in_team").(float64),
 	}
 
-	log.Printf("[DEBUG] Create team member request payload: %+v", memberData)
+	log.Printf("[DEBUG] Creating team member (request payload omitted)")
 
 	resp, err := MakeRequest(client, "POST", "/team/member_add", memberData)
 	if err != nil {
@@ -100,7 +100,7 @@ func resourceLiteLLMTeamMemberUpdate(d *schema.ResourceData, m interface{}) erro
 		"max_budget_in_team": d.Get("max_budget_in_team").(float64),
 	}
 
-	log.Printf("[DEBUG] Update team member request payload: %+v", updateData)
+	log.Printf("[DEBUG] Updating team member (request payload omitted)")
 
 	resp, err := MakeRequest(client, "POST", "/team/member_update", updateData)
 	if err != nil {
@@ -126,7 +126,7 @@ func resourceLiteLLMTeamMemberDelete(d *schema.ResourceData, m interface{}) erro
 		"team_id":    d.Get("team_id").(string),
 	}
 
-	log.Printf("[DEBUG] Delete team member request payload: %+v", deleteData)
+	log.Printf("[DEBUG] Deleting team member (request payload omitted)")
 
 	resp, err := MakeRequest(client, "POST", "/team/member_delete", deleteData)
 	if err != nil {

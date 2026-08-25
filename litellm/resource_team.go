@@ -3,7 +3,6 @@ package litellm
 import (
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"net/http"
 
@@ -78,7 +77,7 @@ func resourceLiteLLMTeamCreate(d *schema.ResourceData, m interface{}) error {
 	teamID := uuid.New().String()
 	teamData := buildTeamData(d, teamID)
 
-	log.Printf("[DEBUG] Create team request payload: %+v", teamData)
+	log.Printf("[DEBUG] Creating LiteLLM team (request payload omitted)")
 
 	resp, err := MakeRequest(client, "POST", endpointTeamNew, teamData)
 	if err != nil {
@@ -113,9 +112,13 @@ func resourceLiteLLMTeamRead(d *schema.ResourceData, m interface{}) error {
 		return nil
 	}
 
+	bodyBytes, err := readLegacyResponseBody(resp.Body)
+	if err != nil {
+		return err
+	}
 	var teamResp TeamResponse
-	if err := json.NewDecoder(resp.Body).Decode(&teamResp); err != nil {
-		return fmt.Errorf("error decoding team info response: %w", err)
+	if err := json.Unmarshal(bodyBytes, &teamResp); err != nil {
+		return fmt.Errorf("error decoding team info response")
 	}
 
 	// Update the state with values from the response or fall back to the data passed in during creation
@@ -153,7 +156,7 @@ func resourceLiteLLMTeamRead(d *schema.ResourceData, m interface{}) error {
 		}
 	} else {
 		// Use the permissions from the permissions_list endpoint
-		log.Printf("[DEBUG] Team permissions from API: %+v", permResp.TeamMemberPermissions)
+		log.Printf("[DEBUG] Team permissions read successfully (values omitted)")
 		d.Set("team_member_permissions", permResp.TeamMemberPermissions)
 	}
 
@@ -165,7 +168,7 @@ func resourceLiteLLMTeamUpdate(d *schema.ResourceData, m interface{}) error {
 	client := m.(*Client)
 
 	teamData := buildTeamData(d, d.Id())
-	log.Printf("[DEBUG] Update team request payload: %+v", teamData)
+	log.Printf("[DEBUG] Updating LiteLLM team (request payload omitted)")
 
 	resp, err := MakeRequest(client, "POST", endpointTeamUpdate, teamData)
 	if err != nil {
@@ -187,7 +190,7 @@ func resourceLiteLLMTeamUpdate(d *schema.ResourceData, m interface{}) error {
 				permissions = append(permissions, perm.(string))
 			}
 
-			log.Printf("[DEBUG] Explicitly updating team permissions: %+v", permissions)
+			log.Printf("[DEBUG] Updating team permissions (values omitted)")
 			if err := updateTeamPermissions(client, d.Id(), permissions); err != nil {
 				return fmt.Errorf("error updating team permissions: %w", err)
 			}
@@ -239,8 +242,8 @@ func buildTeamData(d *schema.ResourceData, teamID string) map[string]interface{}
 
 func handleResponse(resp *http.Response, action string) error {
 	if resp.StatusCode != http.StatusOK {
-		body, _ := ioutil.ReadAll(resp.Body)
-		return fmt.Errorf("error %s: %s - %s", action, resp.Status, string(body))
+		_, _ = readLegacyResponseBody(resp.Body)
+		return fmt.Errorf("error %s: HTTP %d", action, resp.StatusCode)
 	}
 	return nil
 }
@@ -262,14 +265,17 @@ func getTeamPermissions(client *Client, teamID string) (*TeamPermissionsResponse
 	}
 	defer resp.Body.Close()
 
+	bodyBytes, err := readLegacyResponseBody(resp.Body)
+	if err != nil {
+		return nil, err
+	}
 	if resp.StatusCode != http.StatusOK {
-		body, _ := ioutil.ReadAll(resp.Body)
-		return nil, fmt.Errorf("error getting team permissions: %s - %s", resp.Status, string(body))
+		return nil, fmt.Errorf("error getting team permissions: HTTP %d", resp.StatusCode)
 	}
 
 	var permResp TeamPermissionsResponse
-	if err := json.NewDecoder(resp.Body).Decode(&permResp); err != nil {
-		return nil, fmt.Errorf("error decoding team permissions response: %w", err)
+	if err := json.Unmarshal(bodyBytes, &permResp); err != nil {
+		return nil, fmt.Errorf("error decoding team permissions response")
 	}
 
 	return &permResp, nil
