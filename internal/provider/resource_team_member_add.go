@@ -78,9 +78,11 @@ type remoteBatchMember struct {
 }
 
 type remoteBatchMembership struct {
-	UserID    string
-	BudgetID  string
-	MaxBudget *float64
+	UserID              string
+	BudgetID            string
+	MaxBudget           *float64
+	BudgetDuration      *string
+	BudgetDurationKnown bool
 }
 
 type teamMemberAddSnapshot struct {
@@ -1196,12 +1198,16 @@ func decodeTeamMemberAddSnapshot(raw json.RawMessage, expectedTeamID string) (*t
 			if membership.BudgetID != "" {
 				return snapshot, &teamMemberAddPartialResponseError{detail: "a team membership references a budget_id but its budget relation is null"}
 			}
+			// An explicit null relation authoritatively proves all nested optional
+			// budget fields are null. This is distinct from an omitted relation.
+			membership.BudgetDurationKnown = true
 			memberships = append(memberships, membership)
 			continue
 		}
 		var budget struct {
-			BudgetID  json.RawMessage `json:"budget_id"`
-			MaxBudget json.RawMessage `json:"max_budget"`
+			BudgetID       json.RawMessage `json:"budget_id"`
+			MaxBudget      json.RawMessage `json:"max_budget"`
+			BudgetDuration json.RawMessage `json:"budget_duration"`
 		}
 		if err := json.Unmarshal(wire.LiteLLMBudgetTable, &budget); err != nil {
 			return snapshot, &teamMemberAddPartialResponseError{detail: "a team membership budget relation is not an object", retryable: true}
@@ -1219,6 +1225,16 @@ func decodeTeamMemberAddSnapshot(raw json.RawMessage, expectedTeamID string) (*t
 				return snapshot, &teamMemberAddPartialResponseError{detail: "a team membership max_budget is malformed"}
 			}
 			membership.MaxBudget = &maxBudget
+		}
+		if len(budget.BudgetDuration) > 0 {
+			membership.BudgetDurationKnown = true
+			if string(budget.BudgetDuration) != "null" {
+				var duration string
+				if err := json.Unmarshal(budget.BudgetDuration, &duration); err != nil || duration == "" {
+					return snapshot, &teamMemberAddPartialResponseError{detail: "a team membership budget_duration is malformed"}
+				}
+				membership.BudgetDuration = &duration
+			}
 		}
 		memberships = append(memberships, membership)
 	}
