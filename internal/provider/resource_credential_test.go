@@ -1321,6 +1321,161 @@ func TestCredentialUpdateRetriesAfterAcceptedMutation(t *testing.T) {
 	}
 }
 
+func TestCredentialAcceptedMutationNestedRemovalClassification(t *testing.T) {
+	const name = "accepted-nested-removal"
+	priorInfo := map[string]interface{}{
+		"nested": map[string]interface{}{
+			"managed":  "keep",
+			"removed":  "old",
+			"external": "preserve",
+		},
+	}
+	desiredInfo := map[string]interface{}{
+		"nested": map[string]interface{}{
+			"managed":  "keep",
+			"external": "preserve",
+		},
+	}
+	changedReappearance := map[string]interface{}{
+		"nested": map[string]interface{}{
+			"managed":  "keep",
+			"removed":  "third",
+			"external": "preserve",
+		},
+	}
+
+	for _, test := range []struct {
+		name                string
+		preflightInfo       map[string]interface{}
+		postflightInfo      []map[string]interface{}
+		wantError           bool
+		wantPatches         int
+		wantRetainedRemoval bool
+		wantWarning         bool
+	}{
+		{
+			name:          "desired worker with removal already accepted converges",
+			preflightInfo: desiredInfo,
+			postflightInfo: []map[string]interface{}{
+				desiredInfo,
+			},
+			wantPatches: credentialPatchFanoutSize,
+		},
+		{
+			name:          "exact prior worker remains an allowed stale version",
+			preflightInfo: priorInfo,
+			postflightInfo: []map[string]interface{}{
+				desiredInfo,
+				priorInfo,
+				desiredInfo,
+				priorInfo,
+			},
+			wantPatches: credentialPatchFanoutSize,
+			wantWarning: true,
+		},
+		{
+			name:                "changed reappearance is third during retry preflight",
+			preflightInfo:       changedReappearance,
+			wantError:           true,
+			wantRetainedRemoval: true,
+		},
+		{
+			name:          "changed reappearance is third during postflight",
+			preflightInfo: priorInfo,
+			postflightInfo: []map[string]interface{}{
+				desiredInfo,
+				changedReappearance,
+				desiredInfo,
+				priorInfo,
+			},
+			wantError:           true,
+			wantPatches:         credentialPatchFanoutSize,
+			wantRetainedRemoval: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			getCalls := 0
+			patches := 0
+			var patchBodies []map[string]interface{}
+			api := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				writer.Header().Set("Content-Type", "application/json")
+				if request.Method == http.MethodPatch {
+					patches++
+					var body map[string]interface{}
+					_ = json.NewDecoder(request.Body).Decode(&body)
+					patchBodies = append(patchBodies, body)
+					_, _ = writer.Write([]byte(`{"success":true,"message":"updated"}`))
+					return
+				}
+				getCalls++
+				info := test.preflightInfo
+				if getCalls > credentialProbeSampleSize && len(test.postflightInfo) != 0 {
+					info = test.postflightInfo[(getCalls-credentialProbeSampleSize-1)%len(test.postflightInfo)]
+				}
+				_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+					"credential_name":   name,
+					"credential_info":   info,
+					"credential_values": map[string]interface{}{"api_key": maskLiteLLMCredentialString("secret"), "external_value": "preserve"},
+				})
+			}))
+			defer api.Close()
+
+			server, resourceType := credentialProtocolServer(t, api.URL)
+			priorJSON := `{"nested":{"managed":"keep","removed":"old"}}`
+			desiredJSON := `{"nested":{"managed":"keep"}}`
+			values := credentialProtocolStringMap(map[string]string{"api_key": "secret"})
+			nullMap := credentialProtocolMap(nil)
+			prior := credentialProtocolDynamicValue(t, resourceType, credentialProtocolValue(resourceType, name, name, nil, nullMap, values, priorJSON, nil, true, "credential_values"))
+			config := credentialProtocolDynamicValue(t, resourceType, credentialProtocolValue(resourceType, name, nil, nil, nullMap, values, desiredJSON, nil, nil, nil))
+			planned := credentialProtocolDynamicValue(t, resourceType, credentialProtocolValue(resourceType, name, name, nil, nullMap, values, desiredJSON, nil, true, "credential_values"))
+
+			priorModel := credentialTestModel(name, nil, map[string]string{"api_key": "secret"})
+			priorModel.CredentialInfoJSON = types.StringValue(priorJSON)
+			metadata, err := inferCredentialPrivateMetadata(context.Background(), priorModel)
+			if err != nil {
+				t.Fatal(err)
+			}
+			encoded, err := encodeCredentialPrivateMetadata(metadata)
+			if err != nil {
+				t.Fatal(err)
+			}
+			private, err := json.Marshal(map[string][]byte{credentialPrivateMetadataKey: encoded})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			apply, err := server.ApplyResourceChange(context.Background(), &tfprotov6.ApplyResourceChangeRequest{
+				TypeName:       "litellm_credential",
+				Config:         config,
+				PriorState:     prior,
+				PlannedState:   planned,
+				PlannedPrivate: private,
+			})
+			if err != nil || accessGroupProtocolDiagnosticsHaveError(apply.Diagnostics) != test.wantError {
+				t.Fatalf("accepted removal retry: err=%v diagnostics=%v", err, apply.Diagnostics)
+			}
+			if patches != test.wantPatches {
+				t.Fatalf("PATCH count=%d want=%d bodies=%#v diagnostics=%v", patches, test.wantPatches, patchBodies, apply.Diagnostics)
+			}
+			if test.wantWarning && !credentialProtocolDiagnosticsContain(apply.Diagnostics, "Worker Convergence") {
+				t.Fatalf("stale prior worker lacked convergence warning: %v", apply.Diagnostics)
+			}
+			for _, body := range patchBodies {
+				nested := body["credential_info"].(map[string]interface{})["nested"].(map[string]interface{})
+				if _, exists := nested["removed"]; exists || nested["external"] != "preserve" {
+					t.Fatalf("PATCH abandoned removal ownership or unmanaged sibling: %#v", body)
+				}
+			}
+			resultMetadata := credentialProtocolPrivateMetadata(t, apply.Private)
+			nestedOwnership := resultMetadata.JSONInfo.Children["nested"]
+			_, ownsRemoved := nestedOwnership.Children["removed"]
+			if ownsRemoved != test.wantRetainedRemoval {
+				t.Fatalf("removed path ownership retained=%t want=%t metadata=%#v diagnostics=%v", ownsRemoved, test.wantRetainedRemoval, resultMetadata, apply.Diagnostics)
+			}
+		})
+	}
+}
+
 func TestCredentialUpdateRejectsSerializedExceptionEvenWhenPostflightMatches(t *testing.T) {
 	t.Parallel()
 	patched := false

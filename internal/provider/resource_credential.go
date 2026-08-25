@@ -692,8 +692,21 @@ func (r *CredentialResource) Update(ctx context.Context, req resource.UpdateRequ
 		return
 	}
 	remoteBefore := preflight.present[0]
+	priorInfoOwnership := credentialMetadataOwnership(priorMetadata, false)
+	priorValuesOwnership := credentialMetadataOwnership(priorMetadata, true)
 	matchesPrior := credentialRemoteMatchesOwnedState(remoteBefore, priorInfo, priorValues, priorMetadata)
-	matchesDesired := credentialRemoteMatchesOwnedState(remoteBefore, desiredInfo.Object, desiredValues.Object, metadata)
+	retryExpectedInfo, retryInfoErr := credentialShallowMergeExpectation(remoteBefore.info, priorInfo, desiredInfo.Object, priorInfoOwnership, desiredInfo.UnionOwnership, false)
+	retryExpectedValues, retryValuesErr := credentialShallowMergeExpectation(remoteBefore.values, priorValues, desiredValues.Object, priorValuesOwnership, desiredValues.UnionOwnership, true)
+	matchesDesired := retryInfoErr == nil && retryValuesErr == nil && credentialRemoteMatchesExpectedUpdate(
+		remoteBefore,
+		remoteBefore,
+		retryExpectedInfo,
+		retryExpectedValues,
+		priorInfoOwnership,
+		desiredInfo.UnionOwnership,
+		priorValuesOwnership,
+		desiredValues.UnionOwnership,
+	)
 	if !matchesPrior && !matchesDesired {
 		resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 		resp.Diagnostics.AddError("Credential Update Preflight Failed", "The consistent present worker version matched neither the prior Terraform-owned state nor the planned owned state, so no PATCH was sent. A third version is never overwritten arbitrarily.")
@@ -705,8 +718,8 @@ func (r *CredentialResource) Update(ctx context.Context, req resource.UpdateRequ
 	// remote version. The resulting request remains byte-for-byte idempotent.
 	hydrationPriorInfo := priorInfo
 	hydrationPriorValues := priorValues
-	hydrationPriorInfoOwnership := credentialMetadataOwnership(priorMetadata, false)
-	hydrationPriorValuesOwnership := credentialMetadataOwnership(priorMetadata, true)
+	hydrationPriorInfoOwnership := priorInfoOwnership
+	hydrationPriorValuesOwnership := priorValuesOwnership
 	if !matchesPrior && matchesDesired {
 		hydrationPriorInfo = desiredInfo.Object
 		hydrationPriorValues = desiredValues.Object
@@ -748,9 +761,9 @@ func (r *CredentialResource) Update(ctx context.Context, req resource.UpdateRequ
 	conflictingVersions := 0
 	for _, remote := range postflightSample.present {
 		switch {
-		case credentialRemoteMatchesExpectedUpdate(remote, remoteBefore, expectedInfo, expectedValues, desiredInfo.UnionOwnership, desiredValues.UnionOwnership):
+		case credentialRemoteMatchesExpectedUpdate(remote, remoteBefore, expectedInfo, expectedValues, priorInfoOwnership, desiredInfo.UnionOwnership, priorValuesOwnership, desiredValues.UnionOwnership):
 			matchingDesired = append(matchingDesired, remote)
-		case credentialRemoteMatchesExpectedUpdate(remote, remoteBefore, remoteBefore.info, remoteBefore.values, emptyCredentialOwnership(), emptyCredentialOwnership()):
+		case credentialRemoteMatchesExpectedUpdate(remote, remoteBefore, remoteBefore.info, remoteBefore.values, emptyCredentialOwnership(), emptyCredentialOwnership(), emptyCredentialOwnership(), emptyCredentialOwnership()):
 			matchingOld = append(matchingOld, remote)
 		default:
 			conflictingVersions++
@@ -1227,47 +1240,104 @@ func shallowMergeCredentialObject(remoteBefore, patch map[string]interface{}) ma
 	return expected
 }
 
-// credentialRemoteMatchesExpectedUpdate proves the complete remote version
-// produced by LiteLLM's shallow merge. Desired-owned leaves may be returned as
-// their exact deterministic masks; every retained unowned leaf, including an
-// already-masked secret, must remain byte-for-byte equal to the preflight
-// version. This prevents a third worker version from being mistaken for either
-// the desired merge result or the exact prior version.
-func credentialRemoteMatchesExpectedUpdate(remote, remoteBefore credentialRemote, expectedInfo, expectedValues map[string]interface{}, desiredInfoOwnership, desiredValuesOwnership *credentialOwnership) bool {
-	return credentialObjectMatchesExpectedUpdate(remote.info, remoteBefore.info, expectedInfo, desiredInfoOwnership, false) &&
-		credentialObjectMatchesExpectedUpdate(remote.values, remoteBefore.values, expectedValues, desiredValuesOwnership, true)
+// credentialShallowMergeExpectation projects the complete result of applying
+// desired ownership to one observed remote version. Previously owned nested
+// paths omitted from desired are removed, while unmanaged siblings are carried
+// forward exactly as LiteLLM's hydrated shallow dictionary merge preserves
+// them. Unlike hydrateCredentialPatch, this projection intentionally does not
+// require the observed version to satisfy prior compare-and-set preconditions;
+// it is used to classify a retry that may already expose an accepted PATCH.
+func credentialShallowMergeExpectation(remote, prior, desired map[string]interface{}, priorOwnership, desiredOwnership *credentialOwnership, masked bool) (map[string]interface{}, error) {
+	if credentialTopLevelKeyRemoved(priorOwnership, desiredOwnership) {
+		return nil, errors.New("LiteLLM PATCH cannot safely remove an owned top-level credential key")
+	}
+	result := shallowMergeCredentialObject(remote, nil)
+	for key, desiredNode := range desiredOwnership.Children {
+		desiredValue := desired[key]
+		remoteValue, exists := remote[key]
+		if !exists {
+			result[key] = desiredValue
+			continue
+		}
+		var priorNode *credentialOwnership
+		if priorOwnership != nil && priorOwnership.Object {
+			priorNode = priorOwnership.Children[key]
+		}
+		merged, err := hydrateCredentialValue(
+			remoteValue,
+			prior[key],
+			desiredValue,
+			priorNode,
+			desiredNode,
+			credentialChildMasking(masked, key, remoteValue),
+		)
+		if err != nil {
+			return nil, err
+		}
+		result[key] = merged
+	}
+	return result, nil
 }
 
-func credentialObjectMatchesExpectedUpdate(remote, remoteBefore, expected map[string]interface{}, desiredOwnership *credentialOwnership, masked bool) bool {
+// credentialRemoteMatchesExpectedUpdate proves the complete remote version
+// produced by LiteLLM's shallow merge. The union of prior and desired
+// ownership distinguishes desired leaves from removal tombstones: desired
+// leaves may use exact deterministic masks, formerly owned nested paths must
+// be absent, and every retained unmanaged leaf must equal the preflight
+// version. Postflight and accepted-PATCH retry preflight share this predicate.
+func credentialRemoteMatchesExpectedUpdate(remote, remoteBefore credentialRemote, expectedInfo, expectedValues map[string]interface{}, priorInfoOwnership, desiredInfoOwnership, priorValuesOwnership, desiredValuesOwnership *credentialOwnership) bool {
+	return credentialObjectMatchesExpectedUpdate(remote.info, remoteBefore.info, expectedInfo, priorInfoOwnership, desiredInfoOwnership, false) &&
+		credentialObjectMatchesExpectedUpdate(remote.values, remoteBefore.values, expectedValues, priorValuesOwnership, desiredValuesOwnership, true)
+}
+
+func credentialObjectMatchesExpectedUpdate(remote, remoteBefore, expected map[string]interface{}, priorOwnership, desiredOwnership *credentialOwnership, masked bool) bool {
 	if len(remote) != len(expected) {
 		return false
+	}
+	unionOwnership := unionCredentialOwnership(priorOwnership, desiredOwnership)
+	for key := range unionOwnership.Children {
+		var desiredNode *credentialOwnership
+		if desiredOwnership != nil && desiredOwnership.Object {
+			desiredNode = desiredOwnership.Children[key]
+		}
+		if desiredNode == nil {
+			if _, remoteExists := remote[key]; remoteExists {
+				return false
+			}
+			if _, expectedExists := expected[key]; expectedExists {
+				return false
+			}
+		}
 	}
 	for key, expectedValue := range expected {
 		remoteValue, remoteExists := remote[key]
 		if !remoteExists {
 			return false
 		}
-		var desiredNode *credentialOwnership
+		var priorNode, desiredNode *credentialOwnership
+		if priorOwnership != nil && priorOwnership.Object {
+			priorNode = priorOwnership.Children[key]
+		}
 		if desiredOwnership != nil && desiredOwnership.Object {
 			desiredNode = desiredOwnership.Children[key]
 		}
 		beforeValue, beforeExists := remoteBefore[key]
 		if desiredNode == nil {
-			if !beforeExists || !reflect.DeepEqual(expectedValue, beforeValue) || !reflect.DeepEqual(remoteValue, beforeValue) {
+			if priorNode != nil || !beforeExists || !reflect.DeepEqual(expectedValue, beforeValue) || !reflect.DeepEqual(remoteValue, beforeValue) {
 				return false
 			}
 			continue
 		}
-		if !credentialValueMatchesExpectedUpdate(remoteValue, beforeValue, beforeExists, expectedValue, desiredNode, credentialChildMasking(masked, key, remoteValue)) {
+		if !credentialValueMatchesExpectedUpdate(remoteValue, beforeValue, beforeExists, expectedValue, priorNode, desiredNode, credentialChildMasking(masked, key, remoteValue)) {
 			return false
 		}
 	}
 	return true
 }
 
-func credentialValueMatchesExpectedUpdate(remote, remoteBefore interface{}, beforeExists bool, expected interface{}, desiredOwnership *credentialOwnership, maskMode credentialMaskMode) bool {
+func credentialValueMatchesExpectedUpdate(remote, remoteBefore interface{}, beforeExists bool, expected interface{}, priorOwnership, desiredOwnership *credentialOwnership, maskMode credentialMaskMode) bool {
 	if desiredOwnership == nil {
-		return beforeExists && reflect.DeepEqual(expected, remoteBefore) && reflect.DeepEqual(remote, remoteBefore)
+		return false
 	}
 	if desiredOwnership.Object {
 		remoteObject, remoteOK := remote.(map[string]interface{})
@@ -1279,7 +1349,7 @@ func credentialValueMatchesExpectedUpdate(remote, remoteBefore interface{}, befo
 		if beforeObject == nil {
 			beforeObject = map[string]interface{}{}
 		}
-		return credentialObjectMatchesExpectedUpdate(remoteObject, beforeObject, expectedObject, desiredOwnership, maskMode == credentialMaskObject)
+		return credentialObjectMatchesExpectedUpdate(remoteObject, beforeObject, expectedObject, priorOwnership, desiredOwnership, maskMode == credentialMaskObject)
 	}
 	if !desiredOwnership.Atomic {
 		return false
