@@ -29,6 +29,7 @@ func TestFallbackDataSourceReadRetriesNotFoundAndPopulatesState(t *testing.T) {
 
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"model":           "primary",
 			"fallback_type":   "general",
 			"fallback_models": []string{"secondary-a", "secondary-b"},
 		})

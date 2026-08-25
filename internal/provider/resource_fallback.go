@@ -2,8 +2,11 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
@@ -26,12 +29,17 @@ const (
 	fallbackReadMaxDelay     = 10 * time.Second
 )
 
+var supportedFallbackTypes = []string{"general", "context_window", "content_policy"}
+
 func NewFallbackResource() resource.Resource {
 	return &FallbackResource{}
 }
 
 type FallbackResource struct {
-	client *Client
+	client           *Client
+	readMaxAttempts  int
+	readInitialDelay time.Duration
+	readMaxDelay     time.Duration
 }
 
 type FallbackResourceModel struct {
@@ -59,6 +67,9 @@ func (r *FallbackResource) Schema(ctx context.Context, req resource.SchemaReques
 			"model": schema.StringAttribute{
 				Description: "The model name to configure fallbacks for (e.g. 'gpt-3.5-turbo').",
 				Required:    true,
+				Validators: []validator.String{
+					stringvalidator.LengthAtLeast(1),
+				},
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
@@ -74,7 +85,7 @@ func (r *FallbackResource) Schema(ctx context.Context, req resource.SchemaReques
 				Computed:    true,
 				Default:     stringdefault.StaticString("general"),
 				Validators: []validator.String{
-					stringvalidator.OneOf("general", "context_window", "content_policy"),
+					stringvalidator.OneOf(supportedFallbackTypes...),
 				},
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
@@ -108,14 +119,14 @@ func (r *FallbackResource) Create(ctx context.Context, req resource.CreateReques
 
 	fallbackReq := r.buildFallbackRequest(ctx, &data)
 	if err := r.writeFallbackWithRetry(ctx, fallbackReq, 5); err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to create fallback: %s", err))
+		resp.Diagnostics.AddError("Fallback Create Error", fallbackOperationDiagnostic("create", err))
 		return
 	}
 
 	data.ID = types.StringValue(data.Model.ValueString() + ":" + data.FallbackType.ValueString())
 
 	if err := r.readFallbackWithRetry(ctx, &data, fallbackReadMaxAttempts); err != nil {
-		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Fallback created but failed to read back: %s", err))
+		resp.Diagnostics.AddWarning("Fallback Read-Back Error", fallbackOperationDiagnostic("read back the newly created", err))
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -132,7 +143,7 @@ func (r *FallbackResource) Read(ctx context.Context, req resource.ReadRequest, r
 			resp.State.RemoveResource(ctx)
 			return
 		}
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read fallback: %s", err))
+		resp.Diagnostics.AddError("Fallback Read Error", fallbackOperationDiagnostic("read", err))
 		return
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
@@ -147,12 +158,12 @@ func (r *FallbackResource) Update(ctx context.Context, req resource.UpdateReques
 
 	fallbackReq := r.buildFallbackRequest(ctx, &data)
 	if err := r.writeFallbackWithRetry(ctx, fallbackReq, 5); err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to update fallback: %s", err))
+		resp.Diagnostics.AddError("Fallback Update Error", fallbackOperationDiagnostic("update", err))
 		return
 	}
 
 	if err := r.readFallbackWithRetry(ctx, &data, fallbackReadMaxAttempts); err != nil {
-		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Fallback updated but failed to read back: %s", err))
+		resp.Diagnostics.AddWarning("Fallback Read-Back Error", fallbackOperationDiagnostic("read back the updated", err))
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -164,41 +175,88 @@ func (r *FallbackResource) Delete(ctx context.Context, req resource.DeleteReques
 		return
 	}
 
-	endpoint := fmt.Sprintf("/fallback/%s?fallback_type=%s",
-		url.PathEscape(data.Model.ValueString()),
-		url.QueryEscape(data.FallbackType.ValueString()))
-	if err := r.client.DoRequestWithResponse(ctx, "DELETE", endpoint, nil, nil); err != nil {
+	endpoint := fallbackEndpoint(data.Model.ValueString(), data.FallbackType.ValueString())
+	if err := r.client.DoRequestWithResponse(ctx, http.MethodDelete, endpoint, nil, nil); err != nil {
 		if !IsNotFoundError(err) {
-			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to delete fallback: %s", err))
+			resp.Diagnostics.AddError("Fallback Delete Error", fallbackOperationDiagnostic("delete", err))
 			return
 		}
 	}
 }
 
 func (r *FallbackResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	// ID format: model:fallback_type
-	importID := req.ID
-	data := FallbackResourceModel{}
-	for i := 0; i < len(importID); i++ {
-		if importID[i] == ':' {
-			data.Model = types.StringValue(importID[:i])
-			if i+1 < len(importID) {
-				data.FallbackType = types.StringValue(importID[i+1:])
-			} else {
-				data.FallbackType = types.StringValue("general")
-			}
-			break
-		}
+	model, fallbackType, err := parseFallbackImportID(req.ID)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Fallback Import ID", err.Error())
+		return
 	}
-	if data.Model.ValueString() == "" {
-		data.Model = types.StringValue(importID)
-		data.FallbackType = types.StringValue("general")
+
+	data := FallbackResourceModel{
+		Model:        types.StringValue(model),
+		FallbackType: types.StringValue(fallbackType),
 	}
 	if err := r.readFallback(ctx, &data); err != nil {
-		resp.Diagnostics.AddError("Read Error", fmt.Sprintf("Unable to read fallback after import: %s", err))
+		resp.Diagnostics.AddError("Fallback Import Read Error", fallbackOperationDiagnostic("read during import", err))
 		return
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+}
+
+func parseFallbackImportID(importID string) (string, string, error) {
+	separator := strings.LastIndexByte(importID, ':')
+	if separator < 0 {
+		if importID == "" {
+			return "", "", fmt.Errorf("the model component must not be empty; use <model> or <model>:<fallback_type>")
+		}
+		// Preserve the provider's historical model-only import grammar. A model
+		// containing a colon must use an explicit supported right-hand suffix so
+		// it cannot be confused with a misspelled fallback type.
+		return importID, "general", nil
+	}
+	if separator == len(importID)-1 {
+		return "", "", fmt.Errorf("use <model>:<fallback_type>; fallback_type must be one of general, context_window, or content_policy")
+	}
+	if separator == 0 {
+		return "", "", fmt.Errorf("the model component must not be empty; use <model>:<fallback_type>")
+	}
+
+	fallbackType := importID[separator+1:]
+	if !isSupportedFallbackType(fallbackType) {
+		return "", "", fmt.Errorf("the fallback_type suffix is not supported; use exactly general, context_window, or content_policy")
+	}
+	return importID[:separator], fallbackType, nil
+}
+
+func isSupportedFallbackType(value string) bool {
+	for _, supported := range supportedFallbackTypes {
+		if value == supported {
+			return true
+		}
+	}
+	return false
+}
+
+func fallbackEndpoint(model, fallbackType string) string {
+	modelSegment := url.PathEscape(model)
+	// Keep a model identity as one non-traversal path segment even when its
+	// complete value is a dot segment. PathEscape intentionally leaves dots
+	// untouched, while intermediaries are permitted to normalize them.
+	if model == "." {
+		modelSegment = "%2E"
+	} else if model == ".." {
+		modelSegment = "%2E%2E"
+	}
+	query := url.Values{"fallback_type": []string{fallbackType}}.Encode()
+	return "/fallback/" + modelSegment + "?" + query
+}
+
+func fallbackOperationDiagnostic(operation string, err error) string {
+	detail := "LiteLLM could not " + operation + " the fallback. Verify that the fallback and referenced models exist, that the fallback type is supported, and that the proxy is reachable. The provider omitted identity and response details; consult trusted LiteLLM logs for more information."
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return fmt.Sprintf("LiteLLM returned HTTP status %d while attempting to %s the fallback. Verify that the fallback and referenced models exist and that the fallback type is supported. The provider omitted identity and response details; consult trusted LiteLLM logs for more information.", apiErr.StatusCode, operation)
+	}
+	return detail
 }
 
 func (r *FallbackResource) buildFallbackRequest(ctx context.Context, data *FallbackResourceModel) map[string]interface{} {
@@ -243,7 +301,13 @@ func shouldRetryFallbackWriteError(err error) bool {
 }
 
 func (r *FallbackResource) readFallbackWithRetry(ctx context.Context, data *FallbackResourceModel, maxAttempts int) error {
-	return retryFallbackRead(ctx, maxAttempts, fallbackReadInitialDelay, fallbackReadMaxDelay, func() error {
+	initialDelay, maxDelay := fallbackReadInitialDelay, fallbackReadMaxDelay
+	if r.readMaxAttempts > 0 {
+		maxAttempts = r.readMaxAttempts
+		initialDelay = r.readInitialDelay
+		maxDelay = r.readMaxDelay
+	}
+	return retryFallbackRead(ctx, maxAttempts, initialDelay, maxDelay, func() error {
 		return r.readFallback(ctx, data)
 	})
 }
@@ -294,26 +358,36 @@ func retryFallbackRead(ctx context.Context, maxAttempts int, initialDelay, maxDe
 }
 
 func (r *FallbackResource) readFallback(ctx context.Context, data *FallbackResourceModel) error {
-	endpoint := fmt.Sprintf("/fallback/%s?fallback_type=%s",
-		url.PathEscape(data.Model.ValueString()),
-		url.QueryEscape(data.FallbackType.ValueString()))
+	endpoint := fallbackEndpoint(data.Model.ValueString(), data.FallbackType.ValueString())
 	var result map[string]interface{}
-	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
+	if err := r.client.DoRequestWithResponse(ctx, http.MethodGet, endpoint, nil, &result); err != nil {
 		return err
 	}
 
-	if fallbackModels, ok := result["fallback_models"].([]interface{}); ok {
-		list := make([]attr.Value, 0, len(fallbackModels))
-		for _, m := range fallbackModels {
-			if s, ok := m.(string); ok {
-				list = append(list, types.StringValue(s))
-			}
-		}
-		data.FallbackModels, _ = types.ListValue(types.StringType, list)
+	if err := validateFallbackReadResponse(result, data.Model.ValueString(), data.FallbackType.ValueString()); err != nil {
+		return err
 	}
-	if ft, ok := result["fallback_type"].(string); ok {
-		data.FallbackType = types.StringValue(ft)
+	fallbackModels := result["fallback_models"].([]interface{})
+	list := make([]attr.Value, 0, len(fallbackModels))
+	for _, model := range fallbackModels {
+		list = append(list, types.StringValue(model.(string)))
 	}
+	data.FallbackModels, _ = types.ListValue(types.StringType, list)
 	data.ID = types.StringValue(data.Model.ValueString() + ":" + data.FallbackType.ValueString())
+	return nil
+}
+
+func validateFallbackReadResponse(result map[string]interface{}, expectedModel, expectedType string) error {
+	model, modelOK := result["model"].(string)
+	fallbackType, typeOK := result["fallback_type"].(string)
+	fallbackModels, modelsOK := result["fallback_models"].([]interface{})
+	if !modelOK || model == "" || model != expectedModel || !typeOK || !isSupportedFallbackType(fallbackType) || fallbackType != expectedType || !modelsOK {
+		return fmt.Errorf("LiteLLM returned a malformed fallback response; identity and response details were omitted")
+	}
+	for _, fallbackModel := range fallbackModels {
+		if _, ok := fallbackModel.(string); !ok {
+			return fmt.Errorf("LiteLLM returned a malformed fallback response; identity and response details were omitted")
+		}
+	}
 	return nil
 }

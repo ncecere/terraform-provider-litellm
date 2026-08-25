@@ -118,6 +118,7 @@ internal_testing/
     credential_model.tf          # true model-only create
     credential_update.tf         # nested update/removal fixture
     credential_import.tf         # real source-free special-identity import
+    fallback_import.tf           # real colon/percent/Unicode composite import
     tag_minimal.tf
     tag_full.tf
     access_group_minimal.tf
@@ -194,7 +195,9 @@ excluded because its endpoint requires LiteLLM Enterprise. Credential coverage
 includes non-empty values-only, heterogeneous legacy/JSON, true model-only,
 full/by-name and by-model data sources, a two-apply nested update/removal case,
 and a real source-free metadata-only import using a slash/percent/Unicode
-identity. Protocol tests additionally prove that imported masked values remain
+identity. Fallback coverage includes a real right-suffix composite import for a
+colon/query/percent/Unicode model identity followed by refresh, no-drift plan,
+and destroy. Protocol tests additionally prove that imported masked values remain
 absent and unowned and that adding an unproven values or model source fails
 before PATCH, deletion, or replacement. Semantic JSON coverage includes native
 structured guardrail modes, full search-tool objects, budget single/list data

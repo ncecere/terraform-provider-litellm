@@ -32,7 +32,7 @@ SMOKE_LOG="$INTERNAL_TESTING/.smoke-logs/$(date '+%Y%m%d-%H%M%S')-$$.log"
 APPLY_STARTED=0
 SUCCESS=0
 CLEANUP_ARGS=
-CREDENTIAL_IMPORT_BACKUP=
+IMPORT_BACKUP=
 
 cleanup() {
   status=$?
@@ -42,9 +42,9 @@ cleanup() {
     exit 0
   fi
 
-  if [ -n "$CREDENTIAL_IMPORT_BACKUP" ] && [ -f "$CREDENTIAL_IMPORT_BACKUP" ]; then
-    # A failed import after state rm must not orphan the seed credential.
-    cp "$CREDENTIAL_IMPORT_BACKUP" "$SMOKE_DIR/terraform.tfstate"
+  if [ -n "$IMPORT_BACKUP" ] && [ -f "$IMPORT_BACKUP" ]; then
+    # A failed import after state rm must not orphan the seeded remote object.
+    cp "$IMPORT_BACKUP" "$SMOKE_DIR/terraform.tfstate"
   fi
   if [ "$APPLY_STARTED" -eq 1 ] && [ -f "$SMOKE_DIR/terraform.tfstate" ]; then
     echo "Attempting best-effort cleanup after failure..." >&3
@@ -170,16 +170,29 @@ terraform apply -auto-approve tfplan
 STEADY_ARGS=
 if [ "${SMOKE_CREDENTIAL_IMPORT:-}" = "1" ]; then
   echo '=== CREDENTIAL SOURCE-FREE IMPORT ==='
-  CREDENTIAL_IMPORT_BACKUP="$SMOKE_DIR/credential-import-seed.tfstate"
-  cp terraform.tfstate "$CREDENTIAL_IMPORT_BACKUP"
+  IMPORT_BACKUP="$SMOKE_DIR/credential-import-seed.tfstate"
+  cp terraform.tfstate "$IMPORT_BACKUP"
   terraform state rm 'litellm_credential.seed[0]'
   terraform import \
     -var=credential_import_phase=imported \
     'litellm_credential.imported[0]' \
     'test/cred%import-雪'
-  rm -f "$CREDENTIAL_IMPORT_BACKUP"
-  CREDENTIAL_IMPORT_BACKUP=
+  rm -f "$IMPORT_BACKUP"
+  IMPORT_BACKUP=
   STEADY_ARGS='-var=credential_import_phase=imported'
+  CLEANUP_ARGS=$STEADY_ARGS
+elif [ "${SMOKE_FALLBACK_IMPORT:-}" = "1" ]; then
+  echo '=== FALLBACK SPECIAL-IDENTITY IMPORT ==='
+  IMPORT_BACKUP="$SMOKE_DIR/fallback-import-seed.tfstate"
+  cp terraform.tfstate "$IMPORT_BACKUP"
+  terraform state rm 'litellm_fallback.fallback_import_seed[0]'
+  terraform import \
+    -var=fallback_import_phase=imported \
+    'litellm_fallback.fallback_imported[0]' \
+    'smoke-fallback:8b?variant=50%-雪:general'
+  rm -f "$IMPORT_BACKUP"
+  IMPORT_BACKUP=
+  STEADY_ARGS='-var=fallback_import_phase=imported'
   CLEANUP_ARGS=$STEADY_ARGS
 elif [ "${SMOKE_CREDENTIAL_UPDATE:-}" = "1" ]; then
   echo '=== CREDENTIAL UPDATE APPLY ==='
