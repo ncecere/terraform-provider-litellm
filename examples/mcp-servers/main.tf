@@ -36,13 +36,12 @@ resource "litellm_mcp_server" "simple_http" {
 
 # Full HTTP server with authentication
 resource "litellm_mcp_server" "github" {
-  server_name  = "github-integration"
-  alias        = "github"
-  description  = "GitHub API integration for repository operations"
-  url          = "https://api.github.com/mcp"
-  transport    = "http"
-  auth_type    = "bearer_token"
-  spec_version = "2024-11-05"
+  server_name = "github-integration"
+  alias       = "github"
+  description = "GitHub API integration for repository operations"
+  url         = "https://api.github.com/mcp"
+  transport   = "http"
+  auth_type   = "bearer_token"
 
   credentials = {
     "auth_value" = var.github_token
@@ -144,15 +143,22 @@ resource "litellm_mcp_server" "oauth_protected" {
   ]
 }
 
+# OpenAPI-backed server. spec_path is resolved by the LiteLLM runtime.
+resource "litellm_mcp_server" "inventory_openapi" {
+  server_name = "inventory_api"
+  description = "Inventory tools generated from an OpenAPI document"
+  transport   = "http"
+  spec_path   = "/etc/litellm/openapi/inventory.json"
+}
+
 # =============================================================================
-# STDIO MCP SERVERS (Local)
+# STDIO MCP SERVERS (executed by the LiteLLM runtime)
 # =============================================================================
 
 resource "litellm_mcp_server" "local_python" {
   server_name = "local-python-tools"
   alias       = "python-tools"
   description = "Local Python development tools"
-  url         = "stdio://python-tools"
   transport   = "stdio"
   auth_type   = "none"
 
@@ -179,7 +185,6 @@ resource "litellm_mcp_server" "local_nodejs" {
   server_name = "local-nodejs-tools"
   alias       = "nodejs-tools"
   description = "Local Node.js development tools"
-  url         = "stdio://nodejs-tools"
   transport   = "stdio"
   auth_type   = "none"
 

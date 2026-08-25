@@ -27,6 +27,7 @@ type MCPServerDataSourceModel struct {
 	Alias            types.String `tfsdk:"alias"`
 	Description      types.String `tfsdk:"description"`
 	URL              types.String `tfsdk:"url"`
+	SpecPath         types.String `tfsdk:"spec_path"`
 	Transport        types.String `tfsdk:"transport"`
 	SpecVersion      types.String `tfsdk:"spec_version"`
 	AuthType         types.String `tfsdk:"auth_type"`
@@ -79,7 +80,11 @@ func (d *MCPServerDataSource) Schema(ctx context.Context, req datasource.SchemaR
 				Computed:    true,
 			},
 			"url": schema.StringAttribute{
-				Description: "URL of the MCP server.",
+				Description: "URL of the MCP server, when configured.",
+				Computed:    true,
+			},
+			"spec_path": schema.StringAttribute{
+				Description: "Path or URL of the server's OpenAPI specification, when configured.",
 				Computed:    true,
 			},
 			"transport": schema.StringAttribute{
@@ -87,8 +92,9 @@ func (d *MCPServerDataSource) Schema(ctx context.Context, req datasource.SchemaR
 				Computed:    true,
 			},
 			"spec_version": schema.StringAttribute{
-				Description: "MCP specification version.",
-				Computed:    true,
+				Description:        "Deprecated compatibility field. LiteLLM v1.98 does not return an MCP specification version.",
+				DeprecationMessage: "spec_version is retained only for state compatibility and is not returned by LiteLLM v1.98.",
+				Computed:           true,
 			},
 			"auth_type": schema.StringAttribute{
 				Description: "Authentication type reported by LiteLLM.",
@@ -202,11 +208,25 @@ func (d *MCPServerDataSource) Read(ctx context.Context, req datasource.ReadReque
 	}
 
 	serverID := data.ServerID.ValueString()
-	endpoint := fmt.Sprintf("/v1/mcp/server/%s", serverID)
+	endpoint := mcpServerEndpoint(serverID)
 
 	var result map[string]interface{}
 	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read MCP server '%s': %s", serverID, err))
+		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read MCP server: %s", err))
+		return
+	}
+	if err := validateMCPServerResponse(result, serverID); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned a malformed MCP server response.")
+		return
+	}
+	if err := validateMCPServerOptionalResponseFields(
+		result,
+		[]string{"server_name", "alias", "description", "url", "spec_path", "auth_type", "command", "created_at", "created_by", "updated_at", "updated_by", "status", "last_health_check", "health_check_error", "authorization_url", "token_url", "registration_url"},
+		[]string{"allow_all_keys"},
+		[]string{"mcp_access_groups", "args", "allowed_tools", "extra_headers"},
+		[]string{"env", "static_headers"},
+	); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned malformed optional MCP server fields.")
 		return
 	}
 
@@ -224,14 +244,14 @@ func (d *MCPServerDataSource) Read(ctx context.Context, req datasource.ReadReque
 	if desc, ok := result["description"].(string); ok {
 		data.Description = types.StringValue(desc)
 	}
-	if url, ok := result["url"].(string); ok {
-		data.URL = types.StringValue(url)
+	if remoteURL, ok := result["url"].(string); ok {
+		data.URL = types.StringValue(remoteURL)
+	}
+	if specPath, ok := result["spec_path"].(string); ok {
+		data.SpecPath = types.StringValue(specPath)
 	}
 	if transport, ok := result["transport"].(string); ok {
 		data.Transport = types.StringValue(transport)
-	}
-	if specVersion, ok := result["spec_version"].(string); ok {
-		data.SpecVersion = types.StringValue(specVersion)
 	}
 	if authType, ok := result["auth_type"].(string); ok {
 		data.AuthType = types.StringValue(authType)

@@ -27,7 +27,6 @@ resource "litellm_mcp_server" "full" {
   description    = "GitHub MCP server"
   url            = "https://api.github.com/mcp"
   transport      = "sse"
-  spec_version   = "2024-11-05"
   auth_type      = "bearer_token"
   allow_all_keys = true
 
@@ -79,18 +78,15 @@ resource "litellm_mcp_server" "authenticated" {
 }
 ```
 
-### Internal URL / Skip URL Validation
+### OpenAPI Specification
 
-Use `skip_url_validation` when the MCP server URL is reachable from LiteLLM but not from the Terraform runner, such as a Kubernetes-internal service DNS name.
+For HTTP or SSE, LiteLLM v1.98 accepts `spec_path` instead of `url`. The path is resolved by the LiteLLM runtime, not by Terraform, and may also be an HTTP(S) URL.
 
 ```hcl
-resource "litellm_mcp_server" "internal" {
-  server_name         = "lightrag"
-  url                 = "http://mcp.kar-dp-lightrag.svc.cluster.local:8000/mcp"
-  transport           = "http"
-  auth_type           = "none"
-  allow_all_keys      = true
-  skip_url_validation = true
+resource "litellm_mcp_server" "openapi" {
+  server_name = "inventory_api"
+  transport   = "http"
+  spec_path   = "/etc/litellm/openapi/inventory.json"
 }
 ```
 
@@ -99,7 +95,6 @@ resource "litellm_mcp_server" "internal" {
 ```hcl
 resource "litellm_mcp_server" "stdio_server" {
   server_name = "local_dev_tools"
-  url         = "stdio://local"
   transport   = "stdio"
   command     = "python3"
   args        = ["/opt/mcp-servers/dev-tools/server.py", "--verbose"]
@@ -147,14 +142,15 @@ The following arguments are supported:
 ### Required
 
 - `server_name` - (String) The name of the MCP server. **Must not contain hyphens.**
-- `url` - (String) The URL endpoint of the MCP server.
 - `transport` - (String) The transport protocol. Must be one of: `http`, `sse`, `stdio`.
 
 ### Optional
 
 - `alias` - (String) An alias for the server. **Must not contain hyphens.**
 - `description` - (String) A human-readable description of the MCP server.
-- `spec_version` - (String) The MCP specification version. Defaults to `"2024-11-05"`.
+- `url` - (String) The MCP server URL. HTTP and SSE require at least one of `url` or `spec_path`; stdio does not require a URL.
+- `spec_path` - (String) A LiteLLM-local path or HTTP(S) URL for an OpenAPI specification. It can satisfy the HTTP/SSE endpoint requirement without `url`; if both are set, LiteLLM uses `url` as the OpenAPI base URL.
+- `spec_version` - (String, Deprecated) Compatibility-only attribute retained for existing HCL and state. LiteLLM v1.98 does not accept or return it, so the provider does not send it. New or changed non-default values are rejected; an unchanged historical value remains plannable so existing configurations can be upgraded or destroyed safely. Remove it from configuration when practical.
 - `auth_type` - (String) The authentication type. Defaults to `"none"`. LiteLLM v1.98 accepts exactly `none`, `api_key`, `bearer_token`, `basic`, `authorization`, `oauth2`, `aws_sigv4`, `token`, `oauth2_token_exchange`, `oauth2_id_jag`, `true_passthrough`, or `oauth_delegate`. When using a value other than `"none"`, the selected mode may require credentials and additional endpoint-specific fields.
 - `mcp_access_groups` - (List of String) Access groups that are allowed to use this MCP server.
 - `command` - (String) Command to execute for `stdio` transport.
@@ -168,7 +164,7 @@ The following arguments are supported:
 - `token_url` - (String) OAuth2 token URL (used with `oauth2` auth type).
 - `registration_url` - (String) OAuth2 dynamic client registration URL (used with `oauth2` auth type).
 - `allow_all_keys` - (Bool) Whether all API keys are allowed to access this MCP server.
-- `skip_url_validation` - (Bool) Skip MCP server URL reachability validation during creation/update. Use this when the MCP server is reachable from LiteLLM but not from the Terraform runner or validation path.
+- `skip_url_validation` - (Bool, Deprecated) Compatibility-only attribute retained for existing HCL and state. LiteLLM v1.98 does not accept it, so the provider does not send it. New or changed `true` values are rejected; an unchanged historical `true` remains plannable so unrelated updates and destroy continue to work. Remove the argument (`false` remains a safe migration no-op).
 
 ### Nested Blocks
 
@@ -196,6 +192,15 @@ In addition to all arguments above, the following attributes are exported:
 - `created_at` - Timestamp of when the MCP server was created.
 - `created_by` - The user or system that created the MCP server.
 
+## Migrating to the v1.98 transport contract
+
+- Remove `spec_version`; it remains in schema/state for compatibility but is no longer sent or read. Existing non-default state/HCL can remain unchanged during an upgrade or unrelated update, but changing to another unsupported value is rejected.
+- Remove `skip_url_validation`. Existing state/HCL with `true` can remain unchanged during an upgrade, unrelated update, or destroy, but a new or changed `true` is rejected because v1.98 cannot honor it. Omitted or `false` is a no-op and is not sent.
+- Remove synthetic stdio URLs. Stdio requires a non-empty `command` and non-empty `args`; the executable basename must be one of LiteLLM v1.98's built-in commands: `deno`, `docker`, `node`, `npx`, `python`, `python3`, or `uvx`. Absolute paths to those executable names are accepted.
+- For HTTP/SSE, configure a non-empty `url`, a non-empty `spec_path`, or both. Empty strings are rejected; omit a field to clear or release it.
+
+Existing state addresses and attribute types are unchanged. Refresh/import preserves URL-less stdio and spec-path objects without synthesizing a URL.
+
 ## Migrating from `bearer`
 
 The earlier provider accepted `auth_type = "bearer"`, but LiteLLM v1.98 does not. Existing configurations must replace it with `auth_type = "bearer_token"` for bearer-token authentication, or `auth_type = "oauth2"` when configuring OAuth endpoints and client credentials. Leaving `bearer` in configuration now fails Terraform validation during planning. Imported/read state is not rewritten by configuration validation.
@@ -214,15 +219,15 @@ On the first read after import, the provider adopts visible numeric cost fields 
 
 ### HTTP
 
-Standard HTTP/HTTPS communication. Suitable for REST API-based MCP servers. Supports authentication via `auth_type`.
+Standard HTTP/HTTPS communication. Configure a server `url`, an OpenAPI `spec_path`, or both. Supports authentication via `auth_type`.
 
 ### SSE (Server-Sent Events)
 
-Real-time streaming communication. Ideal for servers that need to push updates.
+Real-time streaming communication. Configure a server `url`, an OpenAPI `spec_path`, or both.
 
 ### Stdio
 
-Standard input/output communication. Used for local MCP servers or command-line tools. Requires `command` and optionally `args` and `env`.
+Standard input/output communication executed by the LiteLLM runtime. A URL is not required. Both `command` and at least one `args` item are required, and the command is restricted to LiteLLM's built-in allowlist described above. `env` is optional.
 
 ## Notes
 

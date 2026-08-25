@@ -62,9 +62,10 @@ The following attributes are exported:
   * `server_name` - The server name.
   * `alias` - Server alias.
   * `description` - Server description.
-  * `url` - Server URL.
+  * `url` - Server URL, when configured.
+  * `spec_path` - LiteLLM-local path or HTTP(S) URL of an OpenAPI specification, when configured.
   * `transport` - Transport type (http, sse, stdio).
-  * `spec_version` - Compatibility field; LiteLLM v1.98 does not return an MCP specification version.
+  * `spec_version` - Deprecated compatibility field; LiteLLM v1.98 does not return an MCP specification version.
   * `auth_type` - Authentication type.
   * `status` - Current status.
   * `allow_all_keys` - Whether all keys are allowed.
