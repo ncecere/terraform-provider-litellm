@@ -148,8 +148,8 @@ func TestReadModelImportAdoptsRemoteThinkingThroughAdditionalParams(t *testing.T
 	if err := (&ModelResource{client: client}).readModelWithOwnership(context.Background(), data, modelReadOwnership{imported: true}); err != nil {
 		t.Fatal(err)
 	}
-	if !data.ThinkingEnabled.IsNull() || !data.ThinkingBudgetTokens.IsNull() {
-		t.Fatalf("import invented top-level thinking ownership: %#v", data)
+	if data.ThinkingEnabled.IsNull() || data.ThinkingEnabled.ValueBool() || data.ThinkingBudgetTokens.ValueInt64() != 1024 {
+		t.Fatalf("import did not resolve schema defaults without adopting remote thinking: %#v", data)
 	}
 	var additional map[string]string
 	data.AdditionalLiteLLMParams.ElementsAs(context.Background(), &additional, false)
@@ -727,7 +727,7 @@ func TestPatchModelSendsAdditionalLiteLLMParams(t *testing.T) {
 		AccessGroups:            types.ListNull(types.StringType),
 	}
 
-	err := r.patchModel(context.Background(), data)
+	_, err := r.patchModel(context.Background(), data, &ModelResourceModel{}, false, false)
 	if err != nil {
 		t.Fatalf("patchModel returned error: %v", err)
 	}
@@ -784,7 +784,7 @@ func TestPatchModelSendsTeamPublicModelNameWhenTeamIDSet(t *testing.T) {
 		AccessGroups:      types.ListNull(types.StringType),
 	}
 
-	err := r.patchModel(context.Background(), data)
+	_, err := r.patchModel(context.Background(), data, &ModelResourceModel{}, false, false)
 	if err != nil {
 		t.Fatalf("patchModel returned error: %v", err)
 	}
@@ -1836,7 +1836,7 @@ func TestPatchModelSendsAdditionalModelInfo(t *testing.T) {
 		AdditionalModelInfo: additionalInfo,
 	}
 
-	if err := r.patchModel(context.Background(), data); err != nil {
+	if _, err := r.patchModel(context.Background(), data, &ModelResourceModel{}, false, false); err != nil {
 		t.Fatalf("patchModel returned error: %v", err)
 	}
 

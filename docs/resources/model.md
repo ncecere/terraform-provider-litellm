@@ -171,11 +171,11 @@ The following arguments are supported:
 
 * `tier` - (Optional) string. The usage tier for this model. LiteLLM v1.98 accepts exactly `"free"` or `"paid"`; the provider validates the value during planning. Default: `"free"`.
 
-* `team_id` - (Optional) string. Associate the model with a specific team.
+* `team_id` - (Optional) string. Associate the model with a specific team. Changing or removing an owned team association replaces the model because LiteLLM v1.98 does not provide a reliable in-place detach operation.
 
 * `access_groups` - (Optional) list(string). List of access groups this model belongs to. Teams and keys with access to these groups can use this model. See [LiteLLM Access Groups](https://docs.litellm.ai/docs/proxy/model_access_groups) for more details.
 
-* `mode` - (Optional) string. The intended use of the model. LiteLLM v1.98 keeps this request field extensible rather than declaring an endpoint enum; common values include:
+* `mode` - (Optional) string. The intended use of the model. Removing an owned mode replaces the model because LiteLLM may infer and retain a mode during updates. LiteLLM v1.98 keeps this request field extensible rather than declaring an endpoint enum; common values include:
   * `chat`
   * `completion`
   * `embedding`
@@ -190,9 +190,9 @@ The following arguments are supported:
   * `ocr`
   * `moderation`
 
-* `tpm` - (Optional) integer. Tokens per minute limit for this model.
+* `tpm` - (Optional) integer. Tokens per minute limit for this model. Zero is a valid configured limit; it does not mean "unset." Removing an owned value replaces the model.
 
-* `rpm` - (Optional) integer. Requests per minute limit for this model.
+* `rpm` - (Optional) integer. Requests per minute limit for this model. Zero is a valid configured limit; it does not mean "unset." Removing an owned value replaces the model.
 
 * `reasoning_effort` - (Optional) string. Configures the provider-specific reasoning effort level. Common values are:
   * `low`
@@ -209,13 +209,13 @@ The following arguments are supported:
 
 * `output_cost_per_million_tokens` - (Optional) float. Cost per million output tokens. The provider converts this to a per-token cost sent to the API.
 
-* `input_cost_per_pixel` - (Optional) float. Cost applied per input pixel for models that charge by image size.
+* `input_cost_per_pixel` - (Optional) float. Cost applied per input pixel for models that charge by image size. Removing an owned value replaces the model.
 
-* `output_cost_per_pixel` - (Optional) float. Cost applied per output pixel for image-generation models.
+* `output_cost_per_pixel` - (Optional) float. Cost applied per output pixel for image-generation models. Removing an owned value replaces the model.
 
-* `input_cost_per_second` - (Optional) float. Cost applied per input second for audio/transcription models.
+* `input_cost_per_second` - (Optional) float. Cost applied per input second for audio/transcription models. Removing an owned value replaces the model.
 
-* `output_cost_per_second` - (Optional) float. Cost applied per output second for audio/transcription models.
+* `output_cost_per_second` - (Optional) float. Cost applied per output second for audio/transcription models. Removing an owned value replaces the model.
 
 * `vertex_project` - (Optional) string. Vertex AI project id (for `custom_llm_provider = "vertex"`).
 
@@ -301,6 +301,26 @@ The following arguments are supported:
 
 * `aws_role_name` - (Optional) string (Sensitive). AWS IAM role name for cross-account access scenarios.
 
+## Clear and Replacement Behavior
+
+LiteLLM v1.98 merges model updates, so Terraform distinguishes fields with a verified clear representation from fields that cannot be removed safely.
+
+The required `model_name`, `custom_llm_provider`, and `base_model` arguments can be changed in place but cannot be omitted. Setting `tier` back to its default (`"free"`) and setting a new non-empty `mode` are also in-place updates.
+
+Removing an owned value clears or resets these fields in place:
+
+* Provider connection fields: `model_api_key`, `model_api_base`, and `api_version`
+* AWS, Vertex AI, and `litellm_credential_name` fields
+* `reasoning_effort`, `thinking_enabled`, `thinking_budget_tokens`, and `merge_reasoning_content_in_choices`; removing the thinking arguments disables thinking and restores the state default of 1024 budget tokens
+* `access_groups`
+* `input_cost_per_million_tokens` and `output_cost_per_million_tokens`
+
+Terraform verifies LiteLLM's authoritative update response before committing cleared state. Because the update response contains encrypted-at-rest strings, string and secret clears additionally require a decrypted fresh-worker read; ciphertext or a masked secret is not accepted as proof of removal. If LiteLLM workers temporarily retain an older cached model, Terraform reports `Model Clear Readback Not Yet Consistent` and retains prior state. Retry after worker caches converge.
+
+Removing `tpm`, `rpm`, `mode`, per-pixel costs, or per-second costs replaces the model. Changing or removing `team_id` also replaces it. Removing keys from either additional map follows the replacement rules documented with those arguments. Replacement is intentional: sending `null` or omission for these fields can leave the previous remote value active. Review plans carefully when the model ID is referenced elsewhere.
+
+Imported optional fields remain unmanaged while their arguments are omitted, preventing an import-only configuration from clearing or replacing remote settings. Explicitly configuring an imported field transfers ownership to Terraform, even when the configured value already matches LiteLLM. A later removal then follows the in-place clear or replacement behavior above.
+
 ## Attribute Reference
 
 In addition to the arguments above, the following attributes are exported:
@@ -315,8 +335,8 @@ Model configurations can be imported using the model ID:
 terraform import litellm_model.gpt4 <model-id>
 ```
 
-Note: The model ID is generated when the model is created and is different from the `model_name`.
+The model ID is generated when the model is created and is different from `model_name`. Imported optional values are preserved while omitted from configuration. See [Clear and Replacement Behavior](#clear-and-replacement-behavior) before taking ownership of an imported value.
 
 ## Security Note
 
-When using this resource, ensure that sensitive information such as API keys and AWS credentials are stored securely. It's recommended to use environment variables or a secure secret management solution rather than hardcoding these values in your Terraform configuration files.
+Sensitive arguments are redacted in Terraform output, but values supplied directly can still be stored in Terraform state. Protect state and plan artifacts, restrict backend access, and prefer `litellm_credential_name` with a separately managed credential instead of hardcoding provider credentials. The provider preserves configured sensitive values when LiteLLM returns a recognized mask, but never treats a masked response as proof that a requested clear succeeded.

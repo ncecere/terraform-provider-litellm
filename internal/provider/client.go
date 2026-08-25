@@ -74,7 +74,7 @@ type clientRequestOptions struct {
 }
 
 // executeRequestWithOptions keeps fresh-connection behavior deliberately narrow.
-// Credential cache probes require the provider's cloneable *http.Transport, then
+// Bounded worker-cache and write-convergence probes require the provider's cloneable *http.Transport, then
 // set request.Close and use a cloned transport with an empty connection pool.
 // request.Close also makes Go's HTTP/2 transport allocate a single-use connection.
 // An arbitrary custom RoundTripper fails closed because connection freshness cannot
@@ -151,9 +151,10 @@ func (c *Client) DoRequestWithResponse(ctx context.Context, method, requestPath 
 	return err
 }
 
-// doFreshRequestWithResponse is reserved for bounded credential cache probes.
-// It preserves the normal bounded response and redaction path while preventing
-// HTTP keepalive from pinning consecutive probes to one LiteLLM worker.
+// doFreshRequestWithResponse is reserved for bounded worker-cache and
+// write-convergence probes. It preserves the normal bounded response and
+// redaction path while preventing HTTP keepalive from pinning consecutive
+// probes to one LiteLLM worker.
 func (c *Client) doFreshRequestWithResponse(ctx context.Context, method, requestPath string, body interface{}, result interface{}) error {
 	_, err := c.doRequestWithResponseOptions(ctx, method, requestPath, body, result, clientRequestOptions{freshConnection: true})
 	return err
