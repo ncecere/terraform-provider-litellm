@@ -11,8 +11,9 @@ INTERNAL_TESTING="$REPO_ROOT/internal_testing"
 RESOURCES="$INTERNAL_TESTING/resources"
 DATASOURCES="$INTERNAL_TESTING/datasources"
 PROVIDER_DIR=${PROVIDER_DIR:-$REPO_ROOT}
+SMOKE_ASSEMBLY_ONLY=${SMOKE_ASSEMBLY_ONLY:-0}
 
-if [ ! -f "$PROVIDER_DIR/terraform-provider-litellm" ]; then
+if [ "$SMOKE_ASSEMBLY_ONLY" != "1" ] && [ ! -f "$PROVIDER_DIR/terraform-provider-litellm" ]; then
   echo "Provider binary not found at $PROVIDER_DIR/terraform-provider-litellm; run 'make build'." >&2
   exit 1
 fi
@@ -30,6 +31,8 @@ SMOKE_DIR=$(mktemp -d "$INTERNAL_TESTING/.smoke.XXXXXX")
 SMOKE_LOG="$INTERNAL_TESTING/.smoke-logs/$(date '+%Y%m%d-%H%M%S')-$$.log"
 APPLY_STARTED=0
 SUCCESS=0
+CLEANUP_ARGS=
+CREDENTIAL_IMPORT_BACKUP=
 
 cleanup() {
   status=$?
@@ -39,9 +42,14 @@ cleanup() {
     exit 0
   fi
 
+  if [ -n "$CREDENTIAL_IMPORT_BACKUP" ] && [ -f "$CREDENTIAL_IMPORT_BACKUP" ]; then
+    # A failed import after state rm must not orphan the seed credential.
+    cp "$CREDENTIAL_IMPORT_BACKUP" "$SMOKE_DIR/terraform.tfstate"
+  fi
   if [ "$APPLY_STARTED" -eq 1 ] && [ -f "$SMOKE_DIR/terraform.tfstate" ]; then
     echo "Attempting best-effort cleanup after failure..." >&3
-    (cd "$SMOKE_DIR" && terraform destroy -refresh=false -auto-approve) >>"$SMOKE_LOG" 2>&1 || true
+    # shellcheck disable=SC2086 # CLEANUP_ARGS intentionally expands to an optional complete argument.
+    (cd "$SMOKE_DIR" && terraform destroy -refresh=false -auto-approve $CLEANUP_ARGS) >>"$SMOKE_LOG" 2>&1 || true
   fi
   echo "Smoke failed; workspace preserved at $SMOKE_DIR" >&3
   echo "See $SMOKE_LOG" >&3
@@ -101,11 +109,16 @@ while [ "$#" -gt 0 ]; do
       for file in $(expand_arg "$1"); do
         if [ -n "$DIR" ] && [ -f "$DIR/$file" ]; then
           name=$(basename "$file")
-          if [ -e "$SMOKE_DIR/$name" ]; then
-            echo "Duplicate smoke filename: $name" >&3
+          if [ "$DIR" = "$RESOURCES" ]; then
+            assembled_name="resource_$name"
+          else
+            assembled_name="datasource_$name"
+          fi
+          if [ -e "$SMOKE_DIR/$assembled_name" ]; then
+            echo "Duplicate smoke fixture: $assembled_name" >&3
             exit 1
           fi
-          cp "$DIR/$file" "$SMOKE_DIR/$name"
+          cp "$DIR/$file" "$SMOKE_DIR/$assembled_name"
           FOUND=1
           if [ "$DIR" = "$RESOURCES" ]; then
             RESOURCE_NAMES="$RESOURCE_NAMES $name"
@@ -138,6 +151,15 @@ printf '\n========== Isolated smoke test ==========\n'
 [ -n "$DATASOURCE_NAMES" ] && echo "Datasources:$DATASOURCE_NAMES"
 
 cd "$SMOKE_DIR"
+if [ "$SMOKE_ASSEMBLY_ONLY" = "1" ]; then
+  echo '=== ASSEMBLY FORMAT CHECK ==='
+  terraform fmt -check -diff .
+  SUCCESS=1
+  printf '\nSmoke assembly passed: fixture names are collision-free and all assembled HCL parses and is formatted.\n' >&3
+  echo "Results written to $SMOKE_LOG" >&3
+  exit 0
+fi
+
 echo '=== PLAN ==='
 terraform plan -out=tfplan
 
@@ -145,9 +167,31 @@ echo '=== APPLY ==='
 APPLY_STARTED=1
 terraform apply -auto-approve tfplan
 
+STEADY_ARGS=
+if [ "${SMOKE_CREDENTIAL_IMPORT:-}" = "1" ]; then
+  echo '=== CREDENTIAL SOURCE-FREE IMPORT ==='
+  CREDENTIAL_IMPORT_BACKUP="$SMOKE_DIR/credential-import-seed.tfstate"
+  cp terraform.tfstate "$CREDENTIAL_IMPORT_BACKUP"
+  terraform state rm 'litellm_credential.seed[0]'
+  terraform import \
+    -var=credential_import_phase=imported \
+    'litellm_credential.imported[0]' \
+    'test/cred%import-雪'
+  rm -f "$CREDENTIAL_IMPORT_BACKUP"
+  CREDENTIAL_IMPORT_BACKUP=
+  STEADY_ARGS='-var=credential_import_phase=imported'
+  CLEANUP_ARGS=$STEADY_ARGS
+elif [ "${SMOKE_CREDENTIAL_UPDATE:-}" = "1" ]; then
+  echo '=== CREDENTIAL UPDATE APPLY ==='
+  terraform apply -auto-approve -var=credential_update_phase=after
+  STEADY_ARGS='-var=credential_update_phase=after'
+  CLEANUP_ARGS=$STEADY_ARGS
+fi
+
 echo '=== NO-DRIFT PLAN ==='
 set +e
-terraform plan -detailed-exitcode >steady-plan.log 2>&1
+# shellcheck disable=SC2086 # STEADY_ARGS intentionally expands to an optional complete argument.
+terraform plan -detailed-exitcode $STEADY_ARGS >steady-plan.log 2>&1
 plan_status=$?
 set -e
 cat steady-plan.log
@@ -159,7 +203,8 @@ if [ "$plan_status" -ne 0 ]; then
 fi
 
 echo '=== DESTROY ==='
-terraform destroy -auto-approve
+# shellcheck disable=SC2086 # STEADY_ARGS intentionally expands to an optional complete argument.
+terraform destroy -auto-approve $STEADY_ARGS
 
 state_list=$(terraform state list 2>/dev/null || true)
 if [ -n "$state_list" ]; then

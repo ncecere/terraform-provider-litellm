@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 )
@@ -65,14 +66,71 @@ func (c *Client) prepareRequest(ctx context.Context, method, requestPath string,
 }
 
 func (c *Client) executeRequest(request *http.Request) (*http.Response, error) {
-	response, err := c.HTTPClient.Do(request)
+	return c.executeRequestWithOptions(request, clientRequestOptions{})
+}
+
+type clientRequestOptions struct {
+	freshConnection bool
+}
+
+// executeRequestWithOptions keeps fresh-connection behavior deliberately narrow.
+// Credential cache probes require the provider's cloneable *http.Transport, then
+// set request.Close and use a cloned transport with an empty connection pool.
+// request.Close also makes Go's HTTP/2 transport allocate a single-use connection.
+// An arbitrary custom RoundTripper fails closed because connection freshness cannot
+// be proved. The cloned transport is closed after the response body is consumed.
+func (c *Client) executeRequestWithOptions(request *http.Request, options clientRequestOptions) (*http.Response, error) {
+	httpClient := c.HTTPClient
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	cleanup := func() {}
+	if options.freshConnection {
+		transport := httpClient.Transport
+		if transport == nil {
+			transport = http.DefaultTransport
+		}
+		baseTransport, ok := transport.(*http.Transport)
+		if !ok {
+			// request.Close is only a hint to an arbitrary RoundTripper. Worker
+			// sampling and PATCH fan-out must not claim independent connections
+			// unless the provider can clone and isolate the transport explicitly.
+			return nil, &safeTransportError{kind: "fresh LiteLLM connection is unavailable for the configured HTTP transport"}
+		}
+		request.Close = true
+		freshTransport := baseTransport.Clone()
+		freshTransport.DisableKeepAlives = true
+		httpClient = &http.Client{
+			Transport:     freshTransport,
+			CheckRedirect: httpClient.CheckRedirect,
+			Jar:           httpClient.Jar,
+			Timeout:       httpClient.Timeout,
+		}
+		cleanup = freshTransport.CloseIdleConnections
+	}
+	response, err := httpClient.Do(request)
 	if err != nil {
+		cleanup()
 		if response != nil && response.Body != nil {
 			_ = response.Body.Close()
 		}
 		return nil, safeDispatchedTransportFailure(err)
 	}
+	if options.freshConnection {
+		response.Body = &cleanupReadCloser{ReadCloser: response.Body, cleanup: cleanup}
+	}
 	return response, nil
+}
+
+type cleanupReadCloser struct {
+	io.ReadCloser
+	cleanup func()
+}
+
+func (c *cleanupReadCloser) Close() error {
+	err := c.ReadCloser.Close()
+	c.cleanup()
+	return err
 }
 
 // DoRequest performs an HTTP request with context and standard headers. Any
@@ -93,16 +151,28 @@ func (c *Client) DoRequestWithResponse(ctx context.Context, method, requestPath 
 	return err
 }
 
+// doFreshRequestWithResponse is reserved for bounded credential cache probes.
+// It preserves the normal bounded response and redaction path while preventing
+// HTTP keepalive from pinning consecutive probes to one LiteLLM worker.
+func (c *Client) doFreshRequestWithResponse(ctx context.Context, method, requestPath string, body interface{}, result interface{}) error {
+	_, err := c.doRequestWithResponseOptions(ctx, method, requestPath, body, result, clientRequestOptions{freshConnection: true})
+	return err
+}
+
 // doRequestWithResponse is the single bounded, redacted response path used by
 // callers that also need to know whether LiteLLM accepted a mutation before a
 // success body failed validation. accepted is true only for an HTTP 2xx
 // response; it does not imply that the bounded body was readable or valid JSON.
 func (c *Client) doRequestWithResponse(ctx context.Context, method, requestPath string, body interface{}, result interface{}) (accepted bool, err error) {
+	return c.doRequestWithResponseOptions(ctx, method, requestPath, body, result, clientRequestOptions{})
+}
+
+func (c *Client) doRequestWithResponseOptions(ctx context.Context, method, requestPath string, body interface{}, result interface{}, options clientRequestOptions) (accepted bool, err error) {
 	request, safety, err := c.prepareRequest(ctx, method, requestPath, body)
 	if err != nil {
 		return false, err
 	}
-	response, err := c.executeRequest(request)
+	response, err := c.executeRequestWithOptions(request, options)
 	if err != nil {
 		return false, err
 	}

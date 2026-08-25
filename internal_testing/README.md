@@ -109,8 +109,11 @@ internal_testing/
     organization_member_full.tf
     budget_minimal.tf
     budget_full.tf
-    credential_minimal.tf
-    credential_full.tf
+    credential_minimal.tf        # non-empty values-only create
+    credential_full.tf           # legacy maps + heterogeneous JSON
+    credential_model.tf          # true model-only create
+    credential_update.tf         # nested update/removal fixture
+    credential_import.tf         # real source-free special-identity import
     tag_minimal.tf
     tag_full.tf
     access_group_minimal.tf
@@ -137,6 +140,7 @@ internal_testing/
     budget.tf
     credential_minimal.tf
     credential_full.tf
+    credential_by_model.tf
     tag.tf
     access_group.tf
     prompt.tf
@@ -165,7 +169,9 @@ internal_testing/
 ## Automated Smoke and Acceptance Tests
 
 `make smoke` builds the provider and runs selected configurations in a fresh,
-isolated workspace. It requires the local Compose backend and performs
+isolated workspace. Resource and data-source files receive distinct assembly
+prefixes, so same-basename pairs such as both `credential_full.tf` fixtures do
+not overwrite each other. It requires the local Compose backend and performs
 `plan -> apply -> no-drift plan -> destroy`. Successful workspaces are removed;
 on failure, state and logs are retained under `internal_testing/.smoke.*` and
 `internal_testing/.smoke-logs/` for diagnosis and cleanup.
@@ -177,13 +183,28 @@ make smoke resources=agent_minimal.tf datasources=agent.tf,agents_list.tf
 ```
 
 The explicit acceptance matrix covers 22 of 23 resources; `litellm_project` is
-excluded because its endpoint requires LiteLLM Enterprise. The matrix is
-restricted to a disposable loopback LiteLLM v1.98.0 backend and requires two
-opt-in values before it performs destructive lifecycle tests:
+excluded because its endpoint requires LiteLLM Enterprise. Credential coverage
+includes non-empty values-only, heterogeneous legacy/JSON, true model-only,
+full/by-name and by-model data sources, a two-apply nested update/removal case,
+and a real source-free metadata-only import using a slash/percent/Unicode
+identity. Protocol tests additionally prove that imported masked values remain
+absent and unowned and that adding an unproven values or model source fails
+before PATCH, deletion, or replacement.
+
+The matrix is restricted to a disposable loopback LiteLLM v1.98.0 backend and
+requires two opt-in values before it performs destructive lifecycle tests:
 
 ```bash
 make local
 TF_ACC=1 LITELLM_ACCEPTANCE_CONFIRM=local-v1.98.0 make testacc
+```
+
+The non-destructive assembly mode runs the same matrix without a provider
+binary or backend. It verifies collision-free copying plus parseable, formatted
+HCL and is suitable for CI or fixture review:
+
+```bash
+LITELLM_ACCEPTANCE_ASSEMBLY_ONLY=1 sh internal_testing/acceptance.sh
 ```
 
 ## Testing a Subset Manually
