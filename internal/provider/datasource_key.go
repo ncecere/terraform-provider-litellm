@@ -241,22 +241,22 @@ func (d *KeyDataSource) Read(ctx context.Context, req datasource.ReadRequest, re
 		data.BudgetDuration = types.StringValue(budgetDuration)
 	}
 
-	// Budget values come from the v1.98 budget relation, with historical
-	// flattened /key/info responses retained as a compatibility fallback.
-	for _, field := range []struct {
-		name   string
-		target *types.Float64
-	}{
-		{"max_budget", &data.MaxBudget},
-		{"soft_budget", &data.SoftBudget},
-	} {
-		if err := updateFloat64FromAPIPaths(field.target, info, true, true,
-			[]string{"litellm_budget_table", field.name},
-			[]string{field.name},
-		); err != nil {
-			resp.Diagnostics.AddError("Invalid API Response", err.Error())
-			return
-		}
+	// max_budget belongs to the v1.98 verification-token row; soft_budget
+	// belongs to the budget relation. Retain the opposite locations only as
+	// historical compatibility fallbacks.
+	if err := updateFloat64FromAPIPaths(&data.MaxBudget, info, true, true,
+		[]string{"max_budget"},
+		[]string{"litellm_budget_table", "max_budget"},
+	); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+	if err := updateFloat64FromAPIPaths(&data.SoftBudget, info, true, true,
+		[]string{"litellm_budget_table", "soft_budget"},
+		[]string{"soft_budget"},
+	); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
 	}
 	if err := updateFloat64FromAPI(&data.Spend, info, true, true, "spend"); err != nil {
 		resp.Diagnostics.AddError("Invalid API Response", err.Error())

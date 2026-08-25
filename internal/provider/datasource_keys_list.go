@@ -262,8 +262,8 @@ func decodeKeyListItem(raw json.RawMessage) (KeyListItem, error) {
 		item.TeamID = types.StringValue(teamID)
 	}
 	if err := updateFloat64FromAPIPaths(&item.MaxBudget, keyMap, true, true,
-		[]string{"litellm_budget_table", "max_budget"},
 		[]string{"max_budget"},
+		[]string{"litellm_budget_table", "max_budget"},
 	); err != nil {
 		return KeyListItem{}, err
 	}

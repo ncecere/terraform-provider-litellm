@@ -1013,26 +1013,27 @@ func (r *KeyResource) readKeyWithNumericOwnership(ctx context.Context, data *Key
 		info = validatedInfo
 	}
 
-	// LiteLLM v1.98 returns budget-relation values under
-	// info.litellm_budget_table. Older responses flattened these fields into
-	// info, so use the exact relation first and fall back only when it omits the
-	// field. Normal reads refresh configured values when visible, preserve them
-	// across API omission, and never adopt defaults for unconfigured fields.
-	// Imports adopt the authoritative snapshot and clear values it omits.
-	for _, field := range []struct {
-		name   string
-		target *types.Float64
-	}{
-		{"max_budget", &data.MaxBudget},
-		{"soft_budget", &data.SoftBudget},
-	} {
-		owned := imported || (!field.target.IsNull() && !field.target.IsUnknown())
-		if err := updateFloat64FromAPIPaths(field.target, info, imported, owned,
-			[]string{"litellm_budget_table", field.name},
-			[]string{field.name},
-		); err != nil {
-			return err
-		}
+	// LiteLLM v1.98 stores max_budget on the verification-token row, while
+	// soft_budget belongs to the budget relation. Older responses may expose
+	// either field at the other location, so each field has its own fallback
+	// order. In particular, the unrelated nullable relation max_budget must not
+	// override the key row's max_budget. Normal reads refresh configured values
+	// when visible, preserve them across API omission, and never adopt defaults
+	// for unconfigured fields. Imports adopt the authoritative snapshot and clear
+	// values it omits.
+	maxBudgetOwned := imported || (!data.MaxBudget.IsNull() && !data.MaxBudget.IsUnknown())
+	if err := updateFloat64FromAPIPaths(&data.MaxBudget, info, imported, maxBudgetOwned,
+		[]string{"max_budget"},
+		[]string{"litellm_budget_table", "max_budget"},
+	); err != nil {
+		return err
+	}
+	softBudgetOwned := imported || (!data.SoftBudget.IsNull() && !data.SoftBudget.IsUnknown())
+	if err := updateFloat64FromAPIPaths(&data.SoftBudget, info, imported, softBudgetOwned,
+		[]string{"litellm_budget_table", "soft_budget"},
+		[]string{"soft_budget"},
+	); err != nil {
+		return err
 	}
 
 	// Key rate and parallelism limits remain columns on the v1.98 key row.
