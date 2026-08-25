@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -71,8 +70,9 @@ func (d *VectorStoreDataSource) Schema(ctx context.Context, req datasource.Schem
 				Computed:    true,
 			},
 			"litellm_params": schema.MapAttribute{
-				Description: "Additional LiteLLM parameters.",
+				Description: "Additional LiteLLM parameters. Credential-bearing values are redacted by LiteLLM.",
 				Computed:    true,
+				Sensitive:   true,
 				ElementType: types.StringType,
 			},
 			"created_at": schema.StringAttribute{
@@ -124,55 +124,36 @@ func (d *VectorStoreDataSource) Read(ctx context.Context, req datasource.ReadReq
 		return
 	}
 
-	// Update fields from response
-	if vsID, ok := result["vector_store_id"].(string); ok {
-		data.VectorStoreID = types.StringValue(vsID)
-		data.ID = types.StringValue(vsID)
+	store, err := unwrapVectorStoreResponse(result, vectorStoreID)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Vector Store Response", err.Error())
+		return
 	}
-	if vsName, ok := result["vector_store_name"].(string); ok {
-		data.VectorStoreName = types.StringValue(vsName)
+	name, nameOK := store["vector_store_name"].(string)
+	provider, providerOK := store["custom_llm_provider"].(string)
+	if !nameOK || name == "" || !providerOK || provider == "" {
+		resp.Diagnostics.AddError("Invalid Vector Store Response", "LiteLLM returned a vector store without the required name or provider identity.")
+		return
 	}
-	if provider, ok := result["custom_llm_provider"].(string); ok {
-		data.CustomLLMProvider = types.StringValue(provider)
+	data.ID = types.StringValue(vectorStoreID)
+	data.VectorStoreID = types.StringValue(vectorStoreID)
+	data.VectorStoreName = types.StringValue(name)
+	data.CustomLLMProvider = types.StringValue(provider)
+	data.VectorStoreDescription = nullableVectorStoreString(store["vector_store_description"])
+	data.LiteLLMCredentialName = nullableVectorStoreString(store["litellm_credential_name"])
+	data.CreatedAt = nullableVectorStoreString(store["created_at"])
+	data.UpdatedAt = nullableVectorStoreString(store["updated_at"])
+	metadata, err := vectorStoreStringMap(store["vector_store_metadata"], types.MapNull(types.StringType), false, false, "vector_store_metadata")
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Vector Store Response", err.Error())
+		return
 	}
-	if desc, ok := result["vector_store_description"].(string); ok {
-		data.VectorStoreDescription = types.StringValue(desc)
+	params, err := vectorStoreStringMap(store["litellm_params"], types.MapNull(types.StringType), false, false, "litellm_params")
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Vector Store Response", err.Error())
+		return
 	}
-	if credName, ok := result["litellm_credential_name"].(string); ok {
-		data.LiteLLMCredentialName = types.StringValue(credName)
-	}
-	if createdAt, ok := result["created_at"].(string); ok {
-		data.CreatedAt = types.StringValue(createdAt)
-	}
-	if updatedAt, ok := result["updated_at"].(string); ok {
-		data.UpdatedAt = types.StringValue(updatedAt)
-	}
-
-	// Handle vector_store_metadata
-	if metadata, ok := result["vector_store_metadata"].(map[string]interface{}); ok {
-		metaMap := make(map[string]attr.Value)
-		for k, v := range metadata {
-			if str, ok := v.(string); ok {
-				metaMap[k] = types.StringValue(str)
-			}
-		}
-		data.VectorStoreMetadata, _ = types.MapValue(types.StringType, metaMap)
-	} else {
-		data.VectorStoreMetadata, _ = types.MapValue(types.StringType, map[string]attr.Value{})
-	}
-
-	// Handle litellm_params
-	if params, ok := result["litellm_params"].(map[string]interface{}); ok {
-		paramsMap := make(map[string]attr.Value)
-		for k, v := range params {
-			if str, ok := v.(string); ok {
-				paramsMap[k] = types.StringValue(str)
-			}
-		}
-		data.LiteLLMParams, _ = types.MapValue(types.StringType, paramsMap)
-	} else {
-		data.LiteLLMParams, _ = types.MapValue(types.StringType, map[string]attr.Value{})
-	}
-
+	data.VectorStoreMetadata = metadata
+	data.LiteLLMParams = params
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }

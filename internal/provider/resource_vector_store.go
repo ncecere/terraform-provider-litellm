@@ -3,6 +3,9 @@ package provider
 import (
 	"context"
 	"fmt"
+	"reflect"
+	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -16,6 +19,9 @@ import (
 
 var _ resource.Resource = &VectorStoreResource{}
 var _ resource.ResourceWithImportState = &VectorStoreResource{}
+var _ resource.ResourceWithModifyPlan = &VectorStoreResource{}
+
+const vectorStoreImportedPrivateKey = "vector_store_imported_v1"
 
 func NewVectorStoreResource() resource.Resource {
 	return &VectorStoreResource{}
@@ -26,15 +32,19 @@ type VectorStoreResource struct {
 }
 
 type VectorStoreResourceModel struct {
-	ID                     types.String `tfsdk:"id"`
-	VectorStoreID          types.String `tfsdk:"vector_store_id"`
-	VectorStoreName        types.String `tfsdk:"vector_store_name"`
-	CustomLLMProvider      types.String `tfsdk:"custom_llm_provider"`
-	VectorStoreDescription types.String `tfsdk:"vector_store_description"`
-	VectorStoreMetadata    types.Map    `tfsdk:"vector_store_metadata"`
-	LiteLLMCredentialName  types.String `tfsdk:"litellm_credential_name"`
-	LiteLLMParams          types.Map    `tfsdk:"litellm_params"`
-	CreatedAt              types.String `tfsdk:"created_at"`
+	ID                               types.String `tfsdk:"id"`
+	VectorStoreID                    types.String `tfsdk:"vector_store_id"`
+	VectorStoreName                  types.String `tfsdk:"vector_store_name"`
+	CustomLLMProvider                types.String `tfsdk:"custom_llm_provider"`
+	VectorStoreDescription           types.String `tfsdk:"vector_store_description"`
+	VectorStoreMetadata              types.Map    `tfsdk:"vector_store_metadata"`
+	LiteLLMCredentialName            types.String `tfsdk:"litellm_credential_name"`
+	LiteLLMParams                    types.Map    `tfsdk:"litellm_params"`
+	CreatedAt                        types.String `tfsdk:"created_at"`
+	VectorStoreDescriptionConfigured types.Bool   `tfsdk:"vector_store_description_configured"`
+	VectorStoreMetadataConfigured    types.Bool   `tfsdk:"vector_store_metadata_configured"`
+	LiteLLMCredentialNameConfigured  types.Bool   `tfsdk:"litellm_credential_name_configured"`
+	LiteLLMParamsConfigured          types.Bool   `tfsdk:"litellm_params_configured"`
 }
 
 func (r *VectorStoreResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -70,6 +80,7 @@ func (r *VectorStoreResource) Schema(ctx context.Context, req resource.SchemaReq
 			"vector_store_description": schema.StringAttribute{
 				Description: "Description of the vector store.",
 				Optional:    true,
+				Computed:    true,
 			},
 			"vector_store_metadata": schema.MapAttribute{
 				Description: "Metadata associated with the vector store.",
@@ -78,13 +89,15 @@ func (r *VectorStoreResource) Schema(ctx context.Context, req resource.SchemaReq
 				ElementType: types.StringType,
 			},
 			"litellm_credential_name": schema.StringAttribute{
-				Description: "Name of the LiteLLM credential to use.",
-				Optional:    true,
-			},
-			"litellm_params": schema.MapAttribute{
-				Description: "Additional LiteLLM parameters.",
+				Description: "Name of the LiteLLM credential to use. Changes require replacement because LiteLLM v1.98 does not accept this field on update.",
 				Optional:    true,
 				Computed:    true,
+			},
+			"litellm_params": schema.MapAttribute{
+				Description: "Additional LiteLLM parameters. Changes require replacement because LiteLLM v1.98 does not accept this field on update.",
+				Optional:    true,
+				Computed:    true,
+				Sensitive:   true,
 				ElementType: types.StringType,
 			},
 			"created_at": schema.StringAttribute{
@@ -93,6 +106,22 @@ func (r *VectorStoreResource) Schema(ctx context.Context, req resource.SchemaReq
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
 				},
+			},
+			"vector_store_description_configured": schema.BoolAttribute{
+				Description: "Internal ownership marker for vector_store_description.",
+				Computed:    true,
+			},
+			"vector_store_metadata_configured": schema.BoolAttribute{
+				Description: "Internal ownership marker for vector_store_metadata.",
+				Computed:    true,
+			},
+			"litellm_credential_name_configured": schema.BoolAttribute{
+				Description: "Internal ownership marker for litellm_credential_name.",
+				Computed:    true,
+			},
+			"litellm_params_configured": schema.BoolAttribute{
+				Description: "Internal ownership marker for litellm_params.",
+				Computed:    true,
 			},
 		},
 	}
@@ -115,13 +144,99 @@ func (r *VectorStoreResource) Configure(ctx context.Context, req resource.Config
 	r.client = client
 }
 
-func (r *VectorStoreResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
-	var data VectorStoreResourceModel
+func vectorStoreFieldConfigured(value types.Bool, fallback bool) bool {
+	if value.IsNull() || value.IsUnknown() {
+		return fallback
+	}
+	return value.ValueBool()
+}
 
-	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
+func (r *VectorStoreResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	if req.Plan.Raw.IsNull() || req.State.Raw.IsNull() {
+		return
+	}
+	var plan, state, config VectorStoreResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
+
+	descriptionConfigured := vectorStoreFieldConfigured(state.VectorStoreDescriptionConfigured, !state.VectorStoreDescription.IsNull() && !state.VectorStoreDescription.IsUnknown())
+	metadataConfigured := vectorStoreFieldConfigured(state.VectorStoreMetadataConfigured, !state.VectorStoreMetadata.IsNull() && !state.VectorStoreMetadata.IsUnknown())
+	credentialConfigured := vectorStoreFieldConfigured(state.LiteLLMCredentialNameConfigured, !state.LiteLLMCredentialName.IsNull() && !state.LiteLLMCredentialName.IsUnknown())
+	paramsConfigured := vectorStoreFieldConfigured(state.LiteLLMParamsConfigured, !state.LiteLLMParams.IsNull() && !state.LiteLLMParams.IsUnknown())
+
+	if config.VectorStoreDescription.IsNull() {
+		if descriptionConfigured {
+			plan.VectorStoreDescription = types.StringNull()
+		} else {
+			plan.VectorStoreDescription = state.VectorStoreDescription
+		}
+		plan.VectorStoreDescriptionConfigured = types.BoolValue(false)
+	} else if !config.VectorStoreDescription.IsUnknown() {
+		plan.VectorStoreDescriptionConfigured = types.BoolValue(true)
+	}
+
+	if config.VectorStoreMetadata.IsNull() {
+		if metadataConfigured {
+			plan.VectorStoreMetadata = types.MapNull(types.StringType)
+		} else {
+			plan.VectorStoreMetadata = state.VectorStoreMetadata
+		}
+	} else if !config.VectorStoreMetadata.IsUnknown() {
+		plan.VectorStoreMetadataConfigured = types.BoolValue(true)
+	}
+	if config.VectorStoreMetadata.IsNull() {
+		plan.VectorStoreMetadataConfigured = types.BoolValue(false)
+	}
+
+	if config.LiteLLMCredentialName.IsNull() {
+		if credentialConfigured && !state.LiteLLMCredentialName.IsNull() && !state.LiteLLMCredentialName.IsUnknown() {
+			plan.LiteLLMCredentialName = types.StringUnknown()
+			resp.RequiresReplace = append(resp.RequiresReplace, path.Root("litellm_credential_name"))
+		} else {
+			plan.LiteLLMCredentialName = state.LiteLLMCredentialName
+		}
+		plan.LiteLLMCredentialNameConfigured = types.BoolValue(false)
+	} else if !config.LiteLLMCredentialName.IsUnknown() {
+		plan.LiteLLMCredentialNameConfigured = types.BoolValue(true)
+		if !config.LiteLLMCredentialName.Equal(state.LiteLLMCredentialName) {
+			resp.RequiresReplace = append(resp.RequiresReplace, path.Root("litellm_credential_name"))
+		}
+	}
+
+	if config.LiteLLMParams.IsNull() {
+		if paramsConfigured && !state.LiteLLMParams.IsNull() && !state.LiteLLMParams.IsUnknown() {
+			plan.LiteLLMParams = types.MapUnknown(types.StringType)
+			resp.RequiresReplace = append(resp.RequiresReplace, path.Root("litellm_params"))
+		} else {
+			plan.LiteLLMParams = state.LiteLLMParams
+		}
+		plan.LiteLLMParamsConfigured = types.BoolValue(false)
+	} else if !config.LiteLLMParams.IsUnknown() {
+		plan.LiteLLMParamsConfigured = types.BoolValue(true)
+		if !config.LiteLLMParams.Equal(state.LiteLLMParams) {
+			resp.RequiresReplace = append(resp.RequiresReplace, path.Root("litellm_params"))
+		}
+	}
+
+	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
+}
+
+func (r *VectorStoreResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	var data, config VectorStoreResourceModel
+
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	data.VectorStoreDescriptionConfigured = types.BoolValue(!config.VectorStoreDescription.IsNull() && !config.VectorStoreDescription.IsUnknown())
+	data.VectorStoreMetadataConfigured = types.BoolValue(!config.VectorStoreMetadata.IsNull() && !config.VectorStoreMetadata.IsUnknown())
+	data.LiteLLMCredentialNameConfigured = types.BoolValue(!config.LiteLLMCredentialName.IsNull() && !config.LiteLLMCredentialName.IsUnknown())
+	data.LiteLLMParamsConfigured = types.BoolValue(!config.LiteLLMParams.IsNull() && !config.LiteLLMParams.IsUnknown())
 
 	// Generate a UUID for vector_store_id if not already set
 	vsID := uuid.New().String()
@@ -132,14 +247,17 @@ func (r *VectorStoreResource) Create(ctx context.Context, req resource.CreateReq
 	vsReq["vector_store_id"] = vsID
 
 	var result map[string]interface{}
-	if err := r.client.DoRequestWithResponse(ctx, "POST", "/vector_store/new", vsReq, &result); err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to create vector store: %s", err))
+	mutationErr := r.client.DoRequestWithResponse(ctx, "POST", "/vector_store/new", vsReq, &result)
+	if err := r.readVectorStoreAfterCreate(ctx, &data, data, 16); err != nil {
+		if mutationErr != nil {
+			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to create or recover vector store after LiteLLM returned an error: %s", mutationErr))
+		} else {
+			resp.Diagnostics.AddError("Vector Store Create Not Confirmed", fmt.Sprintf("LiteLLM accepted the create but stable reads did not confirm the resource: %s", err))
+		}
 		return
 	}
-
-	// Read back for full state including the actual vector_store_id
-	if err := r.readVectorStore(ctx, &data); err != nil {
-		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Vector store created but failed to read back: %s", err))
+	if mutationErr != nil {
+		resp.Diagnostics.AddWarning("Vector Store Create Recovered", "LiteLLM returned an error after creation, but stable identity and configuration reads confirmed the created vector store.")
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
@@ -153,7 +271,13 @@ func (r *VectorStoreResource) Read(ctx context.Context, req resource.ReadRequest
 		return
 	}
 
-	if err := r.readVectorStore(ctx, &data); err != nil {
+	importedMarker, privateDiags := req.Private.GetKey(ctx, vectorStoreImportedPrivateKey)
+	resp.Diagnostics.Append(privateDiags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	imported := string(importedMarker) == "true"
+	if err := r.readVectorStore(ctx, &data, imported, false); err != nil {
 		if IsNotFoundError(err) {
 			resp.State.RemoveResource(ctx)
 			return
@@ -163,15 +287,23 @@ func (r *VectorStoreResource) Read(ctx context.Context, req resource.ReadRequest
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	if imported && !resp.Diagnostics.HasError() && resp.Private != nil {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, vectorStoreImportedPrivateKey, nil)...)
+	}
 }
 
 func (r *VectorStoreResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var data VectorStoreResourceModel
+	var data, config VectorStoreResourceModel
 
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	data.VectorStoreDescriptionConfigured = types.BoolValue(!config.VectorStoreDescription.IsNull() && !config.VectorStoreDescription.IsUnknown())
+	data.VectorStoreMetadataConfigured = types.BoolValue(!config.VectorStoreMetadata.IsNull() && !config.VectorStoreMetadata.IsUnknown())
+	data.LiteLLMCredentialNameConfigured = types.BoolValue(!config.LiteLLMCredentialName.IsNull() && !config.LiteLLMCredentialName.IsUnknown())
+	data.LiteLLMParamsConfigured = types.BoolValue(!config.LiteLLMParams.IsNull() && !config.LiteLLMParams.IsUnknown())
 
 	var state VectorStoreResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
@@ -183,17 +315,23 @@ func (r *VectorStoreResource) Update(ctx context.Context, req resource.UpdateReq
 	data.ID = state.ID
 	data.VectorStoreID = state.VectorStoreID
 
-	vsReq := r.buildVectorStoreRequest(ctx, &data)
-	vsReq["vector_store_id"] = data.VectorStoreID.ValueString()
+	planned := data
+	vsReq := r.buildVectorStoreUpdateRequest(ctx, &data, &state)
+	mutationErr := r.client.DoRequestWithResponse(ctx, "POST", "/vector_store/update", vsReq, nil)
 
-	if err := r.client.DoRequestWithResponse(ctx, "POST", "/vector_store/update", vsReq, nil); err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to update vector store: %s", err))
+	// The v1.98 endpoint can persist a mutation and then return an error while
+	// synchronizing its process-local registry. Recover only after stable reads
+	// prove the complete planned update.
+	if err := r.readVectorStoreAfterUpdate(ctx, &data, planned, state, 24); err != nil {
+		if mutationErr != nil {
+			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to confirm vector store update after LiteLLM returned an error: %s", mutationErr))
+		} else {
+			resp.Diagnostics.AddError("Vector Store Update Not Confirmed", fmt.Sprintf("LiteLLM accepted the update but stable fresh-worker reads did not return the planned values; Terraform retained prior state: %s", err))
+		}
 		return
 	}
-
-	// Read back for full state
-	if err := r.readVectorStore(ctx, &data); err != nil {
-		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Vector store updated but failed to read back: %s", err))
+	if mutationErr != nil {
+		resp.Diagnostics.AddWarning("Vector Store Update Recovered", "LiteLLM returned an error after the vector store mutation, but stable authoritative reads confirmed the complete planned state.")
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
@@ -217,16 +355,26 @@ func (r *VectorStoreResource) Delete(ctx context.Context, req resource.DeleteReq
 	}
 
 	if err := r.client.DoRequestWithResponse(ctx, "POST", "/vector_store/delete", deleteReq, nil); err != nil {
-		if !IsNotFoundError(err) {
-			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to delete vector store: %s", err))
+		if IsNotFoundError(err) {
 			return
 		}
+		probe := data
+		probeErr := r.readVectorStore(ctx, &probe, false, true)
+		if IsNotFoundError(probeErr) {
+			resp.Diagnostics.AddWarning("Vector Store Delete Recovered", "LiteLLM returned an error after deletion, but an authoritative fresh read confirmed the vector store is absent.")
+			return
+		}
+		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to delete vector store: %s", err))
+		return
 	}
 }
 
 func (r *VectorStoreResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("vector_store_id"), req.ID)...)
+	if resp.Private != nil {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, vectorStoreImportedPrivateKey, []byte("true"))...)
+	}
 }
 
 func (r *VectorStoreResource) buildVectorStoreRequest(ctx context.Context, data *VectorStoreResourceModel) map[string]interface{} {
@@ -236,11 +384,11 @@ func (r *VectorStoreResource) buildVectorStoreRequest(ctx context.Context, data 
 	}
 
 	// String fields - check IsNull, IsUnknown, and empty string
-	if !data.VectorStoreDescription.IsNull() && !data.VectorStoreDescription.IsUnknown() && data.VectorStoreDescription.ValueString() != "" {
+	if !data.VectorStoreDescription.IsNull() && !data.VectorStoreDescription.IsUnknown() {
 		vsReq["vector_store_description"] = data.VectorStoreDescription.ValueString()
 	}
 
-	if !data.LiteLLMCredentialName.IsNull() && !data.LiteLLMCredentialName.IsUnknown() && data.LiteLLMCredentialName.ValueString() != "" {
+	if !data.LiteLLMCredentialName.IsNull() && !data.LiteLLMCredentialName.IsUnknown() {
 		vsReq["litellm_credential_name"] = data.LiteLLMCredentialName.ValueString()
 	}
 
@@ -279,7 +427,142 @@ func (r *VectorStoreResource) buildVectorStoreRequest(ctx context.Context, data 
 	return vsReq
 }
 
-func (r *VectorStoreResource) readVectorStore(ctx context.Context, data *VectorStoreResourceModel) error {
+func (r *VectorStoreResource) buildVectorStoreUpdateRequest(ctx context.Context, data, prior *VectorStoreResourceModel) map[string]interface{} {
+	request := map[string]interface{}{
+		"vector_store_id":     data.VectorStoreID.ValueString(),
+		"vector_store_name":   data.VectorStoreName.ValueString(),
+		"custom_llm_provider": data.CustomLLMProvider.ValueString(),
+	}
+	if data.VectorStoreDescription.IsNull() {
+		if !prior.VectorStoreDescription.IsNull() && !prior.VectorStoreDescription.IsUnknown() {
+			request["vector_store_description"] = ""
+		}
+	} else if !data.VectorStoreDescription.IsUnknown() {
+		request["vector_store_description"] = data.VectorStoreDescription.ValueString()
+	}
+	if data.VectorStoreMetadata.IsNull() {
+		if !prior.VectorStoreMetadata.IsNull() && !prior.VectorStoreMetadata.IsUnknown() {
+			request["vector_store_metadata"] = map[string]string{}
+		}
+	} else if !data.VectorStoreMetadata.IsUnknown() {
+		metadata := map[string]string{}
+		data.VectorStoreMetadata.ElementsAs(ctx, &metadata, false)
+		request["vector_store_metadata"] = metadata
+	}
+	return request
+}
+
+func vectorStoreCreateMatches(planned, observed VectorStoreResourceModel) bool {
+	for _, pair := range [][2]attr.Value{
+		{planned.VectorStoreID, observed.VectorStoreID},
+		{planned.VectorStoreName, observed.VectorStoreName},
+		{planned.CustomLLMProvider, observed.CustomLLMProvider},
+		{planned.VectorStoreDescription, observed.VectorStoreDescription},
+		{planned.VectorStoreMetadata, observed.VectorStoreMetadata},
+		{planned.LiteLLMCredentialName, observed.LiteLLMCredentialName},
+		{planned.LiteLLMParams, observed.LiteLLMParams},
+	} {
+		if !pair[0].IsUnknown() && !pair[0].Equal(pair[1]) {
+			return false
+		}
+	}
+	return true
+}
+
+func (r *VectorStoreResource) readVectorStoreAfterCreate(ctx context.Context, data *VectorStoreResourceModel, planned VectorStoreResourceModel, attempts int) error {
+	stable := 0
+	var lastErr error
+	for attempt := 0; attempt < attempts; attempt++ {
+		candidate := planned
+		if err := r.readVectorStore(ctx, &candidate, false, true); err != nil {
+			lastErr = err
+			stable = 0
+		} else if !vectorStoreCreateMatches(planned, candidate) {
+			lastErr = fmt.Errorf("created vector store did not match its planned configuration")
+			stable = 0
+		} else {
+			stable++
+			if stable >= 2 {
+				*data = candidate
+				return nil
+			}
+		}
+		if attempt+1 < attempts {
+			timer := time.NewTimer(250 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			case <-timer.C:
+			}
+		}
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("created vector store was not observed")
+	}
+	return lastErr
+}
+
+func vectorStoreChangedFieldsNotConverged(planned, prior, observed VectorStoreResourceModel) []string {
+	plannedValue, priorValue, observedValue := reflect.ValueOf(planned), reflect.ValueOf(prior), reflect.ValueOf(observed)
+	modelType := plannedValue.Type()
+	var stale []string
+	for i := 0; i < plannedValue.NumField(); i++ {
+		plannedAttr, plannedOK := plannedValue.Field(i).Interface().(attr.Value)
+		priorAttr, priorOK := priorValue.Field(i).Interface().(attr.Value)
+		observedAttr, observedOK := observedValue.Field(i).Interface().(attr.Value)
+		if !plannedOK || !priorOK || !observedOK || plannedAttr.IsUnknown() || plannedAttr.Equal(priorAttr) {
+			continue
+		}
+		if !plannedAttr.Equal(observedAttr) {
+			stale = append(stale, modelType.Field(i).Tag.Get("tfsdk"))
+		}
+	}
+	return stale
+}
+
+func (r *VectorStoreResource) readVectorStoreAfterUpdate(ctx context.Context, data *VectorStoreResourceModel, planned, prior VectorStoreResourceModel, attempts int) error {
+	stable := 0
+	var stale []string
+	for attempt := 0; attempt < attempts; attempt++ {
+		candidate := planned
+		if err := r.readVectorStore(ctx, &candidate, false, true); err != nil {
+			stale = []string{err.Error()}
+			stable = 0
+		} else if fields := vectorStoreChangedFieldsNotConverged(planned, prior, candidate); len(fields) > 0 {
+			stale = fields
+			stable = 0
+		} else {
+			stable++
+			if stable >= 2 {
+				*data = candidate
+				return nil
+			}
+		}
+		if attempt+1 < attempts {
+			timer := time.NewTimer(250 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			case <-timer.C:
+			}
+		}
+	}
+	return fmt.Errorf("fields did not converge after %d reads: %s", attempts, strings.Join(stale, ", "))
+}
+
+func (r *VectorStoreResource) readVectorStore(ctx context.Context, data *VectorStoreResourceModel, imported, fresh bool) error {
+	descriptionConfigured := vectorStoreFieldConfigured(data.VectorStoreDescriptionConfigured, !imported && !data.VectorStoreDescription.IsNull() && !data.VectorStoreDescription.IsUnknown())
+	metadataConfigured := vectorStoreFieldConfigured(data.VectorStoreMetadataConfigured, !imported && !data.VectorStoreMetadata.IsNull() && !data.VectorStoreMetadata.IsUnknown())
+	credentialConfigured := vectorStoreFieldConfigured(data.LiteLLMCredentialNameConfigured, !imported && !data.LiteLLMCredentialName.IsNull() && !data.LiteLLMCredentialName.IsUnknown())
+	paramsConfigured := vectorStoreFieldConfigured(data.LiteLLMParamsConfigured, !imported && !data.LiteLLMParams.IsNull() && !data.LiteLLMParams.IsUnknown())
+	if imported {
+		descriptionConfigured, metadataConfigured, credentialConfigured, paramsConfigured = false, false, false, false
+	}
+	priorParams := data.LiteLLMParams
+	priorMetadata := data.VectorStoreMetadata
+
 	vectorStoreID := data.VectorStoreID.ValueString()
 	if vectorStoreID == "" {
 		vectorStoreID = data.ID.ValueString()
@@ -290,78 +573,68 @@ func (r *VectorStoreResource) readVectorStore(ctx context.Context, data *VectorS
 	}
 
 	var result map[string]interface{}
-	if err := r.client.DoRequestWithResponse(ctx, "POST", "/vector_store/info", infoReq, &result); err != nil {
+	var err error
+	if fresh {
+		err = r.client.doFreshRequestWithResponse(ctx, "POST", "/vector_store/info", infoReq, &result)
+	} else {
+		err = r.client.DoRequestWithResponse(ctx, "POST", "/vector_store/info", infoReq, &result)
+	}
+	if err != nil {
 		return err
 	}
 
-	// Unwrap nested response - API returns {"vector_store": {...}}
-	if nested, ok := result["vector_store"].(map[string]interface{}); ok {
-		result = nested
+	store, err := unwrapVectorStoreResponse(result, vectorStoreID)
+	if err != nil {
+		return err
 	}
+	name, nameOK := store["vector_store_name"].(string)
+	provider, providerOK := store["custom_llm_provider"].(string)
+	if !nameOK || name == "" || !providerOK || provider == "" {
+		return fmt.Errorf("vector store response is missing required name or provider identity")
+	}
+	data.VectorStoreID = types.StringValue(vectorStoreID)
+	data.ID = types.StringValue(vectorStoreID)
+	data.VectorStoreName = types.StringValue(name)
+	data.CustomLLMProvider = types.StringValue(provider)
 
-	// Update fields from response
-	if vsID, ok := result["vector_store_id"].(string); ok {
-		data.VectorStoreID = types.StringValue(vsID)
-		data.ID = types.StringValue(vsID)
+	if description, ok := store["vector_store_description"].(string); ok && (description != "" || descriptionConfigured) {
+		data.VectorStoreDescription = types.StringValue(description)
+	} else {
+		data.VectorStoreDescription = types.StringNull()
 	}
-	if vsName, ok := result["vector_store_name"].(string); ok {
-		data.VectorStoreName = types.StringValue(vsName)
+	if credential, ok := store["litellm_credential_name"].(string); ok && (credential != "" || credentialConfigured) {
+		data.LiteLLMCredentialName = types.StringValue(credential)
+	} else {
+		data.LiteLLMCredentialName = types.StringNull()
 	}
-	if provider, ok := result["custom_llm_provider"].(string); ok {
-		data.CustomLLMProvider = types.StringValue(provider)
-	}
-	if desc, ok := result["vector_store_description"].(string); ok {
-		data.VectorStoreDescription = types.StringValue(desc)
-	}
-	if credName, ok := result["litellm_credential_name"].(string); ok {
-		data.LiteLLMCredentialName = types.StringValue(credName)
-	}
-	if createdAt, ok := result["created_at"].(string); ok {
+	if createdAt, ok := store["created_at"].(string); ok && createdAt != "" {
 		data.CreatedAt = types.StringValue(createdAt)
-	}
-	// Handle vector_store_metadata - preserve null when API returns empty and config didn't specify
-	if metadata, ok := result["vector_store_metadata"].(map[string]interface{}); ok && len(metadata) > 0 {
-		metaMap := make(map[string]attr.Value)
-		for k, v := range metadata {
-			if str, ok := v.(string); ok {
-				metaMap[k] = types.StringValue(str)
-			}
-		}
-		data.VectorStoreMetadata, _ = types.MapValue(types.StringType, metaMap)
-	} else if data.VectorStoreMetadata.IsUnknown() {
-		data.VectorStoreMetadata, _ = types.MapValue(types.StringType, map[string]attr.Value{})
+	} else {
+		data.CreatedAt = types.StringNull()
 	}
 
-	// Handle litellm_params - filter out server-injected keys, only keep user-configured keys
-	if params, ok := result["litellm_params"].(map[string]interface{}); ok && len(params) > 0 {
-		// Build set of user-configured keys
-		userKeys := make(map[string]bool)
-		if !data.LiteLLMParams.IsNull() && !data.LiteLLMParams.IsUnknown() {
-			var existingParams map[string]string
-			data.LiteLLMParams.ElementsAs(ctx, &existingParams, false)
-			for k := range existingParams {
-				userKeys[k] = true
-			}
-		}
+	metadata, err := vectorStoreStringMap(store["vector_store_metadata"], priorMetadata, false, false, "vector_store_metadata")
+	if err != nil {
+		return err
+	}
+	if !metadataConfigured && len(metadata.Elements()) == 0 {
+		data.VectorStoreMetadata = types.MapNull(types.StringType)
+	} else {
+		data.VectorStoreMetadata = metadata
+	}
 
-		paramsMap := make(map[string]attr.Value)
-		for k, v := range params {
-			// Only include keys the user originally configured
-			if len(userKeys) > 0 && !userKeys[k] {
-				continue
-			}
-			if str, ok := v.(string); ok {
-				paramsMap[k] = types.StringValue(str)
-			}
-		}
-		if len(paramsMap) > 0 {
-			data.LiteLLMParams, _ = types.MapValue(types.StringType, paramsMap)
-		} else if data.LiteLLMParams.IsUnknown() {
-			data.LiteLLMParams = types.MapNull(types.StringType)
-		}
-	} else if data.LiteLLMParams.IsUnknown() {
+	params, err := vectorStoreStringMap(store["litellm_params"], priorParams, paramsConfigured, true, "litellm_params")
+	if err != nil {
+		return err
+	}
+	if !paramsConfigured && len(params.Elements()) == 0 {
 		data.LiteLLMParams = types.MapNull(types.StringType)
+	} else {
+		data.LiteLLMParams = params
 	}
-
+	data.VectorStoreDescriptionConfigured = types.BoolValue(descriptionConfigured)
+	data.VectorStoreMetadataConfigured = types.BoolValue(metadataConfigured)
+	data.LiteLLMCredentialNameConfigured = types.BoolValue(credentialConfigured)
+	data.LiteLLMParamsConfigured = types.BoolValue(paramsConfigured)
 	return nil
 }
