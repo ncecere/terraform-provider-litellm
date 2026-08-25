@@ -43,21 +43,23 @@ type requestSafety struct {
 }
 
 type safeTransportError struct {
-	kind     string
-	identity error
-	timeout  bool
+	kind      string
+	identity  error
+	timeout   bool
+	temporary bool
 }
 
 func (e *safeTransportError) Error() string   { return e.kind }
 func (e *safeTransportError) Unwrap() error   { return e.identity }
 func (e *safeTransportError) Timeout() bool   { return e.timeout }
-func (e *safeTransportError) Temporary() bool { return false }
+func (e *safeTransportError) Temporary() bool { return e.temporary }
 
 type safeResponseError struct {
 	statusCode int
 	requestID  string
 	kind       string
 	identity   error
+	temporary  bool
 }
 
 func (e *safeResponseError) Error() string {
@@ -70,12 +72,14 @@ func (e *safeResponseError) Error() string {
 	}
 	return message
 }
-func (e *safeResponseError) Unwrap() error { return e.identity }
+func (e *safeResponseError) Unwrap() error   { return e.identity }
+func (e *safeResponseError) Temporary() bool { return e.temporary }
 
 func safeTransportFailure(err error) error {
 	kind := "LiteLLM HTTP transport request failed"
 	var identity error
 	timedOut := false
+	temporary := false
 	switch {
 	case errors.Is(err, context.Canceled):
 		kind = "LiteLLM HTTP request was canceled"
@@ -84,6 +88,7 @@ func safeTransportFailure(err error) error {
 		kind = "LiteLLM HTTP request timed out"
 		identity = context.DeadlineExceeded
 		timedOut = true
+		temporary = true
 	default:
 		var netErr net.Error
 		var certErr x509.UnknownAuthorityError
@@ -91,14 +96,30 @@ func safeTransportFailure(err error) error {
 		var recordErr tls.RecordHeaderError
 		switch {
 		case errors.As(err, &certErr), errors.As(err, &hostErr), errors.As(err, &recordErr):
+			// Certificate, hostname, and protocol/configuration failures require
+			// operator action and must never consume a retry budget.
 			kind = "LiteLLM TLS verification failed"
 		case errors.As(err, &netErr) && netErr.Timeout():
 			kind = "LiteLLM HTTP request timed out"
 			identity = context.DeadlineExceeded
 			timedOut = true
+			temporary = true
+		case errors.As(err, &netErr) && netErr.Temporary():
+			temporary = true
 		}
 	}
-	return &safeTransportError{kind: kind, identity: identity, timeout: timedOut}
+	return &safeTransportError{kind: kind, identity: identity, timeout: timedOut, temporary: temporary}
+}
+
+func safeTemporaryResponseFailure(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && (netErr.Timeout() || netErr.Temporary())
 }
 
 func safeErrorIdentity(err error) error {

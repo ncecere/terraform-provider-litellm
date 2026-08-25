@@ -72,6 +72,8 @@ func (d *UnifiedAccessGroupsListDataSource) Read(ctx context.Context, req dataso
 			resp.Diagnostics.AddError("Invalid API Response", "/v1/access_group returned an access group object without access_group_id")
 			return
 		}
+		assignedKeyIDs := types.ListNull(types.StringType)
+		setSafeAssignedKeyListFromResponse(&assignedKeyIDs, item["assigned_key_ids"])
 		data.AccessGroups = append(data.AccessGroups, UnifiedAccessGroupDataSourceModel{
 			ID:                 resourceData.ID,
 			AccessGroupID:      resourceData.AccessGroupID,
@@ -81,7 +83,7 @@ func (d *UnifiedAccessGroupsListDataSource) Read(ctx context.Context, req dataso
 			AccessMCPServerIDs: resourceData.AccessMCPServerIDs,
 			AccessAgentIDs:     resourceData.AccessAgentIDs,
 			AssignedTeamIDs:    resourceData.AssignedTeamIDs,
-			AssignedKeyIDs:     resourceData.AssignedKeyIDs,
+			AssignedKeyIDs:     assignedKeyIDs,
 			CreatedAt:          resourceData.CreatedAt,
 			CreatedBy:          resourceData.CreatedBy,
 			UpdatedAt:          resourceData.UpdatedAt,
