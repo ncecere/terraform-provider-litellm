@@ -13,12 +13,16 @@ This directory contains example configurations for the LiteLLM Terraform provide
 | [mcp-servers](./mcp-servers/) | MCP server configurations (HTTP, SSE, OAuth, stdio) |
 | [search-tools](./search-tools/) | Search tool configurations (Tavily, Serper, Bing, Google) |
 
-## Prerequisites
+## Prerequisites and Compatibility
+
+Every runnable example pins the published source `registry.terraform.io/ncecere/litellm`, requires Terraform >= 1.0.0, and constrains the provider to `>= 2.0.1, < 3.0.0`. OpenTofu >= 1.6.0 is also supported. Provider development requires Go >= 1.24.0. The provider is tested against exactly LiteLLM 1.98.0.
+
+The global client baseline does not require 1.11.0. Only configurations using the optional write-only `key_wo` or key/user `send_invite_email` attributes require Terraform or OpenTofu >= 1.11.0.
 
 Before running any example:
 
-1. **Install Terraform** (>= 1.0)
-2. **Have a running LiteLLM instance**
+1. **Install Terraform >= 1.0.0 or OpenTofu >= 1.6.0**
+2. **Have a running LiteLLM 1.98.0 instance for the tested backend combination**
 3. **Set environment variables**:
    ```bash
    export LITELLM_API_BASE="https://your-litellm-instance.com"
@@ -33,7 +37,7 @@ Before running any example:
 cd minimal
 cp terraform.tfvars.example terraform.tfvars
 # Edit terraform.tfvars with your values
-terraform init
+terraform init -upgrade
 terraform plan
 terraform apply
 ```
@@ -44,7 +48,7 @@ terraform apply
 cd complete
 cp terraform.tfvars.example terraform.tfvars
 # Edit terraform.tfvars with your values
-terraform init
+terraform init -upgrade
 terraform plan
 terraform apply
 ```

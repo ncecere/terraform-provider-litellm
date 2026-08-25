@@ -1,7 +1,5 @@
 # LiteLLM Terraform Provider
 
-> Heads-up: In January 2026 this provider will undergo a major rewrite. Releases will track LiteLLM versions directly (provider version = targeted LiteLLM version), with monthly updates on stable LiteLLM releases only. Expect breaking changes during this transition.
-
 This Terraform provider allows you to manage LiteLLM resources through Infrastructure as Code. It provides support for managing models, teams, team members, and API keys via the LiteLLM REST API.
 
 ## Features
@@ -16,10 +14,14 @@ This Terraform provider allows you to manage LiteLLM resources through Infrastru
 - Manage API keys with fine-grained controls
 - Support for reasoning effort configuration in the model resource
 
-## Requirements
+## Compatibility
 
-- [Terraform](https://www.terraform.io/downloads.html) >= 0.13.x
-- [Go](https://golang.org/doc/install) >= 1.16 (for development)
+- [Terraform](https://developer.hashicorp.com/terraform/install) >= 1.0.0 (provider protocol 6.0)
+- [OpenTofu](https://opentofu.org/docs/intro/install/) >= 1.6.0
+- [Go](https://go.dev/doc/install) >= 1.24.0 for provider development
+- Tested backend: exactly LiteLLM 1.98.0
+
+The provider's global client baseline remains Terraform 1.0.0 or OpenTofu 1.6.0. The optional write-only attributes `litellm_key.key_wo`, `litellm_key.send_invite_email`, and `litellm_user.send_invite_email` require Terraform or OpenTofu 1.11.0 or later only when they are configured.
 
 ## Using the Provider
 
@@ -27,10 +29,12 @@ To use the LiteLLM provider in your Terraform configuration, you need to declare
 
 ```hcl
 terraform {
+  required_version = ">= 1.0.0"
+
   required_providers {
     litellm = {
-      source  = "ncecere/litellm"
-      version = "~> 0.3.11"
+      source  = "registry.terraform.io/ncecere/litellm"
+      version = ">= 2.0.1, < 3.0.0"
     }
   }
 }
@@ -39,6 +43,17 @@ provider "litellm" {
   api_base = var.litellm_api_base
   api_key  = var.litellm_api_key
 }
+```
+
+Run `terraform init -upgrade` (or `tofu init -upgrade`) after changing the version constraint. The published source is exactly `registry.terraform.io/ncecere/litellm`.
+
+Correcting the provider binary's served address to that published source does not change protocol 6, provider or resource schemas, HCL types, state values, IDs, or import formats. Normal state created with the published `ncecere/litellm` source needs no migration. If development-only configuration actually recorded state under the unpublished `registry.terraform.io/nicholas-cecere/litellm` address, migrate it explicitly; the provider does not silently alias addresses:
+
+```sh
+terraform state replace-provider \
+  registry.terraform.io/nicholas-cecere/litellm \
+  registry.terraform.io/ncecere/litellm
+# OpenTofu users can run the equivalent `tofu state replace-provider` command.
 ```
 
 Then, you can use the provider to manage LiteLLM resources. Here's an example of creating a model configuration:
@@ -202,15 +217,16 @@ Plugin Framework implementation in `internal/provider`.
 The former top-level `litellm/` Terraform Plugin SDKv2 implementation was left
 behind by the Framework migration and was never registered by the migrated
 provider binary. Removing that dead implementation does not require a state
-migration: the active provider source/address, provider type name, registered
-resource and data-source type names, schema versions and types, state values and
-IDs, and import formats are unchanged.
+migration: the provider type name, registered resource and data-source type
+names, schema versions and types, state values and IDs, and import formats are
+unchanged. Provider source identity and the one development-only migration case
+are documented in [Using the Provider](#using-the-provider).
 
 ### Building the Provider
 
 1. Clone the repository:
 ```sh
-git clone https://github.com/your-username/terraform-provider-litellm.git
+git clone https://github.com/ncecere/terraform-provider-litellm.git
 ```
 
 2. Enter the repository directory:

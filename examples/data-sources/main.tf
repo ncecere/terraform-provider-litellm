@@ -2,9 +2,12 @@
 # This example demonstrates using data sources to reference existing resources
 
 terraform {
+  required_version = ">= 1.0.0"
+
   required_providers {
     litellm = {
-      source = "registry.terraform.io/ncecere/litellm"
+      source  = "registry.terraform.io/ncecere/litellm"
+      version = ">= 2.0.1, < 3.0.0"
     }
   }
 }

@@ -6,9 +6,12 @@ The LiteLLM provider allows Terraform to manage LiteLLM resources. LiteLLM is a 
 
 ```hcl
 terraform {
+  required_version = ">= 1.0.0"
+
   required_providers {
     litellm = {
-      source = "registry.terraform.io/ncecere/litellm"
+      source  = "registry.terraform.io/ncecere/litellm"
+      version = ">= 2.0.1, < 3.0.0"
     }
   }
 }
@@ -57,6 +60,21 @@ resource "litellm_key" "dev_key" {
   key_alias = "dev-api-key"
   team_id   = litellm_team.dev_team.team_id
 }
+```
+
+## Compatibility and Upgrades
+
+The baseline clients are Terraform 1.0.0 or later (provider protocol 6.0) and OpenTofu 1.6.0 or later. Provider development requires Go 1.24.0 or later. The acceptance harness tests exactly LiteLLM 1.98.0.
+
+The optional write-only attributes `litellm_key.key_wo`, `litellm_key.send_invite_email`, and `litellm_user.send_invite_email` require Terraform or OpenTofu 1.11.0 or later only when configured; they do not raise the global client minimum. Run `terraform init -upgrade` or `tofu init -upgrade` after updating the provider constraint.
+
+The published provider source is exactly `registry.terraform.io/ncecere/litellm`. Correcting the executable's served address does not change protocol 6, schemas, HCL types, state values, IDs, or import formats, so normal state under the published source needs no migration. Development-only state actually recorded under the unpublished `registry.terraform.io/nicholas-cecere/litellm` address must be migrated explicitly; no address alias is installed:
+
+```sh
+terraform state replace-provider \
+  registry.terraform.io/nicholas-cecere/litellm \
+  registry.terraform.io/ncecere/litellm
+# Use `tofu state replace-provider` with the same addresses for OpenTofu.
 ```
 
 ## Provider Arguments
