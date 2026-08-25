@@ -267,6 +267,23 @@ func credentialProtocolReplace(t *testing.T, schemaType tftypes.Type, dynamic *t
 	return credentialProtocolDynamicValue(t, schemaType, tftypes.NewValue(schemaType, attributes))
 }
 
+func credentialProtocolPrivateMetadata(t *testing.T, private []byte) credentialPrivateMetadata {
+	t.Helper()
+	var envelope map[string]string
+	if err := json.Unmarshal(private, &envelope); err != nil {
+		t.Fatalf("decode credential private envelope: %v", err)
+	}
+	encoded, err := base64.StdEncoding.DecodeString(envelope[credentialPrivateMetadataKey])
+	if err != nil {
+		t.Fatalf("decode credential private metadata: %v", err)
+	}
+	metadata, ok := decodeCredentialPrivateMetadata(encoded)
+	if !ok {
+		t.Fatalf("invalid credential private metadata: %q", private)
+	}
+	return metadata
+}
+
 func credentialProtocolServer(t *testing.T, apiBase string) (tfprotov6.ProviderServer, tftypes.Type) {
 	t.Helper()
 	ctx := context.Background()
@@ -1096,6 +1113,214 @@ func TestCredentialUpdateNeverSendsModelAndRequiresValidBodyAndPostflight(t *tes
 	}
 }
 
+func TestCredentialUpdatePostflightUsesCompleteShallowMerge(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		third     bool
+		wantError bool
+	}{
+		{name: "desired prior and 404 fan-out"},
+		{name: "arbitrary third version", third: true, wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			const name = "complete-shallow-merge"
+			remoteBefore := credentialRemote{
+				name: name,
+				info: map[string]interface{}{
+					"managed":   "old",
+					"unmanaged": "keep",
+				},
+				values: map[string]interface{}{
+					"api_key":        maskLiteLLMCredentialString("secret"),
+					"model_value":    "server-selected",
+					"external_token": maskLiteLLMCredentialString("external-secret"),
+				},
+			}
+			desired := credentialRemote{
+				name: name,
+				info: map[string]interface{}{
+					"managed":   "new",
+					"unmanaged": "keep",
+				},
+				values: map[string]interface{}{
+					"api_key":        maskLiteLLMCredentialString("secret"),
+					"model_value":    "server-selected",
+					"external_token": maskLiteLLMCredentialString("external-secret"),
+				},
+			}
+			third := desired
+			third.values = shallowMergeCredentialObject(desired.values, map[string]interface{}{
+				"external_token": maskLiteLLMCredentialString("third-secret"),
+			})
+
+			getCalls := 0
+			var patchBodies []map[string]interface{}
+			api := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				writer.Header().Set("Content-Type", "application/json")
+				if request.Method == http.MethodPatch {
+					var body map[string]interface{}
+					_ = json.NewDecoder(request.Body).Decode(&body)
+					patchBodies = append(patchBodies, body)
+					_, _ = writer.Write([]byte(`{"success":true,"message":"updated"}`))
+					return
+				}
+				getCalls++
+				remote := remoteBefore
+				if getCalls > credentialProbeSampleSize {
+					switch getCalls - credentialProbeSampleSize {
+					case 1, 4:
+						remote = desired
+					case 2:
+						remote = remoteBefore
+					case 3:
+						if test.third {
+							remote = third
+						} else {
+							http.NotFound(writer, request)
+							return
+						}
+					}
+				}
+				_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+					"credential_name":   remote.name,
+					"credential_info":   remote.info,
+					"credential_values": remote.values,
+				})
+			}))
+			defer api.Close()
+
+			schema := credentialTestSchema(t)
+			stateModel := credentialTestModel(name, map[string]string{"managed": "old"}, map[string]string{"api_key": "secret"})
+			planModel := credentialTestModel(name, map[string]string{"managed": "new"}, map[string]string{"api_key": "secret"})
+			state := credentialTestState(t, schema, stateModel)
+			response := &resource.UpdateResponse{State: state}
+			(&CredentialResource{client: &Client{APIBase: api.URL, APIKey: "admin", HTTPClient: api.Client()}}).Update(
+				context.Background(),
+				resource.UpdateRequest{State: state, Plan: credentialTestPlan(t, schema, planModel), Config: credentialTestConfig(t, schema, planModel)},
+				response,
+			)
+			if response.Diagnostics.HasError() != test.wantError {
+				t.Fatalf("update diagnostics=%v want_error=%t", response.Diagnostics, test.wantError)
+			}
+			if !test.wantError && !credentialDiagnosticsContain(response.Diagnostics, "Worker Convergence") {
+				t.Fatalf("desired/prior/404 fan-out lacked convergence warning: %v", response.Diagnostics)
+			}
+			if test.wantError && !credentialDiagnosticsContain(response.Diagnostics, "Postflight Failed") {
+				t.Fatalf("third version was not a postflight conflict: %v", response.Diagnostics)
+			}
+			if len(patchBodies) != credentialPatchFanoutSize {
+				t.Fatalf("PATCH fan-out=%d want=%d", len(patchBodies), credentialPatchFanoutSize)
+			}
+			for _, body := range patchBodies {
+				info := body["credential_info"].(map[string]interface{})
+				values := body["credential_values"].(map[string]interface{})
+				if info["managed"] != "new" || info["unmanaged"] != "keep" || !reflect.DeepEqual(values, map[string]interface{}{"api_key": "secret"}) {
+					t.Fatalf("hydrated shallow PATCH=%#v", body)
+				}
+			}
+		})
+	}
+}
+
+func TestCredentialModelDominantMetadataUpdatePreservesCompleteRemoteValues(t *testing.T) {
+	const name = "model-metadata-update"
+	remoteValues := map[string]interface{}{
+		"api_key":        maskLiteLLMCredentialString("model-secret"),
+		"model_value":    "server-selected",
+		"external_token": maskLiteLLMCredentialString("external-secret"),
+	}
+	patched := false
+	var valuesPatch map[string]interface{}
+	api := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		if request.Method == http.MethodPatch {
+			var body map[string]interface{}
+			_ = json.NewDecoder(request.Body).Decode(&body)
+			valuesPatch, _ = body["credential_values"].(map[string]interface{})
+			patched = true
+			_, _ = writer.Write([]byte(`{"success":true,"message":"updated"}`))
+			return
+		}
+		env := "old"
+		if patched {
+			env = "new"
+		}
+		_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+			"credential_name":   name,
+			"credential_info":   map[string]interface{}{"env": env, "unmanaged": "keep"},
+			"credential_values": remoteValues,
+		})
+	}))
+	defer api.Close()
+
+	schema := credentialTestSchema(t)
+	stateModel := credentialTestModel(name, map[string]string{"env": "old"}, nil)
+	stateModel.ModelID = types.StringValue("deployment/model")
+	stateModel.CredentialValuesActive = types.BoolValue(false)
+	stateModel.CredentialSource = types.StringValue("model_id")
+	planModel := stateModel
+	planModel.CredentialInfo = stringMapValue(map[string]string{"env": "new"})
+	state := credentialTestState(t, schema, stateModel)
+	response := &resource.UpdateResponse{State: state}
+	(&CredentialResource{client: &Client{APIBase: api.URL, APIKey: "admin", HTTPClient: api.Client()}}).Update(
+		context.Background(),
+		resource.UpdateRequest{State: state, Plan: credentialTestPlan(t, schema, planModel), Config: credentialTestConfig(t, schema, planModel)},
+		response,
+	)
+	if response.Diagnostics.HasError() {
+		t.Fatalf("model-dominant metadata update: %v", response.Diagnostics)
+	}
+	if !reflect.DeepEqual(valuesPatch, map[string]interface{}{}) {
+		t.Fatalf("model-dominant values PATCH=%#v want empty delta", valuesPatch)
+	}
+}
+
+func TestCredentialUpdateRetriesAfterAcceptedMutation(t *testing.T) {
+	const name = "accepted-mutation-retry"
+	remote := credentialRemote{
+		name:   name,
+		info:   map[string]interface{}{"managed": "new", "unmanaged": "keep"},
+		values: map[string]interface{}{"api_key": maskLiteLLMCredentialString("secret"), "model_value": "retain"},
+	}
+	patches := 0
+	api := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		if request.Method == http.MethodPatch {
+			patches++
+			_, _ = writer.Write([]byte(`{"success":true,"message":"updated"}`))
+			return
+		}
+		_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+			"credential_name":   remote.name,
+			"credential_info":   remote.info,
+			"credential_values": remote.values,
+		})
+	}))
+	defer api.Close()
+
+	schema := credentialTestSchema(t)
+	stateModel := credentialTestModel(name, map[string]string{"managed": "old"}, map[string]string{"api_key": "secret"})
+	planModel := credentialTestModel(name, map[string]string{"managed": "new"}, map[string]string{"api_key": "secret"})
+	state := credentialTestState(t, schema, stateModel)
+	response := &resource.UpdateResponse{State: state}
+	(&CredentialResource{client: &Client{APIBase: api.URL, APIKey: "admin", HTTPClient: api.Client()}}).Update(
+		context.Background(),
+		resource.UpdateRequest{State: state, Plan: credentialTestPlan(t, schema, planModel), Config: credentialTestConfig(t, schema, planModel)},
+		response,
+	)
+	if response.Diagnostics.HasError() || patches != credentialPatchFanoutSize {
+		t.Fatalf("accepted mutation retry diagnostics=%v patches=%d", response.Diagnostics, patches)
+	}
+	var updated CredentialResourceModel
+	if diagnostics := response.State.Get(context.Background(), &updated); diagnostics.HasError() {
+		t.Fatal(diagnostics)
+	}
+	var info map[string]string
+	if diagnostics := updated.CredentialInfo.ElementsAs(context.Background(), &info, false); diagnostics.HasError() || info["managed"] != "new" {
+		t.Fatalf("retry did not record desired state: info=%v diagnostics=%v", info, diagnostics)
+	}
+}
+
 func TestCredentialUpdateRejectsSerializedExceptionEvenWhenPostflightMatches(t *testing.T) {
 	t.Parallel()
 	patched := false
@@ -1374,6 +1599,222 @@ func TestCredentialProtocolImportIsSourceFreeNoOpAndRejectsSourceAdoption(t *tes
 				t.Fatalf("unsafe imported adoption apply: err=%v diagnostics=%v", err, applyResponse.Diagnostics)
 			}
 			assertOnlyImportRead("unsafe adoption apply")
+		})
+	}
+}
+
+func TestCredentialProtocolImportedMetadataOwnershipTransition(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		persist bool
+	}{
+		{name: "authoritative success", persist: true},
+		{name: "postflight failure retains import", persist: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			const identity = "imported-metadata-transition"
+			var mu sync.Mutex
+			remoteInfo := map[string]interface{}{
+				"owner":  "outside",
+				"nested": map[string]interface{}{"enabled": true},
+			}
+			remoteValues := map[string]interface{}{
+				"api_key":     maskLiteLLMCredentialString("remote-secret"),
+				"credentials": map[string]interface{}{"token": maskLiteLLMCredentialString("nested-secret")},
+			}
+			patches := 0
+			var valuesPatches []map[string]interface{}
+			api := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				mu.Lock()
+				defer mu.Unlock()
+				writer.Header().Set("Content-Type", "application/json")
+				switch request.Method {
+				case http.MethodGet:
+					_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+						"credential_name":   identity,
+						"credential_info":   remoteInfo,
+						"credential_values": remoteValues,
+					})
+				case http.MethodPatch:
+					patches++
+					var body map[string]interface{}
+					_ = json.NewDecoder(request.Body).Decode(&body)
+					infoPatch, _ := body["credential_info"].(map[string]interface{})
+					valuesPatch, _ := body["credential_values"].(map[string]interface{})
+					valuesPatches = append(valuesPatches, valuesPatch)
+					if test.persist {
+						remoteInfo = shallowMergeCredentialObject(remoteInfo, infoPatch)
+						remoteValues = shallowMergeCredentialObject(remoteValues, valuesPatch)
+					}
+					_, _ = writer.Write([]byte(`{"success":true,"message":"updated"}`))
+				default:
+					http.NotFound(writer, request)
+				}
+			}))
+			defer api.Close()
+
+			server, resourceType := credentialProtocolServer(t, api.URL)
+			ctx := context.Background()
+			importResponse, err := server.ImportResourceState(ctx, &tfprotov6.ImportResourceStateRequest{
+				TypeName: "litellm_credential",
+				ID:       identity,
+			})
+			if err != nil || accessGroupProtocolDiagnosticsHaveError(importResponse.Diagnostics) || len(importResponse.ImportedResources) != 1 {
+				t.Fatalf("import: err=%v diagnostics=%v", err, importResponse.Diagnostics)
+			}
+			imported := importResponse.ImportedResources[0]
+			read, err := server.ReadResource(ctx, &tfprotov6.ReadResourceRequest{
+				TypeName:     "litellm_credential",
+				CurrentState: imported.State,
+				Private:      imported.Private,
+			})
+			if err != nil || accessGroupProtocolDiagnosticsHaveError(read.Diagnostics) {
+				t.Fatalf("import read: err=%v diagnostics=%v", err, read.Diagnostics)
+			}
+			beforeMetadata := credentialProtocolPrivateMetadata(t, read.Private)
+			if !beforeMetadata.Imported || beforeMetadata.ValuesUnowned || len(credentialMetadataOwnership(beforeMetadata, false).Children) != 0 || len(credentialMetadataOwnership(beforeMetadata, true).Children) != 0 {
+				t.Fatalf("pre-transition import marker=%#v", beforeMetadata)
+			}
+
+			nullMap := credentialProtocolMap(nil)
+			configuredInfo := credentialProtocolStringMap(map[string]string{"owner": "terraform"})
+			config := credentialProtocolDynamicValue(t, resourceType, credentialProtocolValue(
+				resourceType, identity, nil, nil, configuredInfo, nullMap, nil, nil, nil, nil,
+			))
+			proposed := credentialProtocolReplace(t, resourceType, read.NewState, map[string]tftypes.Value{
+				"credential_info": configuredInfo,
+			})
+			plan, err := server.PlanResourceChange(ctx, &tfprotov6.PlanResourceChangeRequest{
+				TypeName:         "litellm_credential",
+				Config:           config,
+				PriorState:       read.NewState,
+				ProposedNewState: proposed,
+				PriorPrivate:     read.Private,
+			})
+			if err != nil || accessGroupProtocolDiagnosticsHaveError(plan.Diagnostics) {
+				t.Fatalf("metadata ownership plan: err=%v diagnostics=%v", err, plan.Diagnostics)
+			}
+			apply, err := server.ApplyResourceChange(ctx, &tfprotov6.ApplyResourceChangeRequest{
+				TypeName:       "litellm_credential",
+				Config:         config,
+				PriorState:     read.NewState,
+				PlannedState:   plan.PlannedState,
+				PlannedPrivate: plan.PlannedPrivate,
+			})
+			if err != nil {
+				t.Fatalf("metadata ownership apply: %v", err)
+			}
+			if patches != credentialPatchFanoutSize {
+				t.Fatalf("metadata ownership PATCH fan-out=%d", patches)
+			}
+			for _, valuesPatch := range valuesPatches {
+				if !reflect.DeepEqual(valuesPatch, map[string]interface{}{}) {
+					t.Fatalf("imported transition sent credential values: %#v", valuesPatch)
+				}
+			}
+
+			if !test.persist {
+				if !accessGroupProtocolDiagnosticsHaveError(apply.Diagnostics) || !credentialProtocolDiagnosticsContain(apply.Diagnostics, "Postflight Failed") {
+					t.Fatalf("unpersisted PATCH was accepted: %v", apply.Diagnostics)
+				}
+				retained := credentialProtocolPrivateMetadata(t, apply.Private)
+				if !retained.Imported || retained.ValuesUnowned || len(credentialMetadataOwnership(retained, false).Children) != 0 || len(credentialMetadataOwnership(retained, true).Children) != 0 {
+					t.Fatalf("failed transition changed import ownership: %#v", retained)
+				}
+				return
+			}
+
+			if accessGroupProtocolDiagnosticsHaveError(apply.Diagnostics) {
+				t.Fatalf("authoritative metadata transition: %v", apply.Diagnostics)
+			}
+			transitioned := credentialProtocolPrivateMetadata(t, apply.Private)
+			if transitioned.Imported || !transitioned.ValuesUnowned || transitioned.AllRemoteOwned ||
+				len(credentialMetadataOwnership(transitioned, false).Children) != 1 ||
+				len(credentialMetadataOwnership(transitioned, true).Children) != 0 ||
+				transitioned.LegacyValuesConfigured || transitioned.JSONValuesConfigured {
+				t.Fatalf("invalid transitioned metadata: %#v", transitioned)
+			}
+			appliedValue, err := apply.NewState.Unmarshal(resourceType)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var appliedAttributes map[string]tftypes.Value
+			if err := appliedValue.As(&appliedAttributes); err != nil {
+				t.Fatal(err)
+			}
+			for _, attribute := range []string{"credential_values", "credential_values_json", "model_id"} {
+				if !appliedAttributes[attribute].IsKnown() || !appliedAttributes[attribute].IsNull() {
+					t.Fatalf("transition adopted %s: %s", attribute, appliedAttributes[attribute])
+				}
+			}
+			var source string
+			if err := appliedAttributes["credential_source"].As(&source); err != nil || source != "imported" {
+				t.Fatalf("transitioned source=%q err=%v", source, err)
+			}
+
+			refreshed, err := server.ReadResource(ctx, &tfprotov6.ReadResourceRequest{
+				TypeName:     "litellm_credential",
+				CurrentState: apply.NewState,
+				Private:      apply.Private,
+			})
+			if err != nil || accessGroupProtocolDiagnosticsHaveError(refreshed.Diagnostics) {
+				t.Fatalf("transition refresh: err=%v diagnostics=%v", err, refreshed.Diagnostics)
+			}
+			noDrift, err := server.PlanResourceChange(ctx, &tfprotov6.PlanResourceChangeRequest{
+				TypeName:         "litellm_credential",
+				Config:           config,
+				PriorState:       refreshed.NewState,
+				ProposedNewState: refreshed.NewState,
+				PriorPrivate:     refreshed.Private,
+			})
+			if err != nil || accessGroupProtocolDiagnosticsHaveError(noDrift.Diagnostics) {
+				t.Fatalf("transition no-drift plan: err=%v diagnostics=%v", err, noDrift.Diagnostics)
+			}
+
+			updatedInfo := credentialProtocolStringMap(map[string]string{"owner": "terraform-next"})
+			updatedConfig := credentialProtocolReplace(t, resourceType, config, map[string]tftypes.Value{"credential_info": updatedInfo})
+			updatedProposed := credentialProtocolReplace(t, resourceType, refreshed.NewState, map[string]tftypes.Value{"credential_info": updatedInfo})
+			updatedPlan, err := server.PlanResourceChange(ctx, &tfprotov6.PlanResourceChangeRequest{
+				TypeName:         "litellm_credential",
+				Config:           updatedConfig,
+				PriorState:       refreshed.NewState,
+				ProposedNewState: updatedProposed,
+				PriorPrivate:     refreshed.Private,
+			})
+			if err != nil || accessGroupProtocolDiagnosticsHaveError(updatedPlan.Diagnostics) {
+				t.Fatalf("transitioned metadata update plan: err=%v diagnostics=%v", err, updatedPlan.Diagnostics)
+			}
+			updatedApply, err := server.ApplyResourceChange(ctx, &tfprotov6.ApplyResourceChangeRequest{
+				TypeName:       "litellm_credential",
+				Config:         updatedConfig,
+				PriorState:     refreshed.NewState,
+				PlannedState:   updatedPlan.PlannedState,
+				PlannedPrivate: updatedPlan.PlannedPrivate,
+			})
+			if err != nil || accessGroupProtocolDiagnosticsHaveError(updatedApply.Diagnostics) {
+				t.Fatalf("transitioned metadata update: err=%v diagnostics=%v", err, updatedApply.Diagnostics)
+			}
+			updatedMetadata := credentialProtocolPrivateMetadata(t, updatedApply.Private)
+			if updatedMetadata.Imported || !updatedMetadata.ValuesUnowned || len(credentialMetadataOwnership(updatedMetadata, true).Children) != 0 {
+				t.Fatalf("subsequent update adopted secrets: %#v", updatedMetadata)
+			}
+
+			adoptionConfig := credentialProtocolReplace(t, resourceType, updatedConfig, map[string]tftypes.Value{
+				"credential_values": credentialProtocolStringMap(map[string]string{"api_key": "new-secret"}),
+			})
+			adoptionProposed := credentialProtocolReplace(t, resourceType, updatedApply.NewState, map[string]tftypes.Value{
+				"credential_values": credentialProtocolStringMap(map[string]string{"api_key": "new-secret"}),
+			})
+			adoptionPlan, err := server.PlanResourceChange(ctx, &tfprotov6.PlanResourceChangeRequest{
+				TypeName:         "litellm_credential",
+				Config:           adoptionConfig,
+				PriorState:       updatedApply.NewState,
+				ProposedNewState: adoptionProposed,
+				PriorPrivate:     updatedApply.Private,
+			})
+			if err != nil || !accessGroupProtocolDiagnosticsHaveError(adoptionPlan.Diagnostics) {
+				t.Fatalf("transitioned secret adoption was not rejected: err=%v diagnostics=%v", err, adoptionPlan.Diagnostics)
+			}
 		})
 	}
 }

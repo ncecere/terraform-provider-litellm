@@ -44,6 +44,7 @@ type credentialPrivateMetadata struct {
 	LegacyValuesConfigured bool `json:"legacy_values_configured,omitempty"`
 	JSONValuesConfigured   bool `json:"json_values_configured,omitempty"`
 	ModelDominant          bool `json:"model_dominant,omitempty"`
+	ValuesUnowned          bool `json:"values_unowned,omitempty"`
 	AllRemoteOwned         bool `json:"all_remote_owned,omitempty"`
 	ReplacementPending     bool `json:"replacement_pending,omitempty"`
 	UncertainOwnership     bool `json:"uncertain_ownership,omitempty"`
@@ -410,12 +411,17 @@ func validCredentialPrivateMetadata(metadata credentialPrivateMetadata) bool {
 	if metadata.ModelDominant && (len(metadata.LegacyValues.Children) != 0 || len(metadata.JSONValues.Children) != 0) {
 		return false
 	}
-	if metadata.Imported && (metadata.ModelDominant || metadata.AllRemoteOwned ||
+	if metadata.ValuesUnowned && (metadata.Imported || metadata.ModelDominant || metadata.AllRemoteOwned ||
+		metadata.LegacyValuesConfigured || metadata.JSONValuesConfigured ||
+		len(metadata.LegacyValues.Children) != 0 || len(metadata.JSONValues.Children) != 0) {
+		return false
+	}
+	if metadata.Imported && (metadata.ModelDominant || metadata.ValuesUnowned || metadata.AllRemoteOwned ||
 		len(metadata.LegacyInfo.Children) != 0 || len(metadata.JSONInfo.Children) != 0 ||
 		len(metadata.LegacyValues.Children) != 0 || len(metadata.JSONValues.Children) != 0) {
 		return false
 	}
-	if metadata.UncertainOwnership && (metadata.AllRemoteOwned ||
+	if metadata.UncertainOwnership && (metadata.ValuesUnowned || metadata.AllRemoteOwned ||
 		metadata.LegacyInfoConfigured || metadata.JSONInfoConfigured ||
 		metadata.LegacyValuesConfigured || metadata.JSONValuesConfigured ||
 		len(metadata.LegacyInfo.Children) != 0 || len(metadata.JSONInfo.Children) != 0 ||
@@ -941,6 +947,10 @@ func credentialReplacementPaths(state, plan CredentialResourceModel) path.Paths 
 
 func credentialKnownModelSource(modelID types.String) bool {
 	return !modelID.IsNull() && !modelID.IsUnknown() && modelID.ValueString() != ""
+}
+
+func credentialValuesAreUnowned(metadata credentialPrivateMetadata) bool {
+	return metadata.Imported || metadata.ValuesUnowned
 }
 
 // Configured empty values are still a known source declaration. This matters

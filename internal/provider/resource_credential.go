@@ -287,10 +287,10 @@ func (r *CredentialResource) ModifyPlan(ctx context.Context, req resource.Modify
 		)
 		return
 	}
-	if metadata.Imported && credentialConfigHasSource(config) {
+	if credentialValuesAreUnowned(metadata) && credentialConfigHasSource(config) {
 		resp.Diagnostics.AddError(
 			"Unsafe Credential Source Adoption",
-			"This metadata-only import has remote credential values whose ownership and cleartext reconstructability are unknown. Adding credential_values, credential_values_json, or model_id could overwrite or replace unmanaged secrets, so the plan is rejected. Create a separately named credential or remove and re-import only after arranging explicit ownership outside this lifecycle.",
+			"This metadata-only credential has remote credential values whose ownership and cleartext reconstructability are unknown. Adding credential_values, credential_values_json, or model_id could overwrite or replace unmanaged secrets, so the plan is rejected. Create a separately named credential or remove and re-import only after arranging explicit ownership outside this lifecycle.",
 		)
 		return
 	}
@@ -585,7 +585,8 @@ func (r *CredentialResource) Read(ctx context.Context, req resource.ReadRequest,
 		resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 		return
 	}
-	metadata.AllRemoteOwned = credentialRemoteFullyOwned(remote.info, priorInfo, credentialMetadataOwnership(metadata, false), false) &&
+	metadata.AllRemoteOwned = !credentialValuesAreUnowned(metadata) &&
+		credentialRemoteFullyOwned(remote.info, priorInfo, credentialMetadataOwnership(metadata, false), false) &&
 		credentialRemoteFullyOwned(remote.values, priorValues, credentialMetadataOwnership(metadata, true), true)
 	if err := reconcileCredentialState(ctx, &data, remote, priorInfo, priorValues, metadata); err != nil {
 		resp.Diagnostics.AddError("Credential Read Safety Error", formatCredentialSafetyError(err))
@@ -632,10 +633,23 @@ func (r *CredentialResource) Update(ctx context.Context, req resource.UpdateRequ
 		resp.Diagnostics.AddError("Credential Update Safety Error", formatCredentialSafetyError(err))
 		return
 	}
-	metadata.Imported = priorMetadata.Imported
-	if priorMetadata.Imported && credentialConfigHasSource(config) {
-		resp.Diagnostics.AddError("Unsafe Credential Source Adoption", "A metadata-only import cannot adopt a values or model source while remote secret ownership and reconstructability remain unknown. No PATCH was sent.")
+	if credentialValuesAreUnowned(priorMetadata) && credentialConfigHasSource(config) {
+		resp.Diagnostics.AddError("Unsafe Credential Source Adoption", "A metadata-only credential cannot adopt a values or model source while remote secret ownership and reconstructability remain unknown. No PATCH was sent.")
 		return
+	}
+	if priorMetadata.Imported {
+		if metadata.LegacyInfoConfigured || metadata.JSONInfoConfigured {
+			// A source-free import may establish metadata ownership only after its
+			// hydrated PATCH is authoritatively observed. This candidate is valid
+			// on its own (Imported and ownership are never encoded together), but
+			// it is written only on the successful postflight path below.
+			metadata.Imported = false
+			metadata.ValuesUnowned = true
+		} else {
+			metadata.Imported = true
+		}
+	} else if priorMetadata.ValuesUnowned {
+		metadata.ValuesUnowned = true
 	}
 	priorInfo, err := credentialOwnedObjectFromSurfaces(ctx, state.CredentialInfo, state.CredentialInfoJSON, priorMetadata.LegacyInfo, priorMetadata.JSONInfo)
 	if err != nil {
@@ -672,29 +686,48 @@ func (r *CredentialResource) Update(ctx context.Context, req resource.UpdateRequ
 		resp.Diagnostics.AddError("Credential Update Preflight Failed", "Bounded fresh-connection probes did not return a usable exact-name credential, so no PATCH was sent. Terraform retained prior state; verify the durable LiteLLM database record and worker health before retrying.")
 		return
 	}
-	matchingPrior := credentialMatchingRemotes(preflight.present, func(remote credentialRemote) bool {
-		return credentialRemoteMatchesOwnedState(remote, priorInfo, priorValues, priorMetadata)
-	})
-	if len(matchingPrior) == 0 || !preflight.versionsMatch() {
+	if !preflight.versionsMatch() {
 		resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
-		resp.Diagnostics.AddError("Credential Update Preflight Failed", "No single present worker version both matched the prior Terraform-owned state and was consistent with every other present version, so no PATCH was sent. Exact 404 workers may have an empty process-local cache, but conflicting present data could be durable and is never overwritten arbitrarily.")
+		resp.Diagnostics.AddError("Credential Update Preflight Failed", "Present workers returned conflicting complete versions, so no PATCH was sent. Exact 404 workers may have an empty process-local cache, but conflicting present data could be durable and is never overwritten arbitrarily.")
 		return
 	}
-	remoteBefore := matchingPrior[0]
-	priorInfoOwnership := credentialMetadataOwnership(priorMetadata, false)
-	infoPatch, err := hydrateCredentialPatch(remoteBefore.info, priorInfo, desiredInfo.Object, priorInfoOwnership, desiredInfo.UnionOwnership, false)
+	remoteBefore := preflight.present[0]
+	matchesPrior := credentialRemoteMatchesOwnedState(remoteBefore, priorInfo, priorValues, priorMetadata)
+	matchesDesired := credentialRemoteMatchesOwnedState(remoteBefore, desiredInfo.Object, desiredValues.Object, metadata)
+	if !matchesPrior && !matchesDesired {
+		resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+		resp.Diagnostics.AddError("Credential Update Preflight Failed", "The consistent present worker version matched neither the prior Terraform-owned state nor the planned owned state, so no PATCH was sent. A third version is never overwritten arbitrarily.")
+		return
+	}
+
+	// If a previous PATCH was accepted but Terraform retained prior state after
+	// an unusable response or postflight, hydrate from the already-desired
+	// remote version. The resulting request remains byte-for-byte idempotent.
+	hydrationPriorInfo := priorInfo
+	hydrationPriorValues := priorValues
+	hydrationPriorInfoOwnership := credentialMetadataOwnership(priorMetadata, false)
+	hydrationPriorValuesOwnership := credentialMetadataOwnership(priorMetadata, true)
+	if !matchesPrior && matchesDesired {
+		hydrationPriorInfo = desiredInfo.Object
+		hydrationPriorValues = desiredValues.Object
+		hydrationPriorInfoOwnership = desiredInfo.UnionOwnership
+		hydrationPriorValuesOwnership = desiredValues.UnionOwnership
+	}
+	infoPatch, err := hydrateCredentialPatch(remoteBefore.info, hydrationPriorInfo, desiredInfo.Object, hydrationPriorInfoOwnership, desiredInfo.UnionOwnership, false)
 	if err == nil {
-		infoPatch, err = hydrateCredentialInfoTopLevel(remoteBefore.info, infoPatch, priorInfoOwnership, desiredInfo.UnionOwnership)
+		infoPatch, err = hydrateCredentialInfoTopLevel(remoteBefore.info, infoPatch, hydrationPriorInfoOwnership, desiredInfo.UnionOwnership)
 	}
 	if err != nil {
 		resp.Diagnostics.AddError("Credential Update Safety Error", formatCredentialSafetyError(err))
 		return
 	}
-	valuesPatch, err := hydrateCredentialPatch(remoteBefore.values, priorValues, desiredValues.Object, credentialMetadataOwnership(priorMetadata, true), desiredValues.UnionOwnership, true)
+	valuesPatch, err := hydrateCredentialPatch(remoteBefore.values, hydrationPriorValues, desiredValues.Object, hydrationPriorValuesOwnership, desiredValues.UnionOwnership, true)
 	if err != nil {
 		resp.Diagnostics.AddError("Credential Update Safety Error", formatCredentialSafetyError(err))
 		return
 	}
+	expectedInfo := shallowMergeCredentialObject(remoteBefore.info, infoPatch)
+	expectedValues := shallowMergeCredentialObject(remoteBefore.values, valuesPatch)
 	patch := map[string]interface{}{
 		"credential_name":   plan.CredentialName.ValueString(),
 		"credential_info":   infoPatch,
@@ -715,9 +748,9 @@ func (r *CredentialResource) Update(ctx context.Context, req resource.UpdateRequ
 	conflictingVersions := 0
 	for _, remote := range postflightSample.present {
 		switch {
-		case credentialRemoteMatchesVersion(remote, infoPatch, valuesPatch):
+		case credentialRemoteMatchesExpectedUpdate(remote, remoteBefore, expectedInfo, expectedValues, desiredInfo.UnionOwnership, desiredValues.UnionOwnership):
 			matchingDesired = append(matchingDesired, remote)
-		case credentialRemoteMatchesVersion(remote, remoteBefore.info, remoteBefore.values):
+		case credentialRemoteMatchesExpectedUpdate(remote, remoteBefore, remoteBefore.info, remoteBefore.values, emptyCredentialOwnership(), emptyCredentialOwnership()):
 			matchingOld = append(matchingOld, remote)
 		default:
 			conflictingVersions++
@@ -731,7 +764,8 @@ func (r *CredentialResource) Update(ctx context.Context, req resource.UpdateRequ
 		postflightErr = errors.New("a sampled worker returned a conflicting credential version")
 	} else {
 		remoteAfter = matchingDesired[0]
-		metadata.AllRemoteOwned = credentialRemoteFullyOwned(remoteAfter.info, desiredInfo.Object, desiredInfo.UnionOwnership, false) &&
+		metadata.AllRemoteOwned = !credentialValuesAreUnowned(metadata) &&
+			credentialRemoteFullyOwned(remoteAfter.info, desiredInfo.Object, desiredInfo.UnionOwnership, false) &&
 			credentialRemoteFullyOwned(remoteAfter.values, desiredValues.Object, desiredValues.UnionOwnership, true)
 		if err := reconcileCredentialState(ctx, &plan, remoteAfter, desiredInfo.Object, desiredValues.Object, metadata); err != nil {
 			postflightErr = err
@@ -966,7 +1000,7 @@ func credentialCreateStateFromConfig(config CredentialResourceModel, metadata cr
 		data.CredentialValuesActive = types.BoolValue(true)
 		data.CredentialSource = types.StringValue("credential_values")
 	}
-	if metadata.Imported {
+	if credentialValuesAreUnowned(metadata) {
 		data.CredentialValuesActive = types.BoolValue(false)
 		data.CredentialSource = types.StringValue("imported")
 	}
@@ -1022,7 +1056,7 @@ func reconcileCredentialState(ctx context.Context, data *CredentialResourceModel
 	if metadata.ModelDominant {
 		next.CredentialValuesActive = types.BoolValue(false)
 		next.CredentialSource = types.StringValue("model_id")
-	} else if metadata.Imported {
+	} else if credentialValuesAreUnowned(metadata) {
 		next.CredentialValues = types.MapNull(types.StringType)
 		next.CredentialValuesJSON = types.StringNull()
 		next.CredentialValuesActive = types.BoolValue(false)
@@ -1162,7 +1196,7 @@ func credentialRemoteMatchesOwnedState(remote credentialRemote, priorInfo, prior
 	if validateCredentialOwnedAtomicPreconditions(remote.info, priorInfo, credentialMetadataOwnership(metadata, false), false) != nil {
 		return false
 	}
-	if metadata.ModelDominant || metadata.Imported {
+	if metadata.ModelDominant || credentialValuesAreUnowned(metadata) {
 		return true
 	}
 	return validateCredentialOwnedAtomicPreconditions(remote.values, priorValues, credentialMetadataOwnership(metadata, true), true) == nil
@@ -1180,6 +1214,87 @@ func credentialRemoteMatchesVersion(remote credentialRemote, info, values map[st
 	valuesOwnership := credentialOwnershipForObject(values)
 	return verifyCredentialOwnedObject(remote.values, values, valuesOwnership, true) == nil &&
 		credentialRemoteFullyOwned(remote.values, values, valuesOwnership, true)
+}
+
+func shallowMergeCredentialObject(remoteBefore, patch map[string]interface{}) map[string]interface{} {
+	expected := make(map[string]interface{}, len(remoteBefore)+len(patch))
+	for key, value := range remoteBefore {
+		expected[key] = value
+	}
+	for key, value := range patch {
+		expected[key] = value
+	}
+	return expected
+}
+
+// credentialRemoteMatchesExpectedUpdate proves the complete remote version
+// produced by LiteLLM's shallow merge. Desired-owned leaves may be returned as
+// their exact deterministic masks; every retained unowned leaf, including an
+// already-masked secret, must remain byte-for-byte equal to the preflight
+// version. This prevents a third worker version from being mistaken for either
+// the desired merge result or the exact prior version.
+func credentialRemoteMatchesExpectedUpdate(remote, remoteBefore credentialRemote, expectedInfo, expectedValues map[string]interface{}, desiredInfoOwnership, desiredValuesOwnership *credentialOwnership) bool {
+	return credentialObjectMatchesExpectedUpdate(remote.info, remoteBefore.info, expectedInfo, desiredInfoOwnership, false) &&
+		credentialObjectMatchesExpectedUpdate(remote.values, remoteBefore.values, expectedValues, desiredValuesOwnership, true)
+}
+
+func credentialObjectMatchesExpectedUpdate(remote, remoteBefore, expected map[string]interface{}, desiredOwnership *credentialOwnership, masked bool) bool {
+	if len(remote) != len(expected) {
+		return false
+	}
+	for key, expectedValue := range expected {
+		remoteValue, remoteExists := remote[key]
+		if !remoteExists {
+			return false
+		}
+		var desiredNode *credentialOwnership
+		if desiredOwnership != nil && desiredOwnership.Object {
+			desiredNode = desiredOwnership.Children[key]
+		}
+		beforeValue, beforeExists := remoteBefore[key]
+		if desiredNode == nil {
+			if !beforeExists || !reflect.DeepEqual(expectedValue, beforeValue) || !reflect.DeepEqual(remoteValue, beforeValue) {
+				return false
+			}
+			continue
+		}
+		if !credentialValueMatchesExpectedUpdate(remoteValue, beforeValue, beforeExists, expectedValue, desiredNode, credentialChildMasking(masked, key, remoteValue)) {
+			return false
+		}
+	}
+	return true
+}
+
+func credentialValueMatchesExpectedUpdate(remote, remoteBefore interface{}, beforeExists bool, expected interface{}, desiredOwnership *credentialOwnership, maskMode credentialMaskMode) bool {
+	if desiredOwnership == nil {
+		return beforeExists && reflect.DeepEqual(expected, remoteBefore) && reflect.DeepEqual(remote, remoteBefore)
+	}
+	if desiredOwnership.Object {
+		remoteObject, remoteOK := remote.(map[string]interface{})
+		expectedObject, expectedOK := expected.(map[string]interface{})
+		if !remoteOK || !expectedOK {
+			return false
+		}
+		beforeObject, _ := remoteBefore.(map[string]interface{})
+		if beforeObject == nil {
+			beforeObject = map[string]interface{}{}
+		}
+		return credentialObjectMatchesExpectedUpdate(remoteObject, beforeObject, expectedObject, desiredOwnership, maskMode == credentialMaskObject)
+	}
+	if !desiredOwnership.Atomic {
+		return false
+	}
+	if _, remoteIsObject := remote.(map[string]interface{}); remoteIsObject {
+		return false
+	}
+	if maskMode == credentialMaskScalar {
+		remoteText, remoteOK := remote.(string)
+		expectedText, expectedOK := expected.(string)
+		if remoteOK && expectedOK && (remoteText == expectedText || remoteText == maskLiteLLMCredentialString(expectedText)) {
+			return true
+		}
+	}
+	return reflect.DeepEqual(remote, expected)
 }
 
 func (r *CredentialResource) fetchCredentialByName(ctx context.Context, name string) (credentialRemote, error) {
