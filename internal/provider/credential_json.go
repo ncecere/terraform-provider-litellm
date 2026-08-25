@@ -46,11 +46,17 @@ type credentialPrivateMetadata struct {
 	ModelDominant          bool `json:"model_dominant,omitempty"`
 	AllRemoteOwned         bool `json:"all_remote_owned,omitempty"`
 	ReplacementPending     bool `json:"replacement_pending,omitempty"`
+	UncertainOwnership     bool `json:"uncertain_ownership,omitempty"`
 
 	LegacyInfo   *credentialOwnership `json:"legacy_info,omitempty"`
 	JSONInfo     *credentialOwnership `json:"json_info,omitempty"`
 	LegacyValues *credentialOwnership `json:"legacy_values,omitempty"`
 	JSONValues   *credentialOwnership `json:"json_values,omitempty"`
+
+	// noPrivateFallback is process-local. A schema-v0 Read has no Config, so
+	// it may preserve public compatibility values but must not infer ownership
+	// from Optional+Computed state or persist that inference into private state.
+	noPrivateFallback bool `json:"-"`
 }
 
 type credentialConfiguredObject struct {
@@ -352,7 +358,69 @@ func decodeCredentialPrivateMetadata(encoded []byte) (credentialPrivateMetadata,
 	if metadata.JSONValues == nil {
 		metadata.JSONValues = emptyCredentialOwnership()
 	}
+	for _, ownership := range []*credentialOwnership{metadata.LegacyInfo, metadata.JSONInfo, metadata.LegacyValues, metadata.JSONValues} {
+		normalizeCredentialOwnership(ownership)
+	}
+	if !validCredentialPrivateMetadata(metadata) {
+		return credentialPrivateMetadata{}, false
+	}
 	return metadata, true
+}
+
+func normalizeCredentialOwnership(ownership *credentialOwnership) {
+	if ownership == nil || !ownership.Object {
+		return
+	}
+	if ownership.Children == nil {
+		ownership.Children = map[string]*credentialOwnership{}
+	}
+	for _, child := range ownership.Children {
+		normalizeCredentialOwnership(child)
+	}
+}
+
+func validCredentialPrivateMetadata(metadata credentialPrivateMetadata) bool {
+	for _, ownership := range []*credentialOwnership{metadata.LegacyInfo, metadata.JSONInfo, metadata.LegacyValues, metadata.JSONValues} {
+		if !validCredentialOwnership(ownership, true) {
+			return false
+		}
+	}
+	if (!metadata.LegacyInfoConfigured && len(metadata.LegacyInfo.Children) != 0) ||
+		(!metadata.JSONInfoConfigured && len(metadata.JSONInfo.Children) != 0) ||
+		(!metadata.LegacyValuesConfigured && len(metadata.LegacyValues.Children) != 0) ||
+		(!metadata.JSONValuesConfigured && len(metadata.JSONValues.Children) != 0) {
+		return false
+	}
+	if metadata.ModelDominant && (len(metadata.LegacyValues.Children) != 0 || len(metadata.JSONValues.Children) != 0) {
+		return false
+	}
+	if metadata.Imported && (metadata.ModelDominant || metadata.AllRemoteOwned ||
+		len(metadata.LegacyInfo.Children) != 0 || len(metadata.JSONInfo.Children) != 0 ||
+		len(metadata.LegacyValues.Children) != 0 || len(metadata.JSONValues.Children) != 0) {
+		return false
+	}
+	return !metadata.UncertainOwnership || !metadata.AllRemoteOwned
+}
+
+func validCredentialOwnership(ownership *credentialOwnership, root bool) bool {
+	if ownership == nil || ownership.Object == ownership.Atomic {
+		return false
+	}
+	if root && !ownership.Object {
+		return false
+	}
+	if ownership.Atomic {
+		return len(ownership.Children) == 0
+	}
+	if ownership.Children == nil {
+		return false
+	}
+	for key, child := range ownership.Children {
+		if key == "" || !validCredentialOwnership(child, false) {
+			return false
+		}
+	}
+	return true
 }
 
 // credentialJSONObjectValidator validates shape while preserving json.Number
@@ -522,6 +590,9 @@ func hydrateCredentialPatch(remote, prior, desired map[string]interface{}, prior
 	if credentialTopLevelKeyRemoved(priorOwnership, desiredOwnership) {
 		return nil, errors.New("LiteLLM PATCH cannot safely remove an owned top-level credential key")
 	}
+	if err := validateCredentialOwnedAtomicPreconditions(remote, prior, priorOwnership, masked); err != nil {
+		return nil, err
+	}
 	result := map[string]interface{}{}
 	for key, desiredNode := range desiredOwnership.Children {
 		desiredValue := desired[key]
@@ -652,6 +723,60 @@ func containsUnownedCredentialMask(value interface{}, maskMode credentialMaskMod
 		}
 	}
 	return false
+}
+
+// validateCredentialOwnedAtomicPreconditions makes PATCH compare-and-set-like
+// for every previously owned atomic leaf. LiteLLM v1.98 does not expose a
+// revision token, so an unmasked value must equal prior state and a mask must
+// be exactly the mask generated from the prior configured secret.
+func validateCredentialOwnedAtomicPreconditions(remote, prior map[string]interface{}, ownership *credentialOwnership, masked bool) error {
+	if ownership == nil {
+		return nil
+	}
+	for key, node := range ownership.Children {
+		remoteValue, remoteExists := remote[key]
+		priorValue, priorExists := prior[key]
+		if !remoteExists || !priorExists {
+			return errors.New("an owned credential value is missing from the PATCH preflight")
+		}
+		if err := validateCredentialOwnedAtomicValue(remoteValue, priorValue, node, credentialChildMasking(masked, key, remoteValue)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateCredentialOwnedAtomicValue(remote, prior interface{}, ownership *credentialOwnership, maskMode credentialMaskMode) error {
+	if ownership == nil {
+		return errors.New("credential ownership metadata is incomplete")
+	}
+	if ownership.Object {
+		remoteObject, remoteOK := remote.(map[string]interface{})
+		priorObject, priorOK := prior.(map[string]interface{})
+		if !remoteOK || !priorOK {
+			return errors.New("an owned credential object changed shape before PATCH")
+		}
+		return validateCredentialOwnedAtomicPreconditions(remoteObject, priorObject, ownership, maskMode == credentialMaskObject)
+	}
+	if !ownership.Atomic {
+		return errors.New("credential ownership metadata does not describe an atomic PATCH precondition")
+	}
+	if _, remoteIsObject := remote.(map[string]interface{}); remoteIsObject {
+		return errors.New("an owned atomic credential value changed to an object before PATCH")
+	}
+	if maskMode == credentialMaskScalar {
+		if remoteText, ok := remote.(string); ok && isLiteLLMCredentialMask(remoteText) {
+			priorText, priorOK := prior.(string)
+			if !priorOK || isLiteLLMCredentialMask(priorText) || remoteText != maskLiteLLMCredentialString(priorText) {
+				return errors.New("a credential mask does not match the prior owned value before PATCH")
+			}
+			return nil
+		}
+	}
+	if !reflect.DeepEqual(remote, prior) {
+		return errors.New("an owned credential value changed outside Terraform before PATCH")
+	}
+	return nil
 }
 
 func credentialRemoteFullyOwned(remote, prior map[string]interface{}, ownership *credentialOwnership, masked bool) bool {

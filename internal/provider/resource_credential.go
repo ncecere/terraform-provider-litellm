@@ -203,15 +203,41 @@ func (r *CredentialResource) ModifyPlan(ctx context.Context, req resource.Modify
 		}
 		return
 	}
+
 	var state CredentialResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
-	metadata, diagnostics := readCredentialPrivateMetadata(ctx, req.Private, state)
+	replacementPending := len(credentialReplacementPaths(state, plan)) != 0
+	metadata, diagnostics := readCredentialPrivateMetadata(ctx, req.Private, &config)
 	resp.Diagnostics.Append(diagnostics...)
 	if resp.Diagnostics.HasError() {
+		// Even malformed or unavailable legacy ownership cannot let an identity
+		// replacement reach an unguarded Delete. Persist a fail-closed marker
+		// before returning; it owns no surface and cannot broaden ownership.
+		if replacementPending && resp.Private != nil {
+			blocked := unownedCredentialPrivateMetadata()
+			blocked.ReplacementPending = true
+			blocked.UncertainOwnership = true
+			resp.Diagnostics.Append(writeCredentialPrivateMetadata(ctx, resp.Private, blocked)...)
+		}
+		return
+	}
+	if replacementPending {
+		metadata.ReplacementPending = true
+		if resp.Private != nil {
+			resp.Diagnostics.Append(writeCredentialPrivateMetadata(ctx, resp.Private, metadata)...)
+			if resp.Diagnostics.HasError() {
+				return
+			}
+		}
+	}
+	if metadata.UncertainOwnership {
+		resp.Diagnostics.AddError(
+			"Uncertain Credential Ownership",
+			"A prior create had an ambiguous transport or response outcome. Terraform retained the caller-known identity but will not update or replace the possibly concurrent credential. Inspect LiteLLM, then either import after verifying ownership or remove the retained state only after resolving the remote object.",
+		)
 		return
 	}
 	if metadata.Imported && credentialConfigHasSource(config) {
@@ -234,18 +260,14 @@ func (r *CredentialResource) ModifyPlan(ctx context.Context, req resource.Modify
 		return
 	}
 
-	replacementPaths := credentialReplacementPaths(state, plan)
-	if len(replacementPaths) != 0 {
-		metadata.ReplacementPending = true
-		if !metadata.AllRemoteOwned {
-			resp.Diagnostics.AddError(
-				"Unsafe Credential Replacement",
-				"The create-only model_id or credential_name change requires replacement, but the latest authoritative read did not prove that every remote metadata and secret key is Terraform-owned and reconstructable. Replacement is blocked to avoid deleting unmanaged credential data.",
-			)
-			return
-		}
+	if replacementPending && !metadata.AllRemoteOwned {
+		resp.Diagnostics.AddError(
+			"Unsafe Credential Replacement",
+			"The create-only model_id or credential_name change requires replacement, but the latest authoritative read did not prove that every remote metadata and secret key is Terraform-owned and reconstructable. Replacement is blocked to avoid deleting unmanaged credential data.",
+		)
+		return
 	}
-	if resp.Private != nil {
+	if !replacementPending && resp.Private != nil {
 		resp.Diagnostics.Append(writeCredentialPrivateMetadata(ctx, resp.Private, metadata)...)
 	}
 }
