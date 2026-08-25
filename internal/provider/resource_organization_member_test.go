@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
@@ -883,6 +884,416 @@ func TestOrganizationMemberCreateBudgetFollowupFailureRetainsCreatedState(t *tes
 	}
 	if retained.ID.ValueString() != "org-1:user-1" || !retained.MaxBudgetInOrganization.IsNull() {
 		t.Fatalf("partial budget state = %#v, want created membership with no confirmed budget", retained)
+	}
+}
+
+func TestOrganizationMemberChangedBudgetRequiresAuthoritativeNestedConfirmation(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		member := organizationMemberJSON("org-1", "user-1", "member@example.com", "internal_user", "budget-1", float64Pointer(10))
+		delete(member, "litellm_budget_table")
+		switch {
+		case request.Method == http.MethodPatch && request.URL.Path == "/organization/member_update":
+			_ = json.NewEncoder(writer).Encode(member)
+		case request.Method == http.MethodGet && request.URL.Path == "/organization/info":
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+				"organization_id": "org-1",
+				"members":         []interface{}{member},
+			})
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	schema := organizationMemberTestSchema(t)
+	state := organizationMemberTestState(t, schema, OrganizationMemberResourceModel{
+		ID: types.StringValue("org-1:user-1"), OrganizationID: types.StringValue("org-1"), UserID: types.StringValue("user-1"),
+		UserEmail: types.StringNull(), Role: types.StringValue("internal_user"),
+		MaxBudgetInOrganization: types.Float64Value(10),
+	})
+	plan := organizationMemberTestPlan(t, schema, OrganizationMemberResourceModel{
+		ID: types.StringValue("org-1:user-1"), OrganizationID: types.StringValue("org-1"), UserID: types.StringValue("user-1"),
+		UserEmail: types.StringNull(), Role: types.StringValue("internal_user"),
+		MaxBudgetInOrganization: types.Float64Value(20),
+	})
+	response := &resource.UpdateResponse{State: state}
+	(&OrganizationMemberResource{client: organizationMemberTestClient(server)}).Update(
+		context.Background(), resource.UpdateRequest{Plan: plan, State: state}, response,
+	)
+	if !response.Diagnostics.HasError() {
+		t.Fatal("omitted nested budget incorrectly confirmed state 10 to plan 20")
+	}
+	var retained OrganizationMemberResourceModel
+	if diagnostics := response.State.Get(context.Background(), &retained); diagnostics.HasError() {
+		t.Fatalf("decode retained state: %v", diagnostics)
+	}
+	if retained.MaxBudgetInOrganization.IsNull() || retained.MaxBudgetInOrganization.ValueFloat64() != 10 {
+		t.Fatalf("unconfirmed budget state = %v, want last-known 10", retained.MaxBudgetInOrganization)
+	}
+}
+
+func TestOrganizationMemberChangedBudgetCanBeConfirmedByAuthoritativeReadBack(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		member := organizationMemberJSON("org-1", "user-1", "member@example.com", "internal_user", "budget-1", float64Pointer(20))
+		switch {
+		case request.Method == http.MethodPatch && request.URL.Path == "/organization/member_update":
+			delete(member, "litellm_budget_table")
+			_ = json.NewEncoder(writer).Encode(member)
+		case request.Method == http.MethodGet && request.URL.Path == "/organization/info":
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+				"organization_id": "org-1",
+				"members":         []interface{}{member},
+			})
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	schema := organizationMemberTestSchema(t)
+	state := organizationMemberTestState(t, schema, OrganizationMemberResourceModel{
+		ID: types.StringValue("org-1:user-1"), OrganizationID: types.StringValue("org-1"), UserID: types.StringValue("user-1"),
+		UserEmail: types.StringNull(), Role: types.StringValue("internal_user"),
+		MaxBudgetInOrganization: types.Float64Value(10),
+	})
+	plan := organizationMemberTestPlan(t, schema, OrganizationMemberResourceModel{
+		ID: types.StringValue("org-1:user-1"), OrganizationID: types.StringValue("org-1"), UserID: types.StringValue("user-1"),
+		UserEmail: types.StringNull(), Role: types.StringValue("internal_user"),
+		MaxBudgetInOrganization: types.Float64Value(20),
+	})
+	response := &resource.UpdateResponse{State: state}
+	(&OrganizationMemberResource{client: organizationMemberTestClient(server)}).Update(
+		context.Background(), resource.UpdateRequest{Plan: plan, State: state}, response,
+	)
+	if response.Diagnostics.HasError() {
+		t.Fatalf("authoritatively confirmed update diagnostics: %v", response.Diagnostics)
+	}
+	var updated OrganizationMemberResourceModel
+	if diagnostics := response.State.Get(context.Background(), &updated); diagnostics.HasError() {
+		t.Fatalf("decode updated state: %v", diagnostics)
+	}
+	if updated.MaxBudgetInOrganization.IsNull() || updated.MaxBudgetInOrganization.ValueFloat64() != 20 {
+		t.Fatalf("confirmed budget state = %v, want 20", updated.MaxBudgetInOrganization)
+	}
+}
+
+func TestOrganizationMemberRoleOnlyUpdatePreservesLastKnownBudgetWhenNestedIsOmitted(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		member := organizationMemberJSON("org-1", "user-1", "member@example.com", "org_admin", "budget-1", float64Pointer(10))
+		delete(member, "litellm_budget_table")
+		switch {
+		case request.Method == http.MethodPatch && request.URL.Path == "/organization/member_update":
+			_ = json.NewEncoder(writer).Encode(member)
+		case request.Method == http.MethodGet && request.URL.Path == "/organization/info":
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+				"organization_id": "org-1",
+				"members":         []interface{}{member},
+			})
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	schema := organizationMemberTestSchema(t)
+	state := organizationMemberTestState(t, schema, OrganizationMemberResourceModel{
+		ID: types.StringValue("org-1:user-1"), OrganizationID: types.StringValue("org-1"), UserID: types.StringValue("user-1"),
+		UserEmail: types.StringNull(), Role: types.StringValue("internal_user"),
+		MaxBudgetInOrganization: types.Float64Value(10),
+	})
+	plan := organizationMemberTestPlan(t, schema, OrganizationMemberResourceModel{
+		ID: types.StringValue("org-1:user-1"), OrganizationID: types.StringValue("org-1"), UserID: types.StringValue("user-1"),
+		UserEmail: types.StringNull(), Role: types.StringValue("org_admin"),
+		MaxBudgetInOrganization: types.Float64Value(10),
+	})
+	response := &resource.UpdateResponse{State: state}
+	(&OrganizationMemberResource{client: organizationMemberTestClient(server)}).Update(
+		context.Background(), resource.UpdateRequest{Plan: plan, State: state}, response,
+	)
+	if response.Diagnostics.HasError() {
+		t.Fatalf("role-only update diagnostics: %v", response.Diagnostics)
+	}
+	var updated OrganizationMemberResourceModel
+	if diagnostics := response.State.Get(context.Background(), &updated); diagnostics.HasError() {
+		t.Fatalf("decode updated state: %v", diagnostics)
+	}
+	if updated.Role.ValueString() != "org_admin" || updated.MaxBudgetInOrganization.IsNull() || updated.MaxBudgetInOrganization.ValueFloat64() != 10 {
+		t.Fatalf("role-only update state = %#v, want org_admin with last-known budget 10", updated)
+	}
+}
+
+func TestOrganizationMemberCreateBudgetRequiresAuthoritativeNestedConfirmation(t *testing.T) {
+	t.Parallel()
+
+	created := false
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/organization/info":
+			members := []interface{}{}
+			if created {
+				member := organizationMemberJSON("org-1", "user-1", "member@example.com", "internal_user", "budget-1", float64Pointer(20))
+				delete(member, "litellm_budget_table")
+				members = append(members, member)
+			}
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{"organization_id": "org-1", "members": members})
+		case request.Method == http.MethodPost && request.URL.Path == "/organization/member_add":
+			created = true
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+				"organization_id":                  "org-1",
+				"updated_users":                    []interface{}{map[string]interface{}{"user_id": "user-1", "user_email": "member@example.com"}},
+				"updated_organization_memberships": []interface{}{organizationMemberJSON("org-1", "user-1", "member@example.com", "internal_user", "", nil)},
+			})
+		case request.Method == http.MethodPatch && request.URL.Path == "/organization/member_update":
+			member := organizationMemberJSON("org-1", "user-1", "member@example.com", "internal_user", "budget-1", float64Pointer(20))
+			delete(member, "litellm_budget_table")
+			_ = json.NewEncoder(writer).Encode(member)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	schema := organizationMemberTestSchema(t)
+	plan := organizationMemberTestPlan(t, schema, OrganizationMemberResourceModel{
+		ID: types.StringUnknown(), OrganizationID: types.StringValue("org-1"), UserID: types.StringUnknown(),
+		UserEmail: types.StringValue("member@example.com"), Role: types.StringValue("internal_user"),
+		MaxBudgetInOrganization: types.Float64Value(20),
+	})
+	response := &resource.CreateResponse{State: tfsdk.State{Raw: plan.Raw, Schema: schema}}
+	(&OrganizationMemberResource{client: organizationMemberTestClient(server)}).Create(
+		context.Background(), resource.CreateRequest{Plan: plan}, response,
+	)
+	if !response.Diagnostics.HasError() {
+		t.Fatal("omitted nested budget incorrectly confirmed create plan 20")
+	}
+	var retained OrganizationMemberResourceModel
+	if diagnostics := response.State.Get(context.Background(), &retained); diagnostics.HasError() {
+		t.Fatalf("decode retained state: %v", diagnostics)
+	}
+	if retained.ID.ValueString() != "org-1:user-1" || retained.UserID.ValueString() != "user-1" || !retained.MaxBudgetInOrganization.IsNull() {
+		t.Fatalf("unconfirmed create state = %#v, want recoverable identity and null budget", retained)
+	}
+}
+
+func TestOrganizationMemberEmailCreateMalformedSuccessNeverReturnsUnknownPartialState(t *testing.T) {
+	t.Parallel()
+
+	for _, recovery := range []string{"missing", "failed"} {
+		recovery := recovery
+		t.Run(recovery, func(t *testing.T) {
+			t.Parallel()
+			var addAccepted atomic.Bool
+			var laterRead atomic.Bool
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				writer.Header().Set("Content-Type", "application/json")
+				switch {
+				case request.Method == http.MethodPost && request.URL.Path == "/organization/member_add":
+					addAccepted.Store(true)
+					_, _ = writer.Write([]byte(`{"accepted":`))
+				case request.Method == http.MethodGet && request.URL.Path == "/organization/info":
+					if laterRead.Load() {
+						_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+							"organization_id": "org-1",
+							"members": []interface{}{
+								organizationMemberJSON("org-1", "resolved-user", "member@example.com", "internal_user", "", nil),
+							},
+						})
+						return
+					}
+					if addAccepted.Load() && recovery == "failed" {
+						http.Error(writer, `{"error":"recovery unavailable"}`, http.StatusInternalServerError)
+						return
+					}
+					_ = json.NewEncoder(writer).Encode(map[string]interface{}{"organization_id": "org-1", "members": []interface{}{}})
+				default:
+					http.NotFound(writer, request)
+				}
+			}))
+			defer server.Close()
+
+			schema := organizationMemberTestSchema(t)
+			plan := organizationMemberTestPlan(t, schema, OrganizationMemberResourceModel{
+				ID: types.StringUnknown(), OrganizationID: types.StringValue("org-1"), UserID: types.StringUnknown(),
+				UserEmail: types.StringValue("member@example.com"), Role: types.StringValue("internal_user"),
+				MaxBudgetInOrganization: types.Float64Null(),
+			})
+			createResponse := &resource.CreateResponse{State: tfsdk.State{Raw: plan.Raw, Schema: schema}}
+			memberResource := &OrganizationMemberResource{client: organizationMemberTestClient(server)}
+			memberResource.Create(context.Background(), resource.CreateRequest{Plan: plan}, createResponse)
+			if !createResponse.Diagnostics.HasError() {
+				t.Fatal("expected malformed successful add response diagnostic")
+			}
+			var partial OrganizationMemberResourceModel
+			if diagnostics := createResponse.State.Get(context.Background(), &partial); diagnostics.HasError() {
+				t.Fatalf("decode partial create state: %v", diagnostics)
+			}
+			if partial.ID.IsUnknown() || partial.OrganizationID.IsUnknown() || partial.UserID.IsUnknown() || partial.UserEmail.IsUnknown() || partial.Role.IsUnknown() || partial.MaxBudgetInOrganization.IsUnknown() {
+				t.Fatalf("malformed create retained unknown framework state: %#v", partial)
+			}
+			if !partial.UserID.IsNull() || partial.ID.ValueString() != "org-1:member@example.com" {
+				t.Fatalf("partial identity = id %v user_id %v, want canonical email recovery ID and null user_id", partial.ID, partial.UserID)
+			}
+
+			laterRead.Store(true)
+			readResponse := &resource.ReadResponse{State: createResponse.State}
+			memberResource.Read(context.Background(), resource.ReadRequest{State: createResponse.State}, readResponse)
+			if readResponse.Diagnostics.HasError() || readResponse.State.Raw.IsNull() {
+				t.Fatalf("later read diagnostics=%v state_null=%t", readResponse.Diagnostics, readResponse.State.Raw.IsNull())
+			}
+			var recovered OrganizationMemberResourceModel
+			if diagnostics := readResponse.State.Get(context.Background(), &recovered); diagnostics.HasError() {
+				t.Fatalf("decode recovered state: %v", diagnostics)
+			}
+			if recovered.UserID.ValueString() != "resolved-user" || recovered.ID.ValueString() != "org-1:resolved-user" {
+				t.Fatalf("later read did not canonicalize email identity: %#v", recovered)
+			}
+		})
+	}
+}
+
+func TestOrganizationMemberEmailCreatePartialStateIsKnownThroughProtocolLifecycle(t *testing.T) {
+	t.Parallel()
+
+	var addAccepted atomic.Bool
+	var laterRead atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		switch {
+		case request.Method == http.MethodPost && request.URL.Path == "/organization/member_add":
+			addAccepted.Store(true)
+			_, _ = writer.Write([]byte(`{"accepted":`))
+		case request.Method == http.MethodGet && request.URL.Path == "/organization/info":
+			members := []interface{}{}
+			if laterRead.Load() {
+				members = append(members, organizationMemberJSON("org-1", "resolved-user", "member@example.com", "internal_user", "", nil))
+			}
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{"organization_id": "org-1", "members": members})
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	ctx := context.Background()
+	protocolServer := providerserver.NewProtocol6(New("test")())()
+	schemaResponse, err := protocolServer.GetProviderSchema(ctx, &tfprotov6.GetProviderSchemaRequest{})
+	if err != nil || accessGroupProtocolDiagnosticsHaveError(schemaResponse.Diagnostics) {
+		t.Fatalf("get provider schema: err=%v diagnostics=%v", err, schemaResponse.Diagnostics)
+	}
+	providerType := schemaResponse.Provider.ValueType()
+	providerConfig := tftypes.NewValue(providerType, map[string]tftypes.Value{
+		"api_base":             tftypes.NewValue(tftypes.String, server.URL),
+		"api_key":              tftypes.NewValue(tftypes.String, "admin"),
+		"insecure_skip_verify": tftypes.NewValue(tftypes.Bool, false),
+		"litellm_changed_by":   tftypes.NewValue(tftypes.String, nil),
+	})
+	configureResponse, err := protocolServer.ConfigureProvider(ctx, &tfprotov6.ConfigureProviderRequest{
+		TerraformVersion: "test",
+		Config:           organizationMemberProtocolDynamicValue(t, providerType, providerConfig),
+	})
+	if err != nil || accessGroupProtocolDiagnosticsHaveError(configureResponse.Diagnostics) {
+		t.Fatalf("configure provider: err=%v diagnostics=%v", err, configureResponse.Diagnostics)
+	}
+
+	resourceSchema := schemaResponse.ResourceSchemas["litellm_organization_member"]
+	if resourceSchema == nil {
+		t.Fatal("organization member protocol schema is missing")
+	}
+	resourceType := resourceSchema.ValueType()
+	resourceValue := func(id, userID interface{}) tftypes.Value {
+		return tftypes.NewValue(resourceType, map[string]tftypes.Value{
+			"id":                         tftypes.NewValue(tftypes.String, id),
+			"organization_id":            tftypes.NewValue(tftypes.String, "org-1"),
+			"user_id":                    tftypes.NewValue(tftypes.String, userID),
+			"user_email":                 tftypes.NewValue(tftypes.String, "member@example.com"),
+			"role":                       tftypes.NewValue(tftypes.String, "internal_user"),
+			"max_budget_in_organization": tftypes.NewValue(tftypes.Number, nil),
+		})
+	}
+	config := organizationMemberProtocolDynamicValue(t, resourceType, resourceValue(nil, nil))
+	proposed := organizationMemberProtocolDynamicValue(t, resourceType, resourceValue(tftypes.UnknownValue, tftypes.UnknownValue))
+	nullPrior := organizationMemberProtocolDynamicValue(t, resourceType, tftypes.NewValue(resourceType, nil))
+	planResponse, err := protocolServer.PlanResourceChange(ctx, &tfprotov6.PlanResourceChangeRequest{
+		TypeName:         "litellm_organization_member",
+		Config:           config,
+		PriorState:       nullPrior,
+		ProposedNewState: proposed,
+	})
+	if err != nil || accessGroupProtocolDiagnosticsHaveError(planResponse.Diagnostics) {
+		t.Fatalf("plan email-only create: err=%v diagnostics=%v", err, planResponse.Diagnostics)
+	}
+	applyResponse, err := protocolServer.ApplyResourceChange(ctx, &tfprotov6.ApplyResourceChangeRequest{
+		TypeName:       "litellm_organization_member",
+		Config:         config,
+		PriorState:     nullPrior,
+		PlannedState:   planResponse.PlannedState,
+		PlannedPrivate: planResponse.PlannedPrivate,
+	})
+	if err != nil {
+		t.Fatalf("apply email-only create: %v", err)
+	}
+	if !accessGroupProtocolDiagnosticsHaveError(applyResponse.Diagnostics) {
+		t.Fatal("malformed successful add did not return an apply diagnostic")
+	}
+	if !addAccepted.Load() || applyResponse.NewState == nil {
+		t.Fatalf("accepted=%t new_state_nil=%t", addAccepted.Load(), applyResponse.NewState == nil)
+	}
+	partialValue, err := applyResponse.NewState.Unmarshal(resourceType)
+	if err != nil {
+		t.Fatalf("decode partial protocol state: %v", err)
+	}
+	var partial map[string]tftypes.Value
+	if err := partialValue.As(&partial); err != nil {
+		t.Fatalf("decode partial protocol attributes: %v", err)
+	}
+	if !partial["user_id"].IsKnown() || !partial["user_id"].IsNull() || !partial["id"].IsKnown() || partial["id"].IsNull() {
+		t.Fatalf("partial protocol identity = id %s user_id %s, want known email ID and known null user_id", partial["id"], partial["user_id"])
+	}
+	var partialID string
+	if err := partial["id"].As(&partialID); err != nil || partialID != "org-1:member@example.com" {
+		t.Fatalf("partial protocol ID = %q, err=%v", partialID, err)
+	}
+	for name, value := range partial {
+		if !value.IsKnown() {
+			t.Fatalf("partial protocol attribute %q remained unknown: %s", name, value)
+		}
+	}
+
+	laterRead.Store(true)
+	readResponse, err := protocolServer.ReadResource(ctx, &tfprotov6.ReadResourceRequest{
+		TypeName:     "litellm_organization_member",
+		CurrentState: applyResponse.NewState,
+	})
+	if err != nil || accessGroupProtocolDiagnosticsHaveError(readResponse.Diagnostics) {
+		t.Fatalf("read partial protocol state: err=%v diagnostics=%v", err, readResponse.Diagnostics)
+	}
+	recoveredValue, err := readResponse.NewState.Unmarshal(resourceType)
+	if err != nil {
+		t.Fatalf("decode recovered protocol state: %v", err)
+	}
+	var recovered map[string]tftypes.Value
+	if err := recoveredValue.As(&recovered); err != nil {
+		t.Fatalf("decode recovered protocol attributes: %v", err)
+	}
+	var recoveredID, recoveredUserID string
+	if err := recovered["id"].As(&recoveredID); err != nil {
+		t.Fatalf("decode recovered id: %v", err)
+	}
+	if err := recovered["user_id"].As(&recoveredUserID); err != nil {
+		t.Fatalf("decode recovered user_id: %v", err)
+	}
+	if recoveredID != "org-1:resolved-user" || recoveredUserID != "resolved-user" {
+		t.Fatalf("recovered protocol identity = id %q user_id %q", recoveredID, recoveredUserID)
 	}
 }
 

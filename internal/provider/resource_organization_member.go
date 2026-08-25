@@ -266,11 +266,20 @@ func validateOrganizationMember(member organizationMemberAPIModel) error {
 }
 
 func applyOrganizationMemberResponse(data *OrganizationMemberResourceModel, member organizationMemberAPIModel) error {
+	_, err := applyOrganizationMemberResponseWithBudgetConfirmation(data, member)
+	return err
+}
+
+// applyOrganizationMemberResponseWithBudgetConfirmation applies fields to a
+// last-known state snapshot, never to a requested plan. The boolean is true
+// only when LiteLLM actually returned the nested budget relation. An omitted or
+// null relation preserves the snapshot but cannot confirm a requested change.
+func applyOrganizationMemberResponseWithBudgetConfirmation(data *OrganizationMemberResourceModel, member organizationMemberAPIModel) (bool, error) {
 	if err := validateOrganizationMember(member); err != nil {
-		return err
+		return false, err
 	}
 	if member.UserRole == nil || !isOrganizationMemberRole(*member.UserRole) {
-		return fmt.Errorf("membership has missing or unsupported user_role")
+		return false, fmt.Errorf("membership has missing or unsupported user_role")
 	}
 	data.UserID = types.StringValue(member.UserID)
 	data.Role = types.StringValue(*member.UserRole)
@@ -281,26 +290,26 @@ func applyOrganizationMemberResponse(data *OrganizationMemberResourceModel, memb
 
 	// Exact LiteLLM v1.98 organization-admin responses can prove membership
 	// through /organization/info while omitting or returning null for this
-	// relation, even when budget_id is set. Preserve the value already known
-	// from configuration, state, or a mutation response in that case. A loaded
-	// nested object remains authoritative when LiteLLM actually returns it.
+	// relation, even when budget_id is set. Preserve only the last-known value in
+	// that case. A loaded nested object remains authoritative when LiteLLM
+	// actually returns it.
 	budget := member.LiteLLMBudgetTable
 	if budget == nil {
-		return nil
+		return false, nil
 	}
 	if member.BudgetID != nil && *member.BudgetID != "" {
 		if budget.BudgetID == nil || *budget.BudgetID != *member.BudgetID {
-			return fmt.Errorf("litellm_budget_table budget_id does not match membership budget_id")
+			return true, fmt.Errorf("litellm_budget_table budget_id does not match membership budget_id")
 		}
 	} else if budget.BudgetID != nil && *budget.BudgetID != "" {
-		return fmt.Errorf("litellm_budget_table has a budget_id but the membership does not")
+		return true, fmt.Errorf("litellm_budget_table has a budget_id but the membership does not")
 	}
 	if budget.MaxBudget == nil {
 		data.MaxBudgetInOrganization = types.Float64Null()
 	} else {
 		data.MaxBudgetInOrganization = types.Float64Value(*budget.MaxBudget)
 	}
-	return nil
+	return true, nil
 }
 
 func validateOrganizationMemberAddResponse(response organizationMemberAddAPIResponse, data *OrganizationMemberResourceModel) (organizationMemberAPIModel, error) {
@@ -328,6 +337,10 @@ func validateOrganizationMemberAddResponse(response organizationMemberAddAPIResp
 		return member, fmt.Errorf("add response user_email does not match the requested email identity")
 	}
 	validated := *data
+	// member_add does not persist the requested budget. Validate its response
+	// from that null post-add baseline so an omitted nested relation can never
+	// inherit the plan, even in temporary validation state.
+	validated.MaxBudgetInOrganization = types.Float64Null()
 	if err := applyOrganizationMemberResponse(&validated, member); err != nil {
 		return member, fmt.Errorf("invalid updated membership: %w", err)
 	}
@@ -367,30 +380,35 @@ func organizationMemberDiagnosticError(err error) string {
 }
 
 func (r *OrganizationMemberResource) readOrganizationMember(ctx context.Context, data *OrganizationMemberResourceModel) (bool, error) {
+	exists, _, err := r.readOrganizationMemberWithBudgetConfirmation(ctx, data)
+	return exists, err
+}
+
+func (r *OrganizationMemberResource) readOrganizationMemberWithBudgetConfirmation(ctx context.Context, data *OrganizationMemberResourceModel) (bool, bool, error) {
 	userID, userEmail, err := organizationMemberIdentity(data)
 	if err != nil {
-		return false, err
+		return false, false, err
 	}
 	organizationID := data.OrganizationID.ValueString()
 	endpoint := fmt.Sprintf("/organization/info?organization_id=%s", url.QueryEscape(organizationID))
 
 	var response organizationInfoAPIResponse
 	if err := r.client.DoRequestWithResponse(ctx, http.MethodGet, endpoint, nil, &response); err != nil {
-		return false, err
+		return false, false, err
 	}
 	if response.OrganizationID != organizationID {
-		return false, fmt.Errorf("organization info response organization_id does not match the requested organization")
+		return false, false, fmt.Errorf("organization info response organization_id does not match the requested organization")
 	}
 	if response.Members == nil {
-		return false, fmt.Errorf("organization info response is missing the members array")
+		return false, false, fmt.Errorf("organization info response is missing the members array")
 	}
 
 	for _, member := range response.Members {
 		if err := validateOrganizationMember(member); err != nil {
-			return false, fmt.Errorf("organization info response contains an invalid member: %w", err)
+			return false, false, fmt.Errorf("organization info response contains an invalid member: %w", err)
 		}
 		if member.OrganizationID != organizationID {
-			return false, fmt.Errorf("organization info response contains a member for another organization")
+			return false, false, fmt.Errorf("organization info response contains a member for another organization")
 		}
 		memberEmail := ""
 		if member.UserEmail != nil {
@@ -399,12 +417,13 @@ func (r *OrganizationMemberResource) readOrganizationMember(ctx context.Context,
 		if !matchOrganizationMember(member.UserID, memberEmail, userID, userEmail) {
 			continue
 		}
-		if err := applyOrganizationMemberResponse(data, member); err != nil {
-			return false, err
+		budgetConfirmed, err := applyOrganizationMemberResponseWithBudgetConfirmation(data, member)
+		if err != nil {
+			return false, budgetConfirmed, err
 		}
-		return true, nil
+		return true, budgetConfirmed, nil
 	}
-	return false, nil
+	return false, false, nil
 }
 
 func matchOrganizationMember(memberUserID, memberUserEmail, targetUserID, targetUserEmail string) bool {
@@ -501,6 +520,12 @@ func (r *OrganizationMemberResource) Create(ctx context.Context, req resource.Cr
 	// persisted member budget because v1.98.0 ignores that field on member_add.
 	owned := data
 	owned.MaxBudgetInOrganization = types.Float64Null()
+	// Optional+Computed user_id is unknown in an email-only create plan. Once
+	// the add is accepted, partial state must contain only known or null values;
+	// a later Read can resolve this canonical identity from user_email.
+	if owned.UserID.IsUnknown() {
+		owned.UserID = types.StringNull()
+	}
 	var member organizationMemberAPIModel
 	var validationErr error
 	if addErr == nil {
@@ -534,7 +559,9 @@ func (r *OrganizationMemberResource) Create(ctx context.Context, req resource.Cr
 		return
 	}
 
-	if !data.MaxBudgetInOrganization.IsNull() && !data.MaxBudgetInOrganization.IsUnknown() {
+	budgetConfirmedByMutation := false
+	budgetRequested := !data.MaxBudgetInOrganization.IsNull() && !data.MaxBudgetInOrganization.IsUnknown()
+	if budgetRequested {
 		budgetUpdate := owned
 		budgetUpdate.MaxBudgetInOrganization = data.MaxBudgetInOrganization
 		updateRequest, requestErr := buildOrganizationMemberUpdateRequest(&budgetUpdate)
@@ -551,13 +578,16 @@ func (r *OrganizationMemberResource) Create(ctx context.Context, req resource.Cr
 			} else if updatedMember.OrganizationID != owned.OrganizationID.ValueString() || updatedMember.UserID != owned.UserID.ValueString() {
 				updateErr = fmt.Errorf("update response membership identity does not match the created membership")
 			} else {
-				confirmed := budgetUpdate
-				updateErr = applyOrganizationMemberResponse(&confirmed, updatedMember)
+				// Apply onto the null post-add budget, not budgetUpdate (the plan).
+				// Omission therefore remains unconfirmed until an authoritative
+				// nested relation is returned by this response or the read-back.
+				confirmed := owned
+				budgetConfirmedByMutation, updateErr = applyOrganizationMemberResponseWithBudgetConfirmation(&confirmed, updatedMember)
 				if updateErr == nil {
-					// A valid nested mutation response is authoritative even when it
+					// A present nested mutation response is authoritative even when it
 					// proves LiteLLM stored a value different from the request.
 					owned = confirmed
-					if confirmed.Role.ValueString() != budgetUpdate.Role.ValueString() || confirmed.MaxBudgetInOrganization.IsNull() || confirmed.MaxBudgetInOrganization.ValueFloat64() != budgetUpdate.MaxBudgetInOrganization.ValueFloat64() {
+					if confirmed.Role.ValueString() != budgetUpdate.Role.ValueString() || (budgetConfirmedByMutation && !sameOrganizationMemberBudget(confirmed.MaxBudgetInOrganization, budgetUpdate.MaxBudgetInOrganization)) {
 						updateErr = fmt.Errorf("update response did not confirm the requested role and max_budget_in_organization")
 					}
 				}
@@ -578,7 +608,8 @@ func (r *OrganizationMemberResource) Create(ctx context.Context, req resource.Cr
 		}
 	}
 
-	observed, exists, readErr := r.recoverOwnedOrganizationMember(ctx, owned)
+	observed := owned
+	exists, budgetConfirmedByRead, readErr := r.readOrganizationMemberWithBudgetConfirmation(ctx, &observed)
 	if readErr != nil {
 		resp.Diagnostics.Append(resp.State.Set(ctx, &owned)...)
 		resp.Diagnostics.AddError("Organization Member Read-Back Error", fmt.Sprintf("The membership was created and retained in state, but it could not be verified: %s", organizationMemberDiagnosticError(readErr)))
@@ -589,9 +620,14 @@ func (r *OrganizationMemberResource) Create(ctx context.Context, req resource.Cr
 		resp.Diagnostics.AddError("Organization Member Missing After Create", "LiteLLM accepted the create request, but the user is not present in the organization's members array. The provider retained the owned identity in state.")
 		return
 	}
-	if observed.Role.ValueString() != data.Role.ValueString() || !sameOrganizationMemberBudget(observed.MaxBudgetInOrganization, data.MaxBudgetInOrganization) {
+	budgetConfirmed := !budgetRequested || budgetConfirmedByMutation || budgetConfirmedByRead
+	if observed.Role.ValueString() != data.Role.ValueString() || !budgetConfirmed || !sameOrganizationMemberBudget(observed.MaxBudgetInOrganization, data.MaxBudgetInOrganization) {
 		resp.Diagnostics.Append(resp.State.Set(ctx, &observed)...)
-		resp.Diagnostics.AddError("Organization Member Create Verification Failed", "The authoritative organization member role or nested budget does not match the requested value.")
+		detail := "The authoritative organization member role or nested budget does not match the requested value."
+		if !budgetConfirmed {
+			detail = "LiteLLM omitted litellm_budget_table from both the budget mutation response and the organization read-back, so the requested max budget could not be confirmed. The membership was retained with its last-known null budget."
+		}
+		resp.Diagnostics.AddError("Organization Member Create Verification Failed", detail)
 		return
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &observed)...)
@@ -636,6 +672,7 @@ func (r *OrganizationMemberResource) Update(ctx context.Context, req resource.Up
 	data.UserID = state.UserID
 	desiredRole := data.Role.ValueString()
 	desiredBudget := data.MaxBudgetInOrganization
+	budgetChanged := !sameOrganizationMemberBudget(state.MaxBudgetInOrganization, desiredBudget)
 	if !state.MaxBudgetInOrganization.IsNull() && data.MaxBudgetInOrganization.IsNull() {
 		resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 		resp.Diagnostics.AddError(
@@ -652,22 +689,25 @@ func (r *OrganizationMemberResource) Update(ctx context.Context, req resource.Up
 	}
 	var updatedMember organizationMemberAPIModel
 	accepted, updateErr := r.client.doRequestWithResponse(ctx, http.MethodPatch, "/organization/member_update", updateRequest, &updatedMember)
+	// Keep the last-known state independent from the requested plan. Responses
+	// that omit litellm_budget_table may update other observed fields, but can
+	// only preserve this prior budget and never initialize it from desiredBudget.
 	reconciliationBase := state
+	budgetConfirmedByMutation := false
 	if updateErr == nil {
 		if err := validateOrganizationMember(updatedMember); err != nil {
 			updateErr = err
 		} else if updatedMember.OrganizationID != data.OrganizationID.ValueString() || updatedMember.UserID != data.UserID.ValueString() {
 			updateErr = fmt.Errorf("update response membership identity does not match the requested membership")
 		} else {
-			confirmed := data
-			updateErr = applyOrganizationMemberResponse(&confirmed, updatedMember)
+			confirmed := reconciliationBase
+			budgetConfirmedByMutation, updateErr = applyOrganizationMemberResponseWithBudgetConfirmation(&confirmed, updatedMember)
 			if updateErr == nil {
 				// Preserve every valid authoritative mutation field before testing
 				// whether it matched the plan. A later organization-info response
 				// may omit the nested budget and must start from this confirmation.
-				data = confirmed
 				reconciliationBase = confirmed
-				if confirmed.Role.ValueString() != desiredRole || !sameOrganizationMemberBudget(confirmed.MaxBudgetInOrganization, desiredBudget) {
+				if confirmed.Role.ValueString() != desiredRole || (budgetConfirmedByMutation && !sameOrganizationMemberBudget(confirmed.MaxBudgetInOrganization, desiredBudget)) {
 					updateErr = fmt.Errorf("update response did not confirm the requested role and max_budget_in_organization")
 				}
 			}
@@ -679,7 +719,7 @@ func (r *OrganizationMemberResource) Update(ctx context.Context, req resource.Up
 		// committed. Reconcile from any valid mutation confirmation so omitted
 		// organization-info fields cannot restore stale prior state.
 		observed := reconciliationBase
-		exists, readErr := r.readOrganizationMember(ctx, &observed)
+		exists, _, readErr := r.readOrganizationMemberWithBudgetConfirmation(ctx, &observed)
 		switch {
 		case readErr == nil && exists:
 			resp.Diagnostics.Append(resp.State.Set(ctx, &observed)...)
@@ -701,10 +741,10 @@ func (r *OrganizationMemberResource) Update(ctx context.Context, req resource.Up
 		return
 	}
 
-	observed := data
-	exists, readErr := r.readOrganizationMember(ctx, &observed)
+	observed := reconciliationBase
+	exists, budgetConfirmedByRead, readErr := r.readOrganizationMemberWithBudgetConfirmation(ctx, &observed)
 	if readErr != nil {
-		resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+		resp.Diagnostics.Append(resp.State.Set(ctx, &reconciliationBase)...)
 		resp.Diagnostics.AddError("Organization Member Read-Back Error", fmt.Sprintf("The membership was updated and retained in state, but it could not be verified: %s", organizationMemberDiagnosticError(readErr)))
 		return
 	}
@@ -713,19 +753,27 @@ func (r *OrganizationMemberResource) Update(ctx context.Context, req resource.Up
 		resp.Diagnostics.AddError("Organization Member Missing After Update", "LiteLLM accepted the update request, but the user is no longer present in the organization's members array.")
 		return
 	}
-	if observed.Role.ValueString() != desiredRole || !sameOrganizationMemberBudget(observed.MaxBudgetInOrganization, desiredBudget) {
+	budgetConfirmed := !budgetChanged || budgetConfirmedByMutation || budgetConfirmedByRead
+	if observed.Role.ValueString() != desiredRole || !budgetConfirmed || !sameOrganizationMemberBudget(observed.MaxBudgetInOrganization, desiredBudget) {
 		resp.Diagnostics.Append(resp.State.Set(ctx, &observed)...)
-		resp.Diagnostics.AddError("Organization Member Update Verification Failed", "The authoritative organization member role or nested budget does not match the requested value.")
+		detail := "The authoritative organization member role or nested budget does not match the requested value."
+		if !budgetConfirmed {
+			detail = "LiteLLM omitted litellm_budget_table from both the mutation response and the organization read-back, so the requested max budget change could not be confirmed. The membership was retained with its last-known budget."
+		}
+		resp.Diagnostics.AddError("Organization Member Update Verification Failed", detail)
 		return
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &observed)...)
 }
 
 func sameOrganizationMemberBudget(observed, planned types.Float64) bool {
+	if planned.IsUnknown() || observed.IsUnknown() {
+		return false
+	}
 	if planned.IsNull() {
 		return observed.IsNull()
 	}
-	return !observed.IsNull() && !observed.IsUnknown() && observed.ValueFloat64() == planned.ValueFloat64()
+	return !observed.IsNull() && observed.ValueFloat64() == planned.ValueFloat64()
 }
 
 func (r *OrganizationMemberResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
