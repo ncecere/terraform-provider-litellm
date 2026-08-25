@@ -7,7 +7,6 @@ resource "litellm_mcp_server" "full" {
   description    = "Full test MCP server"
   url            = "https://example.com/mcp-full"
   transport      = "sse"
-  spec_version   = "2024-11-05"
   auth_type      = "bearer_token"
   allow_all_keys = true
 

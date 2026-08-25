@@ -72,7 +72,7 @@ run_case guardrail resources guardrail_minimal.tf
 run_case guardrail_structured_mode resources guardrail_full.tf
 run_case key resources key_minimal.tf,key_router_settings.tf,send_invite_email.tf datasources key.tf
 run_case key_block resources key_minimal.tf,key_block_minimal.tf,key_block_hash.tf
-run_case mcp_server resources mcp_server_minimal.tf
+run_case mcp_server resources mcp_server_minimal.tf datasources mcp_server.tf,mcp_servers_list.tf
 run_case model resources model_minimal.tf
 run_case organization resources organization_minimal.tf
 run_case organization_member resources organization_minimal.tf,organization_member_minimal.tf

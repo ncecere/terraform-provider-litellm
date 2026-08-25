@@ -26,6 +26,7 @@ type MCPServerListItem struct {
 	Alias        types.String `tfsdk:"alias"`
 	Description  types.String `tfsdk:"description"`
 	URL          types.String `tfsdk:"url"`
+	SpecPath     types.String `tfsdk:"spec_path"`
 	Transport    types.String `tfsdk:"transport"`
 	SpecVersion  types.String `tfsdk:"spec_version"`
 	AuthType     types.String `tfsdk:"auth_type"`
@@ -74,7 +75,11 @@ func (d *MCPServersListDataSource) Schema(ctx context.Context, req datasource.Sc
 							Computed:    true,
 						},
 						"url": schema.StringAttribute{
-							Description: "URL of the MCP server.",
+							Description: "URL of the MCP server, when configured.",
+							Computed:    true,
+						},
+						"spec_path": schema.StringAttribute{
+							Description: "Path or URL of the server's OpenAPI specification, when configured.",
 							Computed:    true,
 						},
 						"transport": schema.StringAttribute{
@@ -82,8 +87,9 @@ func (d *MCPServersListDataSource) Schema(ctx context.Context, req datasource.Sc
 							Computed:    true,
 						},
 						"spec_version": schema.StringAttribute{
-							Description: "Compatibility field. LiteLLM v1.98 does not return an MCP specification version.",
-							Computed:    true,
+							Description:        "Deprecated compatibility field. LiteLLM v1.98 does not return an MCP specification version.",
+							DeprecationMessage: "spec_version is retained only for state compatibility and is not returned by LiteLLM v1.98.",
+							Computed:           true,
 						},
 						"auth_type": schema.StringAttribute{
 							Description: "Authentication type reported by LiteLLM.",
@@ -147,15 +153,23 @@ func (d *MCPServersListDataSource) Read(ctx context.Context, req datasource.Read
 	data.ID = types.StringValue("mcp_servers")
 	data.MCPServers = make([]MCPServerListItem, 0, len(result))
 	for _, serverMap := range result {
-
-		item := MCPServerListItem{}
-
-		if serverID, ok := serverMap["server_id"].(string); ok && serverID != "" {
-			item.ServerID = types.StringValue(serverID)
-		} else {
-			resp.Diagnostics.AddError("Invalid API Response", "/v1/mcp/server returned a server object without server_id")
+		serverID, ok := serverMap["server_id"].(string)
+		if !ok || serverID == "" || validateMCPServerResponse(serverMap, serverID) != nil {
+			resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned a malformed MCP server object.")
 			return
 		}
+		if err := validateMCPServerOptionalResponseFields(
+			serverMap,
+			[]string{"server_name", "alias", "description", "url", "spec_path", "auth_type", "status", "created_at", "updated_at"},
+			[]string{"allow_all_keys"},
+			nil,
+			nil,
+		); err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned malformed optional MCP server fields.")
+			return
+		}
+
+		item := MCPServerListItem{ServerID: types.StringValue(serverID)}
 		if serverName, ok := serverMap["server_name"].(string); ok {
 			item.ServerName = types.StringValue(serverName)
 		}
@@ -165,14 +179,14 @@ func (d *MCPServersListDataSource) Read(ctx context.Context, req datasource.Read
 		if desc, ok := serverMap["description"].(string); ok {
 			item.Description = types.StringValue(desc)
 		}
-		if url, ok := serverMap["url"].(string); ok {
-			item.URL = types.StringValue(url)
+		if remoteURL, ok := serverMap["url"].(string); ok {
+			item.URL = types.StringValue(remoteURL)
+		}
+		if specPath, ok := serverMap["spec_path"].(string); ok {
+			item.SpecPath = types.StringValue(specPath)
 		}
 		if transport, ok := serverMap["transport"].(string); ok {
 			item.Transport = types.StringValue(transport)
-		}
-		if specVersion, ok := serverMap["spec_version"].(string); ok {
-			item.SpecVersion = types.StringValue(specVersion)
 		}
 		if authType, ok := serverMap["auth_type"].(string); ok {
 			item.AuthType = types.StringValue(authType)
@@ -182,8 +196,6 @@ func (d *MCPServersListDataSource) Read(ctx context.Context, req datasource.Read
 		}
 		if allowAllKeys, ok := serverMap["allow_all_keys"].(bool); ok {
 			item.AllowAllKeys = types.BoolValue(allowAllKeys)
-		} else {
-			item.AllowAllKeys = types.BoolValue(false)
 		}
 		if createdAt, ok := serverMap["created_at"].(string); ok {
 			item.CreatedAt = types.StringValue(createdAt)

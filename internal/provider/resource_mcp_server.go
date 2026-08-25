@@ -4,11 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/mapvalidator"
-	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -24,7 +25,13 @@ import (
 var _ resource.Resource = &MCPServerResource{}
 var _ resource.ResourceWithImportState = &MCPServerResource{}
 var _ resource.ResourceWithUpgradeState = &MCPServerResource{}
+var _ resource.ResourceWithValidateConfig = &MCPServerResource{}
+var _ resource.ResourceWithModifyPlan = &MCPServerResource{}
 
+// Wire-contract values verified against LiteLLM commit
+// d8f71d7bdbd7c9873d98293f83d64c6db72847e6: litellm/types/mcp.py,
+// litellm/constants.py, and NewMCPServerRequest/UpdateMCPServerRequest in
+// litellm/proxy/_types.py.
 var mcpAuthTypesV198 = []string{
 	"none",
 	"api_key",
@@ -38,6 +45,50 @@ var mcpAuthTypesV198 = []string{
 	"oauth2_id_jag",
 	"true_passthrough",
 	"oauth_delegate",
+}
+
+var mcpTransportsV198 = []string{"http", "sse", "stdio"}
+
+var mcpStdioAllowedCommandsV198 = map[string]struct{}{
+	"deno":    {},
+	"docker":  {},
+	"node":    {},
+	"npx":     {},
+	"python":  {},
+	"python3": {},
+	"uvx":     {},
+}
+
+type mcpSafeEnumValidator struct {
+	allowed     map[string]struct{}
+	description string
+}
+
+var _ validator.String = mcpSafeEnumValidator{}
+
+func newMCPSafeEnumValidator(values []string, description string) mcpSafeEnumValidator {
+	allowed := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		allowed[value] = struct{}{}
+	}
+	return mcpSafeEnumValidator{allowed: allowed, description: description}
+}
+
+func (v mcpSafeEnumValidator) Description(context.Context) string {
+	return v.description
+}
+
+func (v mcpSafeEnumValidator) MarkdownDescription(ctx context.Context) string {
+	return v.Description(ctx)
+}
+
+func (v mcpSafeEnumValidator) ValidateString(_ context.Context, req validator.StringRequest, resp *validator.StringResponse) {
+	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		return
+	}
+	if _, ok := v.allowed[req.ConfigValue.ValueString()]; !ok {
+		resp.Diagnostics.AddAttributeError(req.Path, "Invalid MCP Configuration", v.description)
+	}
 }
 
 func NewMCPServerResource() resource.Resource {
@@ -67,6 +118,7 @@ type MCPServerResourceModel struct {
 	Alias           types.String  `tfsdk:"alias"`
 	Description     types.String  `tfsdk:"description"`
 	URL             types.String  `tfsdk:"url"`
+	SpecPath        types.String  `tfsdk:"spec_path"`
 	Transport       types.String  `tfsdk:"transport"`
 	SpecVersion     types.String  `tfsdk:"spec_version"`
 	AuthType        types.String  `tfsdk:"auth_type"`
@@ -126,21 +178,26 @@ func (r *MCPServerResource) Schema(ctx context.Context, req resource.SchemaReque
 				Optional:    true,
 			},
 			"url": schema.StringAttribute{
-				Description: "URL of the MCP server.",
-				Required:    true,
+				Description: "URL of the MCP server. HTTP and SSE transports require url or spec_path; stdio does not require a URL.",
+				Optional:    true,
+			},
+			"spec_path": schema.StringAttribute{
+				Description: "Path or URL of an OpenAPI specification. For HTTP and SSE transports this can be used instead of url.",
+				Optional:    true,
 			},
 			"transport": schema.StringAttribute{
 				Description: "Transport type for the MCP server (http, sse, stdio).",
 				Required:    true,
 				Validators: []validator.String{
-					stringvalidator.OneOf("http", "sse", "stdio"),
+					newMCPSafeEnumValidator(mcpTransportsV198, "Transport must be one of the values accepted by LiteLLM v1.98."),
 				},
 			},
 			"spec_version": schema.StringAttribute{
-				Description: "MCP specification version.",
-				Optional:    true,
-				Computed:    true,
-				Default:     stringdefault.StaticString("2024-11-05"),
+				Description:        "Deprecated compatibility attribute. LiteLLM v1.98 does not accept or return this field.",
+				DeprecationMessage: "spec_version is retained only for state and HCL compatibility and is not sent to LiteLLM. Remove it from configuration.",
+				Optional:           true,
+				Computed:           true,
+				Default:            stringdefault.StaticString("2024-11-05"),
 			},
 			"auth_type": schema.StringAttribute{
 				Description: "Authentication type accepted by the LiteLLM v1.98 MCP server request contract.",
@@ -148,7 +205,7 @@ func (r *MCPServerResource) Schema(ctx context.Context, req resource.SchemaReque
 				Computed:    true,
 				Default:     stringdefault.StaticString("none"),
 				Validators: []validator.String{
-					stringvalidator.OneOf(mcpAuthTypesV198...),
+					newMCPSafeEnumValidator(mcpAuthTypesV198, "Authentication type must be one of the values accepted by LiteLLM v1.98."),
 				},
 			},
 			"mcp_access_groups": schema.ListAttribute{
@@ -215,8 +272,9 @@ func (r *MCPServerResource) Schema(ctx context.Context, req resource.SchemaReque
 				Optional:    true,
 			},
 			"skip_url_validation": schema.BoolAttribute{
-				Description: "Skip MCP server URL reachability validation during creation/update. Useful when the MCP server is reachable by LiteLLM but not by the Terraform runner or validation path.",
-				Optional:    true,
+				Description:        "Deprecated compatibility attribute. LiteLLM v1.98 does not accept this field; new or changed true values are unsafe, while unchanged historical state remains plannable.",
+				DeprecationMessage: "skip_url_validation is retained only for state and HCL compatibility and is not sent to LiteLLM. Remove it from configuration.",
+				Optional:           true,
 			},
 			"created_at": schema.StringAttribute{
 				Description: "Timestamp when the server was created.",
@@ -273,6 +331,168 @@ func (r *MCPServerResource) Schema(ctx context.Context, req resource.SchemaReque
 	}
 }
 
+func (r *MCPServerResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var data MCPServerResourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	for name, value := range map[string]types.String{"url": data.URL, "spec_path": data.SpecPath} {
+		if !value.IsNull() && !value.IsUnknown() && value.ValueString() == "" {
+			resp.Diagnostics.AddAttributeError(
+				path.Root(name),
+				"Invalid MCP Endpoint Configuration",
+				"Configured MCP endpoint fields must be non-empty. Omit the field to clear or release it.",
+			)
+		}
+	}
+	if resp.Diagnostics.HasError() || data.Transport.IsNull() || data.Transport.IsUnknown() {
+		return
+	}
+	switch data.Transport.ValueString() {
+	case "http", "sse":
+		if data.URL.IsUnknown() || data.SpecPath.IsUnknown() {
+			return
+		}
+		if !mcpKnownNonEmptyString(data.URL) && !mcpKnownNonEmptyString(data.SpecPath) {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("url"),
+				"Invalid MCP Transport Configuration",
+				"HTTP and SSE configurations require at least one non-empty endpoint field: url or spec_path.",
+			)
+		}
+	case "stdio":
+		if !data.Command.IsUnknown() && !mcpKnownNonEmptyString(data.Command) {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("command"),
+				"Invalid MCP Stdio Configuration",
+				"A non-empty command is required for stdio transport.",
+			)
+		}
+		if !data.Args.IsUnknown() && (data.Args.IsNull() || len(data.Args.Elements()) == 0) {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("args"),
+				"Invalid MCP Stdio Configuration",
+				"At least one command argument is required for stdio transport.",
+			)
+		}
+		if mcpKnownNonEmptyString(data.Command) {
+			if _, ok := mcpStdioAllowedCommandsV198[mcpStdioCommandBaseV198(data.Command.ValueString())]; !ok {
+				resp.Diagnostics.AddAttributeError(
+					path.Root("command"),
+					"Invalid MCP Stdio Configuration",
+					"The command executable is not in LiteLLM v1.98's built-in stdio allowlist: deno, docker, node, npx, python, python3, uvx.",
+				)
+			}
+		}
+	}
+}
+
+func (r *MCPServerResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	// Destroy must remain possible for every historical phantom value.
+	if req.Plan.Raw.IsNull() {
+		return
+	}
+
+	var plan MCPServerResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	var state MCPServerResourceModel
+	hasState := !req.State.Raw.IsNull()
+	if hasState {
+		resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+	}
+
+	unsupportedSpecVersion := !plan.SpecVersion.IsNull() && !plan.SpecVersion.IsUnknown() && plan.SpecVersion.ValueString() != "2024-11-05"
+	unchangedSpecVersion := hasState && !state.SpecVersion.IsUnknown() && state.SpecVersion.Equal(plan.SpecVersion)
+	if unsupportedSpecVersion && !unchangedSpecVersion {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("spec_version"),
+			"Unsupported Deprecated MCP Configuration",
+			"LiteLLM v1.98 does not accept this compatibility field. A historical non-default value may remain unchanged, but new or changed non-default values are unsafe.",
+		)
+	}
+
+	unsupportedSkipValidation := !plan.SkipURLValidation.IsNull() && !plan.SkipURLValidation.IsUnknown() && plan.SkipURLValidation.ValueBool()
+	unchangedSkipValidation := hasState && !state.SkipURLValidation.IsUnknown() && state.SkipURLValidation.Equal(plan.SkipURLValidation)
+	if unsupportedSkipValidation && !unchangedSkipValidation {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("skip_url_validation"),
+			"Unsupported Deprecated MCP Configuration",
+			"LiteLLM v1.98 does not accept this compatibility field. A historical true value may remain unchanged, but a new or changed true value is unsafe.",
+		)
+	}
+}
+
+func validateMCPServerOptionalResponseFields(result map[string]interface{}, stringFields, boolFields, stringListFields, stringMapFields []string) error {
+	for _, field := range stringFields {
+		if value, present := result[field]; present && value != nil {
+			if _, ok := value.(string); !ok {
+				return fmt.Errorf("MCP server response contains a malformed optional string field")
+			}
+		}
+	}
+	for _, field := range boolFields {
+		if value, present := result[field]; present && value != nil {
+			if _, ok := value.(bool); !ok {
+				return fmt.Errorf("MCP server response contains a malformed optional boolean field")
+			}
+		}
+	}
+	for _, field := range stringListFields {
+		value, present := result[field]
+		if !present || value == nil {
+			continue
+		}
+		items, ok := value.([]interface{})
+		if !ok {
+			return fmt.Errorf("MCP server response contains a malformed optional string-list field")
+		}
+		for _, item := range items {
+			if _, ok := item.(string); !ok {
+				return fmt.Errorf("MCP server response contains a malformed optional string-list field")
+			}
+		}
+	}
+	for _, field := range stringMapFields {
+		value, present := result[field]
+		if !present || value == nil {
+			continue
+		}
+		items, ok := value.(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("MCP server response contains a malformed optional string-map field")
+		}
+		for _, item := range items {
+			if _, ok := item.(string); !ok {
+				return fmt.Errorf("MCP server response contains a malformed optional string-map field")
+			}
+		}
+	}
+	return nil
+}
+
+func mcpKnownNonEmptyString(value types.String) bool {
+	return !value.IsNull() && !value.IsUnknown() && value.ValueString() != ""
+}
+
+// Python's os.path.basename on the LiteLLM runtime is deliberately not the
+// same as path.Base: it does not clean the path, and a trailing slash yields an
+// empty basename. Matching that behavior keeps plan validation wire-exact.
+func mcpStdioCommandBaseV198(command string) string {
+	if slash := strings.LastIndex(command, "/"); slash >= 0 {
+		return command[slash+1:]
+	}
+	return command
+}
+
 func (r *MCPServerResource) Configure(ctx context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
 	if req.ProviderData == nil {
 		return
@@ -310,21 +530,35 @@ func (r *MCPServerResource) Create(ctx context.Context, req resource.CreateReque
 		return
 	}
 
-	// Extract server_id from response
-	if serverID, ok := result["server_id"].(string); ok {
-		data.ServerID = types.StringValue(serverID)
-		data.ID = types.StringValue(serverID)
+	serverID, ok := result["server_id"].(string)
+	if !ok || serverID == "" {
+		resp.Diagnostics.AddError("Invalid Create Response", "LiteLLM accepted the MCP server create but returned a malformed required response shape.")
+		return
 	}
-
-	if data.ServerID.IsNull() || data.ServerID.IsUnknown() || data.ServerID.ValueString() == "" {
-		resp.Diagnostics.AddError("Invalid Create Response", "LiteLLM created the MCP server but did not return a server_id, so the provider cannot manage it.")
+	data.ServerID = types.StringValue(serverID)
+	data.ID = types.StringValue(serverID)
+	if err := validateMCPServerResponse(result, serverID); err != nil {
+		partial := partialMCPServerState(serverID)
+		resp.Diagnostics.Append(resp.State.Set(ctx, &partial)...)
+		resp.Diagnostics.AddError("Invalid Create Response", "LiteLLM accepted the MCP server create but returned a malformed required response shape. Only the confirmed identity was retained for recovery.")
 		return
 	}
 
-	// Read back for full state. If every read path fails after a successful
-	// create, publish a recoverable state with no unknown computed values.
+	// Require authoritative post-create confirmation. A successful POST with a
+	// failed or inconsistent read retains only the confirmed identity so the
+	// remote object remains recoverable without publishing planned endpoint data.
+	planned := data
 	if err := r.readMCPServer(ctx, &data); err != nil {
-		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("MCP server created but failed to read back: %s", err))
+		partial := partialMCPServerState(serverID)
+		resp.Diagnostics.Append(resp.State.Set(ctx, &partial)...)
+		resp.Diagnostics.AddError("MCP Server Readback Not Confirmed", "LiteLLM accepted the create, but authoritative readback failed. Only the confirmed identity was retained for recovery.")
+		return
+	}
+	if mcpOwnedEndpointReadbackMismatch(&planned, &data, nil) {
+		partial := partialMCPServerState(serverID)
+		resp.Diagnostics.Append(resp.State.Set(ctx, &partial)...)
+		resp.Diagnostics.AddError("Inconsistent MCP Endpoint Readback", "LiteLLM accepted the create but did not persist the requested endpoint or transport. Only the confirmed identity was retained for recovery.")
+		return
 	}
 	resolveUnknownMCPServerState(&data, nil)
 
@@ -381,16 +615,44 @@ func (r *MCPServerResource) Update(ctx context.Context, req resource.UpdateReque
 		return
 	}
 	mcpReq["server_id"] = data.ServerID.ValueString()
+	if !state.URL.IsNull() && !state.URL.IsUnknown() && data.URL.IsNull() {
+		mcpReq["url"] = nil
+	}
+	if !state.SpecPath.IsNull() && !state.SpecPath.IsUnknown() && data.SpecPath.IsNull() {
+		mcpReq["spec_path"] = nil
+	}
 
-	if err := r.client.DoRequestWithResponse(ctx, "PUT", "/v1/mcp/server", mcpReq, nil); err != nil {
+	var updateResult map[string]interface{}
+	if err := r.client.DoRequestWithResponse(ctx, "PUT", "/v1/mcp/server", mcpReq, &updateResult); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to update MCP server: %s", err))
 		return
 	}
+	if len(updateResult) > 0 {
+		if err := validateMCPServerResponse(updateResult, data.ServerID.ValueString()); err != nil {
+			resp.Diagnostics.AddError("Invalid Update Response", "LiteLLM accepted the MCP server update but returned a malformed required response shape. Prior state was preserved.")
+			return
+		}
+	}
 
-	// Read back for full state. Preserve prior known computed values if every
-	// read path fails after LiteLLM accepted the update.
+	// The partial PUT response is not sufficient to prove convergence. A failed
+	// or malformed authoritative read preserves prior state instead of publishing
+	// requested values as confirmed.
+	planned := data
+	// A planned null after prior ownership is an explicit clear. Probe that
+	// field authoritatively even though it will be unowned after convergence.
+	if mcpEndpointWasCleared(state.URL, planned.URL) {
+		data.URL = types.StringUnknown()
+	}
+	if mcpEndpointWasCleared(state.SpecPath, planned.SpecPath) {
+		data.SpecPath = types.StringUnknown()
+	}
 	if err := r.readMCPServer(ctx, &data); err != nil {
-		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("MCP server updated but failed to read back: %s", err))
+		resp.Diagnostics.AddError("Read Error", fmt.Sprintf("MCP server update was accepted but authoritative readback failed: %s", err))
+		return
+	}
+	if mcpOwnedEndpointReadbackMismatch(&planned, &data, &state) {
+		resp.Diagnostics.AddError("Inconsistent MCP Endpoint Readback", "LiteLLM accepted the update but did not persist the requested endpoint or transport. Prior Terraform state was retained for recovery.")
+		return
 	}
 	resolveUnknownMCPServerState(&data, &state)
 
@@ -410,7 +672,7 @@ func (r *MCPServerResource) Delete(ctx context.Context, req resource.DeleteReque
 		serverID = data.ServerID.ValueString()
 	}
 
-	endpoint := fmt.Sprintf("/v1/mcp/server/%s", serverID)
+	endpoint := mcpServerEndpoint(serverID)
 	if err := r.client.DoRequestWithResponse(ctx, "DELETE", endpoint, nil, nil); err != nil {
 		if !IsAPIErrorStatus(err, 404) {
 			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to delete MCP server: %s", err))
@@ -492,14 +754,18 @@ func (r *MCPServerResource) UpgradeState(ctx context.Context) map[int64]resource
 
 func (r *MCPServerResource) buildMCPServerRequest(ctx context.Context, data *MCPServerResourceModel) (map[string]interface{}, error) {
 	mcpReq := map[string]interface{}{
-		"server_name":  data.ServerName.ValueString(),
-		"url":          data.URL.ValueString(),
-		"transport":    data.Transport.ValueString(),
-		"spec_version": data.SpecVersion.ValueString(),
-		"auth_type":    data.AuthType.ValueString(),
+		"server_name": data.ServerName.ValueString(),
+		"transport":   data.Transport.ValueString(),
+		"auth_type":   data.AuthType.ValueString(),
 	}
 
-	// String fields - check IsNull, IsUnknown, and empty string
+	// String fields - check IsNull, IsUnknown, and empty string.
+	if mcpKnownNonEmptyString(data.URL) {
+		mcpReq["url"] = data.URL.ValueString()
+	}
+	if mcpKnownNonEmptyString(data.SpecPath) {
+		mcpReq["spec_path"] = data.SpecPath.ValueString()
+	}
 	if !data.Alias.IsNull() && !data.Alias.IsUnknown() && data.Alias.ValueString() != "" {
 		mcpReq["alias"] = data.Alias.ValueString()
 	}
@@ -522,9 +788,6 @@ func (r *MCPServerResource) buildMCPServerRequest(ctx context.Context, data *MCP
 	// Boolean fields - check IsNull and IsUnknown
 	if !data.AllowAllKeys.IsNull() && !data.AllowAllKeys.IsUnknown() {
 		mcpReq["allow_all_keys"] = data.AllowAllKeys.ValueBool()
-	}
-	if !data.SkipURLValidation.IsNull() && !data.SkipURLValidation.IsUnknown() {
-		mcpReq["skip_url_validation"] = data.SkipURLValidation.ValueBool()
 	}
 
 	// List fields - check IsNull, IsUnknown, and len > 0
@@ -628,6 +891,45 @@ func (r *MCPServerResource) buildMCPServerRequest(ctx context.Context, data *MCP
 	return mcpReq, nil
 }
 
+func mcpEndpointWasCleared(previous, planned types.String) bool {
+	return !previous.IsNull() && !previous.IsUnknown() && planned.IsNull()
+}
+
+func mcpOwnedEndpointReadbackMismatch(planned, observed, previous *MCPServerResourceModel) bool {
+	plannedFields := []types.String{planned.URL, planned.SpecPath, planned.Transport}
+	observedFields := []types.String{observed.URL, observed.SpecPath, observed.Transport}
+	previousFields := []types.String{types.StringNull(), types.StringNull(), types.StringNull()}
+	if previous != nil {
+		previousFields = []types.String{previous.URL, previous.SpecPath, previous.Transport}
+	}
+	for index := range plannedFields {
+		if !plannedFields[index].IsNull() && !plannedFields[index].IsUnknown() {
+			if !plannedFields[index].Equal(observedFields[index]) {
+				return true
+			}
+			continue
+		}
+		if mcpEndpointWasCleared(previousFields[index], plannedFields[index]) && !observedFields[index].IsNull() {
+			return true
+		}
+	}
+	return false
+}
+
+func partialMCPServerState(serverID string) MCPServerResourceModel {
+	return MCPServerResourceModel{
+		ID:              types.StringValue(serverID),
+		ServerID:        types.StringValue(serverID),
+		MCPAccessGroups: types.ListNull(types.StringType),
+		Args:            types.ListNull(types.StringType),
+		Env:             types.MapNull(types.StringType),
+		Credentials:     types.MapNull(types.StringType),
+		AllowedTools:    types.ListNull(types.StringType),
+		ExtraHeaders:    types.ListNull(types.StringType),
+		StaticHeaders:   types.MapNull(types.StringType),
+	}
+}
+
 func resolveUnknownMCPServerState(data *MCPServerResourceModel, previous *MCPServerResourceModel) {
 	var prior MCPServerResourceModel
 	if previous != nil {
@@ -677,6 +979,7 @@ func resolveUnknownMCPServerState(data *MCPServerResourceModel, previous *MCPSer
 	data.Alias = resolveString(data.Alias, prior.Alias)
 	data.Description = resolveString(data.Description, prior.Description)
 	data.URL = resolveString(data.URL, prior.URL)
+	data.SpecPath = resolveString(data.SpecPath, prior.SpecPath)
 	data.Transport = resolveString(data.Transport, prior.Transport)
 	data.SpecVersion = resolveString(data.SpecVersion, prior.SpecVersion)
 	data.AuthType = resolveString(data.AuthType, prior.AuthType)
@@ -728,8 +1031,12 @@ func resolveUnknownMCPServerState(data *MCPServerResourceModel, previous *MCPSer
 	}
 }
 
+func mcpServerEndpoint(serverID string) string {
+	return "/v1/mcp/server/" + url.PathEscape(serverID)
+}
+
 func (r *MCPServerResource) getMCPServer(ctx context.Context, serverID string) (map[string]interface{}, error) {
-	endpoint := fmt.Sprintf("/v1/mcp/server/%s", serverID)
+	endpoint := mcpServerEndpoint(serverID)
 	var result map[string]interface{}
 	individualErr := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result)
 	if individualErr == nil || IsAPIErrorStatus(individualErr, 404) {
@@ -763,6 +1070,38 @@ func (r *MCPServerResource) getMCPServer(ctx context.Context, serverID string) (
 	return nil, individualErr
 }
 
+func validateMCPServerResponse(result map[string]interface{}, expectedServerID string) error {
+	serverID, ok := result["server_id"].(string)
+	if !ok || serverID == "" {
+		return fmt.Errorf("MCP server response is missing its required identity")
+	}
+	if expectedServerID == "" || serverID != expectedServerID {
+		return fmt.Errorf("MCP server response identity does not match the requested identity")
+	}
+
+	transport, ok := result["transport"].(string)
+	if !ok {
+		return fmt.Errorf("MCP server response is missing its required transport")
+	}
+	validTransport := false
+	for _, allowed := range mcpTransportsV198 {
+		if transport == allowed {
+			validTransport = true
+			break
+		}
+	}
+	if !validTransport {
+		return fmt.Errorf("MCP server response contains an invalid transport")
+	}
+	return validateMCPServerOptionalResponseFields(
+		result,
+		[]string{"server_name", "url", "spec_path"},
+		nil,
+		nil,
+		nil,
+	)
+}
+
 func (r *MCPServerResource) readMCPServer(ctx context.Context, data *MCPServerResourceModel) error {
 	return r.readMCPServerWithNumericOwnership(ctx, data, false)
 }
@@ -777,13 +1116,8 @@ func (r *MCPServerResource) readMCPServerWithNumericOwnership(ctx context.Contex
 	if err != nil {
 		return err
 	}
-	if err := validateImportedObjectIdentity(imported, "MCP server", result, "server_id", serverID); err != nil {
+	if err := validateMCPServerResponse(result, serverID); err != nil {
 		return err
-	}
-	for _, field := range []string{"server_name", "url", "transport"} {
-		if err := requireImportedStringField(imported, "MCP server", result, field); err != nil {
-			return err
-		}
 	}
 
 	// Update fields from response
@@ -800,19 +1134,29 @@ func (r *MCPServerResource) readMCPServerWithNumericOwnership(ctx context.Contex
 	if desc, ok := result["description"].(string); ok && !data.Description.IsNull() {
 		data.Description = types.StringValue(desc)
 	}
-	if url, ok := result["url"].(string); ok {
-		data.URL = types.StringValue(url)
+	urlOwned := imported || !data.URL.IsNull()
+	if urlOwned {
+		if remoteURL, ok := result["url"].(string); ok {
+			data.URL = types.StringValue(remoteURL)
+		} else {
+			data.URL = types.StringNull()
+		}
+	}
+	specPathOwned := imported || !data.SpecPath.IsNull()
+	if specPathOwned {
+		if specPath, ok := result["spec_path"].(string); ok {
+			data.SpecPath = types.StringValue(specPath)
+		} else {
+			data.SpecPath = types.StringNull()
+		}
 	}
 	if transport, ok := result["transport"].(string); ok {
 		data.Transport = types.StringValue(transport)
 	}
-	if specVersion, ok := result["spec_version"].(string); ok {
-		data.SpecVersion = types.StringValue(specVersion)
-	}
 	if authType, ok := result["auth_type"].(string); ok {
 		data.AuthType = types.StringValue(authType)
 	}
-	if command, ok := result["command"].(string); ok && !data.Command.IsNull() {
+	if command, ok := result["command"].(string); ok && (imported || !data.Command.IsNull()) {
 		data.Command = types.StringValue(command)
 	}
 	if createdAt, ok := result["created_at"].(string); ok {

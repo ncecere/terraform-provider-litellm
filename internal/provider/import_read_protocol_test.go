@@ -347,6 +347,77 @@ func TestMCPServerImportAcceptsCollectionFallbackEnvelope(t *testing.T) {
 	}
 }
 
+func TestMCPServerImportSupportsV198TransportAlternativesAndSpecialPaths(t *testing.T) {
+	ctx := context.Background()
+	tests := []struct {
+		name       string
+		serverID   string
+		response   string
+		stateField string
+		want       string
+	}{
+		{
+			name:       "url-less stdio",
+			serverID:   "stdio-import",
+			response:   `{"server_id":"stdio-import","server_name":"stdio","transport":"stdio","command":"python3","args":["server.py"]}`,
+			stateField: "command",
+			want:       "python3",
+		},
+		{
+			name:       "spec path and escaped identity",
+			serverID:   "tenant:spec/server",
+			response:   `{"server_id":"tenant:spec/server","server_name":"spec","transport":"http","spec_path":"/srv/specs/tenant:a/service/openapi.json"}`,
+			stateField: "spec_path",
+			want:       "/srv/specs/tenant:a/service/openapi.json",
+		},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			var requestURI string
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				requestURI = request.RequestURI
+				writer.Header().Set("Content-Type", "application/json")
+				_, _ = writer.Write([]byte(test.response))
+			}))
+			defer server.Close()
+
+			protocolServer, schemas := configuredImportProtocolServer(t, ctx, server.URL)
+			imported, err := protocolServer.ImportResourceState(ctx, &tfprotov6.ImportResourceStateRequest{TypeName: "litellm_mcp_server", ID: test.serverID})
+			if err != nil || accessGroupProtocolDiagnosticsHaveError(imported.Diagnostics) || len(imported.ImportedResources) != 1 {
+				t.Fatalf("import: %v, %v", err, imported.Diagnostics)
+			}
+			resourceState := imported.ImportedResources[0]
+			adopted, err := protocolServer.ReadResource(ctx, &tfprotov6.ReadResourceRequest{
+				TypeName: "litellm_mcp_server", CurrentState: resourceState.State, Private: resourceState.Private,
+			})
+			if err != nil || accessGroupProtocolDiagnosticsHaveError(adopted.Diagnostics) {
+				t.Fatalf("read: %v, %v", err, adopted.Diagnostics)
+			}
+			if requestURI != mcpServerEndpoint(test.serverID) {
+				t.Fatalf("request URI = %q, want %q", requestURI, mcpServerEndpoint(test.serverID))
+			}
+			schema := schemas.ResourceSchemas["litellm_mcp_server"]
+			attributes := protocolAttributeMap(t, schema, adopted.NewState)
+			var got string
+			if err := attributes[test.stateField].As(&got); err != nil || got != test.want {
+				t.Fatalf("%s = %q (%v), want %q", test.stateField, got, err, test.want)
+			}
+			steady, err := protocolServer.ReadResource(ctx, &tfprotov6.ReadResourceRequest{
+				TypeName: "litellm_mcp_server", CurrentState: adopted.NewState, Private: adopted.Private,
+			})
+			if err != nil || accessGroupProtocolDiagnosticsHaveError(steady.Diagnostics) {
+				t.Fatalf("steady read: %v, %v", err, steady.Diagnostics)
+			}
+			adoptedValue, _ := adopted.NewState.Unmarshal(schema.ValueType())
+			steadyValue, _ := steady.NewState.Unmarshal(schema.ValueType())
+			if !adoptedValue.Equal(steadyValue) {
+				t.Fatal("steady read drifted after transport-alternative import")
+			}
+		})
+	}
+}
+
 func TestImportMarkerSurvivesEmptyNullAndWrongIdentityBeforeValidRead(t *testing.T) {
 	ctx := context.Background()
 	var reads atomic.Int64
