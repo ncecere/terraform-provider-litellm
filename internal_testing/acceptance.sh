@@ -58,6 +58,11 @@ run_credential_import_case() {
   SMOKE_ASSEMBLY_ONLY=$ASSEMBLY_ONLY SMOKE_CREDENTIAL_IMPORT=1 sh "$REPO_ROOT/internal_testing/smoke.sh" "$REPO_ROOT" resources credential_import.tf
 }
 
+run_fallback_import_case() {
+  printf '\n===== ACCEPTANCE: fallback_special_identity_import =====\n'
+  SMOKE_ASSEMBLY_ONLY=$ASSEMBLY_ONLY SMOKE_FALLBACK_IMPORT=1 sh "$REPO_ROOT/internal_testing/smoke.sh" "$REPO_ROOT" resources fallback_import.tf
+}
+
 # Explicit coverage table. litellm_project is enterprise-only and intentionally
 # excluded; every other registered resource has a lifecycle case here.
 run_case access_group resources model_access_group.tf,access_group_minimal.tf
@@ -68,6 +73,7 @@ run_case credential_model resources credential_model.tf datasources credential_b
 run_credential_update_case
 run_credential_import_case
 run_case fallback resources fallback_minimal.tf
+run_fallback_import_case
 run_case guardrail resources guardrail_minimal.tf
 run_case guardrail_structured_mode resources guardrail_full.tf
 run_case key resources key_minimal.tf,key_router_settings.tf,send_invite_email.tf datasources key.tf

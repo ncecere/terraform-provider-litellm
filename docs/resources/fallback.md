@@ -78,9 +78,16 @@ Fallbacks can be imported using the composite ID `model:fallback_type`:
 terraform import litellm_fallback.example "gpt-3.5-turbo:general"
 ```
 
-If the type is omitted, `general` is assumed.
+The provider recognizes the exact supported fallback-type suffix from the right, so colons in a model identifier are preserved:
+
+```shell
+terraform import litellm_fallback.example "llama3:8b:general"
+```
+
+The suffix is required and must be exactly `general`, `context_window`, or `content_policy`. The model component must not be empty. Pass the model identifier in its raw form; do not URL-encode `/`, `%`, `?`, Unicode, or other characters before constructing the import ID. The provider URL-escapes the model once when calling LiteLLM. Whether a particular identity is accepted is still subject to the LiteLLM proxy's model and route support.
 
 ## Notes
 
+- Resource addresses, schema, state, and IDs remain unchanged: the state ID is the raw `model:fallback_type` value.
 - The LiteLLM API allows one fallback configuration per `(model, fallback_type)` pair. Creating a resource with the same model and type updates the existing configuration.
 - Fallback models must exist on the proxy and cannot include the primary model itself.
