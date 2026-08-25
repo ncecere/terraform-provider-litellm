@@ -2,8 +2,15 @@ package provider
 
 import (
 	"context"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"runtime"
+	"slices"
 	"testing"
 
+	"github.com/hashicorp/hcl/v2"
+	"github.com/hashicorp/hcl/v2/hclsyntax"
 	frameworkdatasource "github.com/hashicorp/terraform-plugin-framework/datasource"
 	datasourceschema "github.com/hashicorp/terraform-plugin-framework/datasource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -11,6 +18,7 @@ import (
 	resourceschema "github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/zclconf/go-cty/cty"
 )
 
 type requestEnumValidatorCase struct {
@@ -162,21 +170,8 @@ func TestRequestEnumValidatorsMatchLiteLLMV198Contracts(t *testing.T) {
 		{
 			name:       "MCP auth_type",
 			validators: resourceStringValidators(t, &MCPServerResource{}, "auth_type"),
-			accepted: []string{
-				"none",
-				"api_key",
-				"bearer_token",
-				"basic",
-				"authorization",
-				"oauth2",
-				"aws_sigv4",
-				"token",
-				"oauth2_token_exchange",
-				"oauth2_id_jag",
-				"true_passthrough",
-				"oauth_delegate",
-			},
-			rejected: []string{"bearer", "oauth", "AWS_SIGV4", "", "none "},
+			accepted:   mcpAuthTypesV198,
+			rejected:   []string{"bearer", "oauth", "AWS_SIGV4", "", "none "},
 		},
 		{
 			name:       "fallback resource fallback_type",
@@ -226,6 +221,112 @@ func TestRequestEnumValidatorsMatchLiteLLMV198Contracts(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestMCPAuthTypesMatchExactLiteLLMV198RequestContract(t *testing.T) {
+	t.Parallel()
+
+	expected := []string{
+		"none",
+		"api_key",
+		"bearer_token",
+		"basic",
+		"authorization",
+		"oauth2",
+		"aws_sigv4",
+		"token",
+		"oauth2_token_exchange",
+		"oauth2_id_jag",
+		"true_passthrough",
+		"oauth_delegate",
+	}
+	if !slices.Equal(mcpAuthTypesV198, expected) {
+		t.Fatalf("MCP auth types = %q, want exact LiteLLM v1.98 request contract %q", mcpAuthTypesV198, expected)
+	}
+}
+
+func TestShippedMCPServerAuthTypeLiteralsPassProviderValidation(t *testing.T) {
+	t.Parallel()
+
+	_, testFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("could not locate test source")
+	}
+	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(testFile), "..", ".."))
+	validators := resourceStringValidators(t, &MCPServerResource{}, "auth_type")
+	requiredFiles := map[string]bool{
+		"examples/complete/main.tf":                     false,
+		"examples/mcp-servers/main.tf":                  false,
+		"internal_testing/resources/mcp_server_full.tf": false,
+	}
+	checked := 0
+
+	for _, directory := range []string{"examples", "internal_testing/resources"} {
+		err := filepath.WalkDir(filepath.Join(repoRoot, directory), func(path string, entry fs.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if entry.IsDir() || filepath.Ext(path) != ".tf" {
+				return nil
+			}
+
+			source, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			file, diagnostics := hclsyntax.ParseConfig(source, path, hcl.Pos{Line: 1, Column: 1})
+			if diagnostics.HasErrors() {
+				t.Errorf("parse %s: %s", path, diagnostics.Error())
+				return nil
+			}
+			relativePath, err := filepath.Rel(repoRoot, path)
+			if err != nil {
+				return err
+			}
+			relativePath = filepath.ToSlash(relativePath)
+
+			body, ok := file.Body.(*hclsyntax.Body)
+			if !ok {
+				t.Errorf("parse %s returned unexpected body type %T", path, file.Body)
+				return nil
+			}
+			for _, block := range body.Blocks {
+				if block.Type != "resource" || len(block.Labels) != 2 || block.Labels[0] != "litellm_mcp_server" {
+					continue
+				}
+				authType, configured := block.Body.Attributes["auth_type"]
+				if !configured {
+					continue
+				}
+				value, valueDiagnostics := authType.Expr.Value(nil)
+				if valueDiagnostics.HasErrors() || !value.IsKnown() || value.IsNull() || value.Type() != cty.String {
+					t.Errorf("%s resource %q auth_type must be a literal string: %s", relativePath, block.Labels[1], valueDiagnostics.Error())
+					continue
+				}
+				literal := value.AsString()
+				if validateStringValue(context.Background(), validators, types.StringValue(literal)) {
+					t.Errorf("%s resource %q uses unsupported auth_type %q", relativePath, block.Labels[1], literal)
+				}
+				checked++
+				if _, required := requiredFiles[relativePath]; required {
+					requiredFiles[relativePath] = true
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("scan %s: %v", directory, err)
+		}
+	}
+
+	if checked == 0 {
+		t.Fatal("no shipped MCP auth_type literals were validated")
+	}
+	for path, found := range requiredFiles {
+		if !found {
+			t.Errorf("did not validate an MCP auth_type literal in %s", path)
+		}
 	}
 }
 

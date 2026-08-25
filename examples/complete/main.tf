@@ -298,7 +298,7 @@ resource "litellm_mcp_server" "github" {
   description = "GitHub MCP server for repository operations"
   url         = "https://api.github.com/mcp"
   transport   = "http"
-  auth_type   = "bearer"
+  auth_type   = "bearer_token"
 
   credentials = {
     "token" = var.github_token

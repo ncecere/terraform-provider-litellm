@@ -85,7 +85,7 @@ func (d *MCPServersListDataSource) Schema(ctx context.Context, req datasource.Sc
 							Computed:    true,
 						},
 						"auth_type": schema.StringAttribute{
-							Description: "Authentication type (none, bearer, basic).",
+							Description: "Authentication type reported by LiteLLM.",
 							Computed:    true,
 						},
 						"status": schema.StringAttribute{

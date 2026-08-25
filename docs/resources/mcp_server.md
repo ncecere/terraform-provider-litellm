@@ -196,9 +196,11 @@ In addition to all arguments above, the following attributes are exported:
 - `created_at` - Timestamp of when the MCP server was created.
 - `created_by` - The user or system that created the MCP server.
 
-## Import
+## Migrating from `bearer`
 
-The earlier provider accepted `bearer`, but the LiteLLM v1.98 MCP request type does not. Use `bearer_token` for bearer-token authentication. The expanded v1.98 modes listed above are now accepted by Terraform. Imported/read state is not rewritten by configuration validation.
+The earlier provider accepted `auth_type = "bearer"`, but LiteLLM v1.98 does not. Existing configurations must replace it with `auth_type = "bearer_token"` for bearer-token authentication, or `auth_type = "oauth2"` when configuring OAuth endpoints and client credentials. Leaving `bearer` in configuration now fails Terraform validation during planning. Imported/read state is not rewritten by configuration validation.
+
+## Import
 
 MCP servers can be imported using their server ID:
 
@@ -223,8 +225,8 @@ Standard input/output communication. Used for local MCP servers or command-line 
 ## Notes
 
 - Server names and aliases must use underscores, not hyphens.
-- The `auth_type` field supports `none`, `bearer_token`, `bearer`, `basic`, `api_key`, `authorization`, and `oauth2`.
-- When using an `auth_type` other than `"none"`, provide authentication details via the `credentials` map.
+- The `auth_type` field accepts exactly `none`, `api_key`, `bearer_token`, `basic`, `authorization`, `oauth2`, `aws_sigv4`, `token`, `oauth2_token_exchange`, `oauth2_id_jag`, `true_passthrough`, or `oauth_delegate` under the LiteLLM v1.98 request contract. The legacy literal `bearer` is not supported.
+- For authenticated modes, provide the credentials and endpoint-specific fields required by the selected authentication type.
 - The `credentials` attribute is sensitive and will not appear in CLI output or state file in plain text.
 - Use `mcp_access_groups` to control which teams or users can access the MCP server tools.
 - Configure cost tracking through the `mcp_info.mcp_server_cost_info` block to monitor spending on MCP tool usage.
