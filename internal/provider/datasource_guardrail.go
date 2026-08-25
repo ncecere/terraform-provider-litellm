@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
@@ -68,6 +67,7 @@ func (d *GuardrailDataSource) Schema(ctx context.Context, req datasource.SchemaR
 			"litellm_params": schema.StringAttribute{
 				Description: "JSON string containing additional provider-specific parameters.",
 				Computed:    true,
+				Sensitive:   true,
 			},
 			"guardrail_info": schema.StringAttribute{
 				Description: "JSON string containing additional metadata.",
@@ -104,7 +104,6 @@ func (d *GuardrailDataSource) Configure(ctx context.Context, req datasource.Conf
 
 func (d *GuardrailDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
 	var data GuardrailDataSourceModel
-
 	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -112,64 +111,75 @@ func (d *GuardrailDataSource) Read(ctx context.Context, req datasource.ReadReque
 
 	guardrailID := data.GuardrailID.ValueString()
 	endpoint := fmt.Sprintf("/guardrails/%s/info", guardrailID)
-
-	var result map[string]interface{}
-	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
+	var raw map[string]interface{}
+	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &raw); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read guardrail: %s", err))
 		return
 	}
-
-	// Populate the data model
-	data.ID = types.StringValue(guardrailID)
-
-	if name, ok := result["guardrail_name"].(string); ok {
-		data.GuardrailName = types.StringValue(name)
+	observed, err := decodeGuardrailAPIObject(raw, guardrailID, true)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
 	}
-	if createdAt, ok := result["created_at"].(string); ok {
-		data.CreatedAt = types.StringValue(createdAt)
-	}
-	if updatedAt, ok := result["updated_at"].(string); ok {
-		data.UpdatedAt = types.StringValue(updatedAt)
+	if observed.Params == nil {
+		resp.Diagnostics.AddError("Invalid API Response", "Guardrail response omitted required litellm_params")
+		return
 	}
 
-	// Handle litellm_params
-	if litellmParams, ok := result["litellm_params"].(map[string]interface{}); ok {
-		if guardrail, ok := litellmParams["guardrail"].(string); ok {
-			data.Guardrail = types.StringValue(guardrail)
+	data.ID = types.StringValue(observed.ID)
+	data.GuardrailID = types.StringValue(observed.ID)
+	data.GuardrailName = types.StringValue(observed.Name)
+	data.Guardrail = types.StringNull()
+	data.Mode = types.StringNull()
+	data.DefaultOn = types.BoolNull()
+	data.LitellmParams = types.StringNull()
+	data.GuardrailInfo = types.StringNull()
+	data.CreatedAt = types.StringNull()
+	data.UpdatedAt = types.StringNull()
+	if observed.CreatedAt != nil {
+		data.CreatedAt = types.StringValue(*observed.CreatedAt)
+	}
+	if observed.UpdatedAt != nil {
+		data.UpdatedAt = types.StringValue(*observed.UpdatedAt)
+	}
+	if observed.Params != nil {
+		guardrail, ok := observed.Params["guardrail"].(string)
+		if !ok || guardrail == "" {
+			resp.Diagnostics.AddError("Invalid API Response", "Guardrail response omitted required litellm_params.guardrail")
+			return
 		}
-		if defaultOn, ok := litellmParams["default_on"].(bool); ok {
+		data.Guardrail = types.StringValue(guardrail)
+		mode, present, err := guardrailModeFromAPI(observed.Params)
+		if err != nil || !present {
+			resp.Diagnostics.AddError("Invalid API Response", "Guardrail response omitted or returned invalid litellm_params.mode")
+			return
+		}
+		data.Mode = types.StringValue(mode)
+		if value, exists := observed.Params["default_on"]; exists && value != nil {
+			defaultOn, ok := value.(bool)
+			if !ok {
+				resp.Diagnostics.AddError("Invalid API Response", "Guardrail response returned invalid litellm_params.default_on")
+				return
+			}
 			data.DefaultOn = types.BoolValue(defaultOn)
 		}
-
-		// Handle mode (can be string or array)
-		if mode, ok := litellmParams["mode"].(string); ok {
-			data.Mode = types.StringValue(mode)
-		} else if modeArray, ok := litellmParams["mode"].([]interface{}); ok {
-			if jsonBytes, err := json.Marshal(modeArray); err == nil {
-				data.Mode = types.StringValue(string(jsonBytes))
+		additional := guardrailAdditionalParams(observed.Params)
+		if len(additional) > 0 {
+			encoded, err := canonicalGuardrailJSONObject(additional, "litellm_params")
+			if err != nil {
+				resp.Diagnostics.AddError("Invalid API Response", err.Error())
+				return
 			}
-		}
-
-		// Store other litellm_params as JSON
-		otherParams := make(map[string]interface{})
-		for k, v := range litellmParams {
-			if k != "guardrail" && k != "mode" && k != "default_on" {
-				otherParams[k] = v
-			}
-		}
-		if len(otherParams) > 0 {
-			if jsonBytes, err := json.Marshal(otherParams); err == nil {
-				data.LitellmParams = types.StringValue(string(jsonBytes))
-			}
+			data.LitellmParams = types.StringValue(encoded)
 		}
 	}
-
-	// Handle guardrail_info
-	if guardrailInfo, ok := result["guardrail_info"].(map[string]interface{}); ok && len(guardrailInfo) > 0 {
-		if jsonBytes, err := json.Marshal(guardrailInfo); err == nil {
-			data.GuardrailInfo = types.StringValue(string(jsonBytes))
+	if observed.Info != nil {
+		encoded, err := canonicalGuardrailJSONObject(observed.Info, "guardrail_info")
+		if err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", err.Error())
+			return
 		}
+		data.GuardrailInfo = types.StringValue(encoded)
 	}
-
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }

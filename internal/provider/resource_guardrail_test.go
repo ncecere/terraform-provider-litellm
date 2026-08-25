@@ -111,7 +111,7 @@ func TestReadGuardrailFiltersNestedNullDefaults(t *testing.T) {
 		LitellmParams: types.StringValue(configured),
 	}
 
-	if err := resource.readGuardrail(context.Background(), &data); err != nil {
+	if err := resource.readGuardrail(context.Background(), &data, false); err != nil {
 		t.Fatalf("readGuardrail returned error: %v", err)
 	}
 	if got := data.LitellmParams.ValueString(); got != configured {
@@ -125,7 +125,8 @@ func TestReadGuardrailPreservesRealNestedDrift(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(writer).Encode(map[string]interface{}{
-			"guardrail_id": "guardrail-1",
+			"guardrail_id":   "guardrail-1",
+			"guardrail_name": "test",
 			"litellm_params": map[string]interface{}{
 				"guardrail": "tool_permission",
 				"mode":      "post_call",
@@ -149,7 +150,7 @@ func TestReadGuardrailPreservesRealNestedDrift(t *testing.T) {
 		GuardrailID:   types.StringValue("guardrail-1"),
 		LitellmParams: types.StringValue(`{"rules":[{"decision":"allow","id":"allow_bash","tool_name":"Bash"}]}`),
 	}
-	if err := resource.readGuardrail(context.Background(), &data); err != nil {
+	if err := resource.readGuardrail(context.Background(), &data, false); err != nil {
 		t.Fatalf("readGuardrail returned error: %v", err)
 	}
 	want := `{"rules":[{"decision":"deny","id":"allow_bash","tool_name":"Bash"}]}`
