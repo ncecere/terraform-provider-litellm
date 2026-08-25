@@ -47,21 +47,21 @@ func TestBuildOrganizationRequestPreservesNumericMapPresence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if values, ok := request["model_rpm_limit"].(map[string]int64); !ok || len(values) != 0 {
-		t.Fatalf("known empty model_rpm_limit = %#v", request["model_rpm_limit"])
+	if _, exists := request["model_rpm_limit"]; exists {
+		t.Fatalf("model_rpm_limit escaped authoritative metadata: %#v", request["model_rpm_limit"])
 	}
-	if values, ok := request["model_tpm_limit"].(map[string]int64); !ok || len(values) != 0 {
-		t.Fatalf("known empty model_tpm_limit = %#v", request["model_tpm_limit"])
+	if _, exists := request["model_tpm_limit"]; exists {
+		t.Fatalf("model_tpm_limit escaped authoritative metadata: %#v", request["model_tpm_limit"])
 	}
 	metadata := request["metadata"].(map[string]interface{})
 	if metadata["environment"] != "production" {
 		t.Fatalf("metadata = %#v", metadata)
 	}
-	if _, present := metadata["model_rpm_limit"]; present {
-		t.Fatal("reserved RPM map leaked into metadata request")
+	if values, ok := metadata["model_rpm_limit"].(map[string]int64); !ok || len(values) != 0 {
+		t.Fatalf("known empty model_rpm_limit = %#v", metadata["model_rpm_limit"])
 	}
-	if _, present := metadata["model_tpm_limit"]; present {
-		t.Fatal("reserved TPM map leaked into metadata request")
+	if values, ok := metadata["model_tpm_limit"].(map[string]int64); !ok || len(values) != 0 {
+		t.Fatalf("known empty model_tpm_limit = %#v", metadata["model_tpm_limit"])
 	}
 }
 
@@ -104,7 +104,7 @@ func TestOrganizationDataSourceReadsExactMetadataModelLimits(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
-		_, _ = writer.Write([]byte(`{"organization_info":{"organization_id":"org-1","organization_alias":"acme","metadata":{"environment":"production","model_rpm_limit":{"large":9007199254740993},"model_tpm_limit":{"maximum":9223372036854775807}},"litellm_budget_table":null}}`))
+		_, _ = writer.Write([]byte(`{"organization_info":{"organization_id":"org-1","organization_alias":"acme","budget_id":"budget-1","metadata":{"environment":"production","model_rpm_limit":{"large":9007199254740993},"model_tpm_limit":{"maximum":9223372036854775807}},"litellm_budget_table":{"budget_id":"budget-1","max_budget":100,"soft_budget":80,"tpm_limit":9007199254740995,"rpm_limit":9007199254740997,"max_parallel_requests":9007199254740999,"budget_duration":"30d"}}}`))
 	}))
 	defer server.Close()
 
@@ -134,6 +134,9 @@ func TestOrganizationDataSourceReadsExactMetadataModelLimits(t *testing.T) {
 	data.ModelTPMLimit.ElementsAs(ctx, &tpm, false)
 	if rpm["large"] != 9007199254740993 || tpm["maximum"] != 9223372036854775807 {
 		t.Fatalf("model limits = %#v, %#v", rpm, tpm)
+	}
+	if data.BudgetID.ValueString() != "budget-1" || data.TPMLimit.ValueInt64() != 9007199254740995 || data.RPMLimit.ValueInt64() != 9007199254740997 || data.MaxParallelRequests.ValueInt64() != 9007199254740999 {
+		t.Fatalf("nested budget inventory = %#v", data)
 	}
 	var metadata map[string]string
 	data.Metadata.ElementsAs(ctx, &metadata, false)

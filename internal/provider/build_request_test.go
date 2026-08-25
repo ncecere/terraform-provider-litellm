@@ -276,7 +276,7 @@ func TestBuildOrganizationRequest(t *testing.T) {
 		MaxBudget:         types.Float64Value(500),
 		TPMLimit:          types.Int64Value(2000),
 		Blocked:           types.BoolValue(false),
-		Tags:              stringListValue("team-a"),
+		Tags:              stringListValue(),
 	}
 
 	req, err := r.buildOrganizationRequest(context.Background(), data)
@@ -293,8 +293,11 @@ func TestBuildOrganizationRequest(t *testing.T) {
 	if req["max_budget"] != float64(500) {
 		t.Errorf("max_budget = %v", req["max_budget"])
 	}
-	if req["blocked"] != false {
-		t.Errorf("blocked = %v", req["blocked"])
+	if _, exists := req["blocked"]; exists {
+		t.Errorf("unsupported organization blocked field was sent: %#v", req["blocked"])
+	}
+	if _, exists := req["tags"]; exists {
+		t.Errorf("unsupported organization tags field was sent: %#v", req["tags"])
 	}
 	models, ok := req["models"].([]string)
 	if !ok || len(models) != 1 {

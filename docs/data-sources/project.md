@@ -1,6 +1,6 @@
 # litellm_project Data Source
 
-Retrieves information about a LiteLLM Project.
+Retrieves one LiteLLM Project and its authoritative nested budget controls.
 
 ## Example Usage
 
@@ -9,32 +9,35 @@ data "litellm_project" "example" {
   id = "proj-abc-123"
 }
 
-output "project_name" {
-  value = data.litellm_project.example.project_alias
-}
-
-output "project_team" {
-  value = data.litellm_project.example.team_id
+output "project_budget" {
+  value = {
+    team_id               = data.litellm_project.example.team_id
+    budget_id             = data.litellm_project.example.budget_id
+    max_budget            = data.litellm_project.example.max_budget
+    max_parallel_requests = data.litellm_project.example.max_parallel_requests
+  }
 }
 ```
 
 ## Argument Reference
 
-* `id` - (Required) The project ID to look up.
+- `id` - (Required String) Project ID.
 
 ## Attribute Reference
 
-* `project_alias` - Human-friendly name for the project.
-* `description` - Description of the project.
-* `team_id` - The team ID this project belongs to.
-* `models` - Models the project can access.
-* `metadata` - Project metadata.
-* `tags` - Tags associated with the project.
-* `blocked` - Whether the project is blocked.
-* `spend` - Total spend for this project.
-* `model_rpm_limit` - Per-model RPM limits.
-* `model_tpm_limit` - Per-model TPM limits.
-* `created_at` - Timestamp when the project was created.
-* `updated_at` - Timestamp when the project was last updated.
-* `created_by` - User who created the project.
-* `updated_by` - User who last updated the project.
+- `project_alias` / `description` / `team_id`
+- `models`
+- `metadata` - Metadata excluding dedicated tags and per-model rate maps.
+- `tags` - Tags read from v1.98 project metadata.
+- `blocked` / `spend`
+- `budget_id`
+- `max_budget` / `soft_budget`
+- `budget_duration`
+- `tpm_limit` / `rpm_limit`
+- `max_parallel_requests`
+- `model_max_budget`
+- `model_rpm_limit` / `model_tpm_limit`
+- `created_at` / `updated_at`
+- `created_by` / `updated_by`
+
+Budget values come only from `litellm_budget_table`. A missing or null relation produces null budget attributes; malformed relations and inconsistent budget IDs fail the read. Exact integer values above `2^53` are preserved.

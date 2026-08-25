@@ -13,8 +13,16 @@ output "ds_org_models" {
   value = data.litellm_organization.lookup.models
 }
 
-output "ds_org_max_budget" {
-  value = data.litellm_organization.lookup.max_budget
+output "ds_org_budget" {
+  value = {
+    budget_id             = data.litellm_organization.lookup.budget_id
+    max_budget            = data.litellm_organization.lookup.max_budget
+    soft_budget           = data.litellm_organization.lookup.soft_budget
+    budget_duration       = data.litellm_organization.lookup.budget_duration
+    tpm_limit             = data.litellm_organization.lookup.tpm_limit
+    rpm_limit             = data.litellm_organization.lookup.rpm_limit
+    max_parallel_requests = data.litellm_organization.lookup.max_parallel_requests
+  }
 }
 
 output "ds_org_spend" {
