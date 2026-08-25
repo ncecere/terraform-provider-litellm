@@ -192,8 +192,19 @@ terraform-provider-litellm/
 └── ...
 ```
 
-> Note: the top-level `litellm/` directory is legacy and is not wired into the
-> provider binary; `main.go` registers `internal/provider`.
+### Implementation and compatibility
+
+This repository publishes a Terraform provider binary and its HCL interface; it
+is not a supported external Go library API. Provider implementation packages are
+internal details. The binary entry point in `main.go` serves only the Terraform
+Plugin Framework implementation in `internal/provider`.
+
+The former top-level `litellm/` Terraform Plugin SDKv2 implementation was left
+behind by the Framework migration and was never registered by the migrated
+provider binary. Removing that dead implementation does not require a state
+migration: the active provider source/address, provider type name, registered
+resource and data-source type names, schema versions and types, state values and
+IDs, and import formats are unchanged.
 
 ### Building the Provider
 
