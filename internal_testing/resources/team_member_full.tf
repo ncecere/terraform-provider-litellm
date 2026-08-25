@@ -1,5 +1,5 @@
-# litellm_team_member - Full
-# All attributes populated
+# litellm_team_member - Full at-least-one identity compatibility fixture.
+# Both identity fields must resolve to this same canonical user.
 
 resource "litellm_team_member" "full" {
   team_id            = litellm_team.full.id
