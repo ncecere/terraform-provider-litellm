@@ -2,7 +2,10 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
@@ -17,6 +20,38 @@ import (
 
 var _ resource.Resource = &OrganizationMemberResource{}
 var _ resource.ResourceWithImportState = &OrganizationMemberResource{}
+var _ planmodifier.Float64 = organizationMemberBudgetRemovalModifier{}
+
+// organizationMemberBudgetRemovalModifier replaces only the unsupported
+// known-value removal transition. Null or unknown prior values (including
+// freshly imported state) and resource creation remain compatible.
+type organizationMemberBudgetRemovalModifier struct{}
+
+func (organizationMemberBudgetRemovalModifier) Description(context.Context) string {
+	return "Replaces the membership when a previously known max budget is removed from configuration."
+}
+
+func (m organizationMemberBudgetRemovalModifier) MarkdownDescription(ctx context.Context) string {
+	return m.Description(ctx)
+}
+
+func (organizationMemberBudgetRemovalModifier) PlanModifyFloat64(_ context.Context, req planmodifier.Float64Request, resp *planmodifier.Float64Response) {
+	if req.State.Raw.IsNull() || req.Plan.Raw.IsNull() {
+		return
+	}
+	if req.StateValue.IsNull() || req.StateValue.IsUnknown() || req.ConfigValue.IsUnknown() || req.PlanValue.IsUnknown() {
+		return
+	}
+	if req.ConfigValue.IsNull() && req.PlanValue.IsNull() {
+		resp.RequiresReplace = true
+	}
+}
+
+var organizationMemberRoles = []string{
+	"org_admin",
+	"internal_user",
+	"internal_user_viewer",
+}
 
 func NewOrganizationMemberResource() resource.Resource {
 	return &OrganizationMemberResource{}
@@ -35,16 +70,46 @@ type OrganizationMemberResourceModel struct {
 	MaxBudgetInOrganization types.Float64 `tfsdk:"max_budget_in_organization"`
 }
 
+type organizationMemberAPIModel struct {
+	UserID             string                            `json:"user_id"`
+	OrganizationID     string                            `json:"organization_id"`
+	UserRole           *string                           `json:"user_role"`
+	UserEmail          *string                           `json:"user_email"`
+	BudgetID           *string                           `json:"budget_id"`
+	LiteLLMBudgetTable *organizationMemberBudgetAPIModel `json:"litellm_budget_table"`
+}
+
+type organizationMemberBudgetAPIModel struct {
+	BudgetID  *string  `json:"budget_id"`
+	MaxBudget *float64 `json:"max_budget"`
+}
+
+type organizationMemberUserAPIModel struct {
+	UserID    string  `json:"user_id"`
+	UserEmail *string `json:"user_email"`
+}
+
+type organizationMemberAddAPIResponse struct {
+	OrganizationID                 string                           `json:"organization_id"`
+	UpdatedUsers                   []organizationMemberUserAPIModel `json:"updated_users"`
+	UpdatedOrganizationMemberships []organizationMemberAPIModel     `json:"updated_organization_memberships"`
+}
+
+type organizationInfoAPIResponse struct {
+	OrganizationID string                       `json:"organization_id"`
+	Members        []organizationMemberAPIModel `json:"members"`
+}
+
 func (r *OrganizationMemberResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
 	resp.TypeName = req.ProviderTypeName + "_organization_member"
 }
 
 func (r *OrganizationMemberResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "Manages a member of a LiteLLM organization. If the user doesn't exist, a new user row will be created.",
+		Description: "Manages a member of a LiteLLM organization. If the user does not exist, LiteLLM creates it as part of adding the membership.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
-				Description: "The unique identifier for this membership (organization_id:user_id).",
+				Description: "Canonical membership identifier in organization_id:user_id form.",
 				Computed:    true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
@@ -58,7 +123,7 @@ func (r *OrganizationMemberResource) Schema(ctx context.Context, req resource.Sc
 				},
 			},
 			"user_id": schema.StringAttribute{
-				Description: "The user ID to add to the organization. Either user_id or user_email must be provided.",
+				Description: "The user ID to add. Either user_id or user_email must be provided. When both are set, LiteLLM first looks up user_id and falls back to an existing user_email if that ID does not exist. Email-resolved creates are stored with the canonical user_id returned by LiteLLM.",
 				Optional:    true,
 				Computed:    true,
 				PlanModifiers: []planmodifier.String{
@@ -67,26 +132,25 @@ func (r *OrganizationMemberResource) Schema(ctx context.Context, req resource.Sc
 				},
 			},
 			"user_email": schema.StringAttribute{
-				Description: "The user email to add to the organization. Either user_id or user_email must be provided.",
+				Description: "The user email used to resolve or create a user. Either user_id or user_email must be provided. This resource does not manage the user's email after LiteLLM resolves a user_id.",
 				Optional:    true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
 			},
 			"role": schema.StringAttribute{
-				Description: "The role of the member in the organization: org_admin, internal_user, or internal_user_viewer.",
+				Description: "The member's organization role. LiteLLM v1.98.0 accepts org_admin, internal_user, or internal_user_viewer.",
 				Required:    true,
 				Validators: []validator.String{
-					stringvalidator.OneOf(
-						"org_admin",
-						"internal_user",
-						"internal_user_viewer",
-					),
+					stringvalidator.OneOf(organizationMemberRoles...),
 				},
 			},
 			"max_budget_in_organization": schema.Float64Attribute{
-				Description: "Maximum budget for this user within the organization.",
+				Description: "Maximum spend for this user within the organization. LiteLLM v1.98.0 can set or change this value but cannot clear it in place; removing a previously configured value replaces the membership.",
 				Optional:    true,
+				PlanModifiers: []planmodifier.Float64{
+					organizationMemberBudgetRemovalModifier{},
+				},
 			},
 		},
 	}
@@ -109,91 +173,7 @@ func (r *OrganizationMemberResource) Configure(ctx context.Context, req resource
 	r.client = client
 }
 
-func (r *OrganizationMemberResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
-	var data OrganizationMemberResourceModel
-
-	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	// Validate that either user_id or user_email is provided
-	if data.UserID.IsNull() && data.UserEmail.IsNull() {
-		resp.Diagnostics.AddError(
-			"Missing Required Attribute",
-			"Either user_id or user_email must be provided.",
-		)
-		return
-	}
-
-	// Build member object
-	member := map[string]interface{}{
-		"role": data.Role.ValueString(),
-	}
-
-	if !data.UserID.IsNull() && data.UserID.ValueString() != "" {
-		member["user_id"] = data.UserID.ValueString()
-	}
-	if !data.UserEmail.IsNull() && data.UserEmail.ValueString() != "" {
-		member["user_email"] = data.UserEmail.ValueString()
-	}
-
-	addReq := map[string]interface{}{
-		"organization_id": data.OrganizationID.ValueString(),
-		"member":          member,
-	}
-
-	if !data.MaxBudgetInOrganization.IsNull() && !data.MaxBudgetInOrganization.IsUnknown() {
-		addReq["max_budget_in_organization"] = data.MaxBudgetInOrganization.ValueFloat64()
-	}
-
-	var result map[string]interface{}
-	if err := r.client.DoRequestWithResponse(ctx, "POST", "/organization/member_add", addReq, &result); err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to add organization member: %s", err))
-		return
-	}
-
-	// Try to get user_id from response if we used email
-	if data.UserID.IsNull() || data.UserID.ValueString() == "" {
-		if userID, ok := result["user_id"].(string); ok {
-			data.UserID = types.StringValue(userID)
-		}
-	}
-
-	// Set the ID
-	userID := data.UserID.ValueString()
-	if userID == "" && !data.UserEmail.IsNull() {
-		userID = data.UserEmail.ValueString()
-	}
-	data.ID = types.StringValue(fmt.Sprintf("%s:%s", data.OrganizationID.ValueString(), userID))
-
-	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
-}
-
-func (r *OrganizationMemberResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
-	var data OrganizationMemberResourceModel
-
-	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	// Get organization info and check if user is a member
-	orgID := data.OrganizationID.ValueString()
-	endpoint := fmt.Sprintf("/organization/info?organization_id=%s", orgID)
-
-	var result map[string]interface{}
-	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
-		if IsNotFoundError(err) {
-			resp.State.RemoveResource(ctx)
-			return
-		}
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read organization: %s", err))
-		return
-	}
-
-	// Check if user is still a member.
-	// If user_id was not known at create time (email-only workflow), match by user_email and hydrate user_id.
+func organizationMemberIdentity(data *OrganizationMemberResourceModel) (string, string, error) {
 	userID := ""
 	if !data.UserID.IsNull() && !data.UserID.IsUnknown() {
 		userID = data.UserID.ValueString()
@@ -202,51 +182,229 @@ func (r *OrganizationMemberResource) Read(ctx context.Context, req resource.Read
 	if !data.UserEmail.IsNull() && !data.UserEmail.IsUnknown() {
 		userEmail = data.UserEmail.ValueString()
 	}
-	found := false
+	if userID == "" && userEmail == "" {
+		return "", "", fmt.Errorf("either user_id or user_email must be a known, non-empty value")
+	}
+	return userID, userEmail, nil
+}
 
-	if members, ok := result["members"].([]interface{}); ok {
-		for _, m := range members {
-			if memberMap, ok := m.(map[string]interface{}); ok {
-				memberUserID, _ := memberMap["user_id"].(string)
-				memberUserEmail, _ := memberMap["user_email"].(string)
+func buildOrganizationMemberAddRequest(data *OrganizationMemberResourceModel) (map[string]interface{}, error) {
+	userID, userEmail, err := organizationMemberIdentity(data)
+	if err != nil {
+		return nil, err
+	}
+	member := map[string]interface{}{"role": data.Role.ValueString()}
+	if userID != "" {
+		member["user_id"] = userID
+	}
+	if userEmail != "" {
+		member["user_email"] = userEmail
+	}
 
-				if matchOrganizationMember(memberUserID, memberUserEmail, userID, userEmail) {
-					found = true
-					if memberUserID != "" {
-						data.UserID = types.StringValue(memberUserID)
-					}
-					if memberUserEmail != "" {
-						data.UserEmail = types.StringValue(memberUserEmail)
-					}
-					if role, ok := memberMap["role"].(string); ok {
-						data.Role = types.StringValue(role)
-					}
-					if maxBudget, ok := memberMap["max_budget_in_organization"].(float64); ok {
-						data.MaxBudgetInOrganization = types.Float64Value(maxBudget)
-					}
-					break
-				}
-			}
+	// v1.98.0 declares max_budget_in_organization on the add model but the
+	// endpoint implementation ignores it. Budget persistence is deliberately
+	// sequenced through /organization/member_update after the add succeeds.
+	return map[string]interface{}{
+		"organization_id": data.OrganizationID.ValueString(),
+		"member":          member,
+	}, nil
+}
+
+func buildOrganizationMemberUpdateRequest(data *OrganizationMemberResourceModel) (map[string]interface{}, error) {
+	userID, userEmail, err := organizationMemberIdentity(data)
+	if err != nil {
+		return nil, err
+	}
+	request := map[string]interface{}{
+		"organization_id": data.OrganizationID.ValueString(),
+		"role":            data.Role.ValueString(),
+	}
+	// LiteLLM gives user_id precedence when both identifiers are present. Once
+	// resolved, use only that canonical identity for update and delete.
+	if userID != "" {
+		request["user_id"] = userID
+	} else {
+		request["user_email"] = userEmail
+	}
+	if !data.MaxBudgetInOrganization.IsNull() && !data.MaxBudgetInOrganization.IsUnknown() {
+		request["max_budget_in_organization"] = data.MaxBudgetInOrganization.ValueFloat64()
+	}
+	return request, nil
+}
+
+func buildOrganizationMemberDeleteRequest(data *OrganizationMemberResourceModel) (map[string]interface{}, error) {
+	userID, userEmail, err := organizationMemberIdentity(data)
+	if err != nil {
+		return nil, err
+	}
+	request := map[string]interface{}{"organization_id": data.OrganizationID.ValueString()}
+	if userID != "" {
+		request["user_id"] = userID
+	} else {
+		request["user_email"] = userEmail
+	}
+	return request, nil
+}
+
+func isOrganizationMemberRole(role string) bool {
+	for _, allowed := range organizationMemberRoles {
+		if role == allowed {
+			return true
 		}
 	}
+	return false
+}
 
-	if !found {
-		// User is no longer a member
-		resp.State.RemoveResource(ctx)
-		return
+func validateOrganizationMember(member organizationMemberAPIModel) error {
+	if member.UserID == "" {
+		return fmt.Errorf("membership is missing user_id")
+	}
+	if member.OrganizationID == "" {
+		return fmt.Errorf("membership is missing organization_id")
+	}
+	return nil
+}
+
+func applyOrganizationMemberResponse(data *OrganizationMemberResourceModel, member organizationMemberAPIModel) error {
+	if err := validateOrganizationMember(member); err != nil {
+		return err
+	}
+	if member.UserRole == nil || !isOrganizationMemberRole(*member.UserRole) {
+		return fmt.Errorf("membership has missing or unsupported user_role")
+	}
+	data.UserID = types.StringValue(member.UserID)
+	data.Role = types.StringValue(*member.UserRole)
+	data.ID = types.StringValue(fmt.Sprintf("%s:%s", data.OrganizationID.ValueString(), member.UserID))
+	if data.UserEmail.IsUnknown() && member.UserEmail != nil && *member.UserEmail != "" {
+		data.UserEmail = types.StringValue(*member.UserEmail)
 	}
 
-	memberIdentifier := ""
-	if !data.UserID.IsNull() && !data.UserID.IsUnknown() && data.UserID.ValueString() != "" {
-		memberIdentifier = data.UserID.ValueString()
-	} else if !data.UserEmail.IsNull() && !data.UserEmail.IsUnknown() {
-		memberIdentifier = data.UserEmail.ValueString()
+	// Exact LiteLLM v1.98 organization-admin responses can prove membership
+	// through /organization/info while omitting or returning null for this
+	// relation, even when budget_id is set. Preserve the value already known
+	// from configuration, state, or a mutation response in that case. A loaded
+	// nested object remains authoritative when LiteLLM actually returns it.
+	budget := member.LiteLLMBudgetTable
+	if budget == nil {
+		return nil
 	}
-	if memberIdentifier != "" {
-		data.ID = types.StringValue(fmt.Sprintf("%s:%s", data.OrganizationID.ValueString(), memberIdentifier))
+	if member.BudgetID != nil && *member.BudgetID != "" {
+		if budget.BudgetID == nil || *budget.BudgetID != *member.BudgetID {
+			return fmt.Errorf("litellm_budget_table budget_id does not match membership budget_id")
+		}
+	} else if budget.BudgetID != nil && *budget.BudgetID != "" {
+		return fmt.Errorf("litellm_budget_table has a budget_id but the membership does not")
+	}
+	if budget.MaxBudget == nil {
+		data.MaxBudgetInOrganization = types.Float64Null()
+	} else {
+		data.MaxBudgetInOrganization = types.Float64Value(*budget.MaxBudget)
+	}
+	return nil
+}
+
+func validateOrganizationMemberAddResponse(response organizationMemberAddAPIResponse, data *OrganizationMemberResourceModel) (organizationMemberAPIModel, error) {
+	if response.OrganizationID != data.OrganizationID.ValueString() {
+		return organizationMemberAPIModel{}, fmt.Errorf("add response organization_id does not match the requested organization")
+	}
+	if len(response.UpdatedUsers) != 1 || len(response.UpdatedOrganizationMemberships) != 1 {
+		return organizationMemberAPIModel{}, fmt.Errorf("add response must contain exactly one updated user and one updated organization membership")
+	}
+	member := response.UpdatedOrganizationMemberships[0]
+	if err := validateOrganizationMember(member); err != nil {
+		return member, err
+	}
+	if member.OrganizationID != response.OrganizationID {
+		return member, fmt.Errorf("updated membership organization_id does not match the add response")
+	}
+	if response.UpdatedUsers[0].UserID == "" || response.UpdatedUsers[0].UserID != member.UserID {
+		return member, fmt.Errorf("updated user and membership user_id values are missing or inconsistent")
+	}
+	userID, userEmail, _ := organizationMemberIdentity(data)
+	if userID != "" && member.UserID != userID {
+		return member, fmt.Errorf("add response user_id does not match the requested user_id")
+	}
+	if userID == "" && (response.UpdatedUsers[0].UserEmail == nil || *response.UpdatedUsers[0].UserEmail != userEmail) {
+		return member, fmt.Errorf("add response user_email does not match the requested email identity")
+	}
+	validated := *data
+	if err := applyOrganizationMemberResponse(&validated, member); err != nil {
+		return member, fmt.Errorf("invalid updated membership: %w", err)
+	}
+	if validated.Role.ValueString() != data.Role.ValueString() {
+		return member, fmt.Errorf("updated membership user_role does not match the requested role")
+	}
+	return member, nil
+}
+
+// organizationMemberDiagnosticError deliberately discards all response-body,
+// URL, request, and transport detail from centralized Client errors. Semantic
+// contract errors created locally contain only fixed field/classification text.
+func organizationMemberDiagnosticError(err error) string {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return fmt.Sprintf("LiteLLM returned HTTP %d", apiErr.StatusCode)
+	}
+	var responseErr *safeResponseError
+	if errors.As(err, &responseErr) {
+		if responseErr.statusCode != 0 {
+			return fmt.Sprintf("LiteLLM returned HTTP %d but its response could not be safely processed", responseErr.statusCode)
+		}
+		return "The LiteLLM response could not be safely processed"
+	}
+	var transportErr *safeTransportError
+	if errors.As(err, &transportErr) {
+		switch {
+		case errors.Is(err, context.Canceled):
+			return "The LiteLLM request was canceled"
+		case errors.Is(err, context.DeadlineExceeded):
+			return "The LiteLLM request timed out"
+		default:
+			return "The LiteLLM transport request failed"
+		}
+	}
+	return err.Error()
+}
+
+func (r *OrganizationMemberResource) readOrganizationMember(ctx context.Context, data *OrganizationMemberResourceModel) (bool, error) {
+	userID, userEmail, err := organizationMemberIdentity(data)
+	if err != nil {
+		return false, err
+	}
+	organizationID := data.OrganizationID.ValueString()
+	endpoint := fmt.Sprintf("/organization/info?organization_id=%s", url.QueryEscape(organizationID))
+
+	var response organizationInfoAPIResponse
+	if err := r.client.DoRequestWithResponse(ctx, http.MethodGet, endpoint, nil, &response); err != nil {
+		return false, err
+	}
+	if response.OrganizationID != organizationID {
+		return false, fmt.Errorf("organization info response organization_id does not match the requested organization")
+	}
+	if response.Members == nil {
+		return false, fmt.Errorf("organization info response is missing the members array")
 	}
 
-	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	for _, member := range response.Members {
+		if err := validateOrganizationMember(member); err != nil {
+			return false, fmt.Errorf("organization info response contains an invalid member: %w", err)
+		}
+		if member.OrganizationID != organizationID {
+			return false, fmt.Errorf("organization info response contains a member for another organization")
+		}
+		memberEmail := ""
+		if member.UserEmail != nil {
+			memberEmail = *member.UserEmail
+		}
+		if !matchOrganizationMember(member.UserID, memberEmail, userID, userEmail) {
+			continue
+		}
+		if err := applyOrganizationMemberResponse(data, member); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	return false, nil
 }
 
 func matchOrganizationMember(memberUserID, memberUserEmail, targetUserID, targetUserEmail string) bool {
@@ -259,82 +417,347 @@ func matchOrganizationMember(memberUserID, memberUserEmail, targetUserID, target
 	return false
 }
 
-func (r *OrganizationMemberResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var data OrganizationMemberResourceModel
+// readOrganizationMemberWithEmailFallback mirrors member_add identity
+// resolution when both inputs are configured. LiteLLM first looks up user_id,
+// but if that user does not exist it can resolve an existing user_email to a
+// different canonical ID. Normal lifecycle reads deliberately remain pinned to
+// the canonical user_id; this fallback is only for create preflight/recovery.
+func (r *OrganizationMemberResource) readOrganizationMemberWithEmailFallback(ctx context.Context, data *OrganizationMemberResourceModel) (bool, error) {
+	exists, err := r.readOrganizationMember(ctx, data)
+	if err != nil || exists {
+		return exists, err
+	}
+	userID, userEmail, identityErr := organizationMemberIdentity(data)
+	if identityErr != nil || userID == "" || userEmail == "" {
+		return false, identityErr
+	}
+	byEmail := *data
+	byEmail.UserID = types.StringNull()
+	exists, err = r.readOrganizationMember(ctx, &byEmail)
+	if err != nil || !exists {
+		return exists, err
+	}
+	*data = byEmail
+	return true, nil
+}
 
+func (r *OrganizationMemberResource) recoverOwnedOrganizationMember(ctx context.Context, owned OrganizationMemberResourceModel) (OrganizationMemberResourceModel, bool, error) {
+	observed := owned
+	exists, err := r.readOrganizationMemberWithEmailFallback(ctx, &observed)
+	if err != nil || !exists {
+		return owned, exists, err
+	}
+	return observed, true, nil
+}
+
+func (r *OrganizationMemberResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	var data OrganizationMemberResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	if _, _, err := organizationMemberIdentity(&data); err != nil {
+		resp.Diagnostics.AddError("Missing Member Identity", err.Error())
+		return
+	}
 
+	// Refuse implicit adoption. A post-failure membership is deliberately not
+	// adopted because LiteLLM provides no operation identity that proves whether
+	// this request or a concurrent actor created it.
+	preflight := data
+	preexisting, err := r.readOrganizationMemberWithEmailFallback(ctx, &preflight)
+	if err != nil {
+		resp.Diagnostics.AddError("Organization Member Preflight Error", fmt.Sprintf("Unable to verify that the organization member does not already exist: %s", organizationMemberDiagnosticError(err)))
+		return
+	}
+	if preexisting {
+		resp.Diagnostics.AddError("Organization Member Already Exists", "The user is already a member of this organization. Import the membership before managing it with Terraform.")
+		return
+	}
+
+	addRequest, err := buildOrganizationMemberAddRequest(&data)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Member Identity", err.Error())
+		return
+	}
+	var addResponse organizationMemberAddAPIResponse
+	accepted, addErr := r.client.doRequestWithResponse(ctx, http.MethodPost, "/organization/member_add", addRequest, &addResponse)
+	if addErr != nil && !accepted {
+		postflight := data
+		exists, verifyErr := r.readOrganizationMemberWithEmailFallback(ctx, &postflight)
+		if verifyErr == nil && exists {
+			resp.Diagnostics.AddError(
+				"Ambiguous Organization Member Creation",
+				"The add request failed, but the user is now present in the organization. The provider cannot prove who created the membership and did not adopt it. Verify ownership, then import it by organization_id:user_id.",
+			)
+			return
+		}
+		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to add organization member: %s", organizationMemberDiagnosticError(addErr)))
+		return
+	}
+
+	// A successful add is provider-owned even if LiteLLM's response is malformed.
+	// Start from the known post-add contract: the membership exists with no
+	// persisted member budget because v1.98.0 ignores that field on member_add.
+	owned := data
+	owned.MaxBudgetInOrganization = types.Float64Null()
+	var member organizationMemberAPIModel
+	var validationErr error
+	if addErr == nil {
+		member, validationErr = validateOrganizationMemberAddResponse(addResponse, &data)
+	}
+	if addErr == nil && validationErr == nil {
+		owned.UserID = types.StringValue(member.UserID)
+		owned.ID = types.StringValue(fmt.Sprintf("%s:%s", owned.OrganizationID.ValueString(), member.UserID))
+		owned.Role = types.StringValue(*member.UserRole)
+	} else {
+		if !owned.UserID.IsNull() && !owned.UserID.IsUnknown() && owned.UserID.ValueString() != "" {
+			owned.ID = types.StringValue(fmt.Sprintf("%s:%s", owned.OrganizationID.ValueString(), owned.UserID.ValueString()))
+		} else {
+			// Temporary legacy-compatible recovery identity. A successful read
+			// canonicalizes it to organization_id:user_id.
+			owned.ID = types.StringValue(fmt.Sprintf("%s:%s", owned.OrganizationID.ValueString(), owned.UserEmail.ValueString()))
+		}
+		recovered, _, recoverErr := r.recoverOwnedOrganizationMember(ctx, owned)
+		if recoverErr == nil {
+			owned = recovered
+		}
+		resp.Diagnostics.Append(resp.State.Set(ctx, &owned)...)
+		responseErr := addErr
+		if responseErr == nil {
+			responseErr = validationErr
+		}
+		resp.Diagnostics.AddError(
+			"Malformed Organization Member Add Response",
+			fmt.Sprintf("LiteLLM accepted the add, so the membership was retained in state, but its response did not match the v1.98.0 contract: %s", organizationMemberDiagnosticError(responseErr)),
+		)
+		return
+	}
+
+	if !data.MaxBudgetInOrganization.IsNull() && !data.MaxBudgetInOrganization.IsUnknown() {
+		budgetUpdate := owned
+		budgetUpdate.MaxBudgetInOrganization = data.MaxBudgetInOrganization
+		updateRequest, requestErr := buildOrganizationMemberUpdateRequest(&budgetUpdate)
+		if requestErr != nil {
+			resp.Diagnostics.Append(resp.State.Set(ctx, &owned)...)
+			resp.Diagnostics.AddError("Invalid Member Identity", requestErr.Error())
+			return
+		}
+		var updatedMember organizationMemberAPIModel
+		updateAccepted, updateErr := r.client.doRequestWithResponse(ctx, http.MethodPatch, "/organization/member_update", updateRequest, &updatedMember)
+		if updateErr == nil {
+			if err := validateOrganizationMember(updatedMember); err != nil {
+				updateErr = err
+			} else if updatedMember.OrganizationID != owned.OrganizationID.ValueString() || updatedMember.UserID != owned.UserID.ValueString() {
+				updateErr = fmt.Errorf("update response membership identity does not match the created membership")
+			} else {
+				confirmed := budgetUpdate
+				updateErr = applyOrganizationMemberResponse(&confirmed, updatedMember)
+				if updateErr == nil {
+					// A valid nested mutation response is authoritative even when it
+					// proves LiteLLM stored a value different from the request.
+					owned = confirmed
+					if confirmed.Role.ValueString() != budgetUpdate.Role.ValueString() || confirmed.MaxBudgetInOrganization.IsNull() || confirmed.MaxBudgetInOrganization.ValueFloat64() != budgetUpdate.MaxBudgetInOrganization.ValueFloat64() {
+						updateErr = fmt.Errorf("update response did not confirm the requested role and max_budget_in_organization")
+					}
+				}
+			}
+		}
+		if updateErr != nil {
+			recovered, _, recoverErr := r.recoverOwnedOrganizationMember(ctx, owned)
+			if recoverErr == nil {
+				owned = recovered
+			}
+			resp.Diagnostics.Append(resp.State.Set(ctx, &owned)...)
+			title := "Organization Member Budget Follow-up Error"
+			if updateAccepted {
+				title = "Malformed Organization Member Budget Response"
+			}
+			resp.Diagnostics.AddError(title, fmt.Sprintf("The membership was created and retained in state, but its max budget could not be confirmed through /organization/member_update: %s", organizationMemberDiagnosticError(updateErr)))
+			return
+		}
+	}
+
+	observed, exists, readErr := r.recoverOwnedOrganizationMember(ctx, owned)
+	if readErr != nil {
+		resp.Diagnostics.Append(resp.State.Set(ctx, &owned)...)
+		resp.Diagnostics.AddError("Organization Member Read-Back Error", fmt.Sprintf("The membership was created and retained in state, but it could not be verified: %s", organizationMemberDiagnosticError(readErr)))
+		return
+	}
+	if !exists {
+		resp.Diagnostics.Append(resp.State.Set(ctx, &owned)...)
+		resp.Diagnostics.AddError("Organization Member Missing After Create", "LiteLLM accepted the create request, but the user is not present in the organization's members array. The provider retained the owned identity in state.")
+		return
+	}
+	if observed.Role.ValueString() != data.Role.ValueString() || !sameOrganizationMemberBudget(observed.MaxBudgetInOrganization, data.MaxBudgetInOrganization) {
+		resp.Diagnostics.Append(resp.State.Set(ctx, &observed)...)
+		resp.Diagnostics.AddError("Organization Member Create Verification Failed", "The authoritative organization member role or nested budget does not match the requested value.")
+		return
+	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, &observed)...)
+}
+
+func (r *OrganizationMemberResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
+	var data OrganizationMemberResourceModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	exists, err := r.readOrganizationMember(ctx, &data)
+	if err != nil {
+		if IsAPIErrorStatus(err, http.StatusNotFound) {
+			resp.State.RemoveResource(ctx)
+			return
+		}
+		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read organization member: %s", organizationMemberDiagnosticError(err)))
+		return
+	}
+	if !exists {
+		resp.State.RemoveResource(ctx)
+		return
+	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+}
+
+func (r *OrganizationMemberResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	var data OrganizationMemberResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	var state OrganizationMemberResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	// Preserve ID
 	data.ID = state.ID
 	data.UserID = state.UserID
-
-	// Build member update request
-	member := map[string]interface{}{
-		"role": data.Role.ValueString(),
-	}
-
-	if !data.UserID.IsNull() && data.UserID.ValueString() != "" {
-		member["user_id"] = data.UserID.ValueString()
-	}
-
-	updateReq := map[string]interface{}{
-		"organization_id": data.OrganizationID.ValueString(),
-		"member":          member,
-	}
-
-	if !data.MaxBudgetInOrganization.IsNull() && !data.MaxBudgetInOrganization.IsUnknown() {
-		updateReq["max_budget_in_organization"] = data.MaxBudgetInOrganization.ValueFloat64()
-	}
-
-	if err := r.client.DoRequestWithResponse(ctx, "PATCH", "/organization/member_update", updateReq, nil); err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to update organization member: %s", err))
+	desiredRole := data.Role.ValueString()
+	desiredBudget := data.MaxBudgetInOrganization
+	if !state.MaxBudgetInOrganization.IsNull() && data.MaxBudgetInOrganization.IsNull() {
+		resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+		resp.Diagnostics.AddError(
+			"Unsupported Organization Member Budget Clear",
+			"LiteLLM v1.98.0 ignores max_budget_in_organization=null on /organization/member_update, so the provider did not send a mutation that would falsely report a clear. Replace the membership to remove its effective member budget.",
+		)
 		return
 	}
 
-	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	updateRequest, err := buildOrganizationMemberUpdateRequest(&data)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Member Identity", err.Error())
+		return
+	}
+	var updatedMember organizationMemberAPIModel
+	accepted, updateErr := r.client.doRequestWithResponse(ctx, http.MethodPatch, "/organization/member_update", updateRequest, &updatedMember)
+	reconciliationBase := state
+	if updateErr == nil {
+		if err := validateOrganizationMember(updatedMember); err != nil {
+			updateErr = err
+		} else if updatedMember.OrganizationID != data.OrganizationID.ValueString() || updatedMember.UserID != data.UserID.ValueString() {
+			updateErr = fmt.Errorf("update response membership identity does not match the requested membership")
+		} else {
+			confirmed := data
+			updateErr = applyOrganizationMemberResponse(&confirmed, updatedMember)
+			if updateErr == nil {
+				// Preserve every valid authoritative mutation field before testing
+				// whether it matched the plan. A later organization-info response
+				// may omit the nested budget and must start from this confirmation.
+				data = confirmed
+				reconciliationBase = confirmed
+				if confirmed.Role.ValueString() != desiredRole || !sameOrganizationMemberBudget(confirmed.MaxBudgetInOrganization, desiredBudget) {
+					updateErr = fmt.Errorf("update response did not confirm the requested role and max_budget_in_organization")
+				}
+			}
+		}
+	}
+	if updateErr != nil {
+		// A transport failure can be ambiguous even before an HTTP status is
+		// available, and a 2xx response can be malformed after the mutation was
+		// committed. Reconcile from any valid mutation confirmation so omitted
+		// organization-info fields cannot restore stale prior state.
+		observed := reconciliationBase
+		exists, readErr := r.readOrganizationMember(ctx, &observed)
+		switch {
+		case readErr == nil && exists:
+			resp.Diagnostics.Append(resp.State.Set(ctx, &observed)...)
+		case readErr == nil && !exists:
+			resp.State.RemoveResource(ctx)
+		case IsAPIErrorStatus(readErr, http.StatusNotFound):
+			resp.State.RemoveResource(ctx)
+		default:
+			resp.Diagnostics.Append(resp.State.Set(ctx, &reconciliationBase)...)
+		}
+		detail := fmt.Sprintf("Unable to confirm organization member update: %s", organizationMemberDiagnosticError(updateErr))
+		if readErr != nil && !IsAPIErrorStatus(readErr, http.StatusNotFound) {
+			detail = fmt.Sprintf("%s. State reconciliation also failed: %s", detail, organizationMemberDiagnosticError(readErr))
+		}
+		if accepted {
+			detail = "LiteLLM accepted the update, but its response could not be confirmed. " + detail
+		}
+		resp.Diagnostics.AddError("Organization Member Update Error", detail)
+		return
+	}
+
+	observed := data
+	exists, readErr := r.readOrganizationMember(ctx, &observed)
+	if readErr != nil {
+		resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+		resp.Diagnostics.AddError("Organization Member Read-Back Error", fmt.Sprintf("The membership was updated and retained in state, but it could not be verified: %s", organizationMemberDiagnosticError(readErr)))
+		return
+	}
+	if !exists {
+		resp.State.RemoveResource(ctx)
+		resp.Diagnostics.AddError("Organization Member Missing After Update", "LiteLLM accepted the update request, but the user is no longer present in the organization's members array.")
+		return
+	}
+	if observed.Role.ValueString() != desiredRole || !sameOrganizationMemberBudget(observed.MaxBudgetInOrganization, desiredBudget) {
+		resp.Diagnostics.Append(resp.State.Set(ctx, &observed)...)
+		resp.Diagnostics.AddError("Organization Member Update Verification Failed", "The authoritative organization member role or nested budget does not match the requested value.")
+		return
+	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, &observed)...)
+}
+
+func sameOrganizationMemberBudget(observed, planned types.Float64) bool {
+	if planned.IsNull() {
+		return observed.IsNull()
+	}
+	return !observed.IsNull() && !observed.IsUnknown() && observed.ValueFloat64() == planned.ValueFloat64()
 }
 
 func (r *OrganizationMemberResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	var data OrganizationMemberResourceModel
-
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
-	deleteReq := map[string]interface{}{
-		"organization_id": data.OrganizationID.ValueString(),
-		"user_id":         data.UserID.ValueString(),
+	deleteRequest, err := buildOrganizationMemberDeleteRequest(&data)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Member Identity", err.Error())
+		return
 	}
-
-	if err := r.client.DoRequestWithResponse(ctx, "DELETE", "/organization/member_delete", deleteReq, nil); err != nil {
-		if !IsNotFoundError(err) {
-			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to remove organization member: %s", err))
-			return
+	if err := r.client.DoRequestWithResponse(ctx, http.MethodDelete, "/organization/member_delete", deleteRequest, nil); err != nil {
+		if !IsAPIErrorStatus(err, http.StatusNotFound) {
+			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to remove organization member: %s", organizationMemberDiagnosticError(err)))
 		}
 	}
 }
 
 func (r *OrganizationMemberResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	// Import format: organization_id:user_id
+	// Only the canonical organization_id:user_id form is accepted. Email lookup
+	// imports are intentionally unsupported because v1.98.0 exposes no distinct
+	// email import grammar and membership identity is the user_id composite key.
 	parts := strings.SplitN(req.ID, ":", 2)
-	if len(parts) != 2 {
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		resp.Diagnostics.AddError(
 			"Invalid Import ID",
-			fmt.Sprintf("Expected import ID in format 'organization_id:user_id', got: %s", req.ID),
+			"Expected a non-empty import ID in format 'organization_id:user_id'.",
 		)
 		return
 	}
-
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("organization_id"), parts[0])...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("user_id"), parts[1])...)
