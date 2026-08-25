@@ -138,6 +138,7 @@ func TestHydrateUnmanagedAgentUpdateFieldsPreservesRemoteSecrets(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+			"agent_id": "agent-update",
 			"litellm_params": map[string]interface{}{
 				"model":     "bedrock/agentcore/runtime",
 				"is_public": false,
@@ -188,6 +189,7 @@ func TestHydrateMaskedPlannedAgentValuesPreservesRealChanges(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+			"agent_id": "agent-masked-plan",
 			"litellm_params": map[string]interface{}{
 				"model":   "remote-old-model",
 				"api_key": "real-api-key-value",
@@ -730,8 +732,9 @@ func TestReadAgentCapabilitiesAfterUpdateRequiresStableValues(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"agent_id": "agent-1",
+			"agent_id": "agent-1", "agent_name": "agent",
 			"agent_card_params": map[string]interface{}{
+				"name": "Agent", "url": "https://agent.invalid",
 				"supportsAuthenticatedExtendedCard": sequence[index],
 			},
 		})
@@ -766,8 +769,9 @@ func TestReadAgentCapabilitiesAfterUpdateRejectsPersistentOmission(t *testing.T)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"agent_id": "agent-1",
+			"agent_id": "agent-1", "agent_name": "agent",
 			"agent_card_params": map[string]interface{}{
+				"name": "Agent", "url": "https://agent.invalid",
 				"capabilities": map[string]interface{}{"streaming": true},
 			},
 		})

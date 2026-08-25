@@ -135,6 +135,7 @@ internal_testing/
     search_tool_full.tf
     agent_minimal.tf
     agent_mcp_tool_permissions.tf # map(string) JSON-array wire bridge
+    agent_lifecycle_clear.tf      # set/clear/import/no-drift PATCH lifecycle
     unified_access_group_minimal.tf
 
   datasources/                 # one file per data source
