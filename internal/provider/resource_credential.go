@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strings"
 	"time"
 
@@ -24,8 +25,16 @@ import (
 const credentialPrivateMetadataKey = "credential_ownership_v1"
 
 const (
-	credentialPostflightAttempts = 4
-	credentialReadAttempts       = 8
+	// Four conclusive probes are sampled over fresh connections. Exact absence
+	// is authoritative only when all four are consecutive exact 404 responses.
+	// Transient failures reset that absence streak and may use the bounded extra
+	// attempts; they never count as evidence that a credential is absent.
+	credentialProbeSampleSize  = 4
+	credentialProbeMaxAttempts = 8
+
+	// Retained aliases keep focused lifecycle tests source-compatible.
+	credentialPostflightAttempts = credentialProbeSampleSize
+	credentialReadAttempts       = credentialProbeMaxAttempts
 )
 
 var _ resource.Resource = &CredentialResource{}
@@ -68,6 +77,40 @@ type credentialMutationResponse struct {
 	Success *bool  `json:"success"`
 	Message string `json:"message"`
 }
+
+type credentialProbeSample struct {
+	present            []credentialRemote
+	absent             int
+	transient          int
+	consecutiveAbsence int
+}
+
+func (s credentialProbeSample) hasPresence() bool {
+	return len(s.present) != 0
+}
+
+func (s credentialProbeSample) authoritativeAbsence() bool {
+	return len(s.present) == 0 && s.consecutiveAbsence >= credentialProbeSampleSize
+}
+
+func (s credentialProbeSample) versionsMatch() bool {
+	if len(s.present) < 2 {
+		return true
+	}
+	first := s.present[0]
+	for _, remote := range s.present[1:] {
+		if remote.name != first.name || !reflect.DeepEqual(remote.info, first.info) || !reflect.DeepEqual(remote.values, first.values) {
+			return false
+		}
+	}
+	return true
+}
+
+func (s credentialProbeSample) convergenceUncertain() bool {
+	return s.hasPresence() && (s.absent != 0 || !s.versionsMatch())
+}
+
+var errCredentialProbeIncomplete = errors.New("bounded credential worker sampling was inconclusive")
 
 type credentialPrivateReader interface {
 	GetKey(context.Context, string) ([]byte, diag.Diagnostics)
@@ -303,15 +346,17 @@ func (r *CredentialResource) Create(ctx context.Context, req resource.CreateRequ
 	}
 
 	name := config.CredentialName.ValueString()
-	if existing, preflightErr := r.fetchCredentialByName(ctx, name); preflightErr == nil {
-		if existing.name == name {
-			resp.Diagnostics.AddError("Credential Already Exists", "A credential with this exact name already exists. Terraform did not adopt or mutate it; import it only after verifying ownership.")
-		} else {
-			resp.Diagnostics.AddError("Credential Create Preflight Failed", "The exact by-name route returned a different credential identity, so Terraform did not send the create request.")
+	preflight, preflightErr := probeCredentialEndpoint(ctx, r.client, credentialByNamePath(name), name)
+	if preflight.hasPresence() {
+		detail := "A credential with this exact name was present on at least one fresh-connection worker probe. Terraform did not adopt or mutate it; import it only after verifying ownership."
+		if preflight.convergenceUncertain() || preflightErr != nil {
+			detail += " LiteLLM v1.98 keeps credential lookups in process-local worker caches, and the sampled workers were not consistent. Reload or restart workers as appropriate, verify convergence, and retry."
 		}
+		resp.Diagnostics.AddError("Credential Already Exists", detail)
 		return
-	} else if !IsAPIErrorStatus(preflightErr, http.StatusNotFound) {
-		resp.Diagnostics.AddError("Credential Create Preflight Failed", "Terraform could not prove exact-name absence before create, so it did not send the request.")
+	}
+	if preflightErr != nil || !preflight.authoritativeAbsence() {
+		resp.Diagnostics.AddError("Credential Create Preflight Failed", "Terraform could not prove exact-name absence through four consecutive exact 404 responses over fresh connections, so it did not send the create request. Retry transient failures or reconcile LiteLLM v1.98 worker caches before retrying.")
 		return
 	}
 
@@ -336,7 +381,7 @@ func (r *CredentialResource) Create(ctx context.Context, req resource.CreateRequ
 			resp.Diagnostics.AddError("Credential Create Error", "LiteLLM definitively rejected or locally failed the credential create request. No resource state was retained.")
 			return
 		}
-		_, recoveryErr := r.confirmCredentialMutation(ctx, name, verifyCreate)
+		_, _, recoveryErr := r.confirmCredentialMutation(ctx, name, verifyCreate)
 		setCredentialUncertainCreateState(ctx, resp, &plan, config)
 		if recoveryErr == nil {
 			resp.Diagnostics.AddError("Credential Create Recovered With Uncertain Ownership", "A unique exact-name, exact-configuration credential appeared during bounded recovery and was retained in partial state. The create response was unusable, so Terraform cannot distinguish its operation from a concurrent identical create; inspect ownership before importing or removing the retained state.")
@@ -346,7 +391,7 @@ func (r *CredentialResource) Create(ctx context.Context, req resource.CreateRequ
 		return
 	}
 
-	remote, postflightErr := r.confirmCredentialMutation(ctx, name, verifyCreate)
+	remote, postflightSample, postflightErr := r.confirmCredentialMutation(ctx, name, verifyCreate)
 	if postflightErr != nil {
 		setCredentialUncertainCreateState(ctx, resp, &plan, config)
 		resp.Diagnostics.AddError("Credential Create Postflight Failed", "LiteLLM reported create success, but bounded exact-name recovery could not prove the complete owned result. Caller-known identity was retained in partial state with no remote ownership.")
@@ -363,6 +408,12 @@ func (r *CredentialResource) Create(ctx context.Context, req resource.CreateRequ
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 	if resp.Private != nil {
 		resp.Diagnostics.Append(writeCredentialPrivateMetadata(ctx, resp.Private, metadata)...)
+	}
+	if postflightSample.convergenceUncertain() {
+		resp.Diagnostics.AddWarning(
+			"Credential Worker Convergence Uncertain",
+			"Create was confirmed with matching state on at least one fresh-connection worker probe, but LiteLLM v1.98 workers returned mixed presence or different cached versions. Terraform retained the credential identity but does not claim cluster-wide convergence. Reload or restart workers as appropriate, verify their process-local credential caches, and retry refresh.",
+		)
 	}
 }
 
@@ -484,19 +535,22 @@ func (r *CredentialResource) Read(ctx context.Context, req resource.ReadRequest,
 	if name == "" {
 		name = data.ID.ValueString()
 	}
-	remote, err := r.fetchCredentialByName(ctx, name)
-	if err != nil {
-		if IsAPIErrorStatus(err, http.StatusNotFound) {
+	sample, probeErr := probeCredentialEndpoint(ctx, r.client, credentialByNamePath(name), name)
+	if !sample.hasPresence() {
+		if probeErr == nil && sample.authoritativeAbsence() {
 			resp.State.RemoveResource(ctx)
 			return
 		}
-		resp.Diagnostics.AddError("Credential Read Error", "LiteLLM did not return a valid credential from the exact by-name route.")
+		resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+		resp.Diagnostics.AddError("Credential Read Sampling Inconclusive", "Terraform retained the credential in state because bounded fresh-connection probes did not establish either a consistent present credential or four consecutive exact 404 responses. Retry transient failures or reconcile LiteLLM v1.98 process-local worker caches before retrying.")
 		return
 	}
-	if remote.name != name {
-		resp.Diagnostics.AddError("Credential Read Error", "LiteLLM returned a credential identity that did not match the exact requested name.")
+	if probeErr != nil || sample.convergenceUncertain() {
+		resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+		resp.Diagnostics.AddError("Credential Worker Convergence Uncertain", "Terraform retained the prior credential state because fresh-connection probes observed mixed presence, different cached credential versions, or an incomplete sample across LiteLLM v1.98 workers. Reload or restart workers as appropriate, verify their process-local credential caches are consistent, and retry. Terraform will not treat one worker's exact 404 as remote deletion.")
 		return
 	}
+	remote := sample.present[0]
 	if metadata.noPrivateFallback {
 		if err := reconcileSchemaZeroCredentialState(&data, remote); err != nil {
 			resp.Diagnostics.AddError("Credential Read Safety Error", formatCredentialSafetyError(err))
@@ -585,11 +639,14 @@ func (r *CredentialResource) Update(ctx context.Context, req resource.UpdateRequ
 		}
 	}
 
-	remoteBefore, err := r.fetchCredentialByName(ctx, state.CredentialName.ValueString())
-	if err != nil || remoteBefore.name != state.CredentialName.ValueString() {
-		resp.Diagnostics.AddError("Credential Update Preflight Failed", "The exact remote credential could not be read and validated before PATCH, so no mutation was sent.")
+	name := state.CredentialName.ValueString()
+	preflight, preflightErr := probeCredentialEndpoint(ctx, r.client, credentialByNamePath(name), name)
+	if preflightErr != nil || !preflight.hasPresence() || preflight.convergenceUncertain() {
+		resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+		resp.Diagnostics.AddError("Credential Update Preflight Failed", "The exact credential was not consistently present with one version across bounded fresh-connection worker probes, so no PATCH was sent. Terraform retained prior state; reconcile LiteLLM v1.98 process-local credential caches and retry.")
 		return
 	}
+	remoteBefore := preflight.present[0]
 	priorInfoOwnership := credentialMetadataOwnership(priorMetadata, false)
 	infoPatch, err := hydrateCredentialPatch(remoteBefore.info, priorInfo, desiredInfo.Object, priorInfoOwnership, desiredInfo.UnionOwnership, false)
 	if err == nil {
@@ -616,7 +673,7 @@ func (r *CredentialResource) Update(ctx context.Context, req resource.UpdateRequ
 	if mutationErr != nil {
 		bodyErr = mutationErr
 	}
-	remoteAfter, postflightErr := r.confirmCredentialMutation(ctx, plan.CredentialName.ValueString(), func(remote credentialRemote) error {
+	remoteAfter, postflightSample, postflightErr := r.confirmCredentialMutation(ctx, plan.CredentialName.ValueString(), func(remote credentialRemote) error {
 		if err := verifyCredentialOwnedObject(remote.info, infoPatch, credentialOwnershipForObject(infoPatch), false); err != nil {
 			return err
 		}
@@ -648,7 +705,12 @@ func (r *CredentialResource) Update(ctx context.Context, req resource.UpdateRequ
 		resp.Diagnostics.AddError("Malformed Credential Update Response", "LiteLLM accepted the PATCH status, but its body did not contain the required success result. The authoritative postflight read was still performed.")
 	}
 	if postflightErr != nil {
-		resp.Diagnostics.AddError("Credential Update Postflight Failed", "The provider could not confirm every owned value, mask, and nested removal through the authoritative by-name route, so it did not claim the planned update in state.")
+		resp.Diagnostics.AddError("Credential Update Postflight Failed", "The provider could not confirm every owned value, mask, and nested removal on any worker in the bounded fresh-connection sample, so it did not claim the planned update in state.")
+	} else if postflightSample.convergenceUncertain() {
+		resp.Diagnostics.AddWarning(
+			"Credential Worker Convergence Uncertain",
+			"Update was confirmed with matching state on at least one fresh-connection worker probe, but LiteLLM v1.98 workers returned mixed presence or different cached versions. Terraform recorded the matching result but does not claim cluster-wide convergence. Reload or restart workers as appropriate, verify their process-local credential caches, and retry refresh.",
+		)
 	}
 }
 
@@ -670,16 +732,20 @@ func (r *CredentialResource) Delete(ctx context.Context, req resource.DeleteRequ
 	if metadata.ReplacementPending {
 		priorInfo, infoErr := credentialOwnedObjectFromSurfaces(ctx, data.CredentialInfo, data.CredentialInfoJSON, metadata.LegacyInfo, metadata.JSONInfo)
 		priorValues, valuesErr := credentialOwnedObjectFromSurfaces(ctx, data.CredentialValues, data.CredentialValuesJSON, metadata.LegacyValues, metadata.JSONValues)
-		remote, readErr := r.fetchCredentialByName(ctx, data.CredentialName.ValueString())
-		if readErr != nil && !IsAPIErrorStatus(readErr, http.StatusNotFound) {
-			resp.Diagnostics.AddError("Unsafe Credential Replacement", "The exact credential could not be re-read before replacement deletion.")
+		name := data.CredentialName.ValueString()
+		preflight, preflightErr := probeCredentialEndpoint(ctx, r.client, credentialByNamePath(name), name)
+		if preflightErr != nil || preflight.convergenceUncertain() || (!preflight.hasPresence() && !preflight.authoritativeAbsence()) {
+			resp.Diagnostics.AddError("Unsafe Credential Replacement", "The exact credential was not consistently observable across bounded fresh-connection worker probes before replacement deletion. Terraform retained state; reconcile LiteLLM v1.98 process-local credential caches and retry.")
 			return
 		}
-		if readErr == nil && (infoErr != nil || valuesErr != nil ||
-			!credentialRemoteFullyOwned(remote.info, priorInfo, credentialMetadataOwnership(metadata, false), false) ||
-			!credentialRemoteFullyOwned(remote.values, priorValues, credentialMetadataOwnership(metadata, true), true)) {
-			resp.Diagnostics.AddError("Unsafe Credential Replacement", "Replacement deletion was blocked because the current remote credential contains data that is not proven Terraform-owned and reconstructable.")
-			return
+		if preflight.hasPresence() {
+			remote := preflight.present[0]
+			if infoErr != nil || valuesErr != nil ||
+				!credentialRemoteFullyOwned(remote.info, priorInfo, credentialMetadataOwnership(metadata, false), false) ||
+				!credentialRemoteFullyOwned(remote.values, priorValues, credentialMetadataOwnership(metadata, true), true) {
+				resp.Diagnostics.AddError("Unsafe Credential Replacement", "Replacement deletion was blocked because the current remote credential contains data that is not proven Terraform-owned and reconstructable.")
+				return
+			}
 		}
 	}
 
@@ -689,7 +755,7 @@ func (r *CredentialResource) Delete(ctx context.Context, req resource.DeleteRequ
 	if mutationErr != nil {
 		bodyErr = mutationErr
 	}
-	absenceErr := r.confirmCredentialAbsence(ctx, data.CredentialName.ValueString())
+	absenceSample, absenceErr := r.confirmCredentialAbsence(ctx, data.CredentialName.ValueString())
 	if !accepted && IsAPIErrorStatus(mutationErr, http.StatusNotFound) && absenceErr == nil {
 		return
 	}
@@ -699,7 +765,11 @@ func (r *CredentialResource) Delete(ctx context.Context, req resource.DeleteRequ
 		resp.Diagnostics.AddError("Malformed Credential Delete Response", "LiteLLM accepted the DELETE status, but its body did not contain the required success result. Exact absence was still checked through the authoritative by-name route.")
 	}
 	if absenceErr != nil {
-		resp.Diagnostics.AddError("Credential Delete Postflight Failed", "The provider could not confirm exact credential absence through the authoritative by-name route, so Terraform must retain the resource in state.")
+		detail := "The provider could not confirm four consecutive exact 404 responses across bounded fresh-connection probes, so Terraform must retain the resource in state."
+		if absenceSample.hasPresence() {
+			detail += " At least one sampled LiteLLM v1.98 worker still serves the credential from its process-local cache; reload or restart workers as appropriate, verify cache convergence, and retry destroy."
+		}
+		resp.Diagnostics.AddError("Credential Delete Postflight Failed", detail)
 	}
 }
 
@@ -958,10 +1028,17 @@ func validateCredentialMutationResponse(response credentialMutationResponse) err
 
 func (r *CredentialResource) fetchCredentialByName(ctx context.Context, name string) (credentialRemote, error) {
 	var result credentialAPIResponse
-	if err := r.client.DoRequestWithResponse(ctx, http.MethodGet, credentialByNamePath(name), nil, &result); err != nil {
+	if err := r.client.doFreshRequestWithResponse(ctx, http.MethodGet, credentialByNamePath(name), nil, &result); err != nil {
 		return credentialRemote{}, err
 	}
-	return decodeCredentialResponse(result)
+	remote, err := decodeCredentialResponse(result)
+	if err != nil {
+		return credentialRemote{}, err
+	}
+	if remote.name != name {
+		return credentialRemote{}, errors.New("credential identity mismatch")
+	}
+	return remote, nil
 }
 
 func decodeCredentialResponse(result credentialAPIResponse) (credentialRemote, error) {
@@ -979,33 +1056,75 @@ func decodeCredentialResponse(result credentialAPIResponse) (credentialRemote, e
 	return credentialRemote{name: result.CredentialName, info: info, values: values}, nil
 }
 
-func (r *CredentialResource) confirmCredentialMutation(ctx context.Context, name string, verify func(credentialRemote) error) (credentialRemote, error) {
-	var lastErr error
-	for attempt := 0; attempt < credentialPostflightAttempts; attempt++ {
-		remote, err := r.fetchCredentialByName(ctx, name)
+// probeCredentialEndpoint samples a bounded number of fresh connections. A
+// transient response never counts as absence and resets the consecutive-404
+// streak. This cannot enumerate every worker behind an arbitrary load balancer;
+// it is an API-only fail-safe against treating one process-local cache miss as
+// authoritative deletion.
+func probeCredentialEndpoint(ctx context.Context, client *Client, endpoint, expectedName string) (credentialProbeSample, error) {
+	var sample credentialProbeSample
+	for attempt := 0; attempt < credentialProbeMaxAttempts; attempt++ {
+		var result credentialAPIResponse
+		err := client.doFreshRequestWithResponse(ctx, http.MethodGet, endpoint, nil, &result)
 		if err == nil {
-			if remote.name != name {
-				lastErr = errors.New("credential identity mismatch")
-			} else if err := verify(remote); err == nil {
-				return remote, nil
-			} else {
-				// A matching exact-name row can still be propagating nested values.
-				// Keep verification bounded rather than adopting a partial result.
-				lastErr = err
+			remote, decodeErr := decodeCredentialResponse(result)
+			if decodeErr != nil {
+				return sample, decodeErr
 			}
+			if expectedName != "" && remote.name != expectedName {
+				return sample, errors.New("credential identity mismatch")
+			}
+			sample.present = append(sample.present, remote)
+			sample.consecutiveAbsence = 0
+		} else if IsAPIErrorStatus(err, http.StatusNotFound) {
+			sample.absent++
+			sample.consecutiveAbsence++
+		} else if shouldRetryCredentialRecoveryRead(err) {
+			sample.transient++
+			sample.consecutiveAbsence = 0
+			if attempt < credentialProbeMaxAttempts-1 {
+				if waitErr := waitCredentialProbeRetry(ctx, attempt); waitErr != nil {
+					return sample, waitErr
+				}
+			}
+			continue
 		} else {
-			lastErr = err
-			if !shouldRetryCredentialRecoveryRead(err) {
-				return credentialRemote{}, err
-			}
+			return sample, err
 		}
-		if attempt < credentialPostflightAttempts-1 {
-			if err := waitCredentialRetry(ctx, attempt); err != nil {
-				return credentialRemote{}, err
-			}
+
+		conclusive := len(sample.present) + sample.absent
+		if sample.authoritativeAbsence() || (sample.hasPresence() && conclusive >= credentialProbeSampleSize) {
+			return sample, nil
 		}
 	}
-	return credentialRemote{}, lastErr
+	return sample, errCredentialProbeIncomplete
+}
+
+func (r *CredentialResource) confirmCredentialMutation(ctx context.Context, name string, verify func(credentialRemote) error) (credentialRemote, credentialProbeSample, error) {
+	sample, err := probeCredentialEndpoint(ctx, r.client, credentialByNamePath(name), name)
+	if err != nil {
+		return credentialRemote{}, sample, err
+	}
+	var matching credentialRemote
+	var lastErr error
+	matched := false
+	for _, remote := range sample.present {
+		if verifyErr := verify(remote); verifyErr != nil {
+			lastErr = verifyErr
+			continue
+		}
+		if !matched {
+			matching = remote
+			matched = true
+		}
+	}
+	if matched {
+		return matching, sample, nil
+	}
+	if lastErr == nil {
+		lastErr = errors.New("no sampled worker returned the requested credential state")
+	}
+	return credentialRemote{}, sample, lastErr
 }
 
 func shouldRetryCredentialRecoveryRead(err error) bool {
@@ -1030,28 +1149,35 @@ func shouldRetryCredentialRecoveryRead(err error) bool {
 	return false
 }
 
-func (r *CredentialResource) confirmCredentialAbsence(ctx context.Context, name string) error {
-	var lastErr error
-	for attempt := 0; attempt < credentialPostflightAttempts; attempt++ {
-		_, err := r.fetchCredentialByName(ctx, name)
-		if IsAPIErrorStatus(err, http.StatusNotFound) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		lastErr = errors.New("credential still exists")
-		if attempt < credentialPostflightAttempts-1 {
-			if err := waitCredentialRetry(ctx, attempt); err != nil {
-				return err
-			}
-		}
+func (r *CredentialResource) confirmCredentialAbsence(ctx context.Context, name string) (credentialProbeSample, error) {
+	sample, err := probeCredentialEndpoint(ctx, r.client, credentialByNamePath(name), name)
+	if err != nil {
+		return sample, err
 	}
-	return lastErr
+	if sample.authoritativeAbsence() {
+		return sample, nil
+	}
+	if sample.hasPresence() {
+		return sample, errors.New("credential is still present on at least one sampled worker")
+	}
+	return sample, errCredentialProbeIncomplete
 }
 
 func waitCredentialRetry(ctx context.Context, attempt int) error {
 	delay := 100 * time.Millisecond * time.Duration(1<<attempt)
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(delay):
+		return nil
+	}
+}
+
+func waitCredentialProbeRetry(ctx context.Context, attempt int) error {
+	delay := 100 * time.Millisecond * time.Duration(1<<attempt)
+	if delay > 200*time.Millisecond {
+		delay = 200 * time.Millisecond
+	}
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -1077,14 +1203,17 @@ func (r *CredentialResource) readCredential(ctx context.Context, data *Credentia
 	if name == "" {
 		name = data.ID.ValueString()
 	}
-	remote, err := r.fetchCredentialByName(ctx, name)
+	sample, err := probeCredentialEndpoint(ctx, r.client, credentialByNamePath(name), name)
 	if err != nil {
 		return err
 	}
-	if remote.name != name {
-		return errors.New("LiteLLM returned a credential identity mismatch")
+	if sample.authoritativeAbsence() {
+		return &APIError{StatusCode: http.StatusNotFound}
 	}
-	return reconcileCredentialState(ctx, data, remote, priorInfo, priorValues, metadata)
+	if !sample.hasPresence() || sample.convergenceUncertain() {
+		return errCredentialProbeIncomplete
+	}
+	return reconcileCredentialState(ctx, data, sample.present[0], priorInfo, priorValues, metadata)
 }
 
 func (r *CredentialResource) readCredentialWithRetry(ctx context.Context, data *CredentialResourceModel, maxRetries int) error {

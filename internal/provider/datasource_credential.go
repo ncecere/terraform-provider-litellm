@@ -2,9 +2,7 @@ package provider
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"net/http"
 	"regexp"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
@@ -96,20 +94,20 @@ func (d *CredentialDataSource) Read(ctx context.Context, req datasource.ReadRequ
 	if lookupByModel {
 		endpoint = credentialByModelPath(data.ModelID.ValueString())
 	}
-	var result credentialAPIResponse
-	if err := readCredentialDataSourceWithRetry(ctx, d.client, endpoint, &result, credentialReadAttempts); err != nil {
-		resp.Diagnostics.AddError("Credential Data Source Read Error", "LiteLLM did not return a valid credential from the selected exact lookup route.")
+	expectedName := credentialName
+	if lookupByModel {
+		expectedName = ""
+	}
+	sample, probeErr := probeCredentialEndpoint(ctx, d.client, endpoint, expectedName)
+	if probeErr != nil || !sample.hasPresence() {
+		resp.Diagnostics.AddError("Credential Data Source Read Error", "Bounded fresh-connection probes did not return a usable credential from the selected exact lookup route. Retry transient failures or reconcile LiteLLM v1.98 process-local worker caches before retrying.")
 		return
 	}
-	remote, err := decodeCredentialResponse(result)
-	if err != nil {
-		resp.Diagnostics.AddError("Credential Data Source Read Error", "LiteLLM returned a malformed credential object.")
+	if !sample.versionsMatch() {
+		resp.Diagnostics.AddError("Credential Worker Convergence Uncertain", "Fresh-connection probes returned different cached credential versions from LiteLLM v1.98 workers. No arbitrary version was selected. Reload or restart workers as appropriate, verify their process-local credential caches are consistent, and retry.")
 		return
 	}
-	if !lookupByModel && remote.name != credentialName {
-		resp.Diagnostics.AddError("Credential Data Source Read Error", "LiteLLM returned a credential identity that did not match the exact requested name.")
-		return
-	}
+	remote := sample.present[0]
 	infoMap, err := stringMapValueFromObject(remote.info)
 	if err != nil {
 		resp.Diagnostics.AddError("Credential Data Source Read Error", "LiteLLM metadata could not be represented by the compatibility map.")
@@ -127,27 +125,10 @@ func (d *CredentialDataSource) Read(ctx context.Context, req datasource.ReadRequ
 	data.CredentialInfo = infoMap
 	data.CredentialInfoJSON = types.StringValue(infoJSON)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
-}
-
-func readCredentialDataSourceWithRetry(ctx context.Context, client *Client, endpoint string, result *credentialAPIResponse, maxRetries int) error {
-	var err error
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		*result = credentialAPIResponse{}
-		err = client.DoRequestWithResponse(ctx, http.MethodGet, endpoint, nil, result)
-		if err == nil {
-			return nil
-		}
-		if !IsAPIErrorStatus(err, http.StatusNotFound) {
-			return err
-		}
-		if attempt < maxRetries-1 {
-			if waitErr := waitCredentialRetry(ctx, attempt); waitErr != nil {
-				return waitErr
-			}
-		}
+	if sample.convergenceUncertain() {
+		resp.Diagnostics.AddWarning(
+			"Credential Worker Convergence Uncertain",
+			"At least one fresh-connection probe returned the credential while another LiteLLM v1.98 worker returned exact 404. The data source used the matching representation but does not claim cluster-wide convergence. Reload or restart workers as appropriate, verify their process-local credential caches, and retry.",
+		)
 	}
-	if err == nil {
-		return errors.New("credential lookup failed without a response")
-	}
-	return err
 }

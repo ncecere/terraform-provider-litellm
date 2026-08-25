@@ -181,6 +181,39 @@ func TestSanitizeDiagnosticValuePreservesOnlyBoundedJSONNumbers(t *testing.T) {
 	}
 }
 
+func TestClientFreshCredentialProbePreservesRedaction(t *testing.T) {
+	t.Parallel()
+	const (
+		nameSecret = "credential-name-secret"
+		apiSecret  = "admin-secret"
+	)
+	closed := false
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		closed = request.Close
+		writer.Header().Set("Content-Type", "application/json")
+		writer.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+			"detail":        nameSecret,
+			"request_url":   request.URL.String(),
+			"authorization": request.Header.Get("Authorization"),
+		})
+	}))
+	defer server.Close()
+
+	client := &Client{APIBase: server.URL, APIKey: apiSecret, HTTPClient: server.Client()}
+	err := client.doFreshRequestWithResponse(context.Background(), http.MethodGet, "/credentials/by_name/"+nameSecret, nil, nil)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusBadRequest || !closed {
+		t.Fatalf("fresh probe contract: close=%t error=%#v", closed, err)
+	}
+	combined := apiErr.Error() + apiErr.Detail + apiErr.Body
+	for _, secret := range []string{nameSecret, apiSecret, server.URL} {
+		if strings.Contains(combined, secret) {
+			t.Fatalf("fresh probe leaked %q in %q", secret, combined)
+		}
+	}
+}
+
 func TestSanitizeDiagnosticStringRedactsCompleteKnownSecretBeforePatterns(t *testing.T) {
 	t.Parallel()
 

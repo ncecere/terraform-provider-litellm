@@ -104,9 +104,24 @@ PATCH in LiteLLM v1.98 shallow-merges the two top-level dictionaries:
 
 Because top-level removal cannot be proved safe, the provider reports a plan error instead of deleting and recreating the credential. Create-only replacement is allowed only when private ownership metadata and an authoritative delete preflight prove every remote key is Terraform-owned and reconstructable. This prevents replacement from destroying operator-added secrets.
 
-PATCH and DELETE response bodies must contain LiteLLM's explicit `success: true` result. This matters because affected handlers can serialize an exception with HTTP 200. Every mutation also receives an authoritative exact-name postflight GET: updates verify owned values, masks, and removals; deletes verify exact 404 absence.
+PATCH and DELETE response bodies must contain LiteLLM's explicit `success: true` result. This matters because affected handlers can serialize an exception with HTTP 200. Every mutation also receives bounded exact-name postflight sampling: updates verify owned values, masks, and removals; deletes require sampled exact 404 absence.
 
-Create first proves that the exact name is absent and refuses to overwrite or adopt a collision. Unusable HTTP success, dispatched transport failures, request timeouts, and server errors receive a bounded exact-name recovery window. Because an identical concurrent create cannot be distinguished from the provider's commit, every ambiguous outcome retains only caller-known partial state plus an uncertain-ownership private marker—even when exact configuration appears during recovery. That marker blocks refresh adoption, update, replacement, and deletion until an operator verifies ownership and imports the object or deliberately removes retained state.
+### LiteLLM v1.98 worker-cache limitation
+
+LiteLLM v1.98 serves `GET /credentials/by_name/{credential_name}` from the process-local `litellm.credential_list`. A credential mutation updates the handling worker, but another worker or pod can continue to return exact 404 or an older credential version. One 404 is therefore not authoritative.
+
+The provider uses an API-only fail-safe; it cannot enumerate workers or force the load balancer to select each one:
+
+* Each lifecycle lookup samples four conclusive GET responses over fresh HTTP connections so keepalive does not pin every probe to one worker. A load balancer can still route multiple fresh connections to the same worker.
+* Transient transport failures, request timeouts, HTTP 429, and HTTP 5xx responses are retried within a maximum of eight total probes. They do not count as absence and reset the consecutive-absence sequence.
+* Absence is accepted only after four consecutive fresh-connection probes all return exact HTTP 404. Presence on any probe retains Terraform identity and blocks duplicate create.
+* Mixed present/404 results or different credential versions retain state and produce a worker-convergence diagnostic. They are never converted into remote deletion or recreate drift.
+* Create and update postflight must find the exact requested owned result on at least one sampled worker. A mixed sample produces a warning and does not claim cluster-wide convergence.
+* Delete does not complete while any sampled worker still serves the credential. With v1.98, an operator may need to reload or restart workers and then retry destroy.
+
+This policy is bounded safety sampling, not a fixed convergence interval or proof that every worker agrees. There is no promised wait time after which v1.98 caches become consistent.
+
+Create first proves sampled exact-name absence and refuses to overwrite or adopt a collision. Unusable HTTP success, dispatched transport failures, request timeouts, and server errors receive bounded exact-name recovery sampling. Because an identical concurrent create cannot be distinguished from the provider's commit, every ambiguous outcome retains only caller-known partial state plus an uncertain-ownership private marker—even when exact configuration appears during recovery. That marker blocks refresh adoption, update, replacement, and deletion until an operator verifies ownership and imports the object or deliberately removes retained state.
 
 ## Import
 

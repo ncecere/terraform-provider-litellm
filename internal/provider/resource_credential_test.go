@@ -57,6 +57,113 @@ func credentialTestModel(name string, info, values map[string]string) Credential
 	return model
 }
 
+type credentialAlternatingWorkerAPI struct {
+	mu                sync.Mutex
+	nextWorker        int
+	connectionWorkers map[string]int
+	workers           [2]*credentialRemote
+	freshGETs         int
+	nonFreshGETs      int
+}
+
+func newCredentialAlternatingWorkerAPI(t *testing.T, workers [2]*credentialRemote) (*httptest.Server, *credentialAlternatingWorkerAPI) {
+	t.Helper()
+	cluster := &credentialAlternatingWorkerAPI{
+		connectionWorkers: make(map[string]int),
+		workers:           workers,
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		cluster.serveHTTP(writer, request)
+	}))
+	t.Cleanup(server.Close)
+	return server, cluster
+}
+
+func (c *credentialAlternatingWorkerAPI) serveHTTP(writer http.ResponseWriter, request *http.Request) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	worker, ok := c.connectionWorkers[request.RemoteAddr]
+	if !ok {
+		worker = c.nextWorker % len(c.workers)
+		c.nextWorker++
+		c.connectionWorkers[request.RemoteAddr] = worker
+	}
+	writer.Header().Set("Content-Type", "application/json")
+
+	switch request.Method {
+	case http.MethodGet:
+		if request.Close {
+			c.freshGETs++
+		} else {
+			c.nonFreshGETs++
+		}
+		remote := c.workers[worker]
+		if remote == nil {
+			http.NotFound(writer, request)
+			return
+		}
+		_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+			"credential_name":   remote.name,
+			"credential_info":   remote.info,
+			"credential_values": remote.values,
+		})
+	case http.MethodPost:
+		var body map[string]interface{}
+		_ = json.NewDecoder(request.Body).Decode(&body)
+		name, _ := body["credential_name"].(string)
+		info, _ := body["credential_info"].(map[string]interface{})
+		values, _ := body["credential_values"].(map[string]interface{})
+		c.workers[worker] = &credentialRemote{name: name, info: info, values: maskCredentialWorkerValues(values)}
+		_, _ = writer.Write([]byte(`{"success":true,"message":"created"}`))
+	case http.MethodPatch:
+		var body map[string]interface{}
+		_ = json.NewDecoder(request.Body).Decode(&body)
+		name, _ := body["credential_name"].(string)
+		info, _ := body["credential_info"].(map[string]interface{})
+		values, _ := body["credential_values"].(map[string]interface{})
+		c.workers[worker] = &credentialRemote{name: name, info: info, values: maskCredentialWorkerValues(values)}
+		_, _ = writer.Write([]byte(`{"success":true,"message":"updated"}`))
+	case http.MethodDelete:
+		c.workers[worker] = nil
+		_, _ = writer.Write([]byte(`{"success":true,"message":"deleted"}`))
+	default:
+		http.NotFound(writer, request)
+	}
+}
+
+func maskCredentialWorkerValues(values map[string]interface{}) map[string]interface{} {
+	masked := make(map[string]interface{}, len(values))
+	for key, value := range values {
+		switch typed := value.(type) {
+		case string:
+			masked[key] = maskLiteLLMCredentialString(typed)
+		case map[string]interface{}:
+			masked[key] = maskCredentialWorkerValues(typed)
+		default:
+			masked[key] = typed
+		}
+	}
+	return masked
+}
+
+func credentialWorkerRemote(name string, info map[string]interface{}) *credentialRemote {
+	return &credentialRemote{
+		name:   name,
+		info:   info,
+		values: map[string]interface{}{"api_key": maskLiteLLMCredentialString("secret")},
+	}
+}
+
+func credentialDiagnosticsContain(diagnostics diag.Diagnostics, text string) bool {
+	for _, diagnostic := range diagnostics {
+		if strings.Contains(diagnostic.Summary(), text) || strings.Contains(diagnostic.Detail(), text) {
+			return true
+		}
+	}
+	return false
+}
+
 func credentialTestState(t *testing.T, schema resourceschema.Schema, model CredentialResourceModel) tfsdk.State {
 	t.Helper()
 	state := tfsdk.State{Raw: tftypes.NewValue(schema.Type().TerraformType(context.Background()), nil), Schema: schema}
@@ -569,14 +676,16 @@ func TestCredentialProtocolCreateFinalStateUsesResolvedApplyConfig(t *testing.T)
 			if err != nil || !accessGroupProtocolDiagnosticsHaveError(retry.Diagnostics) {
 				t.Fatalf("retry did not fail exact-name preflight: err=%v diagnostics=%v", err, retry.Diagnostics)
 			}
-			if !created || posts != 1 || collisions != 0 || gets != 3 {
+			if !created || posts != 1 || collisions != 0 || gets != 3*credentialProbeSampleSize {
 				t.Fatalf("create retry orphan/collision safety: created=%t posts=%d collisions=%d gets=%d requests=%v", created, posts, collisions, gets, requests)
 			}
-			wantRequests := []string{
-				"GET /credentials/by_name/" + credentialName,
-				"POST /credentials",
-				"GET /credentials/by_name/" + credentialName,
-				"GET /credentials/by_name/" + credentialName,
+			wantRequests := make([]string, 0, 3*credentialProbeSampleSize+1)
+			for range credentialProbeSampleSize {
+				wantRequests = append(wantRequests, "GET /credentials/by_name/"+credentialName)
+			}
+			wantRequests = append(wantRequests, "POST /credentials")
+			for range 2 * credentialProbeSampleSize {
+				wantRequests = append(wantRequests, "GET /credentials/by_name/"+credentialName)
 			}
 			if !reflect.DeepEqual(requests, wantRequests) {
 				t.Fatalf("request sequence=%v want=%v", requests, wantRequests)
@@ -627,11 +736,15 @@ func TestCredentialCreateBothKeepsValuesInactiveAndPostflights(t *testing.T) {
 	if response.Diagnostics.HasError() {
 		t.Fatalf("create diagnostics: %v", response.Diagnostics)
 	}
-	if !reflect.DeepEqual(requests, []string{
-		"GET /credentials/by_name/both",
-		"POST /credentials",
-		"GET /credentials/by_name/both",
-	}) {
+	wantRequests := make([]string, 0, 2*credentialProbeSampleSize+1)
+	for range credentialProbeSampleSize {
+		wantRequests = append(wantRequests, "GET /credentials/by_name/both")
+	}
+	wantRequests = append(wantRequests, "POST /credentials")
+	for range credentialProbeSampleSize {
+		wantRequests = append(wantRequests, "GET /credentials/by_name/both")
+	}
+	if !reflect.DeepEqual(requests, wantRequests) {
 		t.Fatalf("requests = %#v", requests)
 	}
 	var state CredentialResourceModel
@@ -907,21 +1020,23 @@ func TestCredentialUpdateNeverSendsModelAndRequiresValidBodyAndPostflight(t *tes
 	var mu sync.Mutex
 	var calls []string
 	var patchBody map[string]interface{}
+	patched := false
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		mu.Lock()
 		calls = append(calls, request.Method+" "+request.RequestURI)
-		call := len(calls)
 		mu.Unlock()
 		writer.Header().Set("Content-Type", "application/json")
-		switch call {
-		case 1:
-			_, _ = writer.Write([]byte(`{"credential_name":"update","credential_info":{"env":"old","nested":{"owned":"old","external":"keep"}},"credential_values":{"api_key":"se****et"}}`))
-		case 2:
+		if request.Method == http.MethodPatch {
 			_ = json.NewDecoder(request.Body).Decode(&patchBody)
+			patched = true
 			_, _ = writer.Write([]byte(`{"success":true,"message":"Credential updated successfully"}`))
-		default:
-			_, _ = writer.Write([]byte(`{"credential_name":"update","credential_info":{"env":"new","nested":{"owned":"new","external":"keep"}},"credential_values":{"api_key":"se****et"}}`))
+			return
 		}
+		if patched {
+			_, _ = writer.Write([]byte(`{"credential_name":"update","credential_info":{"env":"new","nested":{"owned":"new","external":"keep"}},"credential_values":{"api_key":"se****et"}}`))
+			return
+		}
+		_, _ = writer.Write([]byte(`{"credential_name":"update","credential_info":{"env":"old","nested":{"owned":"old","external":"keep"}},"credential_values":{"api_key":"se****et"}}`))
 	}))
 	defer server.Close()
 	schema := credentialTestSchema(t)
@@ -945,23 +1060,23 @@ func TestCredentialUpdateNeverSendsModelAndRequiresValidBodyAndPostflight(t *tes
 	if nested["external"] != "keep" || nested["owned"] != "new" {
 		t.Fatalf("PATCH did not hydrate nested siblings: %#v", patchBody)
 	}
-	if len(calls) != 3 {
-		t.Fatalf("PATCH did not perform preflight and postflight GET: %#v", calls)
+	if len(calls) != 2*credentialProbeSampleSize+1 {
+		t.Fatalf("PATCH did not perform bounded preflight and postflight probes: %#v", calls)
 	}
 }
 
 func TestCredentialUpdateRejectsSerializedExceptionEvenWhenPostflightMatches(t *testing.T) {
 	t.Parallel()
-	call := 0
+	patched := false
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		call++
 		writer.Header().Set("Content-Type", "application/json")
 		if request.Method == http.MethodPatch {
+			patched = true
 			_, _ = writer.Write([]byte(`{"status_code":404,"detail":"exception"}`))
 			return
 		}
 		env := "old"
-		if call > 2 {
+		if patched {
 			env = "new"
 		}
 		_, _ = writer.Write([]byte(fmt.Sprintf(`{"credential_name":"exception","credential_info":{"env":%q},"credential_values":{}}`, env)))
@@ -1146,7 +1261,11 @@ func TestCredentialProtocolImportIsSourceFreeNoOpAndRejectsSourceAdoption(t *tes
 		t.Helper()
 		mu.Lock()
 		defer mu.Unlock()
-		if !reflect.DeepEqual(requests, []string{http.MethodGet + " " + credentialByNamePath(identity)}) {
+		want := make([]string, credentialProbeSampleSize)
+		for index := range want {
+			want[index] = http.MethodGet + " " + credentialByNamePath(identity)
+		}
+		if !reflect.DeepEqual(requests, want) {
 			t.Fatalf("%s sent unexpected requests: %#v", stage, requests)
 		}
 	}
@@ -1329,6 +1448,214 @@ func TestCredentialDataSourcePreservesMapAndAddsFullJSON(t *testing.T) {
 	}
 }
 
+func TestCredentialAlternatingWorkersCreateDataSourceAndPlanReadRetainsIdentity(t *testing.T) {
+	// The connection-bound worker assignment models a load balancer whose
+	// backend selection changes only when the client opens a new connection.
+	api, cluster := newCredentialAlternatingWorkerAPI(t, [2]*credentialRemote{})
+	client := &Client{APIBase: api.URL, APIKey: "admin", HTTPClient: api.Client()}
+	ctx := context.Background()
+
+	resourceSchema := credentialTestSchema(t)
+	model := credentialTestModel("alternating", map[string]string{"owner": "terraform"}, map[string]string{"api_key": "secret"})
+	model.ID = types.StringUnknown()
+	createPlan := credentialTestPlan(t, resourceSchema, model)
+	createResponse := &resource.CreateResponse{State: tfsdk.State{Raw: createPlan.Raw, Schema: resourceSchema}}
+	(&CredentialResource{client: client}).Create(ctx, resource.CreateRequest{Plan: createPlan}, createResponse)
+	if createResponse.Diagnostics.HasError() || !credentialDiagnosticsContain(createResponse.Diagnostics, "Worker Convergence") {
+		t.Fatalf("create did not retain sampled matching state with a convergence warning: %v", createResponse.Diagnostics)
+	}
+
+	var dataSchemaResponse datasource.SchemaResponse
+	(&CredentialDataSource{}).Schema(ctx, datasource.SchemaRequest{}, &dataSchemaResponse)
+	dataConfig := CredentialDataSourceModel{
+		ID:                 types.StringNull(),
+		CredentialName:     types.StringValue("alternating"),
+		ModelID:            types.StringNull(),
+		CredentialInfo:     types.MapUnknown(types.StringType),
+		CredentialInfoJSON: types.StringUnknown(),
+	}
+	dataConfigState := tfsdk.State{Raw: tftypes.NewValue(dataSchemaResponse.Schema.Type().TerraformType(ctx), nil), Schema: dataSchemaResponse.Schema}
+	if diagnostics := dataConfigState.Set(ctx, &dataConfig); diagnostics.HasError() {
+		t.Fatal(diagnostics)
+	}
+	dataResponse := &datasource.ReadResponse{State: tfsdk.State{Raw: dataConfigState.Raw, Schema: dataSchemaResponse.Schema}}
+	(&CredentialDataSource{client: client}).Read(ctx, datasource.ReadRequest{Config: tfsdk.Config{Raw: dataConfigState.Raw, Schema: dataSchemaResponse.Schema}}, dataResponse)
+	if dataResponse.Diagnostics.HasError() || !credentialDiagnosticsContain(dataResponse.Diagnostics, "Worker Convergence") {
+		t.Fatalf("data source did not use sampled matching state with a convergence warning: %v", dataResponse.Diagnostics)
+	}
+
+	readResponse := &resource.ReadResponse{State: createResponse.State}
+	(&CredentialResource{client: client}).Read(ctx, resource.ReadRequest{State: createResponse.State}, readResponse)
+	if !readResponse.Diagnostics.HasError() || !credentialDiagnosticsContain(readResponse.Diagnostics, "Worker Convergence") {
+		t.Fatalf("plan refresh did not report mixed worker caches: %v", readResponse.Diagnostics)
+	}
+	var retained CredentialResourceModel
+	if diagnostics := readResponse.State.Get(ctx, &retained); diagnostics.HasError() || retained.ID.ValueString() != "alternating" {
+		t.Fatalf("one worker 404 removed identity: state=%#v diagnostics=%v", retained, diagnostics)
+	}
+
+	cluster.mu.Lock()
+	defer cluster.mu.Unlock()
+	if cluster.freshGETs != 4*credentialProbeSampleSize || cluster.nonFreshGETs != 0 || len(cluster.connectionWorkers) < cluster.freshGETs {
+		t.Fatalf("credential probes were keepalive-pinned: fresh=%d nonfresh=%d connections=%d", cluster.freshGETs, cluster.nonFreshGETs, len(cluster.connectionWorkers))
+	}
+}
+
+func TestCredentialAlternatingWorkersStaleDeleteRetainsTerraformState(t *testing.T) {
+	name := "stale-delete"
+	api, cluster := newCredentialAlternatingWorkerAPI(t, [2]*credentialRemote{
+		credentialWorkerRemote(name, map[string]interface{}{"env": "old"}),
+		credentialWorkerRemote(name, map[string]interface{}{"env": "old"}),
+	})
+	server, resourceType := credentialProtocolServer(t, api.URL)
+	ctx := context.Background()
+	info := credentialProtocolStringMap(map[string]string{"env": "old"})
+	values := credentialProtocolStringMap(map[string]string{"api_key": "secret"})
+	prior := credentialProtocolDynamicValue(t, resourceType, credentialProtocolValue(resourceType, name, name, nil, info, values, nil, nil, true, "credential_values"))
+	nullState := credentialProtocolDynamicValue(t, resourceType, tftypes.NewValue(resourceType, nil))
+
+	destroy, err := server.ApplyResourceChange(ctx, &tfprotov6.ApplyResourceChangeRequest{
+		TypeName:     "litellm_credential",
+		Config:       nullState,
+		PriorState:   prior,
+		PlannedState: nullState,
+	})
+	if err != nil || !accessGroupProtocolDiagnosticsHaveError(destroy.Diagnostics) || destroy.NewState == nil {
+		t.Fatalf("stale worker delete did not fail closed: err=%v diagnostics=%v state=%v", err, destroy.Diagnostics, destroy.NewState)
+	}
+	retained, unmarshalErr := destroy.NewState.Unmarshal(resourceType)
+	if unmarshalErr != nil || retained.IsNull() {
+		t.Fatalf("stale worker delete removed Terraform state: value=%v err=%v", retained, unmarshalErr)
+	}
+	cluster.mu.Lock()
+	defer cluster.mu.Unlock()
+	if cluster.workers[1] == nil || cluster.freshGETs != credentialProbeSampleSize || cluster.nonFreshGETs != 0 {
+		t.Fatalf("stale worker was not detected: workers=%#v fresh=%d nonfresh=%d", cluster.workers, cluster.freshGETs, cluster.nonFreshGETs)
+	}
+}
+
+func TestCredentialAlternatingWorkersMixedUpdateWarnsAndUsesMatchingVersion(t *testing.T) {
+	name := "mixed-update"
+	api, cluster := newCredentialAlternatingWorkerAPI(t, [2]*credentialRemote{
+		credentialWorkerRemote(name, map[string]interface{}{"env": "old"}),
+		credentialWorkerRemote(name, map[string]interface{}{"env": "old"}),
+	})
+	client := &Client{APIBase: api.URL, APIKey: "admin", HTTPClient: api.Client()}
+	schema := credentialTestSchema(t)
+	stateModel := credentialTestModel(name, map[string]string{"env": "old"}, map[string]string{"api_key": "secret"})
+	planModel := credentialTestModel(name, map[string]string{"env": "new"}, map[string]string{"api_key": "secret"})
+	state := credentialTestState(t, schema, stateModel)
+	plan := credentialTestPlan(t, schema, planModel)
+	response := &resource.UpdateResponse{State: state}
+
+	(&CredentialResource{client: client}).Update(context.Background(), resource.UpdateRequest{
+		State:  state,
+		Plan:   plan,
+		Config: credentialTestConfig(t, schema, planModel),
+	}, response)
+	if response.Diagnostics.HasError() || !credentialDiagnosticsContain(response.Diagnostics, "Worker Convergence") {
+		t.Fatalf("mixed post-update workers did not return an actionable warning: %v", response.Diagnostics)
+	}
+	var updated CredentialResourceModel
+	if diagnostics := response.State.Get(context.Background(), &updated); diagnostics.HasError() {
+		t.Fatal(diagnostics)
+	}
+	var infoValues map[string]string
+	if diagnostics := updated.CredentialInfo.ElementsAs(context.Background(), &infoValues, false); diagnostics.HasError() || infoValues["env"] != "new" {
+		t.Fatalf("matching updated worker state was not recorded: info=%v diagnostics=%v", infoValues, diagnostics)
+	}
+
+	cluster.mu.Lock()
+	defer cluster.mu.Unlock()
+	if cluster.workers[0].info["env"] != "new" || cluster.workers[1].info["env"] != "old" || cluster.freshGETs != 2*credentialProbeSampleSize {
+		t.Fatalf("test did not produce mixed worker versions: workers=%#v fresh=%d", cluster.workers, cluster.freshGETs)
+	}
+}
+
+func TestCredentialAll404RemoteDeletionRequiresCompleteFreshSample(t *testing.T) {
+	api, cluster := newCredentialAlternatingWorkerAPI(t, [2]*credentialRemote{})
+	server, resourceType := credentialProtocolServer(t, api.URL)
+	ctx := context.Background()
+	name := "remote-delete"
+	info := credentialProtocolStringMap(map[string]string{"env": "old"})
+	values := credentialProtocolStringMap(map[string]string{"api_key": "secret"})
+	prior := credentialProtocolDynamicValue(t, resourceType, credentialProtocolValue(resourceType, name, name, nil, info, values, nil, nil, true, "credential_values"))
+
+	readResponse, err := server.ReadResource(ctx, &tfprotov6.ReadResourceRequest{TypeName: "litellm_credential", CurrentState: prior})
+	if err != nil || accessGroupProtocolDiagnosticsHaveError(readResponse.Diagnostics) || readResponse.NewState == nil {
+		t.Fatalf("all-404 refresh failed: err=%v diagnostics=%v state=%v", err, readResponse.Diagnostics, readResponse.NewState)
+	}
+	removed, unmarshalErr := readResponse.NewState.Unmarshal(resourceType)
+	if unmarshalErr != nil || !removed.IsNull() {
+		t.Fatalf("four consecutive all-404 probes did not remove state: value=%v err=%v", removed, unmarshalErr)
+	}
+	cluster.mu.Lock()
+	defer cluster.mu.Unlock()
+	if cluster.freshGETs != credentialProbeSampleSize || cluster.nonFreshGETs != 0 {
+		t.Fatalf("remote deletion sample was not bounded/fresh: fresh=%d nonfresh=%d", cluster.freshGETs, cluster.nonFreshGETs)
+	}
+}
+
+func TestCredentialSamplingTerminalErrorsRetainStateWithoutRetry(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{name: "terminal HTTP response", status: http.StatusBadRequest, body: `{"detail":"invalid request"}`},
+		{name: "identity mismatch", status: http.StatusOK, body: `{"credential_name":"other","credential_info":{},"credential_values":{}}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			requests := 0
+			api := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				requests++
+				writer.Header().Set("Content-Type", "application/json")
+				writer.WriteHeader(test.status)
+				_, _ = writer.Write([]byte(test.body))
+			}))
+			defer api.Close()
+			server, resourceType := credentialProtocolServer(t, api.URL)
+			ctx := context.Background()
+			name := "terminal"
+			info := credentialProtocolStringMap(map[string]string{"env": "old"})
+			values := credentialProtocolStringMap(map[string]string{"api_key": "secret"})
+			prior := credentialProtocolDynamicValue(t, resourceType, credentialProtocolValue(resourceType, name, name, nil, info, values, nil, nil, true, "credential_values"))
+
+			readResponse, err := server.ReadResource(ctx, &tfprotov6.ReadResourceRequest{TypeName: "litellm_credential", CurrentState: prior})
+			if err != nil || !accessGroupProtocolDiagnosticsHaveError(readResponse.Diagnostics) || readResponse.NewState == nil || requests != 1 {
+				t.Fatalf("terminal sampling did not stop and retain state: err=%v diagnostics=%v requests=%d state=%v", err, readResponse.Diagnostics, requests, readResponse.NewState)
+			}
+			retained, unmarshalErr := readResponse.NewState.Unmarshal(resourceType)
+			if unmarshalErr != nil || retained.IsNull() {
+				t.Fatalf("terminal probe removed state: value=%v err=%v", retained, unmarshalErr)
+			}
+		})
+	}
+}
+
+func TestCredentialSamplingRetriesTransientWithoutCountingItAsAbsence(t *testing.T) {
+	requests := 0
+	fresh := 0
+	api := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		requests++
+		if request.Close {
+			fresh++
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		if requests == 2 {
+			http.Error(writer, `{"detail":"busy"}`, http.StatusServiceUnavailable)
+			return
+		}
+		http.NotFound(writer, request)
+	}))
+	defer api.Close()
+
+	sample, err := probeCredentialEndpoint(context.Background(), &Client{APIBase: api.URL, APIKey: "admin", HTTPClient: api.Client()}, credentialByNamePath("transient"), "transient")
+	if err != nil || !sample.authoritativeAbsence() || sample.transient != 1 || requests != 6 || fresh != requests {
+		t.Fatalf("transient counted as absence or was not retried: sample=%#v err=%v requests=%d fresh=%d", sample, err, requests, fresh)
+	}
+}
+
 type credentialPrivateReaderStub struct {
 	encoded []byte
 	diags   diag.Diagnostics
@@ -1393,7 +1720,7 @@ func TestCredentialAmbiguousCreateRecoveryIsBoundedAndRetainsPartialIdentity(t *
 	plan := credentialTestPlan(t, schema, model)
 	response := &resource.CreateResponse{State: tfsdk.State{Raw: plan.Raw, Schema: schema}}
 	(&CredentialResource{client: &Client{APIBase: server.URL, APIKey: "admin", HTTPClient: server.Client()}}).Create(context.Background(), resource.CreateRequest{Plan: plan}, response)
-	if !response.Diagnostics.HasError() || posts != 1 || gets != 1+credentialPostflightAttempts {
+	if !response.Diagnostics.HasError() || posts != 1 || gets != 2*credentialProbeSampleSize {
 		t.Fatalf("bounded recovery diagnostics=%v posts=%d gets=%d", response.Diagnostics, posts, gets)
 	}
 	var partial CredentialResourceModel

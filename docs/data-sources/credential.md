@@ -12,6 +12,8 @@ data "litellm_credential" "existing" {
 
 This uses the exact `GET /credentials/by_name/{credential_name:path}` route. Names are safely escaped, including slash, percent, spaces, Unicode, query/fragment characters, and traversal-like text.
 
+LiteLLM v1.98 reads this route from the process-local `litellm.credential_list`, so workers can temporarily disagree after a mutation. The provider samples four conclusive responses over fresh connections (with at most eight total probes when transient failures require retries). Mixed present/404 responses return the matching data with a worker-convergence warning; different present versions fail instead of selecting one arbitrarily. Four consecutive exact 404 responses are required to report absence. Fresh connections avoid keepalive pinning but cannot guarantee that a load balancer selects every worker, so this is bounded fail-safe sampling rather than a fixed convergence promise. Reloading or restarting workers may be required.
+
 ## Lookup by model ID
 
 ```hcl
@@ -22,7 +24,7 @@ data "litellm_credential" "deployment" {
 }
 ```
 
-When `model_id` is non-empty, the provider uses LiteLLM v1.98's exact `GET /credentials/by_model/{model_id}` route. It is not an ignored query parameter on the by-name route. The route declares one ordinary path segment rather than a path-capable parameter, so this data source safely rejects model IDs containing `/`. This restriction applies only to the data-source route; the resource may send slash-containing `model_id` values in its JSON create body.
+When `model_id` is non-empty, the provider uses LiteLLM v1.98's exact `GET /credentials/by_model/{model_id}` route. It is not an ignored query parameter on the by-name route. The same bounded fresh-connection sampling is used for this credential data source. The route declares one ordinary path segment rather than a path-capable parameter, so this data source safely rejects model IDs containing `/`. This restriction applies only to the data-source route; the resource may send slash-containing `model_id` values in its JSON create body.
 
 LiteLLM's by-model response synthesizes `credential_name`. Terraform preserves the configured `credential_name` as both `id` and the public stable value.
 
