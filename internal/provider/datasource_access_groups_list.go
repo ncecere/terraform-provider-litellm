@@ -3,8 +3,8 @@ package provider
 import (
 	"context"
 	"fmt"
+	"sort"
 
-	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -43,7 +43,7 @@ func (d *AccessGroupsListDataSource) Schema(ctx context.Context, req datasource.
 				Computed:    true,
 			},
 			"access_groups": schema.ListNestedAttribute{
-				Description: "List of access groups.",
+				Description: "List of access groups sorted by name.",
 				Computed:    true,
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: map[string]schema.Attribute{
@@ -52,7 +52,7 @@ func (d *AccessGroupsListDataSource) Schema(ctx context.Context, req datasource.
 							Computed:    true,
 						},
 						"model_names": schema.ListAttribute{
-							Description: "List of model names in this access group.",
+							Description: "Sorted, deduplicated list of model names in this access group.",
 							Computed:    true,
 							ElementType: types.StringType,
 						},
@@ -120,19 +120,18 @@ func (d *AccessGroupsListDataSource) Read(ctx context.Context, req datasource.Re
 			item.AccessGroup = types.StringValue(accessGroup)
 		}
 
-		var modelsList []attr.Value
-		if modelNames, ok := groupMap["model_names"].([]interface{}); ok {
-			modelsList = make([]attr.Value, 0, len(modelNames))
-			for _, m := range modelNames {
-				if str, ok := m.(string); ok {
-					modelsList = append(modelsList, types.StringValue(str))
-				}
-			}
+		modelNames, err := reconcileAccessGroupModelNames(ctx, types.ListNull(types.StringType), groupMap["model_names"])
+		if err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", fmt.Sprintf("Unable to decode model_names for access group %q: %s", item.AccessGroup.ValueString(), err))
+			return
 		}
-		item.ModelNames, _ = types.ListValue(types.StringType, modelsList)
+		item.ModelNames = modelNames
 
 		accessGroups = append(accessGroups, item)
 	}
+	sort.Slice(accessGroups, func(i, j int) bool {
+		return accessGroups[i].AccessGroup.ValueString() < accessGroups[j].AccessGroup.ValueString()
+	})
 
 	data.ID = types.StringValue("access_groups")
 	data.AccessGroups = accessGroups
