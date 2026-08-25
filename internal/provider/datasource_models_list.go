@@ -2,7 +2,10 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/url"
+	"sort"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
@@ -44,7 +47,7 @@ func (d *ModelsListDataSource) Schema(ctx context.Context, req datasource.Schema
 		Description: "Retrieves a list of all LiteLLM models.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
-				Description: "Placeholder identifier.",
+				Description: "Stable historical identifier for this data source.",
 				Computed:    true,
 			},
 			"team_id": schema.StringAttribute{
@@ -116,33 +119,27 @@ func (d *ModelsListDataSource) Read(ctx context.Context, req datasource.ReadRequ
 		return
 	}
 
-	endpoint := "/model/info"
-	if !data.TeamID.IsNull() && data.TeamID.ValueString() != "" {
-		endpoint = fmt.Sprintf("/model/info?team_id=%s", data.TeamID.ValueString())
-	}
+	filters := modelListFilters(data.TeamID)
+	endpoint := endpointWithQuery("/model/info", filters)
 
-	var result map[string]interface{}
-	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to list models: %s", err))
+	var rawResult json.RawMessage
+	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &rawResult); err != nil {
+		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to list models: %s", safeListDiagnostic(err, filters)))
+		return
+	}
+	modelsData, err := decodeEnvelopeListOrObject(rawResult, "/model/info", "data")
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
 		return
 	}
 
-	// Set placeholder ID
 	data.ID = types.StringValue("models")
-
-	// Parse the response - it may be in "data" array
-	var modelsData []interface{}
-	if dataArr, ok := result["data"].([]interface{}); ok {
-		modelsData = dataArr
-	} else if models, ok := result["models"].([]interface{}); ok {
-		modelsData = models
-	}
-
 	data.Models = make([]ModelListItem, 0, len(modelsData))
-	for _, m := range modelsData {
-		modelMap, ok := m.(map[string]interface{})
-		if !ok {
-			continue
+	for _, rawModel := range modelsData {
+		modelMap, err := decodeListObject(rawModel, "/model/info", "model item")
+		if err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", err.Error())
+			return
 		}
 
 		item := ModelListItem{}
@@ -186,8 +183,29 @@ func (d *ModelsListDataSource) Read(ctx context.Context, req datasource.ReadRequ
 			}
 		}
 
+		if item.ID.ValueString() == "" && item.ModelName.ValueString() == "" {
+			resp.Diagnostics.AddError("Invalid API Response", "/model/info returned a model object without an id or model_name")
+			return
+		}
 		data.Models = append(data.Models, item)
 	}
+	sort.SliceStable(data.Models, func(i, j int) bool {
+		left := []string{data.Models[i].ID.ValueString(), data.Models[i].ModelName.ValueString(), data.Models[i].TeamID.ValueString()}
+		right := []string{data.Models[j].ID.ValueString(), data.Models[j].ModelName.ValueString(), data.Models[j].TeamID.ValueString()}
+		for index := range left {
+			if left[index] != right[index] {
+				return left[index] < right[index]
+			}
+		}
+		return false
+	})
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+}
+
+func modelListFilters(teamID types.String) url.Values {
+	filters := url.Values{}
+	// LiteLLM v1.98 intentionally uses camel-case teamId on /model/info.
+	addKnownStringFilter(filters, "teamId", teamID)
+	return filters
 }

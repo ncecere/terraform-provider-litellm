@@ -40,3 +40,8 @@ This data source has no required arguments.
   * `rpm_limit` - Requests per minute limit.
   * `budget_duration` - Budget reset duration.
   * `model_max_budget` - JSON string of per-model budget limits.
+  * `budget_reset_at` - Timestamp when the budget will next reset.
+  * `created_at` - Timestamp when the budget was created.
+  * `updated_at` - Timestamp when the budget was last updated.
+
+Results are sorted deterministically by budget ID.

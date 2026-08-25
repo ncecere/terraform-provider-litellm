@@ -2,7 +2,10 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/url"
+	"sort"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
@@ -44,7 +47,7 @@ func (d *OrganizationsListDataSource) Schema(ctx context.Context, req datasource
 		Description: "Retrieves a list of LiteLLM organizations.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
-				Description: "Placeholder identifier.",
+				Description: "Stable historical identifier for this data source.",
 				Computed:    true,
 			},
 			"org_alias": schema.StringAttribute{
@@ -81,7 +84,7 @@ func (d *OrganizationsListDataSource) Schema(ctx context.Context, req datasource
 							Computed:    true,
 						},
 						"blocked": schema.BoolAttribute{
-							Description: "Flag indicating if the org is blocked.",
+							Description: "Compatibility field. LiteLLM v1.98 does not return organization-level blocked state, so this is false.",
 							Computed:    true,
 						},
 					},
@@ -116,38 +119,27 @@ func (d *OrganizationsListDataSource) Read(ctx context.Context, req datasource.R
 		return
 	}
 
-	endpoint := "/organization/list"
-	if !data.OrgAlias.IsNull() && data.OrgAlias.ValueString() != "" {
-		endpoint = fmt.Sprintf("/organization/list?org_alias=%s", data.OrgAlias.ValueString())
-	}
+	filters := organizationListFilters(data.OrgAlias)
+	endpoint := endpointWithQuery("/organization/list", filters)
 
-	var rawResult interface{}
+	var rawResult json.RawMessage
 	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &rawResult); err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to list organizations: %s", err))
+		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to list organizations: %s", safeListDiagnostic(err, filters)))
+		return
+	}
+	orgsData, err := decodeTopLevelList(rawResult, "/organization/list")
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
 		return
 	}
 
-	// Set placeholder ID
 	data.ID = types.StringValue("organizations")
-
-	// Parse the response
-	var orgsData []interface{}
-	switch result := rawResult.(type) {
-	case []interface{}:
-		orgsData = result
-	case map[string]interface{}:
-		if orgs, ok := result["organizations"].([]interface{}); ok {
-			orgsData = orgs
-		} else if dataArr, ok := result["data"].([]interface{}); ok {
-			orgsData = dataArr
-		}
-	}
-
 	data.Organizations = make([]OrganizationListItem, 0, len(orgsData))
-	for _, o := range orgsData {
-		orgMap, ok := o.(map[string]interface{})
-		if !ok {
-			continue
+	for _, rawOrganization := range orgsData {
+		orgMap, err := decodeListObject(rawOrganization, "/organization/list", "organization item")
+		if err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", err.Error())
+			return
 		}
 
 		item := OrganizationListItem{}
@@ -158,16 +150,17 @@ func (d *OrganizationsListDataSource) Read(ctx context.Context, req datasource.R
 		if alias, ok := orgMap["organization_alias"].(string); ok {
 			item.OrganizationAlias = types.StringValue(alias)
 		}
-		if maxBudget, ok := orgMap["max_budget"].(float64); ok {
+		budgetMap := nestedListObject(orgMap, "litellm_budget_table")
+		if maxBudget, ok := budgetMap["max_budget"].(float64); ok {
 			item.MaxBudget = types.Float64Value(maxBudget)
 		}
 		if spend, ok := orgMap["spend"].(float64); ok {
 			item.Spend = types.Float64Value(spend)
 		}
-		if tpmLimit, ok := orgMap["tpm_limit"].(float64); ok {
+		if tpmLimit, ok := budgetMap["tpm_limit"].(float64); ok {
 			item.TPMLimit = types.Int64Value(int64(tpmLimit))
 		}
-		if rpmLimit, ok := orgMap["rpm_limit"].(float64); ok {
+		if rpmLimit, ok := budgetMap["rpm_limit"].(float64); ok {
 			item.RPMLimit = types.Int64Value(int64(rpmLimit))
 		}
 		if blocked, ok := orgMap["blocked"].(bool); ok {
@@ -176,8 +169,21 @@ func (d *OrganizationsListDataSource) Read(ctx context.Context, req datasource.R
 			item.Blocked = types.BoolValue(false)
 		}
 
+		if item.OrganizationID.ValueString() == "" {
+			resp.Diagnostics.AddError("Invalid API Response", "/organization/list returned an organization object without organization_id")
+			return
+		}
 		data.Organizations = append(data.Organizations, item)
 	}
+	sort.SliceStable(data.Organizations, func(i, j int) bool {
+		return data.Organizations[i].OrganizationID.ValueString() < data.Organizations[j].OrganizationID.ValueString()
+	})
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+}
+
+func organizationListFilters(orgAlias types.String) url.Values {
+	filters := url.Values{}
+	addKnownStringFilter(filters, "org_alias", orgAlias)
+	return filters
 }

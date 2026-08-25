@@ -2,7 +2,10 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/url"
+	"sort"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
@@ -45,7 +48,7 @@ func (d *TeamsListDataSource) Schema(ctx context.Context, req datasource.SchemaR
 		Description: "Retrieves a list of LiteLLM teams.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
-				Description: "Placeholder identifier.",
+				Description: "Stable historical identifier for this data source.",
 				Computed:    true,
 			},
 			"organization_id": schema.StringAttribute{
@@ -121,38 +124,27 @@ func (d *TeamsListDataSource) Read(ctx context.Context, req datasource.ReadReque
 		return
 	}
 
-	endpoint := "/team/list"
-	if !data.OrganizationID.IsNull() && data.OrganizationID.ValueString() != "" {
-		endpoint = fmt.Sprintf("/team/list?organization_id=%s", data.OrganizationID.ValueString())
-	}
+	filters := teamListFilters(data.OrganizationID)
+	endpoint := endpointWithQuery("/team/list", filters)
 
-	var rawResult interface{}
+	var rawResult json.RawMessage
 	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &rawResult); err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to list teams: %s", err))
+		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to list teams: %s", safeListDiagnostic(err, filters)))
+		return
+	}
+	teamsData, err := decodeTopLevelList(rawResult, "/team/list")
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
 		return
 	}
 
-	// Set placeholder ID
 	data.ID = types.StringValue("teams")
-
-	// Parse the response
-	var teamsData []interface{}
-	switch result := rawResult.(type) {
-	case []interface{}:
-		teamsData = result
-	case map[string]interface{}:
-		if teams, ok := result["teams"].([]interface{}); ok {
-			teamsData = teams
-		} else if dataArr, ok := result["data"].([]interface{}); ok {
-			teamsData = dataArr
-		}
-	}
-
 	data.Teams = make([]TeamListItem, 0, len(teamsData))
-	for _, t := range teamsData {
-		teamMap, ok := t.(map[string]interface{})
-		if !ok {
-			continue
+	for _, rawTeam := range teamsData {
+		teamMap, err := decodeListObject(rawTeam, "/team/list", "team item")
+		if err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", err.Error())
+			return
 		}
 
 		item := TeamListItem{}
@@ -184,8 +176,21 @@ func (d *TeamsListDataSource) Read(ctx context.Context, req datasource.ReadReque
 			item.Blocked = types.BoolValue(false)
 		}
 
+		if item.TeamID.ValueString() == "" {
+			resp.Diagnostics.AddError("Invalid API Response", "/team/list returned a team object without team_id")
+			return
+		}
 		data.Teams = append(data.Teams, item)
 	}
+	sort.SliceStable(data.Teams, func(i, j int) bool {
+		return data.Teams[i].TeamID.ValueString() < data.Teams[j].TeamID.ValueString()
+	})
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+}
+
+func teamListFilters(organizationID types.String) url.Values {
+	filters := url.Values{}
+	addKnownStringFilter(filters, "organization_id", organizationID)
+	return filters
 }

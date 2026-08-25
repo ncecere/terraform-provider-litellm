@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
@@ -106,40 +107,27 @@ func (d *SearchToolsListDataSource) Read(ctx context.Context, req datasource.Rea
 		return
 	}
 
-	endpoint := "/search_tools/list"
-
-	var result []interface{}
-	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
-		// Try parsing as object with data field
-		var objResult map[string]interface{}
-		if err2 := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &objResult); err2 != nil {
-			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to list search tools: %s", err))
-			return
-		}
-		if dataArr, ok := objResult["data"].([]interface{}); ok {
-			result = dataArr
-		} else if toolsArr, ok := objResult["search_tools"].([]interface{}); ok {
-			result = toolsArr
-		}
+	const endpoint = "/search_tools/list"
+	result, err := fetchEnvelopeListObjects(ctx, d.client, endpoint, "search_tools", "search tool item")
+	if err != nil {
+		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to list search tools: %s", err))
+		return
 	}
 
-	// Set placeholder ID
 	data.ID = types.StringValue("search_tools")
-
 	data.SearchTools = make([]SearchToolListItem, 0, len(result))
-	for _, s := range result {
-		toolMap, ok := s.(map[string]interface{})
-		if !ok {
-			continue
-		}
+	for _, toolMap := range result {
 
 		item := SearchToolListItem{}
 
 		if searchToolID, ok := toolMap["search_tool_id"].(string); ok {
 			item.SearchToolID = types.StringValue(searchToolID)
 		}
-		if searchToolName, ok := toolMap["search_tool_name"].(string); ok {
+		if searchToolName, ok := toolMap["search_tool_name"].(string); ok && searchToolName != "" {
 			item.SearchToolName = types.StringValue(searchToolName)
+		} else {
+			resp.Diagnostics.AddError("Invalid API Response", "/search_tools/list returned a search tool object without search_tool_name")
+			return
 		}
 
 		// Handle litellm_params
@@ -160,6 +148,14 @@ func (d *SearchToolsListDataSource) Read(ctx context.Context, req datasource.Rea
 
 		data.SearchTools = append(data.SearchTools, item)
 	}
+	sort.SliceStable(data.SearchTools, func(i, j int) bool {
+		leftID := data.SearchTools[i].SearchToolID.ValueString()
+		rightID := data.SearchTools[j].SearchToolID.ValueString()
+		if leftID != rightID {
+			return leftID < rightID
+		}
+		return data.SearchTools[i].SearchToolName.ValueString() < data.SearchTools[j].SearchToolName.ValueString()
+	})
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }

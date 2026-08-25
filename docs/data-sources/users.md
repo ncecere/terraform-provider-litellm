@@ -30,7 +30,7 @@ output "admin_emails" {
 
 ## Attribute Reference
 
-* `id` - Placeholder identifier.
+* `id` - Stable historical identifier (`users`), unchanged by filters.
 * `users` - List of user objects, each containing:
   * `user_id` - The unique identifier.
   * `user_email` - Email address.
@@ -40,3 +40,9 @@ output "admin_emails" {
   * `spend` - Current spend.
   * `tpm_limit` - Tokens per minute limit.
   * `rpm_limit` - Requests per minute limit.
+
+## Notes
+
+- The Terraform argument remains `user_role` for compatibility; the provider sends LiteLLM v1.98's canonical `role` query parameter.
+- All `/user/list` pages are retrieved at LiteLLM's maximum page size and sorted deterministically by user ID.
+- Concurrent count/page shifts restart the bounded listing at page 1. Persistent inconsistency, repeated pages/items, malformed data, truncation, and over-limit pagination fail rather than returning a partial inventory.

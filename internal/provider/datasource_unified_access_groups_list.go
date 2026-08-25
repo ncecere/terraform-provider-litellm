@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
@@ -55,8 +56,8 @@ func (d *UnifiedAccessGroupsListDataSource) Configure(ctx context.Context, req d
 }
 
 func (d *UnifiedAccessGroupsListDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
-	var result []map[string]interface{}
-	if err := d.client.DoRequestWithResponse(ctx, "GET", "/v1/access_group", nil, &result); err != nil {
+	result, err := fetchTopLevelListObjects(ctx, d.client, "/v1/access_group", "unified access group item")
+	if err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to list unified access groups: %s", err))
 		return
 	}
@@ -67,6 +68,10 @@ func (d *UnifiedAccessGroupsListDataSource) Read(ctx context.Context, req dataso
 	for _, item := range result {
 		resourceData := UnifiedAccessGroupResourceModel{}
 		readUnifiedAccessGroupResponse(ctx, item, &resourceData)
+		if resourceData.AccessGroupID.ValueString() == "" {
+			resp.Diagnostics.AddError("Invalid API Response", "/v1/access_group returned an access group object without access_group_id")
+			return
+		}
 		data.AccessGroups = append(data.AccessGroups, UnifiedAccessGroupDataSourceModel{
 			ID:                 resourceData.ID,
 			AccessGroupID:      resourceData.AccessGroupID,
@@ -83,6 +88,9 @@ func (d *UnifiedAccessGroupsListDataSource) Read(ctx context.Context, req dataso
 			UpdatedBy:          resourceData.UpdatedBy,
 		})
 	}
+	sort.SliceStable(data.AccessGroups, func(i, j int) bool {
+		return data.AccessGroups[i].AccessGroupID.ValueString() < data.AccessGroups[j].AccessGroupID.ValueString()
+	})
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
