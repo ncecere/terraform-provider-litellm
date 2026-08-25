@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
@@ -11,6 +12,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -18,6 +20,8 @@ import (
 
 var _ resource.Resource = &PromptResource{}
 var _ resource.ResourceWithImportState = &PromptResource{}
+
+const promptImportedPrivateKey = "prompt_imported_v1"
 
 func NewPromptResource() resource.Resource {
 	return &PromptResource{}
@@ -38,6 +42,10 @@ type PromptResourceModel struct {
 	IgnorePromptManagerOptionalParams types.Bool   `tfsdk:"ignore_prompt_manager_optional_params"`
 	DotpromptContent                  types.String `tfsdk:"dotprompt_content"`
 	PromptType                        types.String `tfsdk:"prompt_type"`
+	Environment                       types.String `tfsdk:"environment"`
+	Version                           types.Int64  `tfsdk:"version"`
+	CreatedAt                         types.String `tfsdk:"created_at"`
+	UpdatedAt                         types.String `tfsdk:"updated_at"`
 }
 
 func (r *PromptResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -58,6 +66,18 @@ func (r *PromptResource) Schema(ctx context.Context, req resource.SchemaRequest,
 			"prompt_id": schema.StringAttribute{
 				Description: "The unique prompt ID.",
 				Required:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
+			"environment": schema.StringAttribute{
+				Description: "Environment-scoped prompt identity. Defaults to development; changing it creates a separately owned logical prompt.",
+				Optional:    true,
+				Computed:    true,
+				Default:     stringdefault.StaticString(defaultPromptEnvironment),
+				Validators: []validator.String{
+					stringvalidator.LengthAtLeast(1),
+				},
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
@@ -99,6 +119,18 @@ func (r *PromptResource) Schema(ctx context.Context, req resource.SchemaRequest,
 					stringvalidator.OneOf("config", "db"),
 				},
 			},
+			"version": schema.Int64Attribute{
+				Description: "Latest version currently owned in this environment. Updates append a new version.",
+				Computed:    true,
+			},
+			"created_at": schema.StringAttribute{
+				Description: "Creation timestamp of the selected latest version.",
+				Computed:    true,
+			},
+			"updated_at": schema.StringAttribute{
+				Description: "Last-update timestamp of the selected latest version.",
+				Computed:    true,
+			},
 		},
 	}
 }
@@ -128,6 +160,19 @@ func (r *PromptResource) Create(ctx context.Context, req resource.CreateRequest,
 		return
 	}
 
+	if !data.PromptType.IsNull() && !data.PromptType.IsUnknown() && data.PromptType.ValueString() == "config" {
+		resp.Diagnostics.AddError("Config Prompt Is Read-Only", "LiteLLM v1.98 cannot update or delete config prompts. Import them for read-only visibility, or use prompt_type = \"db\" for managed resources.")
+		return
+	}
+	exists, existenceErr := promptScopedExists(ctx, r.client, data.PromptID.ValueString(), data.Environment.ValueString())
+	if existenceErr != nil {
+		resp.Diagnostics.AddError("Prompt Existence Not Confirmed", fmt.Sprintf("Unable to verify that the scoped prompt identity is available: %s", existenceErr))
+		return
+	}
+	if exists {
+		resp.Diagnostics.AddError("Prompt Already Exists", fmt.Sprintf("A prompt with this ID and environment already exists. Import it with %q instead of creating a second owner.", promptImportID(data.PromptID.ValueString(), promptEnvironment(data.Environment.ValueString()))))
+		return
+	}
 	promptReq, err := r.buildPromptRequest(ctx, &data)
 	if err != nil {
 		resp.Diagnostics.AddError("Invalid Prompt JSON", err.Error())
@@ -142,9 +187,13 @@ func (r *PromptResource) Create(ctx context.Context, req resource.CreateRequest,
 
 	data.ID = data.PromptID
 
-	// Read back for full state
-	if err := r.readPromptWithRetry(ctx, &data, 8); err != nil {
-		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Prompt created but failed to read back: %s", err))
+	if err := r.readPromptWithRetry(ctx, &data, 8, false); err != nil {
+		data.Version = types.Int64Null()
+		data.CreatedAt = types.StringNull()
+		data.UpdatedAt = types.StringNull()
+		resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+		resp.Diagnostics.AddError("Prompt Create Not Confirmed", fmt.Sprintf("LiteLLM accepted the prompt create, but scoped read-back failed: %s", err))
+		return
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
@@ -158,8 +207,14 @@ func (r *PromptResource) Read(ctx context.Context, req resource.ReadRequest, res
 		return
 	}
 
-	if err := r.readPromptWithRetry(ctx, &data, 8); err != nil {
-		if IsNotFoundError(err) {
+	importedMarker, privateDiags := req.Private.GetKey(ctx, promptImportedPrivateKey)
+	resp.Diagnostics.Append(privateDiags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	imported := string(importedMarker) == "true"
+	if err := r.readPromptWithRetry(ctx, &data, 8, imported); err != nil {
+		if isPromptAbsentError(err) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
@@ -168,6 +223,9 @@ func (r *PromptResource) Read(ctx context.Context, req resource.ReadRequest, res
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	if imported && !resp.Diagnostics.HasError() && resp.Private != nil {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, promptImportedPrivateKey, nil)...)
+	}
 }
 
 func (r *PromptResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
@@ -187,22 +245,49 @@ func (r *PromptResource) Update(ctx context.Context, req resource.UpdateRequest,
 	// Preserve IDs
 	data.ID = state.ID
 	data.PromptID = state.PromptID
+	if (!state.PromptType.IsNull() && !state.PromptType.IsUnknown() && state.PromptType.ValueString() == "config") ||
+		(!data.PromptType.IsNull() && !data.PromptType.IsUnknown() && data.PromptType.ValueString() == "config") {
+		resp.Diagnostics.AddError("Config Prompt Is Read-Only", "LiteLLM v1.98 cannot update config prompts. Keep imported config prompts unchanged, or manage a database prompt instead.")
+		return
+	}
 
 	promptReq, err := r.buildPromptRequest(ctx, &data)
 	if err != nil {
 		resp.Diagnostics.AddError("Invalid Prompt JSON", err.Error())
 		return
 	}
+	var currentRaw map[string]interface{}
+	if err := r.client.DoRequestWithResponse(ctx, "GET", promptEndpoint(data.PromptID.ValueString(), data.Environment.ValueString(), nil), nil, &currentRaw); err != nil {
+		resp.Diagnostics.AddError("Prompt Update Not Safe", fmt.Sprintf("Unable to verify the complete current prompt before versioning: %s", err))
+		return
+	}
+	current, err := promptObject(currentRaw, true, data.PromptID.ValueString(), data.Environment.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError("Prompt Update Not Safe", err.Error())
+		return
+	}
+	if !state.Version.IsNull() && !state.Version.IsUnknown() && (!current.HasVersion || current.Version != state.Version.ValueInt64()) {
+		resp.Diagnostics.AddError("Prompt Update Not Safe", "The latest scoped prompt version changed after planning; refresh and retry.")
+		return
+	}
+	if err := validateMutablePromptInfo(current.Info); err != nil {
+		resp.Diagnostics.AddError("Config Prompt Is Read-Only", err.Error())
+		return
+	}
+	if err := validatePromptUpdateCoverage(current.Params, &data, &state); err != nil {
+		resp.Diagnostics.AddError("Prompt Update Not Safe", err.Error())
+		return
+	}
 
-	endpoint := fmt.Sprintf("/prompts/%s", data.PromptID.ValueString())
+	endpoint := promptPath(data.PromptID.ValueString(), nil)
 	if err := r.client.DoRequestWithResponse(ctx, "PUT", endpoint, promptReq, nil); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to update prompt: %s", err))
 		return
 	}
 
-	// Read back for full state
-	if err := r.readPromptWithRetry(ctx, &data, 8); err != nil {
-		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Prompt updated but failed to read back: %s", err))
+	if err := r.readPromptWithRetry(ctx, &data, 8, false); err != nil {
+		resp.Diagnostics.AddError("Prompt Update Not Confirmed", fmt.Sprintf("LiteLLM accepted the prompt update, but scoped read-back failed: %s", err))
+		return
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
@@ -216,18 +301,102 @@ func (r *PromptResource) Delete(ctx context.Context, req resource.DeleteRequest,
 		return
 	}
 
-	endpoint := fmt.Sprintf("/prompts/%s", data.PromptID.ValueString())
-	if err := r.client.DoRequestWithResponse(ctx, "DELETE", endpoint, nil, nil); err != nil {
-		if !IsNotFoundError(err) {
-			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to delete prompt: %s", err))
-			return
+	endpoint := promptEndpoint(data.PromptID.ValueString(), data.Environment.ValueString(), nil)
+	deleteErr := r.client.DoRequestWithResponse(ctx, "DELETE", endpoint, nil, nil)
+	// DELETE can return 400 for undeletable config prompts and 404 from a stale
+	// process-local registry even while scoped DB rows still exist. Never remove
+	// state based on the DELETE status alone; the explicit-environment info read
+	// is the authoritative absence check.
+	var probe map[string]interface{}
+	probeErr := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &probe)
+	if deleteErr != nil && IsAPIErrorStatus(deleteErr, http.StatusNotFound) && probeErr == nil {
+		// A v1.98 worker can lose its process-local registry key while the scoped
+		// DB history still exists. Reinitialize that exact latest DB version with
+		// a no-content-change PATCH, retry DELETE once, then prove absence again.
+		observed, decodeErr := promptObject(probe, true, data.PromptID.ValueString(), data.Environment.ValueString())
+		if decodeErr == nil && validateMutablePromptInfo(observed.Info) == nil {
+			patch := map[string]interface{}{"prompt_info": observed.Info}
+			if patchErr := r.client.DoRequestWithResponse(ctx, "PATCH", endpoint, patch, nil); patchErr == nil {
+				deleteErr = r.client.DoRequestWithResponse(ctx, "DELETE", endpoint, nil, nil)
+				probe = nil
+				probeErr = r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &probe)
+			}
 		}
 	}
+	if isPromptAbsentError(probeErr) {
+		if deleteErr != nil {
+			resp.Diagnostics.AddWarning("Prompt Delete Recovered", "LiteLLM returned an error after deletion, but a scoped read confirmed this prompt environment is absent.")
+		}
+		return
+	}
+	if deleteErr != nil {
+		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to delete prompt: %s", deleteErr))
+		return
+	}
+	if probeErr != nil {
+		resp.Diagnostics.AddError("Prompt Delete Not Confirmed", fmt.Sprintf("LiteLLM accepted the scoped delete, but absence could not be confirmed: %s", probeErr))
+		return
+	}
+	resp.Diagnostics.AddError("Prompt Delete Not Confirmed", "LiteLLM accepted the scoped delete, but the prompt environment still exists.")
 }
 
 func (r *PromptResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
-	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("prompt_id"), req.ID)...)
+	promptID, environment, err := parsePromptImportID(req.ID)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Prompt Import ID", err.Error())
+		return
+	}
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), promptID)...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("prompt_id"), promptID)...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("environment"), environment)...)
+	if resp.Private != nil {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, promptImportedPrivateKey, []byte("true"))...)
+	}
+}
+
+func validateMutablePromptInfo(info map[string]interface{}) error {
+	value, exists := info["prompt_type"]
+	if !exists || value == nil {
+		return fmt.Errorf("prompt response omitted required prompt_info.prompt_type")
+	}
+	promptType, ok := value.(string)
+	if !ok {
+		return fmt.Errorf("prompt response field %q must be a string", "prompt_info.prompt_type")
+	}
+	switch promptType {
+	case "db":
+		return nil
+	case "config":
+		return fmt.Errorf("LiteLLM reports this as a config prompt, which v1.98 cannot update or delete through the management API")
+	default:
+		return fmt.Errorf("prompt response field %q returned unsupported value %q", "prompt_info.prompt_type", promptType)
+	}
+}
+
+func validatePromptUpdateCoverage(remote map[string]interface{}, plan, prior *PromptResourceModel) error {
+	modeled := map[string]struct{}{
+		"prompt_integration":                    {},
+		"api_base":                              {},
+		"api_key":                               {},
+		"provider_specific_query_params":        {},
+		"ignore_prompt_manager_model":           {},
+		"ignore_prompt_manager_optional_params": {},
+		"dotprompt_content":                     {},
+	}
+	for key, value := range remote {
+		if value == nil {
+			continue
+		}
+		if _, supported := modeled[key]; !supported {
+			return fmt.Errorf("the current prompt contains unmodeled litellm_params field %q; refusing a full-version update that could discard it", key)
+		}
+	}
+	if value, exists := remote["api_key"]; exists && value != nil &&
+		(plan.APIKey.IsNull() || plan.APIKey.IsUnknown() || plan.APIKey.ValueString() == "") &&
+		(prior.APIKey.IsNull() || prior.APIKey.IsUnknown() || prior.APIKey.ValueString() == "") {
+		return fmt.Errorf("the current prompt contains an API credential not owned by Terraform; configure api_key before updating")
+	}
+	return nil
 }
 
 func (r *PromptResource) buildPromptRequest(ctx context.Context, data *PromptResourceModel) (map[string]interface{}, error) {
@@ -266,27 +435,30 @@ func (r *PromptResource) buildPromptRequest(ctx context.Context, data *PromptRes
 		"litellm_params": litellmParams,
 	}
 
-	if !data.PromptType.IsNull() && !data.PromptType.IsUnknown() && data.PromptType.ValueString() != "" {
-		promptReq["prompt_info"] = map[string]interface{}{
-			"prompt_type": data.PromptType.ValueString(),
-		}
+	promptInfo := map[string]interface{}{
+		"environment": promptEnvironment(data.Environment.ValueString()),
+		"prompt_type": "db",
 	}
+	if !data.PromptType.IsNull() && !data.PromptType.IsUnknown() && data.PromptType.ValueString() != "" {
+		promptInfo["prompt_type"] = data.PromptType.ValueString()
+	}
+	promptReq["prompt_info"] = promptInfo
 
 	return promptReq, nil
 }
 
-func (r *PromptResource) readPromptWithRetry(ctx context.Context, data *PromptResourceModel, maxRetries int) error {
+func (r *PromptResource) readPromptWithRetry(ctx context.Context, data *PromptResourceModel, maxRetries int, adoptImportedDefaults bool) error {
 	var err error
 	delay := 1 * time.Second
 	maxDelay := 10 * time.Second
 
 	for i := 0; i < maxRetries; i++ {
-		err = r.readPrompt(ctx, data)
+		err = r.readPrompt(ctx, data, adoptImportedDefaults)
 		if err == nil {
 			return nil
 		}
 
-		if !IsNotFoundError(err) {
+		if !isPromptAbsentError(err) {
 			return err
 		}
 
@@ -302,57 +474,117 @@ func (r *PromptResource) readPromptWithRetry(ctx context.Context, data *PromptRe
 	return err
 }
 
-func (r *PromptResource) readPrompt(ctx context.Context, data *PromptResourceModel) error {
+func promptStringFromAPI(params map[string]interface{}, field string) (types.String, error) {
+	value, exists := params[field]
+	if !exists || value == nil {
+		return types.StringNull(), nil
+	}
+	text, ok := value.(string)
+	if !ok {
+		return types.StringNull(), fmt.Errorf("prompt response field %q must be a string or null", "litellm_params."+field)
+	}
+	return types.StringValue(text), nil
+}
+
+func promptBoolFromAPI(params map[string]interface{}, field string) (types.Bool, error) {
+	value, exists := params[field]
+	if !exists || value == nil {
+		return types.BoolNull(), nil
+	}
+	boolean, ok := value.(bool)
+	if !ok {
+		return types.BoolNull(), fmt.Errorf("prompt response field %q must be a boolean or null", "litellm_params."+field)
+	}
+	return types.BoolValue(boolean), nil
+}
+
+func (r *PromptResource) readPrompt(ctx context.Context, data *PromptResourceModel, adoptImportedDefaults bool) error {
 	promptID := data.PromptID.ValueString()
 	if promptID == "" {
 		promptID = data.ID.ValueString()
 	}
-
-	endpoint := fmt.Sprintf("/prompts/%s", promptID)
+	if promptID == "" {
+		return fmt.Errorf("prompt state omitted its identity")
+	}
+	environment := promptEnvironment(data.Environment.ValueString())
+	endpoint := promptEndpoint(promptID, environment, nil)
 
 	var rawResult map[string]interface{}
 	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &rawResult); err != nil {
 		return err
 	}
-	result := parsePromptResult(rawResult)
-
-	// Update fields from response
-	if id, ok := result["prompt_id"].(string); ok {
-		data.PromptID = types.StringValue(id)
-		data.ID = types.StringValue(id)
+	observed, err := promptObject(rawResult, true, promptID, environment)
+	if err != nil {
+		return err
+	}
+	if !observed.HasVersion {
+		return fmt.Errorf("prompt response omitted required version")
+	}
+	integration, ok := observed.Params["prompt_integration"].(string)
+	if !ok || integration == "" {
+		return fmt.Errorf("prompt response omitted required litellm_params.prompt_integration")
 	}
 
-	// Handle litellm_params
-	if litellmParams, ok := result["litellm_params"].(map[string]interface{}); ok {
-		if integration, ok := litellmParams["prompt_integration"].(string); ok {
-			data.PromptIntegration = types.StringValue(integration)
+	data.ID = types.StringValue(observed.PromptID)
+	data.PromptID = types.StringValue(observed.PromptID)
+	data.Environment = types.StringValue(observed.Environment)
+	data.Version = types.Int64Value(observed.Version)
+	data.PromptIntegration = types.StringValue(integration)
+	data.CreatedAt = types.StringNull()
+	data.UpdatedAt = types.StringNull()
+	if observed.CreatedAt != nil {
+		data.CreatedAt = types.StringValue(*observed.CreatedAt)
+	}
+	if observed.UpdatedAt != nil {
+		data.UpdatedAt = types.StringValue(*observed.UpdatedAt)
+	}
+
+	data.APIBase, err = promptStringFromAPI(observed.Params, "api_base")
+	if err != nil {
+		return err
+	}
+	data.DotpromptContent, err = promptStringFromAPI(observed.Params, "dotprompt_content")
+	if err != nil {
+		return err
+	}
+	if adoptImportedDefaults || !data.IgnorePromptManagerModel.IsNull() || data.IgnorePromptManagerModel.IsUnknown() {
+		data.IgnorePromptManagerModel, err = promptBoolFromAPI(observed.Params, "ignore_prompt_manager_model")
+		if err != nil {
+			return err
 		}
-		if apiBase, ok := litellmParams["api_base"].(string); ok {
-			data.APIBase = types.StringValue(apiBase)
+	}
+	if adoptImportedDefaults || !data.IgnorePromptManagerOptionalParams.IsNull() || data.IgnorePromptManagerOptionalParams.IsUnknown() {
+		data.IgnorePromptManagerOptionalParams, err = promptBoolFromAPI(observed.Params, "ignore_prompt_manager_optional_params")
+		if err != nil {
+			return err
 		}
-		if ignoreModel, ok := litellmParams["ignore_prompt_manager_model"].(bool); ok && !data.IgnorePromptManagerModel.IsNull() {
-			data.IgnorePromptManagerModel = types.BoolValue(ignoreModel)
+	}
+	value, exists := observed.Params["provider_specific_query_params"]
+	if !exists || value == nil {
+		data.ProviderSpecificQueryParams = types.StringNull()
+	} else {
+		object, valid := value.(map[string]interface{})
+		if !valid {
+			return fmt.Errorf("prompt response field %q must be an object or null", "litellm_params.provider_specific_query_params")
 		}
-		if ignoreParams, ok := litellmParams["ignore_prompt_manager_optional_params"].(bool); ok && !data.IgnorePromptManagerOptionalParams.IsNull() {
-			data.IgnorePromptManagerOptionalParams = types.BoolValue(ignoreParams)
+		encoded, marshalErr := json.Marshal(object)
+		if marshalErr != nil {
+			return fmt.Errorf("prompt response field %q could not be encoded", "litellm_params.provider_specific_query_params")
 		}
-		if dotprompt, ok := litellmParams["dotprompt_content"].(string); ok {
-			data.DotpromptContent = types.StringValue(dotprompt)
+		if data.ProviderSpecificQueryParams.IsNull() || data.ProviderSpecificQueryParams.IsUnknown() || !jsonSemanticallyEqual(data.ProviderSpecificQueryParams.ValueString(), string(encoded)) {
+			data.ProviderSpecificQueryParams = types.StringValue(string(encoded))
 		}
-		if providerParams, ok := litellmParams["provider_specific_query_params"].(map[string]interface{}); ok {
-			if jsonBytes, err := json.Marshal(providerParams); err == nil {
-				data.ProviderSpecificQueryParams = types.StringValue(string(jsonBytes))
+	}
+	if adoptImportedDefaults || !data.PromptType.IsNull() || data.PromptType.IsUnknown() {
+		data.PromptType = types.StringNull()
+		if value, exists := observed.Info["prompt_type"]; exists && value != nil {
+			promptType, valid := value.(string)
+			if !valid {
+				return fmt.Errorf("prompt response field %q must be a string or null", "prompt_info.prompt_type")
 			}
-		}
-	}
-
-	// Handle prompt_info
-	if promptInfo, ok := result["prompt_info"].(map[string]interface{}); ok {
-		if promptType, ok := promptInfo["prompt_type"].(string); ok && !data.PromptType.IsNull() {
 			data.PromptType = types.StringValue(promptType)
 		}
 	}
-
 	return nil
 }
 

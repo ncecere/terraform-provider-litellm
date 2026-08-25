@@ -690,16 +690,20 @@ func TestReadPromptWithRetrySucceedsFirstTry(t *testing.T) {
 	t.Parallel()
 
 	server, client := jsonServer(t, map[string]interface{}{
-		"prompt_id": "prompt-1",
-		"litellm_params": map[string]interface{}{
-			"prompt_integration": "langfuse",
+		"prompt_spec": map[string]interface{}{
+			"prompt_id":   "prompt-1",
+			"environment": "development",
+			"version":     1,
+			"litellm_params": map[string]interface{}{
+				"prompt_integration": "langfuse",
+			},
 		},
 	})
 	defer server.Close()
 
 	r := &PromptResource{client: client}
 	data := &PromptResourceModel{PromptID: types.StringValue("prompt-1")}
-	if err := r.readPromptWithRetry(context.Background(), data, 3); err != nil {
+	if err := r.readPromptWithRetry(context.Background(), data, 3, false); err != nil {
 		t.Fatalf("readPromptWithRetry: %v", err)
 	}
 }

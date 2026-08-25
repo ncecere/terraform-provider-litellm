@@ -339,7 +339,7 @@ func TestBuildPromptRequest(t *testing.T) {
 		t.Errorf("ignore_prompt_manager_model = %v", params["ignore_prompt_manager_model"])
 	}
 	info, ok := req["prompt_info"].(map[string]interface{})
-	if !ok || info["prompt_type"] != "chat" {
+	if !ok || info["prompt_type"] != "chat" || info["environment"] != defaultPromptEnvironment {
 		t.Errorf("prompt_info = %#v", req["prompt_info"])
 	}
 }
