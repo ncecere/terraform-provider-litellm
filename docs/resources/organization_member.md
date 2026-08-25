@@ -33,6 +33,8 @@ resource "litellm_organization_member" "viewer" {
 
 After an email-only create, LiteLLM's resolved `user_id` is stored in state and used as the canonical membership identity.
 
+~> **LiteLLM v1.98 limitation:** The v1.98 member-add endpoint can return HTTP 500 while resolving an email-only request for an existing user. Configure the canonical `user_id` when it is known; `user_email` can remain alongside it as the fallback identity. The provider reports the failure without exposing the response body and retains any structurally confirmed membership identity for recovery.
+
 ## Argument Reference
 
 - `organization_id` - (Required, ForceNew) Organization ID.
@@ -64,3 +66,5 @@ terraform import litellm_organization_member.example '<organization_id>:<user_id
 ```
 
 Both components must be non-empty. Email-specific import syntax is not supported; resolve the user's ID first. A `user_id` itself may be an email-shaped string if that is its actual LiteLLM ID.
+
+For a no-drift canonical import, configure `organization_id` and `user_id` and omit `user_email`. The email argument is a create-time identity-resolution input and is not reconstructed from the composite import ID; adding it after import intentionally plans replacement. Under organization-admin credentials, also omit `max_budget_in_organization` unless its value is already known because LiteLLM v1.98 does not expose the nested member budget on `/organization/info`.
