@@ -250,7 +250,7 @@ func TestReadGuardrail(t *testing.T) {
 		GuardrailID: types.StringValue("g-1"),
 		DefaultOn:   types.BoolValue(false),
 	}
-	if err := r.readGuardrail(context.Background(), data); err != nil {
+	if err := r.readGuardrail(context.Background(), data, false); err != nil {
 		t.Fatalf("readGuardrail: %v", err)
 	}
 

@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -17,6 +16,8 @@ import (
 
 var _ resource.Resource = &GuardrailResource{}
 var _ resource.ResourceWithImportState = &GuardrailResource{}
+
+const guardrailImportedPrivateKey = "guardrail_imported_v1"
 
 func NewGuardrailResource() resource.Resource {
 	return &GuardrailResource{}
@@ -82,6 +83,7 @@ func (r *GuardrailResource) Schema(ctx context.Context, req resource.SchemaReque
 			"litellm_params": schema.StringAttribute{
 				Description: "JSON object string containing additional provider-specific parameters for the guardrail.",
 				Optional:    true,
+				Sensitive:   true,
 				Validators:  []validator.String{jsonShapeStringValidator{shape: '{'}},
 			},
 			"guardrail_info": schema.StringAttribute{
@@ -148,9 +150,19 @@ func (r *GuardrailResource) Create(ctx context.Context, req resource.CreateReque
 		}
 	}
 
-	// Read back for full state
-	if err := r.readGuardrail(ctx, &data); err != nil {
-		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Guardrail created but failed to read back: %s", err))
+	if data.GuardrailID.IsNull() || data.GuardrailID.IsUnknown() || data.GuardrailID.ValueString() == "" {
+		resp.Diagnostics.AddError("Invalid API Response", "LiteLLM accepted the guardrail create but did not return a recoverable guardrail_id.")
+		return
+	}
+	// Read back before committing full state; info responses apply LiteLLM's
+	// masking and are the authoritative contract for subsequent refreshes.
+	if err := r.readGuardrail(ctx, &data, false); err != nil {
+		if data.CreatedAt.IsUnknown() {
+			data.CreatedAt = types.StringNull()
+		}
+		resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+		resp.Diagnostics.AddError("Guardrail Create Not Confirmed", fmt.Sprintf("LiteLLM created the guardrail, but authoritative read-back failed: %s", err))
+		return
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
@@ -164,7 +176,13 @@ func (r *GuardrailResource) Read(ctx context.Context, req resource.ReadRequest, 
 		return
 	}
 
-	if err := r.readGuardrail(ctx, &data); err != nil {
+	importedMarker, privateDiags := req.Private.GetKey(ctx, guardrailImportedPrivateKey)
+	resp.Diagnostics.Append(privateDiags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	imported := string(importedMarker) == "true"
+	if err := r.readGuardrail(ctx, &data, imported); err != nil {
 		if IsNotFoundError(err) {
 			resp.State.RemoveResource(ctx)
 			return
@@ -174,6 +192,9 @@ func (r *GuardrailResource) Read(ctx context.Context, req resource.ReadRequest, 
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	if imported && !resp.Diagnostics.HasError() && resp.Private != nil {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, guardrailImportedPrivateKey, nil)...)
+	}
 }
 
 func (r *GuardrailResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
@@ -206,9 +227,11 @@ func (r *GuardrailResource) Update(ctx context.Context, req resource.UpdateReque
 		return
 	}
 
-	// Read back for full state
-	if err := r.readGuardrail(ctx, &data); err != nil {
-		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Guardrail updated but failed to read back: %s", err))
+	// Never publish the planned value after an unconfirmed response; retaining
+	// prior state makes a failed or partially applied update safely retryable.
+	if err := r.readGuardrail(ctx, &data, false); err != nil {
+		resp.Diagnostics.AddError("Guardrail Update Not Confirmed", fmt.Sprintf("LiteLLM accepted the guardrail update, but authoritative read-back failed: %s", err))
+		return
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
@@ -234,6 +257,9 @@ func (r *GuardrailResource) Delete(ctx context.Context, req resource.DeleteReque
 func (r *GuardrailResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("guardrail_id"), req.ID)...)
+	if resp.Private != nil {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, guardrailImportedPrivateKey, []byte("true"))...)
+	}
 }
 
 func (r *GuardrailResource) buildGuardrailRequest(ctx context.Context, data *GuardrailResourceModel) (map[string]interface{}, error) {
@@ -259,13 +285,18 @@ func (r *GuardrailResource) buildGuardrailRequest(ctx context.Context, data *Gua
 	}
 
 	// Merge additional litellm_params if provided
-	if !data.LitellmParams.IsNull() && !data.LitellmParams.IsUnknown() && data.LitellmParams.ValueString() != "" {
+	if !data.LitellmParams.IsNull() && !data.LitellmParams.IsUnknown() {
 		additionalParams, err := decodeRequestJSONObject(data.LitellmParams.ValueString(), "litellm_params")
 		if err != nil {
 			return nil, err
 		}
-		for k, v := range additionalParams {
-			litellmParams[k] = v
+		for key := range additionalParams {
+			if _, reserved := guardrailReservedParams[key]; reserved {
+				return nil, fmt.Errorf("invalid litellm_params: %q must be configured through its dedicated guardrail attribute", key)
+			}
+		}
+		for key, value := range additionalParams {
+			litellmParams[key] = value
 		}
 	}
 
@@ -279,7 +310,7 @@ func (r *GuardrailResource) buildGuardrailRequest(ctx context.Context, data *Gua
 		guardrail["guardrail_id"] = data.GuardrailID.ValueString()
 	}
 
-	if !data.GuardrailInfo.IsNull() && !data.GuardrailInfo.IsUnknown() && data.GuardrailInfo.ValueString() != "" {
+	if !data.GuardrailInfo.IsNull() && !data.GuardrailInfo.IsUnknown() {
 		guardrailInfo, err := decodeRequestJSONObject(data.GuardrailInfo.ValueString(), "guardrail_info")
 		if err != nil {
 			return nil, err
@@ -325,86 +356,86 @@ func removeUnconfiguredGuardrailNulls(apiValue, configuredValue interface{}) int
 	}
 }
 
-func (r *GuardrailResource) readGuardrail(ctx context.Context, data *GuardrailResourceModel) error {
+func (r *GuardrailResource) readGuardrail(ctx context.Context, data *GuardrailResourceModel, imported bool) error {
 	guardrailID := data.GuardrailID.ValueString()
 	if guardrailID == "" {
 		guardrailID = data.ID.ValueString()
 	}
+	if guardrailID == "" {
+		return fmt.Errorf("guardrail state omitted its identity")
+	}
 
 	endpoint := fmt.Sprintf("/guardrails/%s/info", guardrailID)
-
-	var result map[string]interface{}
-	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
+	var raw map[string]interface{}
+	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &raw); err != nil {
 		return err
 	}
-
-	// Update fields from response
-	if id, ok := result["guardrail_id"].(string); ok {
-		data.GuardrailID = types.StringValue(id)
-		data.ID = types.StringValue(id)
+	observed, err := decodeGuardrailAPIObject(raw, guardrailID, true)
+	if err != nil {
+		return err
 	}
-	if name, ok := result["guardrail_name"].(string); ok {
-		data.GuardrailName = types.StringValue(name)
+	if observed.Params == nil {
+		return fmt.Errorf("guardrail response omitted required litellm_params")
 	}
-	if createdAt, ok := result["created_at"].(string); ok {
-		data.CreatedAt = types.StringValue(createdAt)
+	guardrail, ok := observed.Params["guardrail"].(string)
+	if !ok || guardrail == "" {
+		return fmt.Errorf("guardrail response omitted required litellm_params.guardrail")
 	}
-	// Handle litellm_params
-	if litellmParams, ok := result["litellm_params"].(map[string]interface{}); ok {
-		if guardrail, ok := litellmParams["guardrail"].(string); ok {
-			data.Guardrail = types.StringValue(guardrail)
-		}
-		// Only set default_on if the user configured it or it was unknown
-		if defaultOn, ok := litellmParams["default_on"].(bool); ok {
-			if !data.DefaultOn.IsNull() || data.DefaultOn.IsUnknown() {
-				data.DefaultOn = types.BoolValue(defaultOn)
-			}
-		}
+	mode, ok, err := guardrailModeFromAPI(observed.Params)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("guardrail response omitted required litellm_params.mode")
+	}
 
-		// Handle mode (can be string or array)
-		if mode, ok := litellmParams["mode"].(string); ok {
-			data.Mode = types.StringValue(mode)
-		} else if modeArray, ok := litellmParams["mode"].([]interface{}); ok {
-			if jsonBytes, err := json.Marshal(modeArray); err == nil {
-				data.Mode = types.StringValue(string(jsonBytes))
-			}
-		}
+	additional := guardrailAdditionalParams(observed.Params)
+	if imported && containsGuardrailMaskedValue(additional) {
+		return fmt.Errorf("guardrail import cannot recover masked litellm_params without prior Terraform state")
+	}
 
-		// Store other litellm_params as JSON (excluding guardrail, mode, default_on).
-		// Only update if the user originally configured litellm_params to avoid
-		// adopting the API's massive default parameter set. Top-level API defaults
-		// remain excluded. Within configured structures, remove only null object
-		// fields that the user omitted; retain explicit nulls and non-null additions
-		// so real server-side drift remains visible.
-		if !data.LitellmParams.IsNull() && !data.LitellmParams.IsUnknown() {
-			userParams, err := decodeRequestJSONObject(data.LitellmParams.ValueString(), "litellm_params")
+	data.ID = types.StringValue(observed.ID)
+	data.GuardrailID = types.StringValue(observed.ID)
+	data.GuardrailName = types.StringValue(observed.Name)
+	data.Guardrail = types.StringValue(guardrail)
+	data.Mode = types.StringValue(mode)
+	if observed.CreatedAt == nil {
+		data.CreatedAt = types.StringNull()
+	} else {
+		data.CreatedAt = types.StringValue(*observed.CreatedAt)
+	}
+	if defaultOn, exists := observed.Params["default_on"]; exists && defaultOn != nil {
+		value, valid := defaultOn.(bool)
+		if !valid {
+			return fmt.Errorf("guardrail response field %q must be a boolean or null", "litellm_params.default_on")
+		}
+		if !data.DefaultOn.IsNull() || data.DefaultOn.IsUnknown() {
+			data.DefaultOn = types.BoolValue(value)
+		}
+	} else if !data.DefaultOn.IsNull() || data.DefaultOn.IsUnknown() {
+		data.DefaultOn = types.BoolNull()
+	}
+
+	if !data.LitellmParams.IsNull() && !data.LitellmParams.IsUnknown() {
+		reconciled, err := reconcileOwnedGuardrailParams(observed.Params, data.LitellmParams.ValueString())
+		if err != nil {
+			return err
+		}
+		data.LitellmParams = types.StringValue(reconciled)
+	}
+
+	if !data.GuardrailInfo.IsNull() || data.GuardrailInfo.IsUnknown() {
+		if observed.Info != nil {
+			encoded, err := canonicalGuardrailJSONObject(observed.Info, "guardrail_info")
 			if err != nil {
 				return err
 			}
-			otherParams := make(map[string]interface{})
-			for k, configuredValue := range userParams {
-				if k != "guardrail" && k != "mode" && k != "default_on" {
-					if apiValue, exists := litellmParams[k]; exists {
-						otherParams[k] = removeUnconfiguredGuardrailNulls(apiValue, configuredValue)
-					}
-				}
+			if !jsonSemanticallyEqual(data.GuardrailInfo.ValueString(), encoded) {
+				data.GuardrailInfo = types.StringValue(encoded)
 			}
-			if len(otherParams) > 0 {
-				jsonBytes, err := json.Marshal(otherParams)
-				if err != nil {
-					return fmt.Errorf("invalid litellm_params response: cannot encode JSON")
-				}
-				data.LitellmParams = types.StringValue(string(jsonBytes))
-			}
+		} else {
+			data.GuardrailInfo = types.StringNull()
 		}
 	}
-
-	// Handle guardrail_info
-	if guardrailInfo, ok := result["guardrail_info"].(map[string]interface{}); ok && len(guardrailInfo) > 0 {
-		if jsonBytes, err := json.Marshal(guardrailInfo); err == nil {
-			data.GuardrailInfo = types.StringValue(string(jsonBytes))
-		}
-	}
-
 	return nil
 }

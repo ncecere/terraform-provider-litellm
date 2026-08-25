@@ -65,6 +65,12 @@ func TestJSONRequestBuildersPreserveExactNumbersAndRejectInvalidJSON(t *testing.
 	if _, err := (&GuardrailResource{}).buildGuardrailRequest(ctx, &GuardrailResourceModel{GuardrailName: types.StringValue("g"), Guardrail: types.StringValue("x"), Mode: types.StringValue("[bad")}); err == nil {
 		t.Fatal("guardrail accepted invalid mode JSON")
 	}
+	if _, err := (&GuardrailResource{}).buildGuardrailRequest(ctx, &GuardrailResourceModel{GuardrailName: types.StringValue("g"), Guardrail: types.StringValue("x"), Mode: types.StringValue("pre_call"), LitellmParams: types.StringValue("")}); err == nil {
+		t.Fatal("guardrail silently omitted empty litellm_params JSON")
+	}
+	if _, err := (&GuardrailResource{}).buildGuardrailRequest(ctx, &GuardrailResourceModel{GuardrailName: types.StringValue("g"), Guardrail: types.StringValue("x"), Mode: types.StringValue("pre_call"), LitellmParams: types.StringValue(`{"mode":"post_call"}`)}); err == nil {
+		t.Fatal("guardrail litellm_params overrode a dedicated attribute")
+	}
 	if _, err := (&GuardrailResource{}).buildGuardrailRequest(ctx, &GuardrailResourceModel{GuardrailName: types.StringValue("g"), Guardrail: types.StringValue("x"), Mode: types.StringValue("pre_call"), GuardrailInfo: types.StringValue(invalid)}); err == nil {
 		t.Fatal("guardrail accepted invalid info JSON")
 	}
