@@ -333,7 +333,7 @@ func (r *AgentResource) Configure(ctx context.Context, req resource.ConfigureReq
 	if req.ProviderData == nil {
 		return
 	}
-	client, ok := configuredClient(req.ProviderData)
+	client, ok := req.ProviderData.(*Client)
 	if !ok {
 		resp.Diagnostics.AddError("Unexpected Resource Configure Type",
 			fmt.Sprintf("Expected *Client, got: %T.", req.ProviderData))

@@ -252,6 +252,7 @@ func ExtractProvider(root string) ([]Operation, error) {
 		typesInfo: &types.Info{
 			Types: map[ast.Expr]types.TypeAndValue{}, Defs: map[*ast.Ident]types.Object{},
 			Uses: map[*ast.Ident]types.Object{}, Selections: map[*ast.SelectorExpr]*types.Selection{},
+			Instances: map[*ast.Ident]types.Instance{},
 		},
 	}
 	entries, err := os.ReadDir(root)
@@ -307,10 +308,6 @@ func ExtractProvider(root string) ([]Operation, error) {
 	if err := x.validateStrictSourcePolicy(); err != nil {
 		return nil, err
 	}
-	if err := x.validateClientTransport(); err != nil {
-		return nil, err
-	}
-
 	var extracted []Operation
 	var problems []string
 	for path, file := range x.files {
@@ -384,9 +381,6 @@ func ExtractProvider(root string) ([]Operation, error) {
 				return true
 			})
 		}
-	}
-	if err := x.detectRawHTTP(); err != nil {
-		problems = append(problems, err.Error())
 	}
 	if len(problems) > 0 {
 		sort.Strings(problems)
@@ -712,7 +706,622 @@ func (x *extractor) isDirectCall(selector *ast.SelectorExpr, parents map[ast.Nod
 	return ok && call.Fun == selector
 }
 
+func exactNamedType(t types.Type, packagePath, name string) bool {
+	if t == nil {
+		return false
+	}
+	t = types.Unalias(t)
+	if pointer, ok := t.(*types.Pointer); ok {
+		t = types.Unalias(pointer.Elem())
+	}
+	named, ok := t.(*types.Named)
+	return ok && named.Obj() != nil && named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == packagePath && named.Obj().Name() == name
+}
+
+func isTypeErasureDestination(t types.Type) bool {
+	if t == nil {
+		return false
+	}
+	t = types.Unalias(t)
+	if _, ok := t.(*types.TypeParam); ok {
+		return true
+	}
+	_, ok := t.Underlying().(*types.Interface)
+	return ok
+}
+
+func originalGenericUnderlying(t types.Type) types.Type {
+	if t == nil {
+		return nil
+	}
+	t = types.Unalias(t)
+	named, ok := t.(*types.Named)
+	if !ok {
+		return t.Underlying()
+	}
+	return named.Origin().Underlying()
+}
+
+func (x *extractor) originalErasureDestination(expr ast.Expr) types.Type {
+	switch item := expr.(type) {
+	case *ast.SelectorExpr:
+		if selection := x.typesInfo.Selections[item]; selection != nil && selection.Kind() == types.FieldVal {
+			receiver := types.Unalias(x.typesInfo.TypeOf(item.X))
+			if pointer, ok := receiver.(*types.Pointer); ok {
+				receiver = types.Unalias(pointer.Elem())
+			}
+			for _, fieldIndex := range selection.Index() {
+				structure, ok := originalGenericUnderlying(receiver).(*types.Struct)
+				if !ok || fieldIndex < 0 || fieldIndex >= structure.NumFields() {
+					return selection.Obj().Type()
+				}
+				field := structure.Field(fieldIndex)
+				receiver = field.Type()
+			}
+			return receiver
+		}
+	case *ast.IndexExpr:
+		switch container := originalGenericUnderlying(x.typesInfo.TypeOf(item.X)).(type) {
+		case *types.Slice:
+			return container.Elem()
+		case *types.Array:
+			return container.Elem()
+		case *types.Map:
+			return container.Elem()
+		}
+	}
+	return x.typesInfo.TypeOf(expr)
+}
+
+func isSensitiveHTTPType(t types.Type) bool {
+	if t == nil {
+		return false
+	}
+	t = types.Unalias(t)
+	if pointer, ok := t.(*types.Pointer); ok {
+		t = types.Unalias(pointer.Elem())
+	}
+	named, ok := t.(*types.Named)
+	if !ok || named.Obj() == nil || named.Obj().Pkg() == nil || named.Obj().Pkg().Path() != "net/http" {
+		return false
+	}
+	return named.Obj().Name() == "Client" || named.Obj().Name() == "Transport" || named.Obj().Name() == "RoundTripper"
+}
+
+func clientTransportName(name string) bool {
+	if _, ok := clientRequestMethods[name]; ok {
+		return true
+	}
+	return approvedClientTransportInternals[name]
+}
+
+func reviewedTransportName(name string) bool {
+	if clientTransportName(name) {
+		return true
+	}
+	_, ok := helperRequestWrappers[name]
+	return ok
+}
+
+func exactProviderFunction(object types.Object, names map[string]int) bool {
+	function, ok := object.(*types.Func)
+	if !ok || function.Pkg() == nil || function.Pkg().Path() != "github.com/nicholas-cecere/terraform-provider-litellm/internal/provider" || function.Type().(*types.Signature).Recv() != nil {
+		return false
+	}
+	_, ok = names[function.Name()]
+	return ok
+}
+
+func (x *extractor) exactClientMethodObject(object types.Object) bool {
+	function, ok := object.(*types.Func)
+	if !ok {
+		return false
+	}
+	signature := function.Type().(*types.Signature)
+	return signature.Recv() != nil && x.isClientType(signature.Recv().Type()) && clientTransportName(function.Name())
+}
+
+func (x *extractor) exactURLValuesMethod(object types.Object, names ...string) bool {
+	function, ok := object.(*types.Func)
+	if !ok || function.Pkg() == nil || function.Pkg().Path() != "net/url" {
+		return false
+	}
+	signature := function.Type().(*types.Signature)
+	if signature.Recv() == nil || !exactNamedType(signature.Recv().Type(), "net/url", "Values") {
+		return false
+	}
+	for _, name := range names {
+		if function.Name() == name {
+			return true
+		}
+	}
+	return false
+}
+
+func (x *extractor) exactQueryHelper(object types.Object) bool {
+	function, ok := object.(*types.Func)
+	if !ok || function.Pkg() == nil || function.Pkg().Path() != "github.com/nicholas-cecere/terraform-provider-litellm/internal/provider" || function.Type().(*types.Signature).Recv() != nil {
+		return false
+	}
+	return map[string]bool{
+		"endpointWithQuery": true, "cloneURLValues": true, "safeListDiagnostic": true,
+		"addKnownStringFilter": true, "listKeys": true, "listUsers": true,
+	}[function.Name()]
+}
+
+func methodSetExposes(t types.Type, names func(string) bool) string {
+	if t == nil {
+		return ""
+	}
+	sets := []*types.MethodSet{types.NewMethodSet(t)}
+	if _, pointer := types.Unalias(t).(*types.Pointer); !pointer {
+		sets = append(sets, types.NewMethodSet(types.NewPointer(t)))
+	}
+	for _, set := range sets {
+		for index := 0; index < set.Len(); index++ {
+			if name := set.At(index).Obj().Name(); names(name) {
+				return name
+			}
+		}
+	}
+	return ""
+}
+
+func (x *extractor) isReviewedHTTPImplementation(fn *ast.FuncDecl) bool {
+	if receiverTypeName(fn) == "Client" && approvedClientTransportInternals[fn.Name.Name] {
+		return true
+	}
+	return receiverTypeName(fn) == "LiteLLMProvider" && fn.Name.Name == "Configure"
+}
+
+func (x *extractor) isFrameworkProviderDataAssertion(assertion *ast.TypeAssertExpr, fn *ast.FuncDecl) bool {
+	star, ok := assertion.Type.(*ast.StarExpr)
+	if !ok {
+		return false
+	}
+	clientName, ok := star.X.(*ast.Ident)
+	if !ok || clientName.Name != "Client" || !x.isClientType(x.typesInfo.TypeOf(assertion.Type)) || fn.Name.Name != "Configure" {
+		return false
+	}
+	selector, ok := assertion.X.(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != "ProviderData" {
+		return false
+	}
+	request, ok := selector.X.(*ast.Ident)
+	if !ok || request.Name != "req" {
+		return false
+	}
+	requestType := x.typesInfo.TypeOf(request)
+	return exactNamedType(requestType, "github.com/hashicorp/terraform-plugin-framework/resource", "ConfigureRequest") ||
+		exactNamedType(requestType, "github.com/hashicorp/terraform-plugin-framework/datasource", "ConfigureRequest")
+}
+
+func (x *extractor) isReviewedHTTPTransportAssertion(assertion *ast.TypeAssertExpr, fn *ast.FuncDecl) bool {
+	if receiverTypeName(fn) != "Client" || fn.Name.Name != "executeRequestWithOptions" {
+		return false
+	}
+	star, ok := assertion.Type.(*ast.StarExpr)
+	if !ok {
+		return false
+	}
+	selector, ok := star.X.(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != "Transport" || !exactNamedType(x.typesInfo.TypeOf(assertion.Type), "net/http", "Transport") {
+		return false
+	}
+	transport, ok := assertion.X.(*ast.Ident)
+	return ok && transport.Name == "transport" && exactNamedType(x.typesInfo.TypeOf(transport), "net/http", "RoundTripper")
+}
+
+func (x *extractor) isFrameworkProviderDataPublication(left, right ast.Expr, fn *ast.FuncDecl) bool {
+	if receiverTypeName(fn) != "LiteLLMProvider" || fn.Name.Name != "Configure" {
+		return false
+	}
+	client, ok := right.(*ast.Ident)
+	if !ok || client.Name != "client" || !x.isClientType(x.typesInfo.TypeOf(client)) {
+		return false
+	}
+	selector, ok := left.(*ast.SelectorExpr)
+	if !ok || (selector.Sel.Name != "DataSourceData" && selector.Sel.Name != "ResourceData") {
+		return false
+	}
+	response, ok := selector.X.(*ast.Ident)
+	return ok && response.Name == "resp" && exactNamedType(x.typesInfo.TypeOf(response), "github.com/hashicorp/terraform-plugin-framework/provider", "ConfigureResponse")
+}
+
+func (x *extractor) reflectDynamicDispatch(object types.Object) bool {
+	if object == nil || object.Pkg() == nil || object.Pkg().Path() != "reflect" {
+		return false
+	}
+	return map[string]bool{"Method": true, "MethodByName": true, "Call": true, "CallSlice": true, "MakeFunc": true}[object.Name()]
+}
+
+// validateStrictSourcePolicy intentionally enforces a closed syntactic/type
+// policy. It does not try to prove safety by following an open-ended data-flow
+// graph: transport names, raw dispatch names, type erasure, and query mutation
+// are reserved and must match one of the exact reviewed forms below.
 func (x *extractor) validateStrictSourcePolicy() error {
+	var problems []string
+	add := func(path string, node ast.Node, message string) {
+		position := x.fset.Position(node.Pos())
+		problems = append(problems, fmt.Sprintf("%s:%d: %s", filepath.Base(path), position.Line, message))
+	}
+	isSensitive := func(t types.Type) bool { return x.isClientType(t) || isSensitiveHTTPType(t) }
+
+	for path, file := range x.files {
+		// Reserve transport method names at declaration time, including methods
+		// acquired from embedded interfaces and generic constraints.
+		ast.Inspect(file, func(node ast.Node) bool {
+			switch item := node.(type) {
+			case *ast.FuncDecl:
+				object, _ := x.typesInfo.Defs[item.Name].(*types.Func)
+				if clientTransportName(item.Name.Name) && !x.exactClientMethodObject(object) {
+					add(path, item, "reviewed Client transport names may only be declared as exact Client methods")
+				}
+				if _, helper := helperRequestWrappers[item.Name.Name]; helper && !exactProviderFunction(object, helperRequestWrappers) {
+					add(path, item, "reviewed transport wrapper names may only be declared as exact provider functions")
+				}
+				if item.Name.Name == "Do" || item.Name.Name == "RoundTrip" {
+					add(path, item, "raw HTTP Do/RoundTrip declarations are forbidden")
+				}
+			case *ast.TypeSpec:
+				object, _ := x.typesInfo.Defs[item.Name].(*types.TypeName)
+				if object == nil {
+					break
+				}
+				if name := methodSetExposes(object.Type(), reviewedTransportName); name != "" && !x.isClientType(object.Type()) {
+					add(path, item, "declaration exposes reviewed transport name "+name+" through an interface, constraint, alias, or embedding")
+				}
+				if name := methodSetExposes(object.Type(), func(name string) bool { return name == "Do" || name == "RoundTrip" }); name != "" {
+					add(path, item, "declaration exposes raw HTTP "+name+" through an interface, constraint, alias, or embedding")
+				}
+			case *ast.InterfaceType:
+				if name := methodSetExposes(x.typesInfo.TypeOf(item), reviewedTransportName); name != "" {
+					add(path, item, "interface or generic constraint exposes reviewed transport name "+name)
+				}
+				if name := methodSetExposes(x.typesInfo.TypeOf(item), func(name string) bool { return name == "Do" || name == "RoundTrip" }); name != "" {
+					add(path, item, "interface or generic constraint exposes raw HTTP "+name)
+				}
+			case *ast.ValueSpec:
+				for index, source := range item.Values {
+					if index < len(item.Names) && isSensitive(x.typesInfo.TypeOf(source)) && isTypeErasureDestination(x.typesInfo.TypeOf(item.Names[index])) {
+						add(path, source, "Client or HTTP transport may not be stored in a package-level interface or type parameter")
+					}
+					ast.Inspect(source, func(child ast.Node) bool {
+						switch expression := child.(type) {
+						case *ast.SelectorExpr:
+							object := x.typesInfo.Uses[expression.Sel]
+							if selection := x.typesInfo.Selections[expression]; object == nil && selection != nil {
+								object = selection.Obj()
+							}
+							if reviewedTransportName(expression.Sel.Name) || expression.Sel.Name == "Do" || expression.Sel.Name == "RoundTrip" || x.isNetHTTPTransportObject(object) || x.reflectDynamicDispatch(object) {
+								add(path, expression, "transport and reflective method values are forbidden in package-level declarations")
+							}
+						}
+						return true
+					})
+				}
+			}
+			return true
+		})
+
+		for _, declaration := range file.Decls {
+			fn, ok := declaration.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			parents := map[ast.Node]ast.Node{}
+			ast.Inspect(fn.Body, func(node ast.Node) bool {
+				if node == nil {
+					return false
+				}
+				ast.Inspect(node, func(child ast.Node) bool {
+					if child != nil && child != node {
+						if _, exists := parents[child]; !exists {
+							parents[child] = node
+						}
+						return false
+					}
+					return true
+				})
+				return true
+			})
+
+			checkErasure := func(source ast.Expr, destination types.Type, message string, left ast.Expr) {
+				if !isSensitive(x.typesInfo.TypeOf(source)) || !isTypeErasureDestination(destination) {
+					return
+				}
+				if left != nil && x.isFrameworkProviderDataPublication(left, source, fn) {
+					return
+				}
+				if isSensitiveHTTPType(x.typesInfo.TypeOf(source)) && x.isReviewedHTTPImplementation(fn) {
+					return
+				}
+				add(path, source, message)
+			}
+
+			ast.Inspect(fn.Body, func(node ast.Node) bool {
+				switch item := node.(type) {
+				case *ast.TypeAssertExpr:
+					if x.isClientType(x.typesInfo.TypeOf(item.Type)) && !x.isFrameworkProviderDataAssertion(item, fn) {
+						add(path, item, "Client may only be recovered from framework ProviderData by an exact Configure assertion")
+					}
+					if isSensitiveHTTPType(x.typesInfo.TypeOf(item.Type)) && !x.isReviewedHTTPTransportAssertion(item, fn) {
+						add(path, item, "HTTP transport may only be recovered from an interface by the exact reviewed transport assertion")
+					}
+				case *ast.CaseClause:
+					for _, expression := range item.List {
+						if x.isClientType(x.typesInfo.TypeOf(expression)) || isSensitiveHTTPType(x.typesInfo.TypeOf(expression)) {
+							add(path, expression, "Client and HTTP transport type-switch recovery is forbidden")
+						}
+					}
+				case *ast.FuncLit:
+					signature, _ := x.typesInfo.TypeOf(item.Type).(*types.Signature)
+					if signature == nil {
+						break
+					}
+					ast.Inspect(item.Body, func(child ast.Node) bool {
+						if nested, ok := child.(*ast.FuncLit); ok && nested != item {
+							return false
+						}
+						returned, ok := child.(*ast.ReturnStmt)
+						if !ok {
+							return true
+						}
+						for index, source := range returned.Results {
+							if index < signature.Results().Len() {
+								checkErasure(source, signature.Results().At(index).Type(), "returning Client as an interface is forbidden; HTTP transports may not be returned as an interface or type parameter", nil)
+							}
+						}
+						return true
+					})
+				case *ast.SelectorExpr:
+					selection := x.typesInfo.Selections[item]
+					object := x.typesInfo.Uses[item.Sel]
+					if object == nil && selection != nil {
+						object = selection.Obj()
+					}
+					direct := x.isDirectCall(item, parents)
+					if reviewedTransportName(item.Sel.Name) {
+						exactClient := selection != nil && selection.Kind() == types.MethodVal && x.isClientType(selection.Recv()) && x.exactClientMethodObject(selection.Obj())
+						if !exactClient {
+							add(path, item, "reviewed Client transport selector must resolve to the exact Client object; interface/generic dispatch and embedding and promotion are forbidden")
+						} else if !direct {
+							add(path, item, "Client transport methods may not be used as values or method expressions")
+						}
+					}
+					if item.Sel.Name == "Do" || item.Sel.Name == "RoundTrip" || x.isNetHTTPTransportObject(object) {
+						approvedRequest := direct && receiverTypeName(fn) == "Client" && fn.Name.Name == "prepareRequest" && object != nil && object.Name() == "NewRequestWithContext" && selection == nil
+						approvedDo := direct && x.isReviewedHTTPImplementation(fn) && fn.Name.Name == "executeRequestWithOptions" && object != nil && object.Name() == "Do" &&
+							selection != nil && selection.Kind() == types.MethodVal && exactNamedType(selection.Recv(), "net/http", "Client")
+						approved := approvedRequest || approvedDo
+						if !approved {
+							add(path, item, "raw net/http transport reference is not an exact reviewed Client implementation call")
+						}
+					}
+					if x.exactURLValuesMethod(object, "Set", "Add") {
+						call, called := parents[item].(*ast.CallExpr)
+						if !called || call.Fun != item || selection == nil || selection.Kind() != types.MethodVal {
+							add(path, item, "url.Values Set/Add may not be used as a bound method value or method expression")
+						} else if len(call.Args) == 0 {
+							add(path, item, "dynamic url.Values Set/Add key is forbidden")
+						} else if _, literal := stringLiteral(call.Args[0]); !literal && fn.Name.Name != "addKnownStringFilter" {
+							add(path, call.Args[0], "dynamic url.Values Set/Add key is forbidden")
+						}
+					}
+					if x.reflectDynamicDispatch(object) {
+						add(path, item, "reflection-based method lookup or invocation is forbidden in provider code")
+					}
+				case *ast.Ident:
+					object := x.typesInfo.Uses[item]
+					if object == nil {
+						break
+					}
+					if _, helper := helperRequestWrappers[item.Name]; helper && exactProviderFunction(object, helperRequestWrappers) {
+						call, direct := parents[item].(*ast.CallExpr)
+						if !direct || call.Fun != item {
+							add(path, item, "reviewed transport wrapper may not be used as a value")
+						}
+					}
+					if x.exactQueryHelper(object) {
+						call, direct := parents[item].(*ast.CallExpr)
+						if !direct || call.Fun != item {
+							add(path, item, "reviewed query helper may not be used as a value")
+						}
+					}
+					parentSelector, selectorIdentifier := parents[item].(*ast.SelectorExpr)
+					if (x.isNetHTTPTransportObject(object) || x.reflectDynamicDispatch(object)) && (!selectorIdentifier || parentSelector.Sel != item) {
+						add(path, item, "raw net/http transport or reflective dispatch function may not be used as a value")
+					}
+				case *ast.AssignStmt:
+					for index, source := range item.Rhs {
+						if index < len(item.Lhs) {
+							checkErasure(source, x.originalErasureDestination(item.Lhs[index]), "Client-to-interface assignment is forbidden; HTTP transports may not be assigned to an interface or type parameter", item.Lhs[index])
+						}
+					}
+				case *ast.DeclStmt:
+					general, ok := item.Decl.(*ast.GenDecl)
+					if !ok {
+						break
+					}
+					for _, specification := range general.Specs {
+						values, ok := specification.(*ast.ValueSpec)
+						if !ok {
+							continue
+						}
+						for index, source := range values.Values {
+							if index < len(values.Names) {
+								checkErasure(source, x.typesInfo.TypeOf(values.Names[index]), "Client-to-interface assignment is forbidden; HTTP transports may not be stored in an interface or type parameter", values.Names[index])
+							}
+						}
+					}
+				case *ast.ReturnStmt:
+					function, _ := x.typesInfo.Defs[fn.Name].(*types.Func)
+					if function != nil {
+						signature := function.Type().(*types.Signature)
+						for index, source := range item.Results {
+							if index < signature.Results().Len() {
+								checkErasure(source, signature.Results().At(index).Type(), "returning Client as an interface is forbidden; HTTP transports may not be returned as an interface or type parameter", nil)
+							}
+						}
+					}
+				case *ast.CallExpr:
+					called := calledFunctionObject(x.typesInfo, item.Fun)
+					if reviewedTransportName(callName(item.Fun)) {
+						selector, selected := item.Fun.(*ast.SelectorExpr)
+						exactClient := selected && x.typesInfo.Selections[selector] != nil && x.typesInfo.Selections[selector].Kind() == types.MethodVal &&
+							x.isClientType(x.typesInfo.Selections[selector].Recv()) && x.exactClientMethodObject(x.typesInfo.Selections[selector].Obj())
+						exactHelper := !selected && exactProviderFunction(called, helperRequestWrappers)
+						if !exactClient && !exactHelper {
+							add(path, item, "reviewed transport call does not resolve to an exact Client method or reviewed wrapper")
+						}
+					}
+					if callName(item.Fun) == "Do" || callName(item.Fun) == "RoundTrip" {
+						selector, selected := item.Fun.(*ast.SelectorExpr)
+						selection := x.typesInfo.Selections[selector]
+						approved := selected && selection != nil && selection.Kind() == types.MethodVal && called != nil && called.Name() == "Do" &&
+							exactNamedType(selection.Recv(), "net/http", "Client") && x.isReviewedHTTPImplementation(fn) && fn.Name.Name == "executeRequestWithOptions"
+						if !approved {
+							add(path, item, "raw Do/RoundTrip dispatch is forbidden outside the exact reviewed Client implementation")
+						}
+					}
+					if len(item.Args) == 1 && x.typesInfo.Types[item.Fun].IsType() {
+						checkErasure(item.Args[0], x.typesInfo.TypeOf(item), "Client-to-interface conversion is forbidden; HTTP transports may not be converted to an interface or type parameter", nil)
+					}
+					signature, _ := x.typesInfo.TypeOf(item.Fun).(*types.Signature)
+					// Inspect the declaration signature for generic calls. The inferred
+					// instance replaces T with the argument type and would otherwise hide
+					// the type-erasing boundary itself.
+					if function, ok := called.(*types.Func); ok {
+						declared := function.Type().(*types.Signature)
+						if declared.TypeParams() != nil && declared.TypeParams().Len() != 0 {
+							signature = declared
+						}
+					}
+					if signature != nil {
+						for index, argument := range item.Args {
+							parameterIndex := index
+							if signature.Variadic() && parameterIndex >= signature.Params().Len()-1 {
+								parameterIndex = signature.Params().Len() - 1
+							}
+							if parameterIndex >= 0 && parameterIndex < signature.Params().Len() {
+								parameterType := signature.Params().At(parameterIndex).Type()
+								if signature.Variadic() && parameterIndex == signature.Params().Len()-1 {
+									if slice, ok := types.Unalias(parameterType).(*types.Slice); ok {
+										parameterType = slice.Elem()
+									}
+								}
+								checkErasure(argument, parameterType, "passing Client to an interface parameter is forbidden; HTTP transports may not be passed to an interface or type parameter", nil)
+							}
+						}
+					}
+					for _, argument := range item.Args {
+						if !x.isURLValuesExpr(argument) {
+							continue
+						}
+						if _, builtin := called.(*types.Builtin); builtin {
+							continue
+						}
+						if !x.exactQueryHelper(called) {
+							add(path, argument, "url.Values may only be passed to an exact reviewed query helper")
+						}
+					}
+					if called != nil && called.Name() == "addKnownStringFilter" {
+						if !x.exactQueryHelper(called) || len(item.Args) < 2 {
+							add(path, item, "unresolved reviewed query helper call")
+						} else if _, literal := stringLiteral(item.Args[1]); !literal {
+							add(path, item.Args[1], "reviewed query helper requires a literal key")
+						}
+					}
+				case *ast.IndexExpr:
+					if x.isURLValuesExpr(item.X) {
+						if _, literal := stringLiteral(item.Index); !literal && fn.Name.Name != "cloneURLValues" {
+							add(path, item.Index, "dynamic url.Values index key is forbidden")
+						}
+					}
+				case *ast.CompositeLit:
+					if x.isURLValuesExpr(item) {
+						for _, element := range item.Elts {
+							if pair, ok := element.(*ast.KeyValueExpr); ok {
+								if _, literal := stringLiteral(pair.Key); !literal {
+									add(path, pair.Key, "dynamic url.Values literal key is forbidden")
+								}
+							}
+						}
+					}
+					underlying := x.typesInfo.TypeOf(item)
+					if underlying == nil {
+						break
+					}
+					// Use the generic origin's fields/elements. Instantiation replaces T
+					// with *http.Client (for example), which must not erase the fact that
+					// the storage boundary was a type parameter.
+					switch composite := originalGenericUnderlying(underlying).(type) {
+					case *types.Slice:
+						for _, element := range item.Elts {
+							checkErasure(element, composite.Elem(), "Client or HTTP transport may not be stored in an interface collection", nil)
+						}
+					case *types.Map:
+						for _, element := range item.Elts {
+							if pair, ok := element.(*ast.KeyValueExpr); ok {
+								checkErasure(pair.Value, composite.Elem(), "Client or HTTP transport may not be stored in an interface collection", nil)
+							}
+						}
+					case *types.Struct:
+						for index, element := range item.Elts {
+							valueExpression := ast.Expr(element)
+							fieldIndex := index
+							if pair, keyed := element.(*ast.KeyValueExpr); keyed {
+								valueExpression = pair.Value
+								fieldIndex = -1
+								if name, ok := pair.Key.(*ast.Ident); ok {
+									for candidate := 0; candidate < composite.NumFields(); candidate++ {
+										if composite.Field(candidate).Name() == name.Name {
+											fieldIndex = candidate
+											break
+										}
+									}
+								}
+							}
+							if fieldIndex >= 0 && fieldIndex < composite.NumFields() {
+								checkErasure(valueExpression, composite.Field(fieldIndex).Type(), "storing Client in an interface field is forbidden; HTTP transports may not be stored in an interface or type-parameter field", nil)
+							}
+						}
+					}
+				}
+				return true
+			})
+
+			if receiverTypeName(fn) == "Client" && !clientTransportName(fn.Name.Name) {
+				ast.Inspect(fn.Body, func(node ast.Node) bool {
+					call, ok := node.(*ast.CallExpr)
+					if !ok {
+						return true
+					}
+					for _, argument := range call.Args {
+						if x.isClientType(x.typesInfo.TypeOf(argument)) {
+							add(path, call, "unknown Client HTTP abstraction "+fn.Name.Name)
+							return false
+						}
+					}
+					selector, selected := call.Fun.(*ast.SelectorExpr)
+					selection := x.typesInfo.Selections[selector]
+					if selected && selection != nil && x.exactClientMethodObject(selection.Obj()) {
+						add(path, call, "unknown Client HTTP abstraction "+fn.Name.Name)
+						return false
+					}
+					return true
+				})
+			}
+		}
+	}
+	if len(problems) != 0 {
+		sort.Strings(problems)
+		return errors.New(strings.Join(problems, "\n"))
+	}
+	return nil
+}
+
+func (x *extractor) validateLegacyStrictSourcePolicy() error {
 	var problems []string
 	for path, file := range x.files {
 		parents := map[ast.Node]ast.Node{}
@@ -1143,6 +1752,21 @@ func (x *extractor) validateClientTransport() error {
 	return nil
 }
 
+func dereferencedIdent(expr ast.Expr) (*ast.Ident, bool) {
+	for {
+		switch item := expr.(type) {
+		case *ast.Ident:
+			return item, true
+		case *ast.ParenExpr:
+			expr = item.X
+		case *ast.StarExpr:
+			expr = item.X
+		default:
+			return nil, false
+		}
+	}
+}
+
 func (x *extractor) functionEnv(fn *ast.FuncDecl, bindings map[string]value, stack map[string]bool) map[string]value {
 	env := map[string]value{}
 	for k, v := range bindings {
@@ -1164,7 +1788,7 @@ func (x *extractor) functionEnv(fn *ast.FuncDecl, bindings map[string]value, sta
 			case *ast.AssignStmt:
 				for i, lhs := range node.Lhs {
 					if index, ok := lhs.(*ast.IndexExpr); ok {
-						id, identifier := index.X.(*ast.Ident)
+						id, identifier := dereferencedIdent(index.X)
 						if !identifier || !x.isURLValuesExpr(index.X) {
 							continue
 						}
@@ -1231,7 +1855,7 @@ func (x *extractor) functionEnv(fn *ast.FuncDecl, bindings map[string]value, sta
 				name := callName(node.Fun)
 				if (name == "Set" || name == "Add") && len(node.Args) > 0 {
 					if sel, ok := node.Fun.(*ast.SelectorExpr); ok {
-						if id, ok := sel.X.(*ast.Ident); ok {
+						if id, ok := dereferencedIdent(sel.X); ok {
 							v := env[id.Name]
 							if v.queries == nil {
 								v = literalValue("")
@@ -1297,6 +1921,8 @@ func (x *extractor) eval(expr ast.Expr, env map[string]value, stack map[string]b
 			return literalValue(s)
 		}
 	case *ast.ParenExpr:
+		return x.eval(node.X, env, stack)
+	case *ast.StarExpr:
 		return x.eval(node.X, env, stack)
 	case *ast.BinaryExpr:
 		if node.Op == token.ADD {
@@ -1572,6 +2198,13 @@ func stringLiteral(expr ast.Expr) (string, bool) {
 }
 func (x *extractor) isURLValuesExpr(expr ast.Expr) bool {
 	t := types.Unalias(x.typesInfo.TypeOf(expr))
+	for {
+		pointer, ok := t.(*types.Pointer)
+		if !ok {
+			break
+		}
+		t = types.Unalias(pointer.Elem())
+	}
 	named, ok := t.(*types.Named)
 	return ok && named.Obj() != nil && named.Obj().Name() == "Values" && named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == "net/url"
 }

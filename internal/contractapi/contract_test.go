@@ -342,6 +342,303 @@ func badEmbedded(value *wrapper, request *h.Request) { _, _ = value.Do(request) 
 	}
 }
 
+func TestFrameworkProviderDataAssertionHasOneExactConsumerForm(t *testing.T) {
+	t.Run("exact-configure-assertion", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFixture(t, dir, "safe.go", `package provider
+import (
+ "context"
+ "github.com/hashicorp/terraform-plugin-framework/resource"
+)
+type Client struct{}
+type configured struct { client *Client }
+func (configured) Configure(_ context.Context, req resource.ConfigureRequest, _ *resource.ConfigureResponse) {
+ if req.ProviderData == nil { return }
+ client, ok := req.ProviderData.(*Client)
+ _, _ = client, ok
+}
+`)
+		if _, err := ExtractProvider(dir); err != nil {
+			t.Fatalf("exact framework Configure assertion was rejected: %v", err)
+		}
+	})
+	t.Run("alias-assertion", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFixture(t, dir, "bad.go", `package provider
+import (
+ "context"
+ "github.com/hashicorp/terraform-plugin-framework/resource"
+)
+type Client struct{}
+type ProviderClient = Client
+type configured struct { client *Client }
+func (configured) Configure(_ context.Context, req resource.ConfigureRequest, _ *resource.ConfigureResponse) {
+ if req.ProviderData == nil { return }
+ client, ok := req.ProviderData.(*ProviderClient)
+ _, _ = client, ok
+}
+`)
+		_, err := ExtractProvider(dir)
+		if err == nil || !strings.Contains(err.Error(), "exact Configure assertion") {
+			t.Fatalf("aliased ProviderData assertion was accepted: %v", err)
+		}
+	})
+	t.Run("outside-configure", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFixture(t, dir, "bad.go", `package provider
+type Client struct{}
+func recoverClient(value any) { client, ok := value.(*Client); _, _ = client, ok }
+`)
+		_, err := ExtractProvider(dir)
+		if err == nil || !strings.Contains(err.Error(), "exact Configure assertion") {
+			t.Fatalf("ProviderData-style assertion outside Configure was accepted: %v", err)
+		}
+	})
+}
+
+func TestStrictTransportNamePolicyRejectsInterfacesGenericsAndEmbedding(t *testing.T) {
+	fixtures := map[string]string{
+		"generic-constraint": `package provider
+import "context"
+type requester interface { DoRequestWithResponse(context.Context, string, string, any, any) error }
+func invoke[T requester](ctx context.Context, transport T) error { return transport.DoRequestWithResponse(ctx, "GET", "/hidden", nil, nil) }
+`,
+		"embedded-interface": `package provider
+import "context"
+type requester interface { DoRequestWithResponse(context.Context, string, string, any, any) error }
+type embedded interface { requester }
+func invoke(ctx context.Context, transport embedded) error { return transport.DoRequestWithResponse(ctx, "GET", "/hidden", nil, nil) }
+`,
+		"embedded-struct-interface": `package provider
+import "context"
+type requester interface { DoRequestWithResponse(context.Context, string, string, any, any) error }
+type wrapper struct { requester }
+func invoke(ctx context.Context, transport wrapper) error { return transport.DoRequestWithResponse(ctx, "GET", "/hidden", nil, nil) }
+`,
+		"same-name-custom-method": `package provider
+import "context"
+type requester struct{}
+func (requester) DoRequestWithResponse(context.Context, string, string, any, any) error { return nil }
+func invoke(ctx context.Context, transport requester) error { return transport.DoRequestWithResponse(ctx, "GET", "/hidden", nil, nil) }
+`,
+	}
+	for name, fixture := range fixtures {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeHTTPFixtureSupport(t, dir)
+			writeFixture(t, dir, "bad.go", fixture)
+			_, err := ExtractProvider(dir)
+			if err == nil || (!strings.Contains(err.Error(), "exposes reviewed transport name") && !strings.Contains(err.Error(), "exact Client object") && !strings.Contains(err.Error(), "exact Client methods")) {
+				t.Fatalf("transport-name policy bypass was accepted: %v", err)
+			}
+		})
+	}
+}
+
+func TestStrictRawHTTPPolicyRejectsGenericEmbeddingWrappersAndReflection(t *testing.T) {
+	fixtures := map[string]string{
+		"generic-hide-client": `package provider
+import "net/http"
+func hide[T any](value T) any { return value }
+func bad(client *http.Client) { _ = hide(client) }
+`,
+		"generic-hide-transport": `package provider
+import "net/http"
+func hide[T any](value T) T { return value }
+func bad(transport *http.Transport) { var erased any = hide(transport); _ = erased }
+`,
+		"generic-struct-storage": `package provider
+import "net/http"
+type holder[T any] struct { value T }
+func bad(client *http.Client) { _ = holder[*http.Client]{value: client} }
+`,
+		"generic-field-assignment": `package provider
+import "net/http"
+type holder[T any] struct { value T }
+func bad(client *http.Client, destination *holder[*http.Client]) { destination.value = client }
+`,
+		"generic-slice-storage": `package provider
+import "net/http"
+type holder[T any] []T
+func bad(client *http.Client) { _ = holder[*http.Client]{client} }
+`,
+		"round-tripper-interface": `package provider
+import "net/http"
+type transport interface { RoundTrip(*http.Request) (*http.Response, error) }
+`,
+		"embedded-do-interface": `package provider
+import "net/http"
+type doer interface { Do(*http.Request) (*http.Response, error) }
+type embedded interface { doer }
+`,
+		"custom-do": `package provider
+import "net/http"
+type custom struct{}
+func (custom) Do(*http.Request) (*http.Response, error) { return nil, nil }
+`,
+		"custom-round-trip": `package provider
+import "net/http"
+type custom struct{}
+func (custom) RoundTrip(*http.Request) (*http.Response, error) { return nil, nil }
+`,
+		"sneaky-wrapper": `package provider
+import "net/http"
+func Sneaky(client *http.Client, request *http.Request) { _, _ = client.Do(request) }
+`,
+		"method-expression": `package provider
+import "net/http"
+func bad() { operation := (*http.Client).Do; _ = operation }
+`,
+		"client-alias": `package provider
+import "net/http"
+type HTTPClient = http.Client
+`,
+		"default-client-interface": `package provider
+import "net/http"
+func bad() { var hidden any = http.DefaultClient; _ = hidden }
+`,
+		"default-transport-interface": `package provider
+import "net/http"
+func bad() { var hidden http.RoundTripper = http.DefaultTransport; _ = hidden }
+`,
+		"closure-interface-return": `package provider
+import "net/http"
+func bad(client *http.Client) { hidden := func() any { return client }; _ = hidden }
+`,
+		"interface-assertion": `package provider
+import "net/http"
+func bad(hidden any) { client, _ := hidden.(*http.Client); _ = client }
+`,
+		"type-switch-recovery": `package provider
+import "net/http"
+func bad(hidden any) { switch hidden.(type) { case *http.Transport: } }
+`,
+		"reflect-method-by-name": `package provider
+import ("net/http"; "reflect")
+func bad() { reflected := reflect.ValueOf(http.DefaultClient); method := reflected.MethodByName("Do"); method.Call(nil) }
+`,
+		"reflect-call": `package provider
+import "reflect"
+func bad(value reflect.Value) { value.Call(nil) }
+`,
+	}
+	for name, fixture := range fixtures {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFixture(t, dir, "bad.go", fixture)
+			_, err := ExtractProvider(dir)
+			if err == nil {
+				t.Fatal("raw HTTP or reflective dispatch bypass was accepted")
+			}
+		})
+	}
+}
+
+func TestStrictQueryPolicyRejectsPointerMethodValuesAndHigherOrderEscape(t *testing.T) {
+	fixtures := map[string]map[string]string{
+		"pointer-dynamic": {"bad.go": `package provider
+import "net/url"
+func bad(query *url.Values, key string) { query.Set(key, "value") }
+`},
+		"pointer-index-dynamic": {"bad.go": `package provider
+import "net/url"
+func bad(query *url.Values, key string) { (*query)[key] = []string{"value"} }
+`},
+		"pointer-alias-dynamic": {"bad.go": `package provider
+import "net/url"
+func bad(query *url.Values, key string) { alias := query; alias.Add(key, "value") }
+`},
+		"bound-method": {"bad.go": `package provider
+import "net/url"
+func bad(query url.Values) { set := query.Set; set("hidden", "value") }
+`},
+		"higher-order-argument": {"bad.go": `package provider
+import "net/url"
+func take(func(string, string)) {}
+func bad(query url.Values) { take(query.Add) }
+`},
+		"higher-order-return": {"bad.go": `package provider
+import "net/url"
+func bad(query url.Values) func(string, string) { return query.Set }
+`},
+		"method-expression": {"bad.go": `package provider
+import "net/url"
+func bad() { set := url.Values.Set; _ = set }
+`},
+		"cross-file-pointer": {
+			"mutate.go": `package provider
+import "net/url"
+func mutate(query *url.Values, key string) { query.Set(key, "value") }
+`,
+			"use.go": `package provider
+import "net/url"
+func bad(query url.Values, key string) { mutate(&query, key) }
+`,
+		},
+	}
+	for name, files := range fixtures {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			for filename, fixture := range files {
+				writeFixture(t, dir, filename, fixture)
+			}
+			_, err := ExtractProvider(dir)
+			if err == nil || (!strings.Contains(err.Error(), "url.Values") && !strings.Contains(err.Error(), "exact reviewed query helper")) {
+				t.Fatalf("query method-object or pointer escape was accepted: %v", err)
+			}
+		})
+	}
+}
+
+func TestStaticPointerQueryMutationIsInventoried(t *testing.T) {
+	dir := t.TempDir()
+	writeHTTPFixtureSupport(t, dir)
+	writeFixture(t, dir, "query.go", `package provider
+import (
+ "context"
+ "net/url"
+)
+func request(ctx context.Context, client *Client, query *url.Values) error {
+ (*query).Set("page", "1")
+ (*query)["sort"] = []string{"name"}
+ return client.DoRequestWithResponse(ctx, "GET", endpointWithQuery("/things", *query), nil, nil)
+}
+`)
+	operations, err := ExtractProvider(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(operations) != 1 || operations[0].Path != "/things" || strings.Join(operations[0].QueryParameters, ",") != "page,sort" {
+		t.Fatalf("static pointer query was not inventoried: %+v", operations)
+	}
+}
+
+func TestStrictPolicyAllowsUnrelatedInterfacesGenericsAndStaticQueries(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir, "safe.go", `package provider
+import (
+ "net/url"
+ "reflect"
+)
+type runner interface { Run(string) error }
+type box[T any] struct { value T }
+func identity[T any](value T) T { return value }
+type helper struct{}
+func (helper) Set(string, string) {}
+func safe(query url.Values, h helper) {
+ query.Set("page", "1")
+ query.Add("sort", "name")
+ h.Set("unrelated", "value")
+ _ = identity(box[int]{value: 1})
+ _ = reflect.DeepEqual(1, 1)
+}
+`)
+	operations, err := ExtractProvider(dir)
+	if err != nil || len(operations) != 0 {
+		t.Fatalf("ordinary interface/generic/static-query helper produced a false positive: operations=%v error=%v", operations, err)
+	}
+}
+
 func TestExtractorRejectsIncompletePackages(t *testing.T) {
 	dir := t.TempDir()
 	writeFixture(t, dir, "bad.go", `package provider

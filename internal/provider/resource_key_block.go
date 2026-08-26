@@ -235,7 +235,7 @@ func (r *KeyBlockResource) Configure(ctx context.Context, req resource.Configure
 		return
 	}
 
-	client, ok := configuredClient(req.ProviderData)
+	client, ok := req.ProviderData.(*Client)
 	if !ok {
 		resp.Diagnostics.AddError(
 			"Unexpected Resource Configure Type",

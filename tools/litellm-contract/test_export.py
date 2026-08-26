@@ -76,7 +76,7 @@ class LazyExporterAdversarialTests(unittest.TestCase):
         app = FastAPI()
         item = fake_feature()
         with mock.patch.object(exporter, "EXPECTED_LAZY_FEATURES", (REVIEWED,)):
-            with self.assertRaisesRegex(RuntimeError, "zero routes"):
+            with self.assertRaisesRegex(RuntimeError, r"zero (?:live HTTP )?routes"):
                 exporter.direct_register_features(app, [item], importer=lambda _: SimpleNamespace(router=APIRouter()))
 
     def test_unextractable_mounted_application_fails(self):

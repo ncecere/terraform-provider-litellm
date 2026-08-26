@@ -162,7 +162,7 @@ func (r *OrganizationMemberResource) Configure(ctx context.Context, req resource
 		return
 	}
 
-	client, ok := configuredClient(req.ProviderData)
+	client, ok := req.ProviderData.(*Client)
 	if !ok {
 		resp.Diagnostics.AddError(
 			"Unexpected Resource Configure Type",

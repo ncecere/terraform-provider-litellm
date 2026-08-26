@@ -71,7 +71,7 @@ func (d *OrganizationsListDataSource) Configure(_ context.Context, req datasourc
 	if req.ProviderData == nil {
 		return
 	}
-	client, ok := configuredClient(req.ProviderData)
+	client, ok := req.ProviderData.(*Client)
 	if !ok {
 		resp.Diagnostics.AddError("Unexpected Data Source Configure Type", fmt.Sprintf("Expected *Client, got: %T.", req.ProviderData))
 		return

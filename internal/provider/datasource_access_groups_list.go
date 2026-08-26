@@ -68,7 +68,7 @@ func (d *AccessGroupsListDataSource) Configure(ctx context.Context, req datasour
 		return
 	}
 
-	client, ok := configuredClient(req.ProviderData)
+	client, ok := req.ProviderData.(*Client)
 	if !ok {
 		resp.Diagnostics.AddError(
 			"Unexpected Data Source Configure Type",
