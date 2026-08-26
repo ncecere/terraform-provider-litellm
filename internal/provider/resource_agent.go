@@ -438,8 +438,9 @@ func (r *AgentResource) Create(ctx context.Context, req resource.CreateRequest, 
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &confirmed)...)
 	if !resp.Diagnostics.HasError() && resp.Private != nil {
-		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentImportedFieldsPrivateKey, nil)...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentImportedFieldsPrivateKey, encodeAgentFieldSet(agentFieldSet{}))...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipInitializedPrivateKey, []byte("true"))...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipPendingPrivateKey, nil)...)
 	}
 }
 
@@ -448,8 +449,9 @@ func setAgentIdentityOnlyCreateState(ctx context.Context, resp *resource.CreateR
 	partial.ID = confirmedAgentID
 	resp.Diagnostics.Append(resp.State.Set(ctx, &partial)...)
 	if resp.Private != nil {
-		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentImportedFieldsPrivateKey, nil)...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentImportedFieldsPrivateKey, encodeAgentFieldSet(agentFieldSet{}))...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipInitializedPrivateKey, []byte("true"))...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipPendingPrivateKey, nil)...)
 	}
 }
 
@@ -458,11 +460,14 @@ func (r *AgentResource) Read(ctx context.Context, req resource.ReadRequest, resp
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
 	importedMarker, privateDiags := req.Private.GetKey(ctx, numericImportedPrivateKey)
 	resp.Diagnostics.Append(privateDiags...)
-	apiOwned, ownershipDiags := readAgentImportedFields(ctx, req.Private)
+	bundle, ownershipDiags := readAgentOwnershipBundle(ctx, req.Private)
 	resp.Diagnostics.Append(ownershipDiags...)
 	if resp.Diagnostics.HasError() {
+		resp.State = req.State
+		resp.Private = req.Private
 		return
 	}
+	apiOwned := bundle.committed
 	imported := string(importedMarker) == "true"
 
 	var rawResult map[string]interface{}
@@ -472,6 +477,7 @@ func (r *AgentResource) Read(ctx context.Context, req resource.ReadRequest, resp
 			return
 		}
 		resp.State = req.State
+		resp.Private = req.Private
 		resp.Diagnostics.AddError("Agent Read Failed", "LiteLLM did not return an authoritative agent response. Prior Terraform state was retained.")
 		return
 	}
@@ -481,9 +487,12 @@ func (r *AgentResource) Read(ctx context.Context, req resource.ReadRequest, resp
 	if !resp.Diagnostics.HasError() && resp.Private != nil {
 		if imported {
 			apiOwned = agentImportedFieldsFromWire(data, rawResult)
+		} else if bundle.pending != nil {
+			apiOwned = bundle.pending
 		}
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentImportedFieldsPrivateKey, encodeAgentFieldSet(apiOwned))...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipInitializedPrivateKey, []byte("true"))...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipPendingPrivateKey, nil)...)
 		if imported {
 			resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, nil)...)
 		}
@@ -495,9 +504,22 @@ func (r *AgentResource) Update(ctx context.Context, req resource.UpdateRequest, 
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &planned)...)
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
-	importedFields, ownershipDiags := readAgentImportedFields(ctx, req.Private)
+	bundle, ownershipDiags := readAgentOwnershipBundle(ctx, req.Private)
 	resp.Diagnostics.Append(ownershipDiags...)
 	if resp.Diagnostics.HasError() {
+		resp.Private = req.Private
+		resp.State = req.State
+		return
+	}
+	importedFields := bundle.committed
+	expectedOwnership := cloneAgentFieldSet(importedFields)
+	for field := range agentConfiguredFields(config) {
+		delete(expectedOwnership, field)
+	}
+	if (bundle.pending == nil && !agentFieldSetsEqual(expectedOwnership, importedFields)) || (bundle.pending != nil && !agentFieldSetsEqual(bundle.pending, expectedOwnership)) {
+		resp.Private = req.Private
+		resp.State = req.State
+		resp.Diagnostics.AddError("Invalid Agent Ownership State", "Provider-private pending agent ownership does not match the planned ownership transition. Prior public and private state was retained; no remote operation was attempted.")
 		return
 	}
 	planned.ID = state.ID
@@ -552,6 +574,9 @@ func (r *AgentResource) Update(ctx context.Context, req resource.UpdateRequest, 
 		if cardTouched {
 			preservation.cardBase = cardBase
 			preservation.cardPatch, err = overlayAgentCardRaw(cardBase, planned, state, config, importedFields)
+			if err == nil {
+				err = validateAgentCardV198RoundTrip(preservation.cardPatch)
+			}
 			if err != nil {
 				resp.Private = req.Private
 				resp.State = req.State
@@ -579,6 +604,7 @@ func (r *AgentResource) Update(ctx context.Context, req resource.UpdateRequest, 
 		delete(agentReq, "agent_card_params")
 	}
 	endpoint := fmt.Sprintf("/v1/agents/%s", url.PathEscape(planned.ID.ValueString()))
+//line internal/provider/resource_agent.go:582
 	if err := r.client.DoRequestWithResponse(ctx, "PATCH", endpoint, agentReq, nil); err != nil {
 		resp.Private = req.Private
 		resp.State = req.State
@@ -602,23 +628,41 @@ func (r *AgentResource) Update(ctx context.Context, req resource.UpdateRequest, 
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &confirmed)...)
 	if !resp.Diagnostics.HasError() && resp.Private != nil {
-		configuredFields := agentConfiguredFields(config)
-		for field := range configuredFields {
-			delete(importedFields, field)
+		committed := bundle.pending
+		if committed == nil {
+			committed = cloneAgentFieldSet(importedFields)
 		}
-		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentImportedFieldsPrivateKey, encodeAgentFieldSet(importedFields))...)
+		if preservation.cardBase != nil && state.AgentCard != nil {
+			priorIDs := map[string]bool{}
+			for _, skill := range state.AgentCard.Skills {
+				if !skill.ID.IsNull() && !skill.ID.IsUnknown() {
+					priorIDs[skill.ID.ValueString()] = true
+				}
+			}
+			for id, rawSkill := range agentSkillRawByID(preservation.cardBase) {
+				if !priorIDs[id] && importedFields[agentScopeCardSkills] {
+					markAgentSkillWireLeaves(committed, id, rawSkill)
+				}
+			}
+		}
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentImportedFieldsPrivateKey, encodeAgentFieldSet(committed))...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipPendingPrivateKey, nil)...)
 	}
 }
 
 func (r *AgentResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	var data AgentResourceModel
+	_, ownershipDiags := readAgentOwnershipBundle(ctx, req.Private)
+	resp.Diagnostics.Append(ownershipDiags...)
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
 	if resp.Diagnostics.HasError() {
+		resp.Private = req.Private
+		resp.State = req.State
 		return
 	}
 
 	endpoint := fmt.Sprintf("/v1/agents/%s", url.PathEscape(data.ID.ValueString()))
+//line internal/provider/resource_agent.go:622
 	if err := r.client.DoRequestWithResponse(ctx, "DELETE", endpoint, nil, nil); err != nil {
 		if IsAPIErrorStatus(err, 404) {
 			return
@@ -633,7 +677,8 @@ func (r *AgentResource) ImportState(ctx context.Context, req resource.ImportStat
 	if resp.Private != nil {
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, []byte("true"))...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentImportedFieldsPrivateKey, nil)...)
-		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipInitializedPrivateKey, []byte("true"))...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipInitializedPrivateKey, nil)...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipPendingPrivateKey, nil)...)
 	}
 }
 
@@ -727,6 +772,7 @@ func (r *AgentResource) hydrateAgentUpdateFieldsWithOwnership(ctx context.Contex
 
 	endpoint := fmt.Sprintf("/v1/agents/%s", url.PathEscape(data.ID.ValueString()))
 	var result map[string]interface{}
+//line internal/provider/resource_agent.go:730
 	if err := r.client.doFreshRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
 		return err
 	}
@@ -1201,8 +1247,10 @@ func (r *AgentResource) readAgentWithOwnershipTransportCapture(ctx context.Conte
 	var result map[string]interface{}
 	var err error
 	if freshConnection {
+//line internal/provider/resource_agent.go:1204
 		err = r.client.doFreshRequestWithResponse(ctx, "GET", endpoint, nil, &result)
 	} else {
+//line internal/provider/resource_agent.go:1206
 		err = r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result)
 	}
 	if err != nil {
@@ -1518,12 +1566,19 @@ func (r *AgentResource) readAgentCard(cardRaw map[string]interface{}, data *Agen
 	if signaturesRaw, ok := cardRaw["signatures"].([]interface{}); ok && (populateAll || card.Signatures != nil) {
 		signatures := make([]AgentCardSignatureModel, 0, len(signaturesRaw))
 		for _, raw := range signaturesRaw {
-			object := raw.(map[string]interface{}) // validated by validateAgentCardResponse
+			object, ok := raw.(map[string]interface{})
+			if !ok {
+				continue
+			}
 			signature := AgentCardSignatureModel{
-				Protected:  types.StringValue(object["protected"].(string)),
-				Signature:  types.StringValue(object["signature"].(string)),
-				Header:     types.StringNull(),
-				HeaderJSON: types.StringNull(),
+				Protected: types.StringNull(), Signature: types.StringNull(),
+				Header: types.StringNull(), HeaderJSON: types.StringNull(),
+			}
+			if value, ok := object["protected"].(string); ok {
+				signature.Protected = types.StringValue(value)
+			}
+			if value, ok := object["signature"].(string); ok {
+				signature.Signature = types.StringValue(value)
 			}
 			if header, present := object["header"]; present {
 				if header == nil {

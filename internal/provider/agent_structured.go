@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
@@ -343,14 +342,7 @@ func readAgentSecurity(raw interface{}) (types.List, error) {
 }
 
 // A2AProviderConfigManager at the pinned source commit selects AgentCore only
-// for custom_llm_provider == "bedrock" with an "agentcore" model. Absence is
-// left to LiteLLM's permissive registry, but an explicit contradiction is
-// rejected before it creates a registry entry that cannot select AgentCore.
-func validateAgentCorePair(params map[string]interface{}) error {
-	model, _ := params["model"].(string)
-	provider, _ := params["custom_llm_provider"].(string)
-	if strings.Contains(model, "agentcore") && provider != "" && provider != "bedrock" {
-		return errors.New("Bedrock AgentCore models require custom_llm_provider = \"bedrock\"")
-	}
-	return nil
-}
+// when custom_llm_provider is "bedrock" and model contains "agentcore". That
+// predicate is selection logic, not request validation: other providers remain
+// valid even when their model name happens to contain the same substring.
+func validateAgentCorePair(map[string]interface{}) error { return nil }

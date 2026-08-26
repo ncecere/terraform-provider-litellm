@@ -7,10 +7,17 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	datasourceschema "github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	resourceschema "github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
+
+type agentTestPrivate map[string][]byte
+
+func (p agentTestPrivate) GetKey(_ context.Context, key string) ([]byte, diag.Diagnostics) {
+	return p[key], nil
+}
 
 func TestConfiguredAgentParamsIsLiteralAndLossless(t *testing.T) {
 	legacy := stringMapValue(map[string]string{
@@ -84,8 +91,8 @@ func TestImportedLegacyProjectionNeverBecomesWireType(t *testing.T) {
 }
 
 func TestAgentCoreProviderModelPairing(t *testing.T) {
-	if err := validateAgentCorePair(map[string]interface{}{"model": "bedrock/agentcore/runtime", "custom_llm_provider": "openai"}); err == nil {
-		t.Fatal("contradictory AgentCore provider pairing accepted")
+	if err := validateAgentCorePair(map[string]interface{}{"model": "bedrock/agentcore/runtime", "custom_llm_provider": "openai"}); err != nil {
+		t.Fatalf("provider mistook v1.98 AgentCore selection logic for request validation: %v", err)
 	}
 	if err := validateAgentCorePair(map[string]interface{}{"model": "bedrock/agentcore/runtime", "custom_llm_provider": "bedrock"}); err != nil {
 		t.Fatalf("source-supported AgentCore pairing rejected: %v", err)
@@ -387,6 +394,151 @@ func TestAgentImportSkillOwnershipUsesWirePresence(t *testing.T) {
 	owned := agentImportedFieldsFromWire(data, raw)
 	if !owned[agentSkillLeaf("null", "security")] || owned[agentSkillLeaf("omitted", "security")] {
 		t.Fatalf("wire security ownership=%#v", owned)
+	}
+}
+
+func TestAgentConfiguredChildrenDoNotClaimFreshHeaderOrSecurity(t *testing.T) {
+	base := map[string]interface{}{"name": "Agent", "url": "https://agent.invalid",
+		"signatures": []interface{}{map[string]interface{}{"protected": "p", "signature": "s", "header": nil}},
+		"skills":     []interface{}{map[string]interface{}{"id": "skill", "name": "Skill", "security": nil}},
+	}
+	prior := emptyKnownAgentResourceModel()
+	prior.AgentCard = &AgentCardModel{Name: types.StringValue("Agent"), URL: types.StringValue("https://agent.invalid"),
+		Signatures: []AgentCardSignatureModel{{Protected: types.StringValue("p"), Signature: types.StringValue("s"), Header: types.StringNull(), HeaderJSON: types.StringNull()}},
+		Skills:     []AgentSkillModel{{ID: types.StringValue("skill"), Name: types.StringValue("Skill"), Security: types.ListNull(types.MapType{ElemType: types.ListType{ElemType: types.StringType}}), SecurityJSON: types.StringNull()}},
+	}
+	plan, config := cloneAgentResourceModel(prior), cloneAgentResourceModel(prior)
+	plan.AgentCard.Description, config.AgentCard.Description = types.StringValue("changed"), types.StringValue("changed")
+	patch, err := overlayAgentCardRaw(base, plan, prior, config, agentFieldSet{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if header, present := agentWireObjectList(patch["signatures"])[0]["header"]; !present || header != nil {
+		t.Fatalf("fresh signature header changed: %#v", patch)
+	}
+	if security, present := agentWireObjectList(patch["skills"])[0]["security"]; !present || security != nil {
+		t.Fatalf("fresh skill security changed: %#v", patch)
+	}
+}
+
+func TestAgentRemoveOwnedSkillsPreservesAPISiblings(t *testing.T) {
+	base := map[string]interface{}{"name": "Agent", "url": "https://agent.invalid", "skills": []interface{}{
+		map[string]interface{}{"id": "owned", "name": "Owned"}, map[string]interface{}{"id": "imported", "name": "Imported"}, map[string]interface{}{"id": "fresh", "name": "Fresh"},
+	}}
+	prior := emptyKnownAgentResourceModel()
+	prior.AgentCard = &AgentCardModel{Name: types.StringValue("Agent"), URL: types.StringValue("https://agent.invalid"), Skills: []AgentSkillModel{
+		{ID: types.StringValue("owned"), Name: types.StringValue("Owned")}, {ID: types.StringValue("imported"), Name: types.StringValue("Imported")},
+	}}
+	plan, config := cloneAgentResourceModel(prior), cloneAgentResourceModel(prior)
+	plan.AgentCard.Skills, config.AgentCard.Skills = nil, nil
+	patch, err := overlayAgentCardRaw(base, plan, prior, config, agentFieldSet{agentScopeCardSkills: true, agentSkillLeaf("imported", "id"): true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := agentSkillRawByID(map[string]interface{}{"skills": patch["skills"]})
+	if byID["owned"] != nil || byID["imported"] == nil || byID["fresh"] == nil {
+		t.Fatalf("skill removal overlay=%#v", byID)
+	}
+	observedSkills := agentWireModelsForSkillsForTest(byID)
+	unconfirmed := append(append([]AgentSkillModel(nil), observedSkills...), AgentSkillModel{ID: types.StringValue("owned"), Name: types.StringValue("Owned")})
+	ownership := agentFieldSet{agentScopeCardSkills: true, agentSkillLeaf("imported", "id"): true}
+	if agentSkillsMutationMatch(nil, prior.AgentCard, nil, unconfirmed, ownership) {
+		t.Fatal("unconfirmed owned skill removal accepted")
+	}
+	observed := cloneAgentResourceModel(plan)
+	observed.AgentCard.Skills = observedSkills
+	confirmed := reconcileConfirmedAgentState(plan, observed, config, prior, ownership)
+	confirmedByID := map[string]bool{}
+	for _, skill := range confirmed.AgentCard.Skills {
+		confirmedByID[skill.ID.ValueString()] = true
+	}
+	if confirmedByID["owned"] || !confirmedByID["imported"] || !confirmedByID["fresh"] {
+		t.Fatalf("confirmed state forgot preserved siblings: %#v", confirmedByID)
+	}
+}
+
+func agentWireModelsForSkillsForTest(byID map[string]map[string]interface{}) []AgentSkillModel {
+	result := make([]AgentSkillModel, 0, len(byID))
+	for id, raw := range byID {
+		result = append(result, AgentSkillModel{ID: types.StringValue(id), Name: types.StringValue(raw["name"].(string))})
+	}
+	return result
+}
+
+func TestAgentV198RoundTripPreflightRejectsFilteredPaths(t *testing.T) {
+	for _, card := range []map[string]interface{}{
+		{"name": "Agent", "url": "https://agent.invalid", "x-unknown": true},
+		{"name": "Agent", "url": "https://agent.invalid", "additionalInterfaces": []interface{}{}},
+		{"name": "Agent", "url": "https://agent.invalid", "capabilities": map[string]interface{}{"pushNotifications": true}},
+	} {
+		if err := validateAgentCardV198RoundTrip(card); err == nil {
+			t.Fatalf("filtered path accepted: %#v", card)
+		}
+	}
+	if err := validateAgentCardV198RoundTrip(map[string]interface{}{"name": "Agent", "url": "https://agent.invalid", "capabilities": map[string]interface{}{"streaming": true}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAgentCardStrictPresentShapesAndPartialAbsence(t *testing.T) {
+	malformed := []map[string]interface{}{
+		{"signatures": []interface{}{map[string]interface{}{"protected": nil}}},
+		{"signatures": []interface{}{map[string]interface{}{"signature": true}}},
+		{"skills": []interface{}{map[string]interface{}{"security": []interface{}{map[string]interface{}{"oauth": []interface{}{true}}}}}},
+		{"capabilities": map[string]interface{}{"extensions": []interface{}{map[string]interface{}{"uri": nil}}}},
+		{"securitySchemes": map[string]interface{}{"key": map[string]interface{}{"type": "http", "scheme": nil}}},
+	}
+	for _, card := range malformed {
+		if validateAgentCardResponse(card, false) == nil {
+			t.Fatalf("malformed present field accepted: %#v", card)
+		}
+	}
+	if err := validateAgentCardResponse(map[string]interface{}{"signatures": []interface{}{map[string]interface{}{"header": nil}}}, false); err != nil {
+		t.Fatalf("valid role-partial card rejected: %v", err)
+	}
+}
+
+func TestAgentImportCardOwnershipUsesRawNullPresence(t *testing.T) {
+	data := emptyKnownAgentResourceModel()
+	data.AgentCard = &AgentCardModel{Name: types.StringNull(), URL: types.StringNull(), Capabilities: &AgentCapabilitiesModel{Streaming: types.BoolNull()}, Provider: &AgentProviderModel{Organization: types.StringNull()}}
+	owned := agentImportedFieldsFromWire(data, map[string]interface{}{"agent_card_params": map[string]interface{}{"name": nil, "capabilities": map[string]interface{}{"streaming": nil}, "provider": map[string]interface{}{"organization": nil}}})
+	if !owned[agentFieldCardName] || !owned[agentFieldCardCapStreaming] || !owned[agentFieldCardProviderOrg] || owned[agentFieldCardURL] {
+		t.Fatalf("raw card presence ownership=%#v", owned)
+	}
+}
+
+func TestAgentOwnershipMarkerCanonicalGrammar(t *testing.T) {
+	valid := agentFieldSet{agentScopeCardSkills: true, agentSkillLeaf("skill", "security"): true, agentSignatureLeaf(0, "header"): true}
+	raw := encodeAgentFieldSet(valid)
+	decoded, err := decodeAgentFieldSet(raw)
+	if err != nil || !agentFieldSetsEqual(valid, decoded) {
+		t.Fatalf("canonical ownership rejected: %#v %v", decoded, err)
+	}
+	for _, corrupt := range [][]byte{[]byte(`null`), []byte(`["unknown"]`), []byte(`["agent_card.name","agent_card.name"]`), append([]byte(" "), raw...)} {
+		if _, err := decodeAgentFieldSet(corrupt); err == nil {
+			t.Fatalf("corrupt ownership accepted: %s", corrupt)
+		}
+	}
+}
+
+func TestAgentOwnershipBundleIsAllOrNothing(t *testing.T) {
+	committed := agentFieldSet{agentScopeCardSkills: true, agentSkillLeaf("skill", "id"): true}
+	pending := agentFieldSet{agentScopeCardSkills: true}
+	valid := agentTestPrivate{agentOwnershipInitializedPrivateKey: []byte("true"), agentImportedFieldsPrivateKey: encodeAgentFieldSet(committed), agentOwnershipPendingPrivateKey: encodeAgentFieldSet(pending)}
+	bundle, diagnostics := readAgentOwnershipBundle(context.Background(), valid)
+	if diagnostics.HasError() || !bundle.versioned || !agentFieldSetsEqual(bundle.pending, pending) {
+		t.Fatalf("valid bundle rejected: %#v %#v", bundle, diagnostics)
+	}
+	corrupt := []agentTestPrivate{
+		{agentOwnershipInitializedPrivateKey: []byte("true")},
+		{agentImportedFieldsPrivateKey: encodeAgentFieldSet(committed)},
+		{agentOwnershipInitializedPrivateKey: []byte("1"), agentImportedFieldsPrivateKey: encodeAgentFieldSet(committed)},
+		{agentOwnershipInitializedPrivateKey: []byte("true"), agentImportedFieldsPrivateKey: encodeAgentFieldSet(committed), agentOwnershipPendingPrivateKey: encodeAgentFieldSet(agentFieldSet{agentFieldCardName: true})},
+	}
+	for _, private := range corrupt {
+		if _, diagnostics := readAgentOwnershipBundle(context.Background(), private); !diagnostics.HasError() {
+			t.Fatalf("partial/overlapping bundle accepted: %#v", private)
+		}
 	}
 }
 

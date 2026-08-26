@@ -126,6 +126,38 @@ func agentWireObjectsEqual(left, right map[string]interface{}) bool {
 	return exactJSONValuesEqual(left, right)
 }
 
+// LiteLLM v1.98's merge_agent_card filters every full-card PATCH through this
+// exact source allowlist and filters capabilities to truthy streaming only.
+// Reject before PATCH when a fresh authoritative path would therefore be lost.
+func validateAgentCardV198RoundTrip(card map[string]interface{}) error {
+	allowed := map[string]bool{
+		"protocolVersion": true, "name": true, "description": true, "version": true,
+		"capabilities": true, "defaultInputModes": true, "defaultOutputModes": true,
+		"skills": true, "preferredTransport": true, "supportedInterfaces": true,
+		"iconUrl": true, "provider": true, "documentationUrl": true,
+		"securitySchemes": true, "security": true, "supportsAuthenticatedExtendedCard": true,
+		"signatures": true, "url": true,
+	}
+	for key := range card {
+		if !allowed[key] {
+			return fmt.Errorf("authoritative agent card contains a path LiteLLM v1.98 cannot round-trip")
+		}
+	}
+	if raw, present := card["capabilities"]; present {
+		capabilities, ok := raw.(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("authoritative agent card contains a path LiteLLM v1.98 cannot round-trip")
+		}
+		for key, value := range capabilities {
+			streaming, isBool := value.(bool)
+			if key != "streaming" || !isBool || !streaming {
+				return fmt.Errorf("authoritative agent card contains a path LiteLLM v1.98 cannot round-trip")
+			}
+		}
+	}
+	return nil
+}
+
 func (r *AgentResource) sampleFreshAgentUpdateBase(ctx context.Context, state AgentResourceModel, needParams, needCard bool, maxAttempts int) (map[string]interface{}, map[string]interface{}, error) {
 	if maxAttempts < 2 {
 		maxAttempts = 2
@@ -136,6 +168,7 @@ func (r *AgentResource) sampleFreshAgentUpdateBase(ctx context.Context, state Ag
 	matched := false
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		var result map[string]interface{}
+//line internal/provider/agent_patch.go:139
 		err := r.client.doFreshRequestWithResponse(ctx, "GET", endpoint, nil, &result)
 		if err == nil {
 			err = validateImportedObjectIdentity(true, "agent", result, "agent_id", state.ID.ValueString())
@@ -240,11 +273,35 @@ func agentImportedFieldsFromWire(data AgentResourceModel, raw map[string]interfa
 	fields := agentImportedFieldsFromState(data)
 	card, _ := raw["agent_card_params"].(map[string]interface{})
 	for marker := range fields {
-		if strings.HasPrefix(marker, agentFieldCardSkills+"[") || strings.HasPrefix(marker, agentFieldCardSignatures+"[") {
+		if strings.HasPrefix(marker, "agent_card.") {
 			delete(fields, marker)
 		}
 	}
 	if card != nil {
+		for field, wire := range map[string]string{
+			agentFieldCardName: "name", agentFieldCardURL: "url", agentFieldCardDescription: "description", agentFieldCardVersion: "version",
+			agentFieldCardProtocol: "protocolVersion", agentFieldCardInputModes: "defaultInputModes", agentFieldCardOutputModes: "defaultOutputModes",
+			agentFieldCardTransport: "preferredTransport", agentFieldCardIcon: "iconUrl", agentFieldCardDocumentation: "documentationUrl",
+			agentFieldCardAuthenticated: "supportsAuthenticatedExtendedCard",
+		} {
+			if _, present := card[wire]; present {
+				fields[field] = true
+			}
+		}
+		if capabilities, present := card["capabilities"].(map[string]interface{}); present {
+			for field, wire := range map[string]string{agentFieldCardCapStreaming: "streaming", agentFieldCardCapPush: "pushNotifications", agentFieldCardCapHistory: "stateTransitionHistory"} {
+				if _, present := capabilities[wire]; present {
+					fields[field] = true
+				}
+			}
+		}
+		if provider, present := card["provider"].(map[string]interface{}); present {
+			for field, wire := range map[string]string{agentFieldCardProviderOrg: "organization", agentFieldCardProviderURL: "url"} {
+				if _, present := provider[wire]; present {
+					fields[field] = true
+				}
+			}
+		}
 		for id, skill := range agentSkillRawByID(card) {
 			markAgentSkillWireLeaves(fields, id, skill)
 		}
@@ -257,7 +314,6 @@ func agentImportedFieldsFromWire(data AgentResourceModel, raw map[string]interfa
 				}
 			}
 		}
-		delete(fields, agentFieldCardSignatures)
 	}
 	return fields
 }
@@ -329,11 +385,11 @@ func overlayAgentCardRaw(base map[string]interface{}, plan, prior, config AgentR
 			if index < len(baseSignatures) {
 				current = cloneAgentWireObject(baseSignatures[index])
 			}
-			setAgentWireField(current, desiredSignature, "protected")
-			setAgentWireField(current, desiredSignature, "signature")
-			headerMarker := agentSignatureLeaf(index, "header")
-			if configured[headerMarker] || (index < priorSignatureCount && !imported[headerMarker]) {
-				setAgentWireField(current, desiredSignature, "header")
+			for _, wire := range []string{"protected", "signature", "header"} {
+				marker := agentSignatureLeaf(index, wire)
+				if configured[marker] || (priorFields[marker] && !imported[marker] && !configured[marker]) {
+					setAgentWireField(current, desiredSignature, wire)
+				}
 			}
 			merged = append(merged, current)
 		}
@@ -366,10 +422,9 @@ func overlayAgentCardRaw(base map[string]interface{}, plan, prior, config AgentR
 				current = map[string]interface{}{}
 			}
 			desiredSkill := desiredByID[id]
-			setAgentWireField(current, desiredSkill, "id")
-			for field, wire := range map[string]string{"name": "name", "description": "description", "tags": "tags", "examples": "examples", "input_modes": "inputModes", "output_modes": "outputModes", "security": "security"} {
+			for field, wire := range map[string]string{"id": "id", "name": "name", "description": "description", "tags": "tags", "examples": "examples", "input_modes": "inputModes", "output_modes": "outputModes", "security": "security"} {
 				marker := agentSkillLeaf(id, field)
-				if configured[marker] || (priorIDs[id] && !imported[marker] && !configured[marker]) {
+				if configured[marker] || (priorFields[marker] && !imported[marker] && !configured[marker]) {
 					setAgentWireField(current, desiredSkill, wire)
 				}
 			}
@@ -384,6 +439,22 @@ func overlayAgentCardRaw(base map[string]interface{}, plan, prior, config AgentR
 			if agentFieldSetHasPrefix(imported, agentLeaf(agentFieldCardSkills, id)+".") || (imported[agentScopeCardSkills] && !priorIDs[id]) {
 				merged = append(merged, cloneAgentWireObject(remote))
 			}
+		}
+		patch["skills"] = merged
+	} else if prior.AgentCard != nil && prior.AgentCard.Skills != nil {
+		merged := make([]interface{}, 0, len(agentWireObjectList(patch["skills"])))
+		priorIDs := map[string]bool{}
+		for _, skill := range prior.AgentCard.Skills {
+			if !skill.ID.IsNull() && !skill.ID.IsUnknown() {
+				priorIDs[skill.ID.ValueString()] = true
+			}
+		}
+		for _, remote := range agentWireObjectList(patch["skills"]) {
+			id, _ := remote["id"].(string)
+			if priorIDs[id] && !agentFieldSetHasPrefix(imported, agentLeaf(agentFieldCardSkills, id)+".") {
+				continue
+			}
+			merged = append(merged, cloneAgentWireObject(remote))
 		}
 		patch["skills"] = merged
 	}

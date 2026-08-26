@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -41,40 +42,150 @@ func encodeAgentFieldSet(fields agentFieldSet) []byte {
 	return encoded
 }
 
+func agentOwnershipMarkerKnown(name string) bool {
+	fixed := map[string]bool{
+		agentFieldParamsJSON: true, agentFieldTPM: true, agentFieldRPM: true, agentFieldSessionTPM: true, agentFieldSessionRPM: true,
+		agentFieldExtraHeaders: true, agentFieldCardName: true, agentFieldCardURL: true,
+		agentFieldCardDescription: true, agentFieldCardVersion: true, agentFieldCardProtocol: true,
+		agentFieldCardInputModes: true, agentFieldCardOutputModes: true, agentFieldCardCapStreaming: true,
+		agentFieldCardCapPush: true, agentFieldCardCapHistory: true, agentFieldCardProviderOrg: true,
+		agentFieldCardProviderURL: true, agentFieldCardTransport: true, agentFieldCardIcon: true,
+		agentFieldCardDocumentation: true, agentFieldCardAuthenticated: true,
+		agentFieldPermissionServers: true, agentFieldPermissionGroups: true, agentFieldPermissionTools: true,
+		agentFieldPermissionModels: true, agentFieldPermissionAgents: true,
+		agentScopeParams: true, agentScopeStaticHeaders: true, agentScopeCardCapabilities: true,
+		agentScopeCardProvider: true, agentScopeCardSkills: true, agentScopeCardSignatures: true,
+		agentScopePermission: true,
+	}
+	if fixed[name] {
+		return true
+	}
+	decodeLeaf := func(prefix, suffix string) bool {
+		if !strings.HasPrefix(name, prefix+"[") || !strings.HasSuffix(name, suffix) {
+			return false
+		}
+		encoded := strings.TrimSuffix(strings.TrimPrefix(name, prefix+"["), suffix)
+		decoded, err := base64.RawURLEncoding.DecodeString(encoded)
+		return err == nil && len(decoded) > 0 && base64.RawURLEncoding.EncodeToString(decoded) == encoded
+	}
+	if decodeLeaf(agentFieldParams, "]") || decodeLeaf(agentFieldStaticHeaders, "]") {
+		return true
+	}
+	for _, field := range []string{"id", "name", "description", "tags", "examples", "input_modes", "output_modes", "security"} {
+		if decodeLeaf(agentFieldCardSkills, "]."+field) {
+			return true
+		}
+	}
+	if strings.HasPrefix(name, agentFieldCardSignatures+"[") {
+		close := strings.Index(name[len(agentFieldCardSignatures)+1:], "]")
+		if close >= 0 {
+			indexText := name[len(agentFieldCardSignatures)+1 : len(agentFieldCardSignatures)+1+close]
+			var index int
+			if _, err := fmt.Sscanf(indexText, "%d", &index); err == nil && index >= 0 && fmt.Sprintf("%d", index) == indexText {
+				suffix := name[len(agentFieldCardSignatures)+2+close:]
+				return suffix == ".protected" || suffix == ".signature" || suffix == ".header"
+			}
+		}
+	}
+	return false
+}
+
 func decodeAgentFieldSet(raw []byte) (agentFieldSet, error) {
-	fields := agentFieldSet{}
-	if len(raw) == 0 {
-		return fields, nil
+	if raw == nil {
+		return nil, fmt.Errorf("provider-private agent ownership data is missing")
 	}
 	var names []string
-	if err := json.Unmarshal(raw, &names); err != nil {
-		return nil, fmt.Errorf("The provider-private agent ownership marker is malformed.")
+	if err := json.Unmarshal(raw, &names); err != nil || names == nil {
+		return nil, fmt.Errorf("provider-private agent ownership data is malformed")
 	}
+	fields := agentFieldSet{}
 	for _, name := range names {
-		if name == "" {
-			return nil, fmt.Errorf("The provider-private agent ownership marker is malformed.")
+		if !agentOwnershipMarkerKnown(name) || fields[name] {
+			return nil, fmt.Errorf("provider-private agent ownership data is malformed")
 		}
 		fields[name] = true
+	}
+	if !bytes.Equal(raw, encodeAgentFieldSet(fields)) {
+		return nil, fmt.Errorf("provider-private agent ownership data is not canonical")
 	}
 	return fields, nil
 }
 
-func readAgentImportedFields(ctx context.Context, private agentPrivateReader) (agentFieldSet, diag.Diagnostics) {
+type agentOwnershipBundle struct {
+	committed agentFieldSet
+	pending   agentFieldSet
+	versioned bool
+}
+
+func readAgentOwnershipBundle(ctx context.Context, private agentPrivateReader) (agentOwnershipBundle, diag.Diagnostics) {
+	result := agentOwnershipBundle{committed: agentFieldSet{}}
 	var diagnostics diag.Diagnostics
 	if private == nil {
-		return agentFieldSet{}, diagnostics
+		return result, diagnostics
 	}
-	raw, privateDiags := private.GetKey(ctx, agentImportedFieldsPrivateKey)
-	diagnostics.Append(privateDiags...)
+	committedRaw, committedDiags := private.GetKey(ctx, agentImportedFieldsPrivateKey)
+	initializedRaw, initializedDiags := private.GetKey(ctx, agentOwnershipInitializedPrivateKey)
+	pendingRaw, pendingDiags := private.GetKey(ctx, agentOwnershipPendingPrivateKey)
+	diagnostics.Append(committedDiags...)
+	diagnostics.Append(initializedDiags...)
+	diagnostics.Append(pendingDiags...)
 	if diagnostics.HasError() {
-		return nil, diagnostics
+		return result, diagnostics
 	}
-	fields, err := decodeAgentFieldSet(raw)
+	any := committedRaw != nil || initializedRaw != nil || pendingRaw != nil
+	if !any {
+		return result, diagnostics
+	}
+	invalid := func() (agentOwnershipBundle, diag.Diagnostics) {
+		diagnostics.AddError("Invalid Agent Ownership State", "Provider-private agent ownership data is invalid. Prior public and private state was retained; no remote operation was attempted. This diagnostic contains no public values or identifiers.")
+		return result, diagnostics
+	}
+	if committedRaw == nil || string(initializedRaw) != "true" {
+		return invalid()
+	}
+	committed, err := decodeAgentFieldSet(committedRaw)
 	if err != nil {
-		diagnostics.AddError("Invalid Agent Ownership State", err.Error())
-		return nil, diagnostics
+		return invalid()
 	}
-	return fields, diagnostics
+	result.committed, result.versioned = committed, true
+	if pendingRaw != nil {
+		pending, err := decodeAgentFieldSet(pendingRaw)
+		if err != nil {
+			return invalid()
+		}
+		for field := range pending {
+			if !committed[field] {
+				return invalid()
+			}
+		}
+		result.pending = pending
+	}
+	return result, diagnostics
+}
+
+func readAgentImportedFields(ctx context.Context, private agentPrivateReader) (agentFieldSet, diag.Diagnostics) {
+	bundle, diagnostics := readAgentOwnershipBundle(ctx, private)
+	return bundle.committed, diagnostics
+}
+
+func cloneAgentFieldSet(source agentFieldSet) agentFieldSet {
+	result := agentFieldSet{}
+	for field := range source {
+		result[field] = true
+	}
+	return result
+}
+
+func agentFieldSetsEqual(left, right agentFieldSet) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for field := range left {
+		if !right[field] {
+			return false
+		}
+	}
+	return true
 }
 
 const (
@@ -370,18 +481,15 @@ func (r *AgentResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanR
 		resp.Diagnostics.AddError("Agent Parameter Conflict", err.Error())
 		return
 	}
-	imported, diagnostics := readAgentImportedFields(ctx, req.Private)
+	bundle, diagnostics := readAgentOwnershipBundle(ctx, req.Private)
 	resp.Diagnostics.Append(diagnostics...)
 	if resp.Diagnostics.HasError() {
+		resp.Private = req.Private
+		resp.Plan.Raw = req.State.Raw
 		return
 	}
-	initialized := false
-	if req.Private != nil {
-		raw, privateDiags := req.Private.GetKey(ctx, agentOwnershipInitializedPrivateKey)
-		resp.Diagnostics.Append(privateDiags...)
-		initialized = string(raw) == "true"
-	}
-	if !initialized {
+	imported := bundle.committed
+	if !bundle.versioned {
 		// Older state has no ownership provenance. Conservatively classify every
 		// known optional value as API-owned until explicit HCL transfers ownership
 		// through a verified apply.
@@ -419,11 +527,9 @@ func (r *AgentResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanR
 		headersMerged = mergeAPIMapLeavesIntoPlan(&plan.StaticHeaders, state.StaticHeaders, agentFieldStaticHeaders)
 	}
 	configured := agentConfiguredFields(config)
-	pending := agentFieldSet{}
-	for field := range imported {
-		if configured[field] {
-			pending[field] = true
-		}
+	pending := cloneAgentFieldSet(imported)
+	for field := range configured {
+		delete(pending, field)
 		// Do not copy imported Optional-only values into Plan when HCL omits
 		// them: Terraform rejects provider-planned values for non-computed
 		// attributes. Update builds a separate wire model from prior state so
@@ -448,10 +554,15 @@ func (r *AgentResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanR
 		// unknown so authoritative exact-type read-back is plan-consistent.
 		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root(agentFieldParamsJSON), types.StringUnknown())...)
 	}
+	pendingChanged := !agentFieldSetsEqual(imported, pending)
 	if resp.Private != nil {
-		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipPendingPrivateKey, encodeAgentFieldSet(pending))...)
+		if pendingChanged {
+			resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipPendingPrivateKey, encodeAgentFieldSet(pending))...)
+		} else {
+			resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipPendingPrivateKey, nil)...)
+		}
 	}
-	if len(pending) > 0 {
+	if pendingChanged {
 		// Equal-value ownership transfers require Apply so provenance is consumed
 		// only after authoritative read-back succeeds.
 		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, pathRootID, types.StringUnknown())...)
@@ -584,7 +695,226 @@ func copyAgentField(target *AgentResourceModel, source AgentResourceModel, field
 	}
 }
 
+func validateAgentCardSourceShape(card map[string]interface{}) error {
+	malformed := func() error { return fmt.Errorf("agent read response contains a malformed agent card") }
+	stringValue := func(object map[string]interface{}, field string, nullable bool) bool {
+		value, present := object[field]
+		return !present || (value == nil && nullable) || func() bool { _, ok := value.(string); return ok }()
+	}
+	boolValue := func(object map[string]interface{}, field string, nullable bool) bool {
+		value, present := object[field]
+		return !present || (value == nil && nullable) || func() bool { _, ok := value.(bool); return ok }()
+	}
+	stringList := func(value interface{}, nullable bool) bool {
+		if value == nil {
+			return nullable
+		}
+		items, ok := value.([]interface{})
+		if !ok {
+			return false
+		}
+		for _, item := range items {
+			if _, ok := item.(string); !ok {
+				return false
+			}
+		}
+		return true
+	}
+	for _, field := range []string{"protocolVersion", "name", "description", "url", "version"} {
+		if !stringValue(card, field, false) {
+			return malformed()
+		}
+	}
+	for _, field := range []string{"preferredTransport", "iconUrl", "documentationUrl"} {
+		if !stringValue(card, field, true) {
+			return malformed()
+		}
+	}
+	if !boolValue(card, "supportsAuthenticatedExtendedCard", true) {
+		return malformed()
+	}
+	for _, field := range []string{"defaultInputModes", "defaultOutputModes"} {
+		if value, present := card[field]; present && !stringList(value, false) {
+			return malformed()
+		}
+	}
+	if raw, present := card["capabilities"]; present {
+		capabilities, ok := raw.(map[string]interface{})
+		if !ok {
+			return malformed()
+		}
+		for _, field := range []string{"streaming", "pushNotifications", "stateTransitionHistory"} {
+			if !boolValue(capabilities, field, true) {
+				return malformed()
+			}
+		}
+		if rawExtensions, present := capabilities["extensions"]; present && rawExtensions != nil {
+			extensions, ok := rawExtensions.([]interface{})
+			if !ok {
+				return malformed()
+			}
+			for _, rawExtension := range extensions {
+				extension, ok := rawExtension.(map[string]interface{})
+				if !ok {
+					return malformed()
+				}
+				if !stringValue(extension, "uri", false) || !stringValue(extension, "description", true) || !boolValue(extension, "required", true) {
+					return malformed()
+				}
+				if params, present := extension["params"]; present && params != nil {
+					if _, ok := params.(map[string]interface{}); !ok {
+						return malformed()
+					}
+				}
+			}
+		}
+	}
+	if raw, present := card["provider"]; present && raw != nil {
+		provider, ok := raw.(map[string]interface{})
+		if !ok {
+			return malformed()
+		}
+		if !stringValue(provider, "organization", false) || !stringValue(provider, "url", false) {
+			return malformed()
+		}
+	}
+	for _, field := range []string{"additionalInterfaces", "supportedInterfaces"} {
+		if raw, present := card[field]; present && raw != nil {
+			interfaces, ok := raw.([]interface{})
+			if !ok {
+				return malformed()
+			}
+			for _, rawInterface := range interfaces {
+				item, ok := rawInterface.(map[string]interface{})
+				if !ok {
+					return malformed()
+				}
+				if !stringValue(item, "url", false) || !stringValue(item, "transport", false) || !stringValue(item, "protocolBinding", false) || !stringValue(item, "protocolVersion", false) {
+					return malformed()
+				}
+			}
+		}
+	}
+	validateSecurity := func(raw interface{}) bool {
+		if raw == nil {
+			return true
+		}
+		_, err := readAgentSecurity(raw)
+		return err == nil
+	}
+	if raw, present := card["security"]; present && !validateSecurity(raw) {
+		return malformed()
+	}
+	if raw, present := card["securitySchemes"]; present && raw != nil {
+		schemes, ok := raw.(map[string]interface{})
+		if !ok {
+			return malformed()
+		}
+		for _, rawScheme := range schemes {
+			scheme, ok := rawScheme.(map[string]interface{})
+			if !ok {
+				return malformed()
+			}
+			if !stringValue(scheme, "description", true) {
+				return malformed()
+			}
+			typeValue, ok := scheme["type"].(string)
+			if !ok {
+				return malformed()
+			}
+			switch typeValue {
+			case "apiKey":
+				location, locationOK := scheme["in_"].(string)
+				if !locationOK {
+					location, locationOK = scheme["in"].(string)
+				}
+				if !locationOK || (location != "query" && location != "header" && location != "cookie") || !stringValue(scheme, "name", false) || scheme["name"] == nil {
+					return malformed()
+				}
+			case "http":
+				if value, present := scheme["scheme"]; !present || value == nil || !stringValue(scheme, "scheme", false) || !stringValue(scheme, "bearerFormat", true) {
+					return malformed()
+				}
+			case "oauth2":
+				flows, ok := scheme["flows"].(map[string]interface{})
+				if !ok {
+					return malformed()
+				}
+				for _, flow := range []string{"authorizationCode", "clientCredentials", "implicit", "password"} {
+					if value, present := flows[flow]; present && value != nil {
+						if _, ok := value.(map[string]interface{}); !ok {
+							return malformed()
+						}
+					}
+				}
+				if !stringValue(scheme, "oauth2MetadataUrl", true) {
+					return malformed()
+				}
+			case "openIdConnect":
+				if value, present := scheme["openIdConnectUrl"]; !present || value == nil || !stringValue(scheme, "openIdConnectUrl", false) {
+					return malformed()
+				}
+			case "mutualTLS":
+			default:
+				return malformed()
+			}
+		}
+	}
+	if raw, present := card["signatures"]; present && raw != nil {
+		signatures, ok := raw.([]interface{})
+		if !ok {
+			return malformed()
+		}
+		for _, rawSignature := range signatures {
+			signature, ok := rawSignature.(map[string]interface{})
+			if !ok {
+				return malformed()
+			}
+			if !stringValue(signature, "protected", false) || !stringValue(signature, "signature", false) {
+				return malformed()
+			}
+			if header, present := signature["header"]; present && header != nil {
+				if _, ok := header.(map[string]interface{}); !ok {
+					return malformed()
+				}
+			}
+		}
+	}
+	if raw, present := card["skills"]; present {
+		skills, ok := raw.([]interface{})
+		if !ok {
+			return malformed()
+		}
+		for _, rawSkill := range skills {
+			skill, ok := rawSkill.(map[string]interface{})
+			if !ok {
+				return malformed()
+			}
+			for _, field := range []string{"id", "name", "description"} {
+				if !stringValue(skill, field, false) {
+					return malformed()
+				}
+			}
+			if value, present := skill["tags"]; present && !stringList(value, false) {
+				return malformed()
+			}
+			for _, field := range []string{"examples", "inputModes", "outputModes"} {
+				if value, present := skill[field]; present && !stringList(value, true) {
+					return malformed()
+				}
+			}
+			if value, present := skill["security"]; present && !validateSecurity(value) {
+				return malformed()
+			}
+		}
+	}
+	return nil
+}
+
 func validateAgentCardResponse(card map[string]interface{}, requiredIdentity bool) error {
+	if err := validateAgentCardSourceShape(card); err != nil {
+		return err
+	}
 	if requiredIdentity {
 		name, nameOK := card["name"].(string)
 		_, urlOK := card["url"].(string)
@@ -660,9 +990,6 @@ func validateAgentCardResponse(card map[string]interface{}, requiredIdentity boo
 			}
 			for _, field := range []string{"protected", "signature"} {
 				value, present := signature[field]
-				if requiredIdentity && !present {
-					return fmt.Errorf("agent read response contains a malformed agent card")
-				}
 				if present && value != nil {
 					if _, ok := value.(string); !ok {
 						return fmt.Errorf("agent read response contains a malformed agent card")
@@ -744,6 +1071,7 @@ func waitAgentFreshSample(ctx context.Context, delay time.Duration) error {
 
 func fetchFreshAgentListObjects(ctx context.Context, client *Client) ([]map[string]interface{}, error) {
 	var raw json.RawMessage
+//line internal/provider/resource_agent_lifecycle.go:747
 	if err := client.doFreshRequestWithResponse(ctx, "GET", "/v1/agents", nil, &raw); err != nil {
 		return nil, err
 	}
@@ -1512,7 +1840,7 @@ func compareAgentCard(mismatches *[]string, planned, prior, config AgentResource
 	}
 	providerCheck(agentFieldCardProviderOrg, plannedProvider.Organization, observedProvider.Organization)
 	providerCheck(agentFieldCardProviderURL, plannedProvider.URL, observedProvider.URL)
-	if config.AgentCard.Skills != nil && !agentSkillsMutationMatch(planned.AgentCard.Skills, prior.AgentCard, config.AgentCard.Skills, observed.AgentCard.Skills, imported) {
+	if (config.AgentCard.Skills != nil || (prior.AgentCard != nil && prior.AgentCard.Skills != nil)) && !agentSkillsMutationMatch(planned.AgentCard.Skills, prior.AgentCard, config.AgentCard.Skills, observed.AgentCard.Skills, imported) {
 		*mismatches = append(*mismatches, agentFieldCardSkills)
 	}
 }
@@ -1734,12 +2062,39 @@ func reconcileConfirmedAgentState(planned, observed, config, prior AgentResource
 	} else {
 		result.StaticHeaders = config.StaticHeaders
 	}
-	// Optional+Computed maps may retain API-owned keys in the planned value.
-	// Optional-only nested leaves cannot be added after apply without violating
-	// Terraform's planned-value contract; ordinary Read re-adopts those leaves
-	// authoritatively and keeps their provenance for subsequent planning.
+	// Keep preserved API-owned and concurrently API-added skill siblings in the
+	// confirmed state. Terraform-owned removals were already required absent by
+	// agentSkillsMutationMatch; publishing only the planned list here would forget
+	// the remote siblings that made the full-card mutation safe.
+	if result.AgentCard != nil && observed.AgentCard != nil {
+		plannedIDs, priorIDs := map[string]bool{}, map[string]bool{}
+		for _, skill := range result.AgentCard.Skills {
+			if !skill.ID.IsNull() && !skill.ID.IsUnknown() {
+				plannedIDs[skill.ID.ValueString()] = true
+			}
+		}
+		if prior.AgentCard != nil {
+			for _, skill := range prior.AgentCard.Skills {
+				if !skill.ID.IsNull() && !skill.ID.IsUnknown() {
+					priorIDs[skill.ID.ValueString()] = true
+				}
+			}
+		}
+		for _, skill := range observed.AgentCard.Skills {
+			if skill.ID.IsNull() || skill.ID.IsUnknown() {
+				continue
+			}
+			id := skill.ID.ValueString()
+			if plannedIDs[id] {
+				continue
+			}
+			if agentFieldSetHasPrefix(imported, agentLeaf(agentFieldCardSkills, id)+".") || (imported[agentScopeCardSkills] && !priorIDs[id]) {
+				result.AgentCard.Skills = append(result.AgentCard.Skills, skill)
+				plannedIDs[id] = true
+			}
+		}
+	}
 	_ = config
-	_ = prior
 	resolveAgentUnknowns(&result)
 	return result
 }
