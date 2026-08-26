@@ -459,7 +459,7 @@ PY
 }
 
 run_import() {
-  resource_type=$1 producer_fixtures=$2 importer_fixtures=$3 address=$4 expression=$5 lane=$6 expected_skip=${7:-}
+  resource_type=$1 producer_fixtures=$2 importer_fixtures=$3 address=$4 expression=$5 lane=$6 expected_skip=${7:-} stale_outputs=${8:-}
   IMPORT_ADDRESS=$address
   IMPORT_RESOURCE_TYPE=$resource_type
   if [ "$lane" = enterprise ] && [ "${LITELLM_ENTERPRISE_CONFIRM:-}" != licensed-disposable ]; then
@@ -597,7 +597,7 @@ PYNS
   if [ "$plan_status" -eq 2 ]; then
     (cd "$importer" && run_cli show -json import-converge.tfplan) >"$SCRATCH/import-converge.json" 2>>"$LOG" || fail 'post-import convergence plan inspection failed'
     convergence_kind=$(python3 "$SCRIPT_DIR/import_convergence.py" \
-      "$SCRATCH/import-converge.json" "$address") || \
+      "$SCRATCH/import-converge.json" "$address" "$stale_outputs") || \
       fail 'post-import convergence contained a non-reviewed action'
     # Imported state can lack provider-private configured markers. Terraform
     # 1.1 also reports removal of the producer-only matrix_import_id output as
@@ -936,11 +936,12 @@ if [ "$PHASE" != scenarios ]; then
 python3 - "$SCRIPT_DIR/matrix.json" <<'PY' >"$SCRATCH/imports.tsv"
 import json,sys
 for r in json.load(open(sys.argv[1], encoding="utf-8"))["resources"]:
- print("\t".join([r["type"], ",".join(r["fixture"]), ",".join(r.get("import_fixture",r["fixture"])), r["address"], r["import_expression"], r["lane"], r.get("import_skip_reason", "-")]))
+ print("\t".join([r["type"], ",".join(r["fixture"]), ",".join(r.get("import_fixture",r["fixture"])), r["address"], r["import_expression"], r["lane"], r.get("import_skip_reason", "-"), ",".join(r.get("import_stale_outputs",[])) or "-"]))
 PY
-while IFS="	" read -r resource_type producer_fixtures importer_fixtures address expression lane expected_skip; do
+while IFS="	" read -r resource_type producer_fixtures importer_fixtures address expression lane expected_skip stale_outputs; do
   [ "$expected_skip" = - ] && expected_skip=
-  run_import "$resource_type" "$producer_fixtures" "$importer_fixtures" "$address" "$expression" "$lane" "$expected_skip"
+  [ "$stale_outputs" = - ] && stale_outputs=
+  run_import "$resource_type" "$producer_fixtures" "$importer_fixtures" "$address" "$expression" "$lane" "$expected_skip" "$stale_outputs"
 done <"$SCRATCH/imports.tsv"
 fi
 if [ "$PHASE" = import ]; then

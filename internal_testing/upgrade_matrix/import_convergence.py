@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -12,7 +13,16 @@ class ImportConvergenceError(ValueError):
     pass
 
 
-def classify_import_convergence(value: dict[str, Any], target: str) -> str:
+def parse_stale_outputs(value: str) -> set[str]:
+    names = set(filter(None, value.split(",")))
+    if any(re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", name) is None for name in names):
+        raise ImportConvergenceError("stale output name was malformed")
+    return {"matrix_import_id", *names}
+
+
+def classify_import_convergence(
+    value: dict[str, Any], target: str, allowed_stale_outputs: set[str]
+) -> str:
     target_actions = None
     for change in value.get("resource_changes", []):
         address = change.get("address")
@@ -31,23 +41,26 @@ def classify_import_convergence(value: dict[str, Any], target: str) -> str:
         for name, change in value.get("output_changes", {}).items()
         if change.get("actions", []) not in ([], ["no-op"])
     }
-    allowed_stale_output = {"matrix_import_id": ["delete"]}
-    if changed_outputs not in ({}, allowed_stale_output):
+    if any(
+        name not in allowed_stale_outputs or actions != ["delete"]
+        for name, actions in changed_outputs.items()
+    ):
         raise ImportConvergenceError("output action was not reviewed")
 
     if target_actions == ["update"]:
         return "target-update"
-    if changed_outputs == allowed_stale_output:
+    if changed_outputs:
         return "stale-output-delete"
     raise ImportConvergenceError("detailed plan contained no reviewed change")
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 3:
+    if len(argv) != 4:
         return 2
     value = json.loads(Path(argv[1]).read_text(encoding="utf-8"))
     try:
-        result = classify_import_convergence(value, argv[2])
+        allowed = parse_stale_outputs(argv[3])
+        result = classify_import_convergence(value, argv[2], allowed)
     except (ImportConvergenceError, TypeError, AttributeError):
         return 1
     print(result)
