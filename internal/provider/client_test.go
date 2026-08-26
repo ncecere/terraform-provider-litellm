@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -265,7 +266,7 @@ func TestClientSanitizesSecretsInStructuredDetailKeys(t *testing.T) {
 	}
 }
 
-func TestClientSensitiveErrorPreservesNumericNotFoundClassification(t *testing.T) {
+func TestClientSensitiveErrorDoesNotInferNotFoundFromBody(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -278,8 +279,8 @@ func TestClientSensitiveErrorPreservesNumericNotFoundClassification(t *testing.T
 	client := &Client{APIBase: server.URL, APIKey: "admin", HTTPClient: server.Client()}
 	err := client.DoRequestWithResponse(context.Background(), http.MethodGet, "/key/info", nil, nil)
 	var apiErr *APIError
-	if !errors.As(err, &apiErr) || !IsNotFoundError(err) || apiErr.Detail != "" || apiErr.Body != "" {
-		t.Fatalf("numeric not-found compatibility was not retained safely: %#v", err)
+	if !errors.As(err, &apiErr) || IsNotFoundError(err) || apiErr.Detail != "" || apiErr.Body != "" {
+		t.Fatalf("numeric response content affected exact status classification: %#v", err)
 	}
 }
 
@@ -354,8 +355,8 @@ func TestSuppressedErrorsRetainTypedClassifications(t *testing.T) {
 		notFound bool
 		fallback bool
 	}{
-		{"not found", "/key/info?key=secret", `{"error":{"message":"Key not found"}}`, true, false},
-		{"fallback propagation", "/fallback", `{"detail":"Invalid fallback models: model-a not found in router"}`, true, true},
+		{"not found", "/key/info?key=secret", `{"error":{"message":"Key not found"}}`, false, false},
+		{"fallback propagation", "/fallback", `{"detail":"Invalid fallback models: model-a not found in router"}`, false, true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -426,6 +427,7 @@ func TestClientTransportRetryCategoryIsSafeAndNarrow(t *testing.T) {
 		{name: "deadline", cause: context.DeadlineExceeded, category: safeTransportRetryTimeout, retryable: true},
 		{name: "temporary", cause: temporaryTransportTestError{}, category: safeTransportRetryTemporary, retryable: true},
 		{name: "connection reset", cause: fmt.Errorf("wrapped: %w", syscall.ECONNRESET), category: safeTransportRetryConnectionReset, retryable: true},
+		{name: "early EOF", cause: io.ErrUnexpectedEOF, category: safeTransportRetryNone, retryable: false},
 		{name: "certificate", cause: x509.UnknownAuthorityError{}, category: safeTransportRetryNone},
 		{name: "configuration", cause: errors.New("invalid proxy configuration with secret"), category: safeTransportRetryNone},
 		{name: "cancellation", cause: context.Canceled, category: safeTransportRetryNone},

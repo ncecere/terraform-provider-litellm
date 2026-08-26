@@ -74,7 +74,7 @@ func TestRetryFallbackReadStopsAtAttemptLimit(t *testing.T) {
 	t.Parallel()
 
 	var attempts int
-	expected := errors.New("404 fallback not found")
+	expected := &APIError{StatusCode: http.StatusNotFound}
 	err := retryFallbackRead(context.Background(), 3, 0, 0, func() error {
 		attempts++
 		return expected
@@ -116,7 +116,7 @@ func TestRetryFallbackReadHonorsCancellationDuringBackoff(t *testing.T) {
 	err := retryFallbackRead(ctx, 5, time.Hour, time.Hour, func() error {
 		attempts++
 		cancel()
-		return errors.New("404 fallback not found")
+		return &APIError{StatusCode: http.StatusNotFound}
 	})
 
 	if !errors.Is(err, context.Canceled) {
