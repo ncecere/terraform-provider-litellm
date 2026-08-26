@@ -192,7 +192,7 @@ make smoke resources=model_minimal.tf
 make smoke resources=agent_minimal.tf datasources=agent.tf,agents_list.tf
 ```
 
-The explicit acceptance matrix covers 22 of 23 resources; `litellm_project` is
+The explicit acceptance matrix covers 23 of 24 resources; `litellm_project` is
 excluded because its endpoint requires LiteLLM Enterprise. Credential coverage
 includes non-empty values-only, heterogeneous legacy/JSON, true model-only,
 full/by-name and by-model data sources, a two-apply nested update/removal case,
@@ -271,7 +271,7 @@ rm provider.tf variables.tf terraform.tfvars
   both the resource file and data source file must be in the same working
   directory.
 - Project resource/data-source fixtures require LiteLLM Enterprise and are not
-  part of the default 22-resource acceptance matrix. `project_budget_clear.tf`
+  part of the default 23-resource acceptance matrix. `project_budget_clear.tf`
   is a two-apply fixture: apply its default first, then apply with
   `-var='clear_project_budget=true'` to verify explicit budget and reset clears.
 - `organization_compatibility_defaults.tf` proves only the deprecated harmless

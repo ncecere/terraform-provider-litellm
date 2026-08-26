@@ -1,0 +1,514 @@
+{
+  "lazy_features": [
+    {
+      "attribute": "router",
+      "live_operation_count": 25,
+      "module": "litellm.proxy.guardrails.guardrail_endpoints",
+      "mount_prefix": "",
+      "name": "guardrails",
+      "openapi_operation_count": 25,
+      "path_prefixes": [
+        "/guardrails",
+        "/v2/guardrails",
+        "/apply_guardrail",
+        "/policies/usage"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "live_operation_count": 10,
+      "module": "litellm.proxy.management_endpoints.policy_endpoints",
+      "mount_prefix": "",
+      "name": "policies",
+      "openapi_operation_count": 10,
+      "path_prefixes": [
+        "/policy/",
+        "/utils/test_policies_and_guardrails"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "live_operation_count": 16,
+      "module": "litellm.proxy.policy_engine.policy_endpoints",
+      "mount_prefix": "",
+      "name": "policy_engine",
+      "openapi_operation_count": 16,
+      "path_prefixes": [
+        "/policies"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "live_operation_count": 2,
+      "module": "litellm.proxy.policy_engine.policy_resolve_endpoints",
+      "mount_prefix": "",
+      "name": "policy_resolve",
+      "openapi_operation_count": 2,
+      "path_prefixes": [
+        "/policies/resolve",
+        "/policies/attachments/estimate-impact"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "live_operation_count": 9,
+      "module": "litellm.proxy.agent_endpoints.endpoints",
+      "mount_prefix": "",
+      "name": "agents",
+      "openapi_operation_count": 9,
+      "path_prefixes": [
+        "/v1/agents",
+        "/agents",
+        "/agent/"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "live_operation_count": 5,
+      "module": "litellm.proxy.google_endpoints.agents_endpoints",
+      "mount_prefix": "",
+      "name": "gemini_agents",
+      "openapi_operation_count": 5,
+      "path_prefixes": [
+        "/v1beta/agents"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "live_operation_count": 5,
+      "module": "litellm.proxy.agent_endpoints.a2a_endpoints",
+      "mount_prefix": "",
+      "name": "a2a",
+      "openapi_operation_count": 5,
+      "path_prefixes": [
+        "/a2a"
+      ],
+      "path_suffixes": [
+        "/message/send"
+      ],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "live_operation_count": 1,
+      "module": "litellm.proxy.a2a.endpoints",
+      "mount_prefix": "",
+      "name": "a2a_registration",
+      "openapi_operation_count": 1,
+      "path_prefixes": [
+        "/v1/a2a/discover"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "live_operation_count": 14,
+      "module": "litellm.proxy.vector_store_endpoints.endpoints",
+      "mount_prefix": "",
+      "name": "vector_stores",
+      "openapi_operation_count": 14,
+      "path_prefixes": [
+        "/v1/vector_stores",
+        "/vector_stores",
+        "/v1/indexes"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "live_operation_count": 6,
+      "module": "litellm.proxy.vector_store_endpoints.management_endpoints",
+      "mount_prefix": "",
+      "name": "vector_store_management",
+      "openapi_operation_count": 6,
+      "path_prefixes": [
+        "/vector_store/",
+        "/v1/vector_store/"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "live_operation_count": 12,
+      "module": "litellm.proxy.vector_store_files_endpoints.endpoints",
+      "mount_prefix": "",
+      "name": "vector_store_files",
+      "openapi_operation_count": 12,
+      "path_prefixes": [
+        "/v1/vector_stores",
+        "/vector_stores"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "live_operation_count": 8,
+      "module": "litellm.proxy.management_endpoints.tool_management_endpoints",
+      "mount_prefix": "",
+      "name": "tools",
+      "openapi_operation_count": 8,
+      "path_prefixes": [
+        "/v1/tool",
+        "/tool"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "live_operation_count": 7,
+      "module": "litellm.proxy.search_endpoints.search_tool_management",
+      "mount_prefix": "",
+      "name": "search_tools",
+      "openapi_operation_count": 7,
+      "path_prefixes": [
+        "/search_tools"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "live_operation_count": 36,
+      "module": "litellm.proxy.management_endpoints.mcp_management_endpoints",
+      "mount_prefix": "",
+      "name": "mcp_management",
+      "openapi_operation_count": 33,
+      "path_prefixes": [
+        "/v1/mcp/"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "live_operation_count": 5,
+      "module": "litellm.proxy._experimental.mcp_server.byok_oauth_endpoints",
+      "mount_prefix": "",
+      "name": "mcp_byok_oauth",
+      "openapi_operation_count": 0,
+      "path_prefixes": [
+        "/v1/mcp/oauth",
+        "/.well-known/oauth-"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "live_operation_count": 19,
+      "module": "litellm.proxy._experimental.mcp_server.discoverable_endpoints",
+      "mount_prefix": "",
+      "name": "mcp_discoverable",
+      "openapi_operation_count": 19,
+      "path_prefixes": [
+        "/.well-known/oauth-",
+        "/.well-known/openid-configuration",
+        "/.well-known/jwks.json",
+        "/authorize",
+        "/token",
+        "/callback",
+        "/register"
+      ],
+      "path_suffixes": [
+        "/authorize",
+        "/token",
+        "/register"
+      ],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "live_operation_count": 4,
+      "module": "litellm.proxy._experimental.mcp_server.rest_endpoints",
+      "mount_prefix": "",
+      "name": "mcp_rest",
+      "openapi_operation_count": 4,
+      "path_prefixes": [
+        "/mcp-rest"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "app",
+      "live_operation_count": 9,
+      "module": "litellm.proxy._experimental.mcp_server.server",
+      "mount_prefix": "/mcp",
+      "name": "mcp_app",
+      "openapi_operation_count": 1,
+      "path_prefixes": [
+        "/mcp"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": true,
+      "registration": "mount_app"
+    },
+    {
+      "attribute": "router",
+      "live_operation_count": 4,
+      "module": "litellm.proxy.management_endpoints.config_override_endpoints",
+      "mount_prefix": "",
+      "name": "config_overrides",
+      "openapi_operation_count": 4,
+      "path_prefixes": [
+        "/config_overrides"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "live_operation_count": 9,
+      "module": "litellm.proxy.realtime_endpoints.endpoints",
+      "mount_prefix": "",
+      "name": "realtime",
+      "openapi_operation_count": 9,
+      "path_prefixes": [
+        "/openai/v1/realtime",
+        "/v1/realtime",
+        "/realtime"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "live_operation_count": 3,
+      "module": "litellm.proxy.anthropic_endpoints.endpoints",
+      "mount_prefix": "",
+      "name": "anthropic_passthrough",
+      "openapi_operation_count": 3,
+      "path_prefixes": [
+        "/v1/messages",
+        "/anthropic",
+        "/api/event_logging"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "live_operation_count": 4,
+      "module": "litellm.proxy.anthropic_endpoints.skills_endpoints",
+      "mount_prefix": "",
+      "name": "anthropic_skills",
+      "openapi_operation_count": 4,
+      "path_prefixes": [
+        "/v1/skills",
+        "/skills"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "live_operation_count": 5,
+      "module": "litellm.proxy.vertex_ai_endpoints.langfuse_endpoints",
+      "mount_prefix": "",
+      "name": "langfuse_passthrough",
+      "openapi_operation_count": 5,
+      "path_prefixes": [
+        "/langfuse"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "live_operation_count": 11,
+      "module": "litellm.proxy.openai_evals_endpoints.endpoints",
+      "mount_prefix": "",
+      "name": "evals",
+      "openapi_operation_count": 11,
+      "path_prefixes": [
+        "/v1/evals",
+        "/evals"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "claude_code_marketplace_router",
+      "live_operation_count": 8,
+      "module": "litellm.proxy.anthropic_endpoints.claude_code_endpoints",
+      "mount_prefix": "",
+      "name": "claude_code_marketplace",
+      "openapi_operation_count": 8,
+      "path_prefixes": [
+        "/claude-code"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "scim_router",
+      "live_operation_count": 19,
+      "module": "litellm.proxy.management_endpoints.scim.scim_v2",
+      "mount_prefix": "",
+      "name": "scim",
+      "openapi_operation_count": 18,
+      "path_prefixes": [
+        "/scim"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "live_operation_count": 6,
+      "module": "litellm.proxy.spend_tracking.cloudzero_endpoints",
+      "mount_prefix": "",
+      "name": "cloudzero",
+      "openapi_operation_count": 6,
+      "path_prefixes": [
+        "/cloudzero"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "live_operation_count": 6,
+      "module": "litellm.proxy.spend_tracking.vantage_endpoints",
+      "mount_prefix": "",
+      "name": "vantage",
+      "openapi_operation_count": 6,
+      "path_prefixes": [
+        "/vantage"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "live_operation_count": 1,
+      "module": "litellm.proxy.management_endpoints.usage_endpoints",
+      "mount_prefix": "",
+      "name": "usage_ai",
+      "openapi_operation_count": 1,
+      "path_prefixes": [
+        "/usage/ai"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "live_operation_count": 10,
+      "module": "litellm.proxy.prompts.prompt_endpoints",
+      "mount_prefix": "",
+      "name": "prompts",
+      "openapi_operation_count": 10,
+      "path_prefixes": [
+        "/prompts",
+        "/utils/dotprompt_json_converter"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "live_operation_count": 5,
+      "module": "litellm.proxy.management_endpoints.jwt_key_mapping_endpoints",
+      "mount_prefix": "",
+      "name": "jwt_mappings",
+      "openapi_operation_count": 5,
+      "path_prefixes": [
+        "/jwt/key/mapping"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "live_operation_count": 2,
+      "module": "litellm.proxy.management_endpoints.compliance_endpoints",
+      "mount_prefix": "",
+      "name": "compliance",
+      "openapi_operation_count": 2,
+      "path_prefixes": [
+        "/compliance"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "live_operation_count": 10,
+      "module": "litellm.proxy.management_endpoints.access_group_endpoints",
+      "mount_prefix": "",
+      "name": "access_groups",
+      "openapi_operation_count": 10,
+      "path_prefixes": [
+        "/access_group",
+        "/v1/access_group",
+        "/v1/unified_access_group"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    }
+  ],
+  "routes": [
+    {
+      "evidence": "litellm/proxy/management_endpoints/organization_endpoints.py",
+      "method": "PATCH",
+      "path": "/v2/organization/{organization_id}",
+      "path_parameters": [
+        "organization_id"
+      ],
+      "query_parameters": [],
+      "reason": "include_in_schema=false upstream route used by organization updates"
+    }
+  ],
+  "schema_version": 2,
+  "upstream_commit": "d8f71d7bdbd7c9873d98293f83d64c6db72847e6"
+}
