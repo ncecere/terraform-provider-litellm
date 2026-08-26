@@ -588,6 +588,18 @@ func bad(value string) string {
  return endpointWithPathSegment("/things/", "safe", "")
 }
 `,
+		"slice-parameter-call": `package provider
+import "strings"
+func firstPath(values []string) string {
+ for _, ranged := range values {
+  return endpointWithPathSegment("/things/", ranged, "")
+ }
+ return endpointWithPathSegment("/things/", "safe", "")
+}
+func bad(value string) string {
+ return firstPath([]string{strings.ReplaceAll(value, "/", "%2F")})
+}
+`,
 		"slice-alias-mutation": `package provider
 import "strings"
 func bad(value string) string {

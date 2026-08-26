@@ -1812,6 +1812,80 @@ func (x *extractor) rawStringCollectionProvenance(expr ast.Expr, parameterType t
 	return false
 }
 
+func (x *extractor) bodyAliasObjects(body *ast.BlockStmt, object types.Object) map[types.Object]bool {
+	aliases := map[types.Object]bool{object: true}
+	if body == nil || object == nil {
+		return aliases
+	}
+	changed := true
+	for changed {
+		changed = false
+		ast.Inspect(body, func(node ast.Node) bool {
+			assignment, ok := node.(*ast.AssignStmt)
+			if !ok || len(assignment.Lhs) != len(assignment.Rhs) {
+				return true
+			}
+			for index, left := range assignment.Lhs {
+				leftIdentifier, leftOK := left.(*ast.Ident)
+				rightIdentifier, rightOK := assignment.Rhs[index].(*ast.Ident)
+				if !leftOK || !rightOK {
+					continue
+				}
+				leftObject, rightObject := x.typesInfo.ObjectOf(leftIdentifier), x.typesInfo.ObjectOf(rightIdentifier)
+				if aliases[leftObject] && !aliases[rightObject] {
+					aliases[rightObject] = true
+					changed = true
+				}
+				if aliases[rightObject] && !aliases[leftObject] {
+					aliases[leftObject] = true
+					changed = true
+				}
+			}
+			return true
+		})
+	}
+	return aliases
+}
+
+func (x *extractor) collectionParameterFeedsEndpoint(callable reviewedEndpointCallable, parameter types.Object) bool {
+	parameterAliases := x.bodyAliasObjects(callable.body, parameter)
+	feeds := false
+	ast.Inspect(callable.body, func(node ast.Node) bool {
+		statement, ok := node.(*ast.RangeStmt)
+		if !ok {
+			return true
+		}
+		container, direct := statement.X.(*ast.Ident)
+		if !direct || !parameterAliases[x.typesInfo.ObjectOf(container)] {
+			return true
+		}
+		for _, ranged := range []ast.Expr{statement.Key, statement.Value} {
+			identifier, ok := ranged.(*ast.Ident)
+			if !ok || identifier.Name == "_" {
+				continue
+			}
+			rangeAliases := x.bodyAliasObjects(callable.body, x.typesInfo.ObjectOf(identifier))
+			ast.Inspect(callable.body, func(child ast.Node) bool {
+				call, ok := child.(*ast.CallExpr)
+				if !ok || !x.exactEndpointBuilder(calledFunctionObject(x.typesInfo, call.Fun)) || len(call.Args) < 2 {
+					return true
+				}
+				for alias := range rangeAliases {
+					if expressionUsesObject(x.typesInfo, call.Args[1], alias) > 0 {
+						feeds = true
+					}
+				}
+				return !feeds
+			})
+			if feeds {
+				return false
+			}
+		}
+		return !feeds
+	})
+	return feeds
+}
+
 func (x *extractor) endpointCallableArgumentsValid(callable reviewedEndpointCallable, arguments []ast.Expr, fn *ast.FuncDecl) bool {
 	if callable.params == nil || callable.body == nil {
 		return false
@@ -1847,7 +1921,7 @@ func (x *extractor) endpointCallableArgumentsValid(callable reviewedEndpointCall
 				underlying := types.Unalias(parameter.Type()).Underlying()
 				switch underlying.(type) {
 				case *types.Slice, *types.Array, *types.Map:
-					if !x.rawStringCollectionProvenance(argument, parameter.Type(), fn) {
+					if x.collectionParameterFeedsEndpoint(callable, parameter) && !x.rawStringCollectionProvenance(argument, parameter.Type(), fn) {
 						return false
 					}
 				}
@@ -2866,30 +2940,10 @@ func (x *extractor) validateStrictSourcePolicy() error {
 					}
 					if function, ok := called.(*types.Func); ok && function.Pkg() != nil && function.Pkg().Path() == providerPackagePath {
 						callee := x.funcs[function.Name()]
-						if callee != nil && x.functionDirectlyUsesEndpoint(callee) && callee.Type.Params != nil {
-							argumentIndex := 0
-							for _, field := range callee.Type.Params.List {
-								for _, name := range field.Names {
-									if argumentIndex >= len(item.Args) {
-										break
-									}
-									argument := item.Args[argumentIndex]
-									argumentIndex++
-									parameter := x.typesInfo.Defs[name]
-									if parameter == nil || expressionUsesObject(x.typesInfo, callee.Body, parameter) == 0 {
-										continue
-									}
-									switch {
-									case types.Identical(parameter.Type(), types.Typ[types.String]):
-										if !x.rawStringProvenance(argument, fn, map[types.Object]bool{}) {
-											add(path, argument, "approved endpoint helper argument must retain raw-input provenance")
-										}
-									case exactURLValuesCarrierType(parameter.Type()):
-										if !x.rawURLValuesProvenance(argument, fn, map[types.Object]bool{}) {
-											add(path, argument, "approved query helper argument must retain raw-input provenance")
-										}
-									}
-								}
+						if callee != nil && x.functionDirectlyUsesEndpoint(callee) {
+							callable := reviewedEndpointCallable{params: callee.Type.Params, body: callee.Body}
+							if !x.endpointCallableArgumentsValid(callable, item.Args, fn) {
+								add(path, item, "approved endpoint helper arguments must retain raw-input provenance")
 							}
 						}
 					}
