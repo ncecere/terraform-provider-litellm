@@ -1081,6 +1081,130 @@ func proof(value string) string { return normalize(value) }
 	}
 }
 
+func TestRawHelperProofBindsFieldOwnersEmbeddingAliasesPointersAndCycles(t *testing.T) {
+	proof := func(source string) string {
+		t.Helper()
+		digest, valid := fixtureRawDependencyProof(t, source)
+		if !valid || digest == "" {
+			t.Fatalf("fixture did not produce a closed proof: %q", digest)
+		}
+		return digest
+	}
+
+	embeddedA := proof(`package provider
+type A struct { Value string }
+type Wrapper struct { A }
+func proof(value Wrapper) string { return value.Value }
+`)
+	embeddedB := proof(`package provider
+type B struct { Value string }
+type Wrapper struct { B }
+func proof(value Wrapper) string { return value.Value }
+`)
+	if embeddedA == embeddedB {
+		t.Fatal("embedded declaring owner and selection traversal were absent from proof")
+	}
+
+	alias := proof(`package provider
+type Base struct { Value string }
+type Alias = Base
+func proof(value Alias) string { return value.Value }
+`)
+	named := proof(`package provider
+type Base struct { Value string }
+type Alias Base
+func proof(value Alias) string { return value.Value }
+`)
+	pointer := proof(`package provider
+type Base struct { Value string }
+type Alias = Base
+func proof(value *Alias) string { return value.Value }
+`)
+	if alias == named || alias == pointer || named == pointer {
+		t.Fatalf("alias, named, and pointer field identities collided: %q %q %q", alias, named, pointer)
+	}
+
+	cycleSource := `package provider
+type Node struct { Value string; Next *Node }
+func proof(value *Node) string { return value.Next.Value }
+`
+	cycleFirst := proof(cycleSource)
+	cycleSecond := proof(cycleSource)
+	cycleChanged := proof(`package provider
+type OtherNode struct { Value string; Next *OtherNode }
+func proof(value *OtherNode) string { return value.Next.Value }
+`)
+	if cycleFirst != cycleSecond || cycleFirst == cycleChanged {
+		t.Fatalf("recursive proof identity was unstable or unqualified: %q %q %q", cycleFirst, cycleSecond, cycleChanged)
+	}
+}
+
+func TestExtractorDoesNotGrantSemanticsToSpoofedCallNames(t *testing.T) {
+	fixtures := map[string]string{
+		"sprintf-free": `func Sprintf(string, ...any) string { return "/spoof" }
+func bad(ctx context.Context, client *Client, value string) { client.DoRequestWithResponse(ctx, "GET", Sprintf("/things/%s", value), nil, nil) }`,
+		"sprintf-method": `type formatter struct{}
+func (formatter) Sprintf(string, ...any) string { return "/spoof" }
+func bad(ctx context.Context, client *Client, value string) { client.DoRequestWithResponse(ctx, "GET", (formatter{}).Sprintf("/things/%s", value), nil, nil) }`,
+		"replace-all": `func ReplaceAll(string, string, string) string { return "/spoof" }
+func bad(ctx context.Context, client *Client, value string) { client.DoRequestWithResponse(ctx, "GET", ReplaceAll("/things/"+value, "/", "x"), nil, nil) }`,
+		"path-escape": `func PathEscape(string) string { return "/spoof" }
+func bad(ctx context.Context, client *Client, value string) { client.DoRequestWithResponse(ctx, "GET", PathEscape(value), nil, nil) }`,
+		"query-escape": `func QueryEscape(string) string { return "/spoof" }
+func bad(ctx context.Context, client *Client, value string) { client.DoRequestWithResponse(ctx, "GET", QueryEscape(value), nil, nil) }`,
+		"encode-method": `type values struct{}
+func (values) Encode() string { return "/spoof" }
+func bad(ctx context.Context, client *Client) { client.DoRequestWithResponse(ctx, "GET", (values{}).Encode(), nil, nil) }`,
+		"itoa": `func Itoa(int) string { return "/spoof" }
+func bad(ctx context.Context, client *Client) { client.DoRequestWithResponse(ctx, "GET", Itoa(1), nil, nil) }`,
+		"format-int": `func FormatInt(int64, int) string { return "/spoof" }
+func bad(ctx context.Context, client *Client) { client.DoRequestWithResponse(ctx, "GET", FormatInt(1, 10), nil, nil) }`,
+		"append": `func append(string, ...string) string { return "/spoof" }
+func bad(ctx context.Context, client *Client, value string) { client.DoRequestWithResponse(ctx, "GET", append("/things/", value), nil, nil) }`,
+		"make": `func make(string, string) string { return "/spoof" }
+func bad(ctx context.Context, client *Client, value string) { client.DoRequestWithResponse(ctx, "GET", make("/things/", value), nil, nil) }`,
+		"endpoint-builder-method": `type routes struct{}
+func (routes) endpointWithPathSegment(string, string, string) string { return "/spoof" }
+func bad(ctx context.Context, client *Client, value string) { client.DoRequestWithResponse(ctx, "GET", (routes{}).endpointWithPathSegment("/things/", value, ""), nil, nil) }`,
+	}
+	for name, fixture := range fixtures {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeHTTPFixtureSupport(t, dir)
+			writeFixture(t, dir, "bad.go", "package provider\nimport \"context\"\n"+fixture+"\n")
+			if _, err := ExtractProvider(dir); err == nil {
+				t.Fatal("spoofed call name received reviewed semantics")
+			}
+		})
+	}
+}
+
+func TestExtractorAllowsExactlyQualifiedStandardCalls(t *testing.T) {
+	dir := t.TempDir()
+	writeHTTPFixtureSupport(t, dir)
+	writeFixture(t, dir, "safe.go", `package provider
+import (
+ "context"
+ "fmt"
+ "strconv"
+ "strings"
+)
+func safe(ctx context.Context, client *Client, value string) {
+ client.DoRequestWithResponse(ctx, "GET", fmt.Sprintf("/format/%s", value), nil, nil)
+ client.DoRequestWithResponse(ctx, "GET", strings.ReplaceAll("/replace/static", "old", "new"), nil, nil)
+ client.DoRequestWithResponse(ctx, "GET", "/number/"+strconv.Itoa(1), nil, nil)
+ client.DoRequestWithResponse(ctx, "GET", endpointWithPathSegment("/exact/", value, ""), nil, nil)
+}
+`)
+	operations, err := ExtractProvider(dir)
+	if err != nil {
+		t.Fatalf("exact standard-library calls were rejected: %v", err)
+	}
+	if len(operations) != 6 {
+		t.Fatalf("exact standard-library extraction returned %d operations, want 6", len(operations))
+	}
+}
+
 func TestExtractorPinsPromptEnvironmentFreeHelper(t *testing.T) {
 	fixtures := map[string]string{
 		"transformed-free-function": `package provider
@@ -1236,6 +1360,51 @@ func bad(dispatch routeDispatcher, value string) string { return dispatch.route(
 			writeFixture(t, dir, "bad.go", "package provider\nimport \"strings\"\n"+fixture)
 			if _, err := ExtractProvider(dir); err == nil || (!strings.Contains(err.Error(), "interface dynamic string dispatch") && !strings.Contains(err.Error(), "raw-input provenance")) {
 				t.Fatalf("callable identity collision was accepted: %v", err)
+			}
+		})
+	}
+}
+
+func TestExtractorRejectsGenericAndInterfaceMethodValueEndpointDispatch(t *testing.T) {
+	fixtures := map[string]string{
+		"inferred-generic-higher-order": `
+func route(value string) string { return endpointWithPathSegment("/things/", value, "") }
+func invoke[T any](call func(T) string, value T) string { return call(value) }
+func bad(value string) string { return invoke(route, strings.ReplaceAll(value, "/", "%2F")) }
+`,
+		"explicit-generic-higher-order": `
+func route(value string) string { return endpointWithPathSegment("/things/", value, "") }
+func invoke[T any](call func(T) string, value T) string { return call(value) }
+func bad(value string) string { return invoke[string](route, strings.ReplaceAll(value, "/", "%2F")) }
+`,
+		"type-parameter-callable": `
+func route(value string) string { return endpointWithPathSegment("/things/", value, "") }
+type routeFunction interface { ~func(string) string }
+func invoke[F routeFunction](call F, value string) string { return call(value) }
+func bad(value string) string { return invoke(route, strings.ReplaceAll(value, "/", "%2F")) }
+`,
+		"interface-method-value": `
+type routeDispatcher interface { route(string) string }
+type endpointRoute struct{}
+func (endpointRoute) route(value string) string { return endpointWithPathSegment("/things/", value, "") }
+func invoke(call func(string) string, value string) string { return call(value) }
+func bad(dispatch routeDispatcher, value string) string { return invoke(dispatch.route, strings.ReplaceAll(value, "/", "%2F")) }
+`,
+		"generic-dynamic-method-set": `
+type routeDispatcher interface { route(string) string }
+type endpointRoute struct{}
+func (endpointRoute) route(value string) string { return endpointWithPathSegment("/things/", value, "") }
+func invoke[T routeDispatcher](dispatch T, value string) string { return dispatch.route(value) }
+func bad(value string) string { return invoke(endpointRoute{}, strings.ReplaceAll(value, "/", "%2F")) }
+`,
+	}
+	for name, fixture := range fixtures {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeHTTPFixtureSupport(t, dir)
+			writeFixture(t, dir, "bad.go", "package provider\nimport \"strings\"\n"+fixture)
+			if _, err := ExtractProvider(dir); err == nil || (!strings.Contains(err.Error(), "endpoint-dispatch") && !strings.Contains(err.Error(), "interface dynamic string dispatch") && !strings.Contains(err.Error(), "raw-input provenance")) {
+				t.Fatalf("generic or dynamic method endpoint dispatch was accepted: %v", err)
 			}
 		})
 	}
