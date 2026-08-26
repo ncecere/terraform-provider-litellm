@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
@@ -355,7 +356,12 @@ func (r *UserResource) findExistingUserByExactEmail(ctx context.Context, email s
 		if page > 100 {
 			return "", fmt.Errorf("user lookup exceeded 100 pages")
 		}
-		endpoint := fmt.Sprintf("/user/list?user_email=%s&page=%d&page_size=100", url.QueryEscape(email), page)
+		query := url.Values{
+			"page":       []string{strconv.Itoa(page)},
+			"page_size":  []string{"100"},
+			"user_email": []string{email},
+		}
+		endpoint := endpointWithQuery("/user/list", query)
 		var response userListResponse
 		if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &response); err != nil {
 			return "", fmt.Errorf("unable to list users by email: %w", err)
@@ -550,7 +556,8 @@ func (r *UserResource) readUserWithNumericOwnership(ctx context.Context, data *U
 		userID = data.ID.ValueString()
 	}
 
-	endpoint := fmt.Sprintf("/user/info?user_id=%s", userID)
+	query := url.Values{"user_id": []string{userID}}
+	endpoint := endpointWithQuery("/user/info", query)
 
 	var result map[string]interface{}
 	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {

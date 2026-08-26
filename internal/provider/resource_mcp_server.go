@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -1215,7 +1214,7 @@ func resolveUnknownMCPServerState(data *MCPServerResourceModel, previous *MCPSer
 }
 
 func mcpServerEndpoint(serverID string) string {
-	return "/v1/mcp/server/" + url.PathEscape(serverID)
+	return endpointWithPathSegment("/v1/mcp/server/", serverID, "")
 }
 
 func (r *MCPServerResource) getMCPServer(ctx context.Context, serverID string) (map[string]interface{}, error) {

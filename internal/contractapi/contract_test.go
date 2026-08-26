@@ -119,6 +119,42 @@ func TestExtractionCoversReviewedSpecialRoutes(t *testing.T) {
 	}
 }
 
+func TestResolvedOperationTableHasReviewedPathModes(t *testing.T) {
+	root := repositoryRoot(t)
+	extracted, err := ExtractProvider(filepath.Join(root, "internal", "provider"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	contracts, _, _, err := LoadContracts(filepath.Join(root, "openapi.json"), filepath.Join(root, "internal", "contract", "supplemental-routes.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	operations, err := ResolveOperations(extracted, contracts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(operations) != 108 {
+		t.Fatalf("operation count = %d, want 108", len(operations))
+	}
+	captures := map[string]bool{
+		"GET /credentials/by_name/{credential_name}": true,
+		"DELETE /credentials/{credential_name}":      true,
+		"PATCH /credentials/{credential_name}":       true,
+	}
+	for _, operation := range operations {
+		wantMode := ""
+		if len(operation.PathParameters) != 0 {
+			wantMode = "ordinary"
+			if captures[operation.Method+" "+operation.Path] {
+				wantMode = "capture"
+			}
+		}
+		if operation.pathMode != wantMode {
+			t.Errorf("%s %s mode = %q, want %q (query keys %v)", operation.Method, operation.Path, operation.pathMode, wantMode, operation.QueryParameters)
+		}
+	}
+}
+
 func TestExtractorRejectsUnresolvedAndRawHTTP(t *testing.T) {
 	dir := t.TempDir()
 	writeHTTPFixtureSupport(t, dir)
@@ -204,6 +240,122 @@ func request(ctx context.Context, client *Client, queryName string) error {
 			t.Fatalf("dynamic query name was accepted: %v", err)
 		}
 	})
+}
+
+func TestExtractorNormalizesExactEndpointBuilders(t *testing.T) {
+	dir := t.TempDir()
+	writeHTTPFixtureSupport(t, dir)
+	writeFixture(t, dir, "routes.go", `package provider
+import ("context"; "net/url")
+func safe(ctx context.Context, client *Client, ordinary, captured, queryValue string) {
+ client.DoRequestWithResponse(ctx, "GET", endpointWithPathSegment("/things/", ordinary, "/info"), nil, nil)
+ client.DoRequestWithResponse(ctx, "DELETE", endpointWithPathCapture("/captures/", captured, ""), nil, nil)
+ query := url.Values{"scope": []string{queryValue}}
+ client.DoRequestWithResponse(ctx, "GET", endpointWithQuery("/things", query), nil, nil)
+}
+`)
+	operations, err := ExtractProvider(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string][]string{}
+	for _, operation := range operations {
+		got[operation.Method+" "+operation.Path] = operation.QueryParameters
+	}
+	for key, query := range map[string][]string{
+		"GET /things/{}/info": {},
+		"DELETE /captures/{}": {},
+		"GET /things":         {"scope"},
+	} {
+		if !reflect.DeepEqual(got[key], query) {
+			t.Errorf("%s query = %v, want %v", key, got[key], query)
+		}
+	}
+}
+
+func TestResolverRejectsWrongReviewedPathMode(t *testing.T) {
+	root := repositoryRoot(t)
+	contracts, _, _, err := LoadContracts(filepath.Join(root, "openapi.json"), filepath.Join(root, "internal", "contract", "supplemental-routes.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixtures := map[string]string{
+		"capture-route-with-ordinary-builder": `package provider
+import "context"
+func bad(ctx context.Context, client *Client, value string) {
+ client.DoRequestWithResponse(ctx, "GET", endpointWithPathSegment("/credentials/by_name/", value, ""), nil, nil)
+}
+`,
+		"ordinary-route-with-capture-builder": `package provider
+import "context"
+func bad(ctx context.Context, client *Client, value string) {
+ client.DoRequestWithResponse(ctx, "GET", endpointWithPathCapture("/v1/agents/", value, ""), nil, nil)
+}
+`,
+	}
+	for name, fixture := range fixtures {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeHTTPFixtureSupport(t, dir)
+			writeFixture(t, dir, "bad.go", fixture)
+			extracted, err := ExtractProvider(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ResolveOperations(extracted, contracts); err == nil || !strings.Contains(err.Error(), "path builder mode") {
+				t.Fatalf("wrong reviewed path mode was accepted: %v", err)
+			}
+		})
+	}
+}
+
+func TestExtractorRejectsEndpointBuilderBypasses(t *testing.T) {
+	fixtures := map[string]string{
+		"alias": `package provider
+func bad(value string) { build := endpointWithPathSegment; _ = build("/things/", value, "") }
+`,
+		"higher-order": `package provider
+func take(func(string, string, string) string) {}
+func bad() { take(endpointWithPathCapture) }
+`,
+		"interface": `package provider
+type bad interface { endpointWithPathSegment(string, string, string) string }
+`,
+		"generic": `package provider
+func bad[T ~string](value T) string { return endpointWithPathSegment("/things/", string(value), "") }
+`,
+		"reflection": `package provider
+import "reflect"
+func bad() { _ = reflect.ValueOf(endpointWithPathSegment) }
+`,
+		"container": `package provider
+var bad = []func(string, string, string) string{endpointWithPathCapture}
+`,
+		"dynamic-prefix": `package provider
+func bad(prefix, value string) string { return endpointWithPathSegment(prefix, value, "") }
+`,
+		"dynamic-suffix": `package provider
+func bad(value, suffix string) string { return endpointWithPathCapture("/things/", value, suffix) }
+`,
+		"existing-query": `package provider
+import "net/url"
+func bad(value string) string { return endpointWithQuery("/things?fixed=true", url.Values{"scope": []string{value}}) }
+`,
+		"fragment": `package provider
+import "net/url"
+func bad(value string) string { return endpointWithQuery("/things#fragment", url.Values{"scope": []string{value}}) }
+`,
+	}
+	for name, fixture := range fixtures {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeHTTPFixtureSupport(t, dir)
+			writeFixture(t, dir, "bad.go", fixture)
+			if _, err := ExtractProvider(dir); err == nil || (!strings.Contains(err.Error(), "endpoint builder") && !strings.Contains(err.Error(), "query builder") && !strings.Contains(err.Error(), "path builder")) {
+				t.Fatalf("endpoint-builder bypass was accepted: %v", err)
+			}
+		})
+	}
 }
 
 func TestExtractorRejectsClientAliasesAndMethodValues(t *testing.T) {
@@ -1593,6 +1745,8 @@ import (
 )
 type Client struct{}
 func (*Client) DoRequestWithResponse(context.Context, string, string, any, any) error { return nil }
+func endpointWithPathSegment(prefix, value, suffix string) string { return prefix + value + suffix }
+func endpointWithPathCapture(prefix, value, suffix string) string { return prefix + value + suffix }
 func endpointWithQuery(path string, values url.Values) string { return path + "?" + values.Encode() }
 `)
 }

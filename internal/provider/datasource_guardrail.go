@@ -110,7 +110,7 @@ func (d *GuardrailDataSource) Read(ctx context.Context, req datasource.ReadReque
 	}
 
 	guardrailID := data.GuardrailID.ValueString()
-	endpoint := fmt.Sprintf("/guardrails/%s/info", guardrailID)
+	endpoint := endpointWithPathSegment("/guardrails/", guardrailID, "/info")
 	var raw map[string]interface{}
 	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &raw); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read guardrail: %s", err))

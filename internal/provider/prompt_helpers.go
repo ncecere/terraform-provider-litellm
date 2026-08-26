@@ -105,19 +105,19 @@ func promptPath(promptID string, version *int64) string {
 	if version != nil {
 		lookupID = fmt.Sprintf("%s.v%d", promptID, *version)
 	}
-	return fmt.Sprintf("/prompts/%s", url.PathEscape(lookupID))
+	return endpointWithPathSegment("/prompts/", lookupID, "")
 }
 
 func promptEndpoint(promptID, environment string, version *int64) string {
 	query := url.Values{}
 	query.Set("environment", promptEnvironment(environment))
-	return promptPath(promptID, version) + "?" + query.Encode()
+	return endpointWithQuery(promptPath(promptID, version), query)
 }
 
 func promptVersionsEndpoint(promptID, environment string) string {
 	query := url.Values{}
 	query.Set("environment", promptEnvironment(environment))
-	return promptPath(promptID, nil) + "/versions?" + query.Encode()
+	return endpointWithQuery(promptPath(promptID, nil)+"/versions", query)
 }
 
 func promptListEndpoint(environment string, configured bool) string {
@@ -126,7 +126,7 @@ func promptListEndpoint(environment string, configured bool) string {
 	}
 	query := url.Values{}
 	query.Set("environment", promptEnvironment(environment))
-	return "/prompts/list?" + query.Encode()
+	return endpointWithQuery("/prompts/list", query)
 }
 
 func optionalPromptAPIString(object map[string]interface{}, field string) (*string, error) {

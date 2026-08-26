@@ -211,7 +211,7 @@ func (r *SearchToolResource) Update(ctx context.Context, req resource.UpdateRequ
 		"search_tool": searchToolBody,
 	}
 
-	endpoint := fmt.Sprintf("/search_tools/%s", data.SearchToolID.ValueString())
+	endpoint := endpointWithPathSegment("/search_tools/", data.SearchToolID.ValueString(), "")
 	if err := r.client.DoRequestWithResponse(ctx, "PUT", endpoint, searchReq, nil); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to update search tool: %s", err))
 		return
@@ -238,7 +238,7 @@ func (r *SearchToolResource) Delete(ctx context.Context, req resource.DeleteRequ
 		searchToolID = data.ID.ValueString()
 	}
 
-	endpoint := fmt.Sprintf("/search_tools/%s", searchToolID)
+	endpoint := endpointWithPathSegment("/search_tools/", searchToolID, "")
 	if err := r.client.DoRequestWithResponse(ctx, "DELETE", endpoint, nil, nil); err != nil {
 		if !IsNotFoundError(err) {
 			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to delete search tool: %s", err))
@@ -306,7 +306,7 @@ func (r *SearchToolResource) readSearchToolWithNumericOwnership(ctx context.Cont
 		searchToolID = data.ID.ValueString()
 	}
 
-	endpoint := fmt.Sprintf("/search_tools/%s", searchToolID)
+	endpoint := endpointWithPathSegment("/search_tools/", searchToolID, "")
 
 	var result map[string]interface{}
 	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {

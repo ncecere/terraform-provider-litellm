@@ -136,7 +136,8 @@ func (d *TeamDataSource) Read(ctx context.Context, req datasource.ReadRequest, r
 	}
 
 	teamID := data.TeamID.ValueString()
-	endpoint := fmt.Sprintf("/team/info?team_id=%s", url.QueryEscape(teamID))
+	query := url.Values{"team_id": []string{teamID}}
+	endpoint := endpointWithQuery("/team/info", query)
 
 	var result map[string]interface{}
 	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
@@ -231,7 +232,8 @@ func (d *TeamDataSource) Read(ctx context.Context, req datasource.ReadRequest, r
 	}
 
 	// Fetch permissions separately
-	permEndpoint := fmt.Sprintf("/team/permissions_list?team_id=%s", url.QueryEscape(teamID))
+	permissionQuery := url.Values{"team_id": []string{teamID}}
+	permEndpoint := endpointWithQuery("/team/permissions_list", permissionQuery)
 	var permResult map[string]interface{}
 	if err := d.client.DoRequestWithResponse(ctx, "GET", permEndpoint, nil, &permResult); err == nil {
 		if perms, ok := permResult["team_member_permissions"].([]interface{}); ok {

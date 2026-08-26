@@ -237,17 +237,8 @@ func isSupportedFallbackType(value string) bool {
 }
 
 func fallbackEndpoint(model, fallbackType string) string {
-	modelSegment := url.PathEscape(model)
-	// Keep a model identity as one non-traversal path segment even when its
-	// complete value is a dot segment. PathEscape intentionally leaves dots
-	// untouched, while intermediaries are permitted to normalize them.
-	if model == "." {
-		modelSegment = "%2E"
-	} else if model == ".." {
-		modelSegment = "%2E%2E"
-	}
-	query := url.Values{"fallback_type": []string{fallbackType}}.Encode()
-	return "/fallback/" + modelSegment + "?" + query
+	query := url.Values{"fallback_type": []string{fallbackType}}
+	return endpointWithQuery(endpointWithPathSegment("/fallback/", model, ""), query)
 }
 
 func fallbackOperationDiagnostic(operation string, err error) string {

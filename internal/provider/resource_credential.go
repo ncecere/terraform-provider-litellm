@@ -6,9 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"reflect"
-	"strings"
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
@@ -1596,20 +1594,13 @@ func (r *CredentialResource) readCredentialWithRetry(ctx context.Context, data *
 }
 
 func credentialByNamePath(name string) string {
-	return "/credentials/by_name/" + escapeCredentialPathValue(name)
+	return endpointWithPathCapture("/credentials/by_name/", name, "")
 }
 
 func credentialByModelPath(modelID string) string {
-	return "/credentials/by_model/" + escapeCredentialPathValue(modelID)
+	return endpointWithPathSegment("/credentials/by_model/", modelID, "")
 }
 
 func credentialMutationPath(name string) string {
-	return "/credentials/" + escapeCredentialPathValue(name)
-}
-
-func escapeCredentialPathValue(value string) string {
-	escaped := url.PathEscape(value)
-	// Dot segments are legal text but unsafe as complete segments in proxies
-	// that normalize traversal before routing.
-	return strings.ReplaceAll(escaped, ".", "%2E")
+	return endpointWithPathCapture("/credentials/", name, "")
 }

@@ -914,10 +914,12 @@ func (r *KeyResource) getKeyInfo(ctx context.Context, data *KeyResourceModel) (m
 		return nil, nil, err
 	}
 
-	// url.QueryEscape ensures special characters in a plaintext key (e.g. '#')
-	// are not interpreted as a URL fragment. LiteLLM also accepts the SHA256
-	// token hash used to manage write-only keys without recovering plaintext.
-	endpoint := fmt.Sprintf("/key/info?key=%s", url.QueryEscape(keyIdentifier))
+	// Canonical url.Values encoding ensures special characters in a plaintext
+	// key (e.g. '#') are not interpreted as a URL fragment. LiteLLM also accepts
+	// the SHA256 token hash used to manage write-only keys without recovering
+	// plaintext.
+	query := url.Values{"key": []string{keyIdentifier}}
+	endpoint := endpointWithQuery("/key/info", query)
 	var result map[string]interface{}
 	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
 		return nil, nil, err

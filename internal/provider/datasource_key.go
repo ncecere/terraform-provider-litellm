@@ -207,7 +207,8 @@ func (d *KeyDataSource) Read(ctx context.Context, req datasource.ReadRequest, re
 		resp.Diagnostics.AddError("Invalid Key Lookup", err.Error())
 		return
 	}
-	endpoint := fmt.Sprintf("/key/info?key=%s", url.QueryEscape(lookupValue))
+	query := url.Values{"key": []string{lookupValue}}
+	endpoint := endpointWithQuery("/key/info", query)
 
 	var result map[string]interface{}
 	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {

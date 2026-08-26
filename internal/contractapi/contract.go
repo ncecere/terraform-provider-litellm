@@ -64,6 +64,7 @@ type Operation struct {
 	PathParameters  []string   `json:"path_parameters"`
 	QueryParameters []string   `json:"query_parameters"`
 	Evidence        []Evidence `json:"evidence"`
+	pathMode        string
 }
 
 type Artifact struct {
@@ -195,17 +196,18 @@ type contractOperation struct {
 type value struct {
 	shapes          []string
 	queries         map[string]bool
+	pathModes       map[string]bool
 	unresolvedQuery bool
 	ok              bool
 }
 
 func literalValue(s string) value {
-	return value{shapes: []string{s}, queries: map[string]bool{}, ok: true}
+	return value{shapes: []string{s}, queries: map[string]bool{}, pathModes: map[string]bool{}, ok: true}
 }
 func dynamicValue() value { return literalValue("{}") }
 
 func mergeValues(values ...value) value {
-	out := value{queries: map[string]bool{}, ok: true}
+	out := value{queries: map[string]bool{}, pathModes: map[string]bool{}, ok: true}
 	seen := map[string]bool{}
 	for _, v := range values {
 		if !v.ok {
@@ -220,6 +222,9 @@ func mergeValues(values ...value) value {
 		}
 		for q := range v.queries {
 			out.queries[q] = true
+		}
+		for mode := range v.pathModes {
+			out.pathModes[mode] = true
 		}
 		out.unresolvedQuery = out.unresolvedQuery || v.unresolvedQuery
 	}
@@ -368,6 +373,15 @@ func ExtractProvider(root string) ([]Operation, error) {
 					problems = append(problems, fmt.Sprintf("%s:%d: unresolved HTTP method or path", base, pos.Line))
 					return true
 				}
+				pathMode := ""
+				for mode := range pv.pathModes {
+					if pathMode != "" && pathMode != mode {
+						problems = append(problems, fmt.Sprintf("%s:%d: mixed ordinary and capture path builders", base, pos.Line))
+						pathMode = "mixed"
+						break
+					}
+					pathMode = mode
+				}
 				for _, shape := range pv.shapes {
 					pathShape, query, unresolvedQuery := splitShape(shape)
 					for q := range pv.queries {
@@ -377,7 +391,7 @@ func ExtractProvider(root string) ([]Operation, error) {
 						problems = append(problems, fmt.Sprintf("%s:%d: unresolved dynamic HTTP path or query name", base, pos.Line))
 						continue
 					}
-					extracted = append(extracted, Operation{Method: method, Path: pathShape, QueryParameters: sortedKeys(query), Evidence: []Evidence{{File: "internal/provider/" + base, Line: pos.Line}}})
+					extracted = append(extracted, Operation{Method: method, Path: pathShape, QueryParameters: sortedKeys(query), Evidence: []Evidence{{File: "internal/provider/" + base, Line: pos.Line}}, pathMode: pathMode})
 				}
 				return true
 			})
@@ -387,7 +401,13 @@ func ExtractProvider(root string) ([]Operation, error) {
 		sort.Strings(problems)
 		return nil, errors.New(strings.Join(problems, "\n"))
 	}
-	return combineOperations(extracted), nil
+	combined := combineOperations(extracted)
+	for _, operation := range combined {
+		if operation.pathMode == "mixed" {
+			return nil, fmt.Errorf("%s %s mixes ordinary and capture path builders", operation.Method, operation.Path)
+		}
+	}
+	return combined, nil
 }
 
 func sourceImporter(fset *token.FileSet) types.Importer {
@@ -868,15 +888,52 @@ func (x *extractor) exactURLValuesMethod(object types.Object, names ...string) b
 	return false
 }
 
-func (x *extractor) exactQueryHelper(object types.Object) bool {
+const providerPackagePath = "github.com/nicholas-cecere/terraform-provider-litellm/internal/provider"
+
+var reviewedEndpointBuilders = map[string]bool{
+	"endpointWithPathSegment": true,
+	"endpointWithPathCapture": true,
+	"endpointWithQuery":       true,
+}
+
+func exactProviderFreeFunction(object types.Object, names map[string]bool) (*types.Func, bool) {
 	function, ok := object.(*types.Func)
-	if !ok || function.Pkg() == nil || function.Pkg().Path() != "github.com/nicholas-cecere/terraform-provider-litellm/internal/provider" || function.Type().(*types.Signature).Recv() != nil {
+	if !ok || function.Pkg() == nil || function.Pkg().Path() != providerPackagePath || function.Type().(*types.Signature).Recv() != nil || !names[function.Name()] {
+		return nil, false
+	}
+	return function, true
+}
+
+func (x *extractor) exactEndpointBuilder(object types.Object) bool {
+	function, ok := exactProviderFreeFunction(object, reviewedEndpointBuilders)
+	if !ok {
 		return false
 	}
-	return map[string]bool{
-		"endpointWithQuery": true, "cloneURLValues": true, "safeListDiagnostic": true,
+	signature := function.Type().(*types.Signature)
+	if signature.TypeParams() != nil && signature.TypeParams().Len() != 0 {
+		return false
+	}
+	if signature.Results().Len() != 1 || !types.Identical(signature.Results().At(0).Type(), types.Typ[types.String]) {
+		return false
+	}
+	if function.Name() == "endpointWithQuery" {
+		return signature.Params().Len() == 2 && types.Identical(signature.Params().At(0).Type(), types.Typ[types.String]) && exactURLValuesType(signature.Params().At(1).Type())
+	}
+	return signature.Params().Len() == 3 &&
+		types.Identical(signature.Params().At(0).Type(), types.Typ[types.String]) &&
+		types.Identical(signature.Params().At(1).Type(), types.Typ[types.String]) &&
+		types.Identical(signature.Params().At(2).Type(), types.Typ[types.String])
+}
+
+func (x *extractor) exactQueryHelper(object types.Object) bool {
+	if x.exactEndpointBuilder(object) && object.Name() == "endpointWithQuery" {
+		return true
+	}
+	_, ok := exactProviderFreeFunction(object, map[string]bool{
+		"cloneURLValues": true, "safeListDiagnostic": true,
 		"addKnownStringFilter": true, "listKeys": true, "listUsers": true,
-	}[function.Name()]
+	})
+	return ok
 }
 
 func methodSetExposes(t types.Type, names func(string) bool) string {
@@ -1035,6 +1092,9 @@ func (x *extractor) validateStrictSourcePolicy() error {
 			switch item := node.(type) {
 			case *ast.FuncDecl:
 				object, _ := x.typesInfo.Defs[item.Name].(*types.Func)
+				if reviewedEndpointBuilders[item.Name.Name] && !x.exactEndpointBuilder(object) {
+					add(path, item, "reviewed endpoint builder names may only be declared with the exact provider signature")
+				}
 				if clientTransportName(item.Name.Name) && !x.exactClientMethodObject(object) {
 					add(path, item, "reviewed Client transport names may only be declared as exact Client methods")
 				}
@@ -1044,6 +1104,10 @@ func (x *extractor) validateStrictSourcePolicy() error {
 				if item.Name.Name == "Do" || item.Name.Name == "RoundTrip" {
 					add(path, item, "raw HTTP Do/RoundTrip declarations are forbidden")
 				}
+			case *ast.SelectorExpr:
+				if reviewedEndpointBuilders[item.Sel.Name] {
+					add(path, item, "reviewed endpoint builders require exact direct package-local calls")
+				}
 			case *ast.TypeSpec:
 				object, _ := x.typesInfo.Defs[item.Name].(*types.TypeName)
 				if object == nil {
@@ -1052,12 +1116,18 @@ func (x *extractor) validateStrictSourcePolicy() error {
 				if name := methodSetExposes(object.Type(), reviewedTransportName); name != "" && !x.isClientType(object.Type()) {
 					add(path, item, "declaration exposes reviewed transport name "+name+" through an interface, constraint, alias, or embedding")
 				}
+				if name := methodSetExposes(object.Type(), func(name string) bool { return reviewedEndpointBuilders[name] }); name != "" {
+					add(path, item, "declaration exposes reviewed endpoint builder name "+name+" through an interface, constraint, alias, or embedding")
+				}
 				if name := methodSetExposes(object.Type(), func(name string) bool { return name == "Do" || name == "RoundTrip" }); name != "" {
 					add(path, item, "declaration exposes raw HTTP "+name+" through an interface, constraint, alias, or embedding")
 				}
 			case *ast.InterfaceType:
 				if name := methodSetExposes(x.typesInfo.TypeOf(item), reviewedTransportName); name != "" {
 					add(path, item, "interface or generic constraint exposes reviewed transport name "+name)
+				}
+				if name := methodSetExposes(x.typesInfo.TypeOf(item), func(name string) bool { return reviewedEndpointBuilders[name] }); name != "" {
+					add(path, item, "interface or generic constraint exposes reviewed endpoint builder name "+name)
 				}
 				if name := methodSetExposes(x.typesInfo.TypeOf(item), func(name string) bool { return name == "Do" || name == "RoundTrip" }); name != "" {
 					add(path, item, "interface or generic constraint exposes raw HTTP "+name)
@@ -1073,6 +1143,10 @@ func (x *extractor) validateStrictSourcePolicy() error {
 					}
 					ast.Inspect(source, func(child ast.Node) bool {
 						switch expression := child.(type) {
+						case *ast.Ident:
+							if x.exactEndpointBuilder(x.typesInfo.Uses[expression]) {
+								add(path, expression, "reviewed endpoint builder may not be stored or invoked in a package-level declaration")
+							}
 						case *ast.SelectorExpr:
 							object := x.typesInfo.Uses[expression.Sel]
 							if selection := x.typesInfo.Selections[expression]; object == nil && selection != nil {
@@ -1331,6 +1405,12 @@ func (x *extractor) validateStrictSourcePolicy() error {
 							add(path, item, "reviewed query helper may not be used as a value")
 						}
 					}
+					if x.exactEndpointBuilder(object) {
+						call, direct := parents[item].(*ast.CallExpr)
+						if !direct || call.Fun != item {
+							add(path, item, "reviewed endpoint builder may only be called directly")
+						}
+					}
 					parentSelector, selectorIdentifier := parents[item].(*ast.SelectorExpr)
 					if (x.isNetHTTPTransportObject(object) || x.reflectDynamicDispatch(object)) && (!selectorIdentifier || parentSelector.Sel != item) {
 						add(path, item, "raw net/http transport or reflective dispatch function may not be used as a value")
@@ -1384,6 +1464,39 @@ func (x *extractor) validateStrictSourcePolicy() error {
 					}
 				case *ast.CallExpr:
 					called := calledFunctionObject(x.typesInfo, item.Fun)
+					if x.exactEndpointBuilder(called) {
+						if fn.Type.TypeParams != nil && len(fn.Type.TypeParams.List) != 0 {
+							add(path, item, "reviewed endpoint builders may not be called from generic functions")
+						}
+						switch called.Name() {
+						case "endpointWithPathSegment", "endpointWithPathCapture":
+							if len(item.Args) != 3 {
+								add(path, item, "reviewed path builder requires three arguments")
+								break
+							}
+							prefix, prefixLiteral := stringLiteral(item.Args[0])
+							suffix, suffixLiteral := stringLiteral(item.Args[2])
+							if !prefixLiteral || !suffixLiteral || !strings.HasPrefix(prefix, "/") || strings.ContainsAny(prefix+suffix, "?#{}") {
+								add(path, item, "reviewed path builder requires literal unqueried prefix and suffix boundaries")
+							}
+						case "endpointWithQuery":
+							if len(item.Args) != 2 {
+								add(path, item, "reviewed query builder requires two arguments")
+								break
+							}
+							pathValue := x.eval(item.Args[0], x.functionEnv(fn, nil, map[string]bool{}), map[string]bool{})
+							valid := pathValue.ok && len(pathValue.shapes) > 0 && !pathValue.unresolvedQuery
+							for _, shape := range pathValue.shapes {
+								pathShape, query, unresolved := splitShape(shape)
+								if !strings.HasPrefix(pathShape, "/") || len(query) != 0 || unresolved || strings.Contains(pathShape, "#") {
+									valid = false
+								}
+							}
+							if !valid {
+								add(path, item.Args[0], "reviewed query builder requires a statically unqueried endpoint path")
+							}
+						}
+					}
 					isConversion := len(item.Args) == 1 && x.typesInfo.Types[item.Fun].IsType()
 					urlValuesConversion := isConversion && exactURLValuesCarrierType(x.typesInfo.TypeOf(item))
 					exactURLValuesIdentity := urlValuesConversion && exactURLValuesFlow(x.typesInfo.TypeOf(item.Args[0]), x.typesInfo.TypeOf(item))
@@ -2174,7 +2287,7 @@ func (x *extractor) eval(expr ast.Expr, env map[string]value, stack map[string]b
 			if !a.ok || !b.ok {
 				return value{}
 			}
-			out := value{queries: map[string]bool{}, ok: true}
+			out := value{queries: map[string]bool{}, pathModes: map[string]bool{}, ok: true}
 			for _, as := range a.shapes {
 				for _, bs := range b.shapes {
 					out.shapes = append(out.shapes, as+bs)
@@ -2185,6 +2298,12 @@ func (x *extractor) eval(expr ast.Expr, env map[string]value, stack map[string]b
 			}
 			for q := range b.queries {
 				out.queries[q] = true
+			}
+			for mode := range a.pathModes {
+				out.pathModes[mode] = true
+			}
+			for mode := range b.pathModes {
+				out.pathModes[mode] = true
 			}
 			out.unresolvedQuery = a.unresolvedQuery || b.unresolvedQuery
 			return out
@@ -2205,6 +2324,10 @@ func (x *extractor) eval(expr ast.Expr, env map[string]value, stack map[string]b
 		}
 	case *ast.CallExpr:
 		name := callName(node.Fun)
+		called := calledFunctionObject(x.typesInfo, node.Fun)
+		if reviewedEndpointBuilders[name] && !x.exactEndpointBuilder(called) {
+			return value{}
+		}
 		switch name {
 		case "ReplaceAll":
 			if len(node.Args) > 0 {
@@ -2223,13 +2346,39 @@ func (x *extractor) eval(expr ast.Expr, env map[string]value, stack map[string]b
 			return dynamicValue()
 		case "ValueString", "String", "Itoa", "FormatInt":
 			return dynamicValue()
+		case "endpointWithPathSegment", "endpointWithPathCapture":
+			if len(node.Args) != 3 {
+				return value{}
+			}
+			prefix, prefixLiteral := stringLiteral(node.Args[0])
+			suffix, suffixLiteral := stringLiteral(node.Args[2])
+			if !prefixLiteral || !suffixLiteral || !strings.HasPrefix(prefix, "/") || strings.ContainsAny(prefix+suffix, "?#{}") {
+				return value{}
+			}
+			out := mergeValues(
+				literalValue(prefix+"{}"+suffix),
+				literalValue(prefix+"%2E"+suffix),
+				literalValue(prefix+"%2E%2E"+suffix),
+			)
+			if name == "endpointWithPathCapture" {
+				out.pathModes["capture"] = true
+			} else {
+				out.pathModes["ordinary"] = true
+			}
+			return out
 		case "endpointWithQuery":
 			if len(node.Args) != 2 {
 				return value{}
 			}
 			p, q := x.eval(node.Args[0], env, stack), x.eval(node.Args[1], env, stack)
-			if !p.ok || !q.ok {
+			if !p.ok || !q.ok || p.unresolvedQuery || len(p.queries) != 0 {
 				return value{}
+			}
+			for _, shape := range p.shapes {
+				pathShape, query, unresolved := splitShape(shape)
+				if !strings.HasPrefix(pathShape, "/") || len(query) != 0 || unresolved || strings.Contains(pathShape, "#") {
+					return value{}
+				}
 			}
 			for key := range q.queries {
 				p.queries[key] = true
@@ -2363,10 +2512,25 @@ func combineOperations(in []Operation) []Operation {
 			continue
 		}
 		existing.QueryParameters = union(existing.QueryParameters, op.QueryParameters)
+		if existing.pathMode == "" {
+			existing.pathMode = op.pathMode
+		} else if op.pathMode != "" && existing.pathMode != op.pathMode {
+			existing.pathMode = "mixed"
+		}
 		existing.Evidence = append(existing.Evidence, op.Evidence...)
 	}
 	out := make([]Operation, 0, len(by))
 	for _, op := range by {
+		seenEvidence := map[string]bool{}
+		uniqueEvidence := make([]Evidence, 0, len(op.Evidence))
+		for _, evidence := range op.Evidence {
+			key := evidence.File + ":" + strconv.Itoa(evidence.Line)
+			if !seenEvidence[key] {
+				seenEvidence[key] = true
+				uniqueEvidence = append(uniqueEvidence, evidence)
+			}
+		}
+		op.Evidence = uniqueEvidence
 		sort.Slice(op.Evidence, func(i, j int) bool {
 			if op.Evidence[i].File == op.Evidence[j].File {
 				return op.Evidence[i].Line < op.Evidence[j].Line
@@ -2404,7 +2568,7 @@ func splitShape(shape string) (string, map[string]bool, bool) {
 }
 
 func approvedURLHelper(name string) bool {
-	return strings.HasSuffix(name, "Endpoint") || strings.HasSuffix(name, "Path") || strings.HasSuffix(name, "Filters") || name == "escapeCredentialPathValue"
+	return strings.HasSuffix(name, "Endpoint") || strings.HasSuffix(name, "Path") || strings.HasSuffix(name, "Filters")
 }
 
 func selectorRootName(expr ast.Expr) string {
@@ -2561,6 +2725,11 @@ func LoadContracts(openapiPath, supplementalPath string) (map[string][]contractO
 func ResolveOperations(extracted []Operation, contracts map[string][]contractOperation) ([]Operation, error) {
 	var out []Operation
 	var problems []string
+	captureRoutes := map[string]bool{
+		"GET /credentials/by_name/{credential_name}": true,
+		"DELETE /credentials/{credential_name}":      true,
+		"PATCH /credentials/{credential_name}":       true,
+	}
 	for _, op := range extracted {
 		matches := []contractOperation{}
 		for _, candidate := range contracts[op.Method] {
@@ -2584,6 +2753,16 @@ func ResolveOperations(extracted []Operation, contracts map[string][]contractOpe
 		}
 		op.Path = match.path
 		op.PathParameters = append([]string{}, match.pathParams...)
+		expectedMode := ""
+		if len(match.pathParams) != 0 {
+			expectedMode = "ordinary"
+			if captureRoutes[op.Method+" "+match.path] {
+				expectedMode = "capture"
+			}
+		}
+		if op.pathMode != expectedMode {
+			problems = append(problems, fmt.Sprintf("%s %s: path builder mode %q does not match reviewed mode %q", op.Method, match.path, op.pathMode, expectedMode))
+		}
 		out = append(out, op)
 	}
 	if len(problems) > 0 {
@@ -2599,7 +2778,7 @@ func shapeMatches(shape, contract string) bool {
 		return false
 	}
 	for i := range a {
-		dynamic := a[i] == "{}" || strings.Contains(a[i], "{}") || (strings.HasPrefix(shape, "/fallback/") && (a[i] == "%2E" || a[i] == "%2E%2E"))
+		dynamic := a[i] == "{}" || strings.Contains(a[i], "{}") || a[i] == "%2E" || a[i] == "%2E%2E"
 		templ := strings.HasPrefix(b[i], "{") && strings.HasSuffix(b[i], "}")
 		if dynamic != templ {
 			if dynamic && templ {

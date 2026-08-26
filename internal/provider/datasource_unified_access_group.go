@@ -87,7 +87,7 @@ func (d *UnifiedAccessGroupDataSource) Read(ctx context.Context, req datasource.
 		return
 	}
 
-	endpoint := fmt.Sprintf("/v1/access_group/%s", data.AccessGroupID.ValueString())
+	endpoint := endpointWithPathSegment("/v1/access_group/", data.AccessGroupID.ValueString(), "")
 	var result map[string]interface{}
 	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read unified access group: %s", err))

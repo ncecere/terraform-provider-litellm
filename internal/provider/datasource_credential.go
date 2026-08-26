@@ -89,16 +89,14 @@ func (d *CredentialDataSource) Read(ctx context.Context, req datasource.ReadRequ
 	}
 
 	credentialName := data.CredentialName.ValueString()
-	endpoint := credentialByNamePath(credentialName)
 	lookupByModel := !data.ModelID.IsNull() && !data.ModelID.IsUnknown() && data.ModelID.ValueString() != ""
+	var sample credentialProbeSample
+	var probeErr error
 	if lookupByModel {
-		endpoint = credentialByModelPath(data.ModelID.ValueString())
+		sample, probeErr = probeCredentialEndpoint(ctx, d.client, credentialByModelPath(data.ModelID.ValueString()), "")
+	} else {
+		sample, probeErr = probeCredentialEndpoint(ctx, d.client, credentialByNamePath(credentialName), credentialName)
 	}
-	expectedName := credentialName
-	if lookupByModel {
-		expectedName = ""
-	}
-	sample, probeErr := probeCredentialEndpoint(ctx, d.client, endpoint, expectedName)
 	if probeErr != nil || !sample.hasPresence() {
 		resp.Diagnostics.AddError("Credential Data Source Read Error", "Bounded fresh-connection probes did not return a usable credential from the selected exact lookup route. Retry transient failures or reconcile LiteLLM v1.98 process-local worker caches before retrying.")
 		return

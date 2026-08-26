@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -614,7 +615,7 @@ func (r *AgentResource) Update(ctx context.Context, req resource.UpdateRequest, 
 	} else {
 		delete(agentReq, "agent_card_params")
 	}
-	endpoint := fmt.Sprintf("/v1/agents/%s", url.PathEscape(planned.ID.ValueString()))
+	endpoint := endpointWithPathSegment("/v1/agents/", planned.ID.ValueString(), "")
 //line internal/provider/resource_agent.go:582
 	if err := r.client.DoRequestWithResponse(ctx, "PATCH", endpoint, agentReq, nil); err != nil {
 		resp.Private = req.Private
@@ -688,7 +689,7 @@ func (r *AgentResource) Delete(ctx context.Context, req resource.DeleteRequest, 
 		return
 	}
 
-	endpoint := fmt.Sprintf("/v1/agents/%s", url.PathEscape(data.ID.ValueString()))
+	endpoint := endpointWithPathSegment("/v1/agents/", data.ID.ValueString(), "")
 //line internal/provider/resource_agent.go:622
 	if err := r.client.DoRequestWithResponse(ctx, "DELETE", endpoint, nil, nil); err != nil {
 		if IsAPIErrorStatus(err, 404) {
@@ -798,7 +799,7 @@ func (r *AgentResource) hydrateAgentUpdateFieldsWithOwnership(ctx context.Contex
 		return nil
 	}
 
-	endpoint := fmt.Sprintf("/v1/agents/%s", url.PathEscape(data.ID.ValueString()))
+	endpoint := endpointWithPathSegment("/v1/agents/", data.ID.ValueString(), "")
 	var result map[string]interface{}
 //line internal/provider/resource_agent.go:730
 	if err := r.client.doFreshRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
@@ -1270,7 +1271,7 @@ func (r *AgentResource) readAgentWithOwnershipTransportCapture(ctx context.Conte
 		return fmt.Errorf("agent ID is empty, cannot read agent")
 	}
 
-	endpoint := fmt.Sprintf("/v1/agents/%s", url.PathEscape(agentID))
+	endpoint := endpointWithPathSegment("/v1/agents/", agentID, "")
 
 	var result map[string]interface{}
 	var err error

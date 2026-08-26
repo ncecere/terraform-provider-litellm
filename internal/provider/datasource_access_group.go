@@ -76,7 +76,7 @@ func (d *AccessGroupDataSource) Read(ctx context.Context, req datasource.ReadReq
 	}
 
 	accessGroup := data.AccessGroup.ValueString()
-	endpoint := fmt.Sprintf("/access_group/%s/info", accessGroup)
+	endpoint := endpointWithPathSegment("/access_group/", accessGroup, "/info")
 
 	var result map[string]interface{}
 	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {

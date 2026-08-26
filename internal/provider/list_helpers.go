@@ -169,13 +169,6 @@ func listPageFingerprints[T any](items []T) ([sha256.Size]byte, [][sha256.Size]b
 	return sha256.Sum256(encoded), itemFingerprints, nil
 }
 
-func endpointWithQuery(path string, values url.Values) string {
-	if len(values) == 0 {
-		return path
-	}
-	return path + "?" + values.Encode()
-}
-
 func cloneURLValues(values url.Values) url.Values {
 	cloned := make(url.Values, len(values))
 	for key, entries := range values {

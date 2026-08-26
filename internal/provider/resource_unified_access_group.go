@@ -408,7 +408,7 @@ func (r *UnifiedAccessGroupResource) Update(ctx context.Context, req resource.Up
 	}
 
 	accessGroupID := data.AccessGroupID.ValueString()
-	endpoint := "/v1/access_group/" + url.PathEscape(accessGroupID)
+	endpoint := endpointWithPathSegment("/v1/access_group/", accessGroupID, "")
 	desiredByHash, _ := unifiedAccessGroupKeyRepresentations(data.AssignedKeyIDs)
 	var snapshot *unifiedAccessGroupMembershipSnapshot
 	if managesKeys {
@@ -605,7 +605,7 @@ func (r *UnifiedAccessGroupResource) Delete(ctx context.Context, req resource.De
 	if id == "" {
 		id = data.ID.ValueString()
 	}
-	endpoint := "/v1/access_group/" + url.PathEscape(id)
+	endpoint := endpointWithPathSegment("/v1/access_group/", id, "")
 	if err := r.client.DoRequestWithResponse(ctx, http.MethodDelete, endpoint, nil, nil); err != nil && !IsNotFoundError(err) {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to delete unified access group: %s", err))
 	}
@@ -621,7 +621,7 @@ func (r *UnifiedAccessGroupResource) readUnifiedAccessGroup(ctx context.Context,
 	if id == "" {
 		id = data.ID.ValueString()
 	}
-	endpoint := "/v1/access_group/" + url.PathEscape(id)
+	endpoint := endpointWithPathSegment("/v1/access_group/", id, "")
 	var result map[string]interface{}
 	if err := r.client.DoRequestWithResponse(ctx, http.MethodGet, endpoint, nil, &result); err != nil {
 		return err
@@ -855,7 +855,7 @@ type unifiedAccessGroupKeyInfoResponse struct {
 func (r *UnifiedAccessGroupResource) readUnifiedAccessGroupKeyMembership(ctx context.Context, bareHash string) ([]string, error) {
 	query := url.Values{}
 	query.Set("key", bareHash)
-	endpoint := "/key/info?" + query.Encode()
+	endpoint := endpointWithQuery("/key/info", query)
 	var response unifiedAccessGroupKeyInfoResponse
 	if err := r.client.DoRequestWithResponse(ctx, http.MethodGet, endpoint, nil, &response); err != nil {
 		return nil, err

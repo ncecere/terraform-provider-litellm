@@ -82,7 +82,8 @@ func (r *KeyResource) validateKeyInviteRecipient(ctx context.Context, data *KeyR
 	}
 
 	expectedUserID := data.UserID.ValueString()
-	endpoint := fmt.Sprintf("/user/info?user_id=%s", url.QueryEscape(expectedUserID))
+	query := url.Values{"user_id": []string{expectedUserID}}
+	endpoint := endpointWithQuery("/user/info", query)
 	var response map[string]interface{}
 	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &response); err != nil {
 		return keyInviteRecipientLookupError(err)

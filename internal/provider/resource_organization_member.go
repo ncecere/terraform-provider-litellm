@@ -429,7 +429,8 @@ func (r *OrganizationMemberResource) readOrganizationMemberWithNumericOwnership(
 		return false, false, err
 	}
 	organizationID := data.OrganizationID.ValueString()
-	endpoint := fmt.Sprintf("/organization/info?organization_id=%s", url.QueryEscape(organizationID))
+	query := url.Values{"organization_id": []string{organizationID}}
+	endpoint := endpointWithQuery("/organization/info", query)
 
 	var response organizationInfoAPIResponse
 	if err := r.client.DoRequestWithResponse(ctx, http.MethodGet, endpoint, nil, &response); err != nil {
