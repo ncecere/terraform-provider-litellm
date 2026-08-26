@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"net/url"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -115,7 +116,8 @@ func (r *TeamBlockResource) Read(ctx context.Context, req resource.ReadRequest, 
 	}
 
 	// Check if the team is still blocked
-	endpoint := fmt.Sprintf("/team/info?team_id=%s", data.TeamID.ValueString())
+	query := url.Values{"team_id": []string{data.TeamID.ValueString()}}
+	endpoint := endpointWithQuery("/team/info", query)
 
 	var result map[string]interface{}
 	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {

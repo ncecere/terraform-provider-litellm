@@ -630,7 +630,8 @@ func projectMetadataPayload(ctx context.Context, data *ProjectResourceModel) (ma
 
 func (r *ProjectResource) lookupProjectBudgetID(ctx context.Context, projectID string, configured types.String) (string, error) {
 	var result map[string]interface{}
-	endpoint := "/project/info?project_id=" + url.QueryEscape(projectID)
+	query := url.Values{"project_id": []string{projectID}}
+	endpoint := endpointWithQuery("/project/info", query)
 	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
 		return "", fmt.Errorf("unable to read authoritative project budget: %w", err)
 	}
@@ -668,7 +669,8 @@ func (r *ProjectResource) readProjectWithNumericOwnership(ctx context.Context, d
 		return fmt.Errorf("project ID is empty, cannot read project")
 	}
 	var result map[string]interface{}
-	endpoint := "/project/info?project_id=" + url.QueryEscape(projectID)
+	query := url.Values{"project_id": []string{projectID}}
+	endpoint := endpointWithQuery("/project/info", query)
 	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
 		return err
 	}

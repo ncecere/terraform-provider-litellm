@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"strings"
 	"time"
 
@@ -164,7 +163,7 @@ func (r *AgentResource) sampleFreshAgentUpdateBase(ctx context.Context, state Ag
 	if maxAttempts < 2 {
 		maxAttempts = 2
 	}
-	endpoint := fmt.Sprintf("/v1/agents/%s", url.PathEscape(state.ID.ValueString()))
+	endpoint := endpointWithPathSegment("/v1/agents/", state.ID.ValueString(), "")
 	delay := 250 * time.Millisecond
 	var priorParams, priorCard map[string]interface{}
 	matched := false

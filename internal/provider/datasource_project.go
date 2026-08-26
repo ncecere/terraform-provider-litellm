@@ -95,7 +95,8 @@ func (d *ProjectDataSource) Read(ctx context.Context, req datasource.ReadRequest
 	}
 	projectID := data.ID.ValueString()
 	var result map[string]interface{}
-	endpoint := "/project/info?project_id=" + url.QueryEscape(projectID)
+	query := url.Values{"project_id": []string{projectID}}
+	endpoint := endpointWithQuery("/project/info", query)
 	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read project: %s", err))
 		return

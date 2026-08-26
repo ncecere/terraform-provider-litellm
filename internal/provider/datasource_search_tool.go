@@ -100,11 +100,11 @@ func (d *SearchToolDataSource) Read(ctx context.Context, req datasource.ReadRequ
 	}
 
 	searchToolID := data.SearchToolID.ValueString()
-	endpoint := fmt.Sprintf("/search_tools/%s", searchToolID)
+	endpoint := endpointWithPathSegment("/search_tools/", searchToolID, "")
 
 	var result map[string]interface{}
 	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read search tool '%s': %s", searchToolID, err))
+		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read search tool: %s", err))
 		return
 	}
 

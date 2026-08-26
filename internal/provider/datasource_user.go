@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"net/url"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
@@ -129,7 +130,8 @@ func (d *UserDataSource) Read(ctx context.Context, req datasource.ReadRequest, r
 	}
 
 	userID := data.UserID.ValueString()
-	endpoint := fmt.Sprintf("/user/info?user_id=%s", userID)
+	query := url.Values{"user_id": []string{userID}}
+	endpoint := endpointWithQuery("/user/info", query)
 
 	var result map[string]interface{}
 	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {

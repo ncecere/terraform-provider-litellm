@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"sort"
 	"strings"
@@ -1398,26 +1399,12 @@ func TestUnifiedAccessGroupGlobalOneSidedDriftAndImportUsePaginatedFullObjectDis
 	}
 }
 
-func TestUnifiedAccessGroupImportEscapesSpecialAccessGroupID(t *testing.T) {
+func TestUnifiedAccessGroupImportRejectsSlashIDBeforeDispatch(t *testing.T) {
 	t.Parallel()
 
-	const id = "group/special value"
-	var escapedPath string
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		writer.Header().Set("Content-Type", "application/json")
-		switch {
-		case request.Method == http.MethodGet && strings.HasPrefix(request.URL.Path, "/v1/access_group/"):
-			escapedPath = request.URL.EscapedPath()
-			_ = json.NewEncoder(writer).Encode(unifiedAccessGroupAPIResponse(id, "special", []string{}))
-		case request.Method == http.MethodGet && request.URL.Path == "/key/list":
-			if request.URL.Query().Get("access_group_id") != id {
-				t.Errorf("special access_group_id query = %q", request.URL.RawQuery)
-			}
-			writeEmptyUnifiedAccessGroupKeyPage(writer)
-		default:
-			http.NotFound(writer, request)
-		}
-	}))
+	const id = "group/private value"
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests++ }))
 	defer server.Close()
 
 	schema := unifiedAccessGroupTestSchema(t)
@@ -1431,11 +1418,11 @@ func TestUnifiedAccessGroupImportEscapesSpecialAccessGroupID(t *testing.T) {
 	resourceUnderTest.ImportState(context.Background(), resource.ImportStateRequest{ID: id}, importResponse)
 	readResponse := &resource.ReadResponse{State: importResponse.State}
 	resourceUnderTest.Read(context.Background(), resource.ReadRequest{State: importResponse.State}, readResponse)
-	if readResponse.Diagnostics.HasError() {
-		t.Fatalf("special import read diagnostics: %v", readResponse.Diagnostics)
+	if !readResponse.Diagnostics.HasError() || requests != 0 {
+		t.Fatalf("slash import result: diagnostics=%v requests=%d", readResponse.Diagnostics, requests)
 	}
-	if escapedPath != "/v1/access_group/group%2Fspecial%20value" {
-		t.Fatalf("escaped access-group path = %q", escapedPath)
+	if rendered := fmt.Sprint(readResponse.Diagnostics); strings.Contains(rendered, id) || strings.Contains(rendered, url.PathEscape(id)) {
+		t.Fatalf("slash import diagnostic exposed identity: %s", rendered)
 	}
 }
 

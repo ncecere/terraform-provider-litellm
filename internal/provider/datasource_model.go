@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
@@ -126,7 +127,8 @@ func (d *ModelDataSource) Read(ctx context.Context, req datasource.ReadRequest, 
 	}
 
 	modelID := data.ModelID.ValueString()
-	endpoint := fmt.Sprintf("/model/info?litellm_model_id=%s", modelID)
+	query := url.Values{"litellm_model_id": []string{modelID}}
+	endpoint := endpointWithQuery("/model/info", query)
 
 	var rawResult map[string]interface{}
 	if err := readModelDataSourceWithRetry(ctx, d.client, endpoint, &rawResult, 8); err != nil {

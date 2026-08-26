@@ -168,7 +168,7 @@ func (r *AccessGroupResource) Update(ctx context.Context, req resource.UpdateReq
 		"model_names": modelNames,
 	}
 
-	endpoint := fmt.Sprintf("/access_group/%s/update", data.AccessGroup.ValueString())
+	endpoint := endpointWithPathSegment("/access_group/", data.AccessGroup.ValueString(), "/update")
 	var result map[string]interface{}
 	if err := r.client.DoRequestWithResponse(ctx, "PUT", endpoint, updateReq, &result); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to update access group: %s", err))
@@ -191,7 +191,7 @@ func (r *AccessGroupResource) Delete(ctx context.Context, req resource.DeleteReq
 		return
 	}
 
-	endpoint := fmt.Sprintf("/access_group/%s/delete", data.AccessGroup.ValueString())
+	endpoint := endpointWithPathSegment("/access_group/", data.AccessGroup.ValueString(), "/delete")
 	if err := r.client.DoRequestWithResponse(ctx, "DELETE", endpoint, nil, nil); err != nil {
 		if !IsNotFoundError(err) {
 			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to delete access group: %s", err))
@@ -317,7 +317,7 @@ func (r *AccessGroupResource) readAccessGroup(ctx context.Context, data *AccessG
 		accessGroup = data.ID.ValueString()
 	}
 
-	endpoint := fmt.Sprintf("/access_group/%s/info", accessGroup)
+	endpoint := endpointWithPathSegment("/access_group/", accessGroup, "/info")
 
 	var result map[string]interface{}
 	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {

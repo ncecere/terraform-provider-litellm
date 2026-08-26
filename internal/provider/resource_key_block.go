@@ -185,7 +185,7 @@ func keyBlockOperationError(operation string, err error) string {
 func keyBlockInfoEndpoint(apiValue string) string {
 	query := url.Values{}
 	query.Set("key", apiValue)
-	return "/key/info?" + query.Encode()
+	return endpointWithQuery("/key/info", query)
 }
 
 func (r *KeyBlockResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {

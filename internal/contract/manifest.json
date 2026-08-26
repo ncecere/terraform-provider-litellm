@@ -16,7 +16,7 @@
   "provider_golden": {
     "operation_count": 108,
     "path": "internal/contractapi/testdata/provider-operations.golden.json",
-    "sha256": "32f2b0f6f5b8a0b3575ddbd5780d54040c71e25e43d798178ad216ef557dc960"
+    "sha256": "c262850a0394145da5a57b58e540b685040882f97f31e5469516447b6deb5afb"
   },
   "provider_operations": [
     {
@@ -173,7 +173,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_credential.go",
-          "line": 379
+          "line": 377
         }
       ],
       "method": "POST",
@@ -185,7 +185,7 @@
       "evidence": [
         {
           "file": "internal/provider/datasource_credential.go",
-          "line": 101
+          "line": 96
         }
       ],
       "method": "GET",
@@ -199,43 +199,43 @@
       "evidence": [
         {
           "file": "internal/provider/datasource_credential.go",
-          "line": 101
+          "line": 98
         },
         {
           "file": "internal/provider/resource_credential.go",
-          "line": 354
+          "line": 352
         },
         {
           "file": "internal/provider/resource_credential.go",
-          "line": 543
+          "line": 541
         },
         {
           "file": "internal/provider/resource_credential.go",
-          "line": 683
+          "line": 681
         },
         {
           "file": "internal/provider/resource_credential.go",
-          "line": 756
+          "line": 754
         },
         {
           "file": "internal/provider/resource_credential.go",
-          "line": 832
+          "line": 830
         },
         {
           "file": "internal/provider/resource_credential.go",
-          "line": 1372
+          "line": 1370
         },
         {
           "file": "internal/provider/resource_credential.go",
-          "line": 1464
+          "line": 1462
         },
         {
           "file": "internal/provider/resource_credential.go",
-          "line": 1513
+          "line": 1511
         },
         {
           "file": "internal/provider/resource_credential.go",
-          "line": 1566
+          "line": 1564
         }
       ],
       "method": "GET",
@@ -249,7 +249,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_credential.go",
-          "line": 860
+          "line": 858
         }
       ],
       "method": "DELETE",
@@ -263,7 +263,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_credential.go",
-          "line": 1167
+          "line": 1165
         }
       ],
       "method": "PATCH",
@@ -277,7 +277,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_fallback.go",
-          "line": 278
+          "line": 269
         }
       ],
       "method": "POST",
@@ -287,14 +287,6 @@
     },
     {
       "evidence": [
-        {
-          "file": "internal/provider/resource_fallback.go",
-          "line": 179
-        },
-        {
-          "file": "internal/provider/resource_fallback.go",
-          "line": 179
-        },
         {
           "file": "internal/provider/resource_fallback.go",
           "line": 179
@@ -316,24 +308,8 @@
           "line": 116
         },
         {
-          "file": "internal/provider/datasource_fallback.go",
-          "line": 116
-        },
-        {
-          "file": "internal/provider/datasource_fallback.go",
-          "line": 116
-        },
-        {
           "file": "internal/provider/resource_fallback.go",
-          "line": 363
-        },
-        {
-          "file": "internal/provider/resource_fallback.go",
-          "line": 363
-        },
-        {
-          "file": "internal/provider/resource_fallback.go",
-          "line": 363
+          "line": 354
         }
       ],
       "method": "GET",
@@ -516,11 +492,11 @@
       "evidence": [
         {
           "file": "internal/provider/datasource_key.go",
-          "line": 213
+          "line": 214
         },
         {
           "file": "internal/provider/resource_key.go",
-          "line": 922
+          "line": 924
         },
         {
           "file": "internal/provider/resource_key_block.go",
@@ -611,7 +587,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_model.go",
-          "line": 780
+          "line": 781
         }
       ],
       "method": "POST",
@@ -623,7 +599,7 @@
       "evidence": [
         {
           "file": "internal/provider/datasource_model.go",
-          "line": 132
+          "line": 134
         },
         {
           "file": "internal/provider/datasource_models_list.go",
@@ -631,11 +607,11 @@
         },
         {
           "file": "internal/provider/resource_model.go",
-          "line": 966
+          "line": 968
         },
         {
           "file": "internal/provider/resource_model.go",
-          "line": 968
+          "line": 970
         }
       ],
       "method": "GET",
@@ -650,7 +626,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_model.go",
-          "line": 951
+          "line": 952
         }
       ],
       "method": "POST",
@@ -662,7 +638,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_model.go",
-          "line": 951
+          "line": 952
         }
       ],
       "method": "POST",
@@ -674,7 +650,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_model.go",
-          "line": 2059
+          "line": 2061
         }
       ],
       "method": "PATCH",
@@ -700,19 +676,19 @@
       "evidence": [
         {
           "file": "internal/provider/datasource_organization.go",
-          "line": 94
+          "line": 95
         },
         {
           "file": "internal/provider/resource_organization.go",
-          "line": 415
+          "line": 416
         },
         {
           "file": "internal/provider/resource_organization.go",
-          "line": 484
+          "line": 486
         },
         {
           "file": "internal/provider/resource_organization_member.go",
-          "line": 435
+          "line": 436
         }
       ],
       "method": "GET",
@@ -740,7 +716,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_organization_member.go",
-          "line": 543
+          "line": 544
         }
       ],
       "method": "POST",
@@ -752,7 +728,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_organization_member.go",
-          "line": 855
+          "line": 856
         }
       ],
       "method": "DELETE",
@@ -764,11 +740,11 @@
       "evidence": [
         {
           "file": "internal/provider/resource_organization_member.go",
-          "line": 633
+          "line": 634
         },
         {
           "file": "internal/provider/resource_organization_member.go",
-          "line": 756
+          "line": 757
         }
       ],
       "method": "PATCH",
@@ -804,15 +780,15 @@
       "evidence": [
         {
           "file": "internal/provider/datasource_project.go",
-          "line": 99
+          "line": 100
         },
         {
           "file": "internal/provider/resource_project.go",
-          "line": 634
+          "line": 635
         },
         {
           "file": "internal/provider/resource_project.go",
-          "line": 672
+          "line": 674
         }
       ],
       "method": "GET",
@@ -875,10 +851,6 @@
         {
           "file": "internal/provider/datasource_prompts_list.go",
           "line": 200
-        },
-        {
-          "file": "internal/provider/datasource_prompts_list.go",
-          "line": 221
         },
         {
           "file": "internal/provider/datasource_prompts_list.go",
@@ -1140,7 +1112,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_team_block.go",
-          "line": 98
+          "line": 99
         }
       ],
       "method": "POST",
@@ -1164,19 +1136,19 @@
       "evidence": [
         {
           "file": "internal/provider/datasource_team.go",
-          "line": 142
+          "line": 143
         },
         {
           "file": "internal/provider/resource_team.go",
-          "line": 753
+          "line": 754
         },
         {
           "file": "internal/provider/resource_team_block.go",
-          "line": 121
+          "line": 123
         },
         {
           "file": "internal/provider/resource_team_member_add.go",
-          "line": 1144
+          "line": 1145
         }
       ],
       "method": "GET",
@@ -1204,7 +1176,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_team_member.go",
-          "line": 827
+          "line": 828
         },
         {
           "file": "internal/provider/resource_team_member_add.go",
@@ -1216,7 +1188,7 @@
         },
         {
           "file": "internal/provider/resource_user.go",
-          "line": 760
+          "line": 767
         }
       ],
       "method": "POST",
@@ -1228,7 +1200,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_team_member.go",
-          "line": 1252
+          "line": 1253
         },
         {
           "file": "internal/provider/resource_team_member_add.go",
@@ -1240,7 +1212,7 @@
         },
         {
           "file": "internal/provider/resource_user.go",
-          "line": 766
+          "line": 773
         }
       ],
       "method": "POST",
@@ -1252,7 +1224,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_team_member.go",
-          "line": 1107
+          "line": 1108
         },
         {
           "file": "internal/provider/resource_team_member_add.go",
@@ -1284,11 +1256,11 @@
       "evidence": [
         {
           "file": "internal/provider/datasource_team.go",
-          "line": 236
+          "line": 238
         },
         {
           "file": "internal/provider/resource_team.go",
-          "line": 981
+          "line": 983
         }
       ],
       "method": "GET",
@@ -1314,7 +1286,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_team_block.go",
-          "line": 188
+          "line": 190
         }
       ],
       "method": "POST",
@@ -1342,7 +1314,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_user.go",
-          "line": 326
+          "line": 327
         }
       ],
       "method": "POST",
@@ -1354,15 +1326,15 @@
       "evidence": [
         {
           "file": "internal/provider/datasource_user.go",
-          "line": 135
+          "line": 137
         },
         {
           "file": "internal/provider/invite_email.go",
-          "line": 87
+          "line": 88
         },
         {
           "file": "internal/provider/resource_user.go",
-          "line": 556
+          "line": 563
         }
       ],
       "method": "GET",
@@ -1388,7 +1360,7 @@
         },
         {
           "file": "internal/provider/resource_user.go",
-          "line": 360
+          "line": 366
         }
       ],
       "method": "GET",
@@ -1407,7 +1379,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_user.go",
-          "line": 198
+          "line": 199
         }
       ],
       "method": "POST",
@@ -1419,11 +1391,11 @@
       "evidence": [
         {
           "file": "internal/provider/resource_user.go",
-          "line": 292
+          "line": 293
         },
         {
           "file": "internal/provider/resource_user.go",
-          "line": 455
+          "line": 461
         }
       ],
       "method": "POST",
@@ -1537,7 +1509,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_agent.go",
-          "line": 407
+          "line": 406
         }
       ],
       "method": "POST",
@@ -1567,7 +1539,7 @@
         },
         {
           "file": "internal/provider/datasource_agent.go",
-          "line": 221
+          "line": 220
         },
         {
           "file": "internal/provider/resource_agent.go",
@@ -1709,7 +1681,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_team_member.go",
-          "line": 572
+          "line": 573
         }
       ],
       "method": "GET",

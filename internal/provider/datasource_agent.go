@@ -3,7 +3,6 @@ package provider
 import (
 	"context"
 	"fmt"
-	"net/url"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
@@ -217,7 +216,7 @@ func (d *AgentDataSource) Read(ctx context.Context, req datasource.ReadRequest, 
 		return
 	}
 	var result map[string]interface{}
-	endpoint := fmt.Sprintf("/v1/agents/%s", url.PathEscape(config.ID.ValueString()))
+	endpoint := endpointWithPathSegment("/v1/agents/", config.ID.ValueString(), "")
 	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
 		resp.Diagnostics.AddError("Client Error", "Unable to read the requested agent authoritatively.")
 		return

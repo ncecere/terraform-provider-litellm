@@ -567,7 +567,8 @@ func (r *TeamMemberResource) findCanonicalUsersByEmail(ctx context.Context, emai
 }
 
 func (r *TeamMemberResource) lookupCanonicalUserByID(ctx context.Context, userID string) (string, bool, error) {
-	endpoint := fmt.Sprintf("/v2/user/info?user_id=%s", url.QueryEscape(userID))
+	query := url.Values{"user_id": []string{userID}}
+	endpoint := endpointWithQuery("/v2/user/info", query)
 	var response teamMemberUserAPI
 	if err := r.client.DoRequestWithResponse(ctx, http.MethodGet, endpoint, nil, &response); err != nil {
 		if IsAPIErrorStatus(err, http.StatusNotFound) {

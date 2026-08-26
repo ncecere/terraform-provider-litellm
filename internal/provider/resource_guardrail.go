@@ -220,7 +220,7 @@ func (r *GuardrailResource) Update(ctx context.Context, req resource.UpdateReque
 		return
 	}
 
-	endpoint := fmt.Sprintf("/guardrails/%s", data.GuardrailID.ValueString())
+	endpoint := endpointWithPathSegment("/guardrails/", data.GuardrailID.ValueString(), "")
 	if err := r.client.DoRequestWithResponse(ctx, "PUT", endpoint, guardrailReq, nil); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to update guardrail: %s", err))
 		return
@@ -244,7 +244,7 @@ func (r *GuardrailResource) Delete(ctx context.Context, req resource.DeleteReque
 		return
 	}
 
-	endpoint := fmt.Sprintf("/guardrails/%s", data.GuardrailID.ValueString())
+	endpoint := endpointWithPathSegment("/guardrails/", data.GuardrailID.ValueString(), "")
 	if err := r.client.DoRequestWithResponse(ctx, "DELETE", endpoint, nil, nil); err != nil {
 		if !IsNotFoundError(err) {
 			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to delete guardrail: %s", err))
@@ -358,7 +358,7 @@ func (r *GuardrailResource) readGuardrail(ctx context.Context, data *GuardrailRe
 		return fmt.Errorf("guardrail state omitted its identity")
 	}
 
-	endpoint := fmt.Sprintf("/guardrails/%s/info", guardrailID)
+	endpoint := endpointWithPathSegment("/guardrails/", guardrailID, "/info")
 	var raw map[string]interface{}
 	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &raw); err != nil {
 		return err

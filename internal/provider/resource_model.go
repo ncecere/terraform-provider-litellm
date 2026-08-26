@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"net/url"
 	"reflect"
 	"strconv"
 	"strings"
@@ -958,7 +959,8 @@ func (r *ModelResource) readModel(ctx context.Context, data *ModelResourceModel)
 }
 
 func (r *ModelResource) readModelWithOwnership(ctx context.Context, data *ModelResourceModel, ownership modelReadOwnership) error {
-	endpoint := fmt.Sprintf("/model/info?litellm_model_id=%s", data.ID.ValueString())
+	query := url.Values{"litellm_model_id": []string{data.ID.ValueString()}}
+	endpoint := endpointWithQuery("/model/info", query)
 
 	var rawResult map[string]interface{}
 	var err error
@@ -2054,7 +2056,7 @@ func (r *ModelResource) patchModel(ctx context.Context, data, prior *ModelResour
 		"model_info":     modelInfo,
 	}
 
-	endpoint := fmt.Sprintf("/model/%s/update", modelID)
+	endpoint := endpointWithPathSegment("/model/", modelID, "/update")
 	var result map[string]interface{}
 	if err := r.client.DoRequestWithResponse(ctx, "PATCH", endpoint, patchReq, &result); err != nil {
 		return nil, err

@@ -1139,7 +1139,8 @@ func (r *TeamMemberAddResource) ImportState(ctx context.Context, req resource.Im
 }
 
 func (r *TeamMemberAddResource) readTeamMemberAddSnapshot(ctx context.Context, teamID string) (*teamMemberAddSnapshot, error) {
-	endpoint := fmt.Sprintf("/team/info?team_id=%s", url.QueryEscape(teamID))
+	query := url.Values{"team_id": []string{teamID}}
+	endpoint := endpointWithQuery("/team/info", query)
 	var raw json.RawMessage
 	if err := r.client.DoRequestWithResponse(ctx, http.MethodGet, endpoint, nil, &raw); err != nil {
 		return nil, err

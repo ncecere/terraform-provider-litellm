@@ -747,7 +747,8 @@ func (r *TeamResource) readTeam(ctx context.Context, data *TeamResourceModel) er
 }
 
 func (r *TeamResource) readTeamWithNumericOwnership(ctx context.Context, data *TeamResourceModel, imported bool) error {
-	endpoint := fmt.Sprintf("/team/info?team_id=%s", url.QueryEscape(data.ID.ValueString()))
+	query := url.Values{"team_id": []string{data.ID.ValueString()}}
+	endpoint := endpointWithQuery("/team/info", query)
 
 	var result map[string]interface{}
 	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
@@ -976,7 +977,8 @@ func (r *TeamResource) readTeamWithNumericOwnership(ctx context.Context, data *T
 	}
 
 	// Fetch permissions separately - preserve null when API returns empty and config didn't specify permissions
-	permEndpoint := fmt.Sprintf("/team/permissions_list?team_id=%s", url.QueryEscape(data.ID.ValueString()))
+	permissionQuery := url.Values{"team_id": []string{data.ID.ValueString()}}
+	permEndpoint := endpointWithQuery("/team/permissions_list", permissionQuery)
 	var permResult map[string]interface{}
 	if err := r.client.DoRequestWithResponse(ctx, "GET", permEndpoint, nil, &permResult); err == nil {
 		permsValue, permsPresent := permResult["team_member_permissions"].([]interface{})

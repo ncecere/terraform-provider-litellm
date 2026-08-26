@@ -91,13 +91,19 @@ func TestPromptScopedExistenceRequiresAuthoritativeVersionResult(t *testing.T) {
 
 func TestPromptEndpointsAlwaysScopeEnvironment(t *testing.T) {
 	t.Parallel()
-	endpoint := promptEndpoint("prompt/with spaces", "prod/east", nil)
+	endpoint := promptEndpoint("prompt with spaces", "prod/east", nil)
 	parsed, err := url.Parse(endpoint)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parsed.Query().Get("environment") != "prod/east" || parsed.EscapedPath() != "/prompts/prompt%2Fwith%20spaces" {
+	if parsed.Query().Get("environment") != "prod/east" || parsed.EscapedPath() != "/prompts/prompt%20with%20spaces" {
 		t.Fatalf("scoped endpoint = %s", endpoint)
+	}
+	if slashEndpoint := promptEndpoint("private/prompt", "production", nil); slashEndpoint != invalidReviewedEndpoint {
+		t.Fatalf("ordinary slash endpoint did not fail closed: %q", slashEndpoint)
+	}
+	if slashVersionsEndpoint := promptVersionsEndpoint("private/prompt", "production"); slashVersionsEndpoint != invalidReviewedEndpoint {
+		t.Fatalf("ordinary slash versions endpoint did not preserve failure: %q", slashVersionsEndpoint)
 	}
 	version := int64(7)
 	versionEndpoint := promptEndpoint("prompt", "production", &version)

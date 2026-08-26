@@ -171,7 +171,7 @@ func (r *OrganizationResource) Create(ctx context.Context, req resource.CreateRe
 	// budget_reset_at. Re-send the duration through v2's transactional writer.
 	if knownString(data.BudgetDuration) {
 		var resetResult map[string]interface{}
-		endpoint := "/v2/organization/" + url.PathEscape(organizationID)
+		endpoint := endpointWithPathSegment("/v2/organization/", organizationID, "")
 		if err := r.client.DoRequestWithResponse(ctx, "PATCH", endpoint, map[string]interface{}{"budget_duration": data.BudgetDuration.ValueString()}, &resetResult); err != nil {
 			resp.Diagnostics.AddError("Budget Reset Initialization Error", fmt.Sprintf("Organization was created, but LiteLLM could not initialize its budget reset schedule: %s", err))
 			resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
@@ -248,7 +248,7 @@ func (r *OrganizationResource) Update(ctx context.Context, req resource.UpdateRe
 	}
 	if len(updateRequest) > 0 {
 		var result map[string]interface{}
-		endpoint := "/v2/organization/" + url.PathEscape(state.OrganizationID.ValueString())
+		endpoint := endpointWithPathSegment("/v2/organization/", state.OrganizationID.ValueString(), "")
 		if err := r.client.DoRequestWithResponse(ctx, "PATCH", endpoint, updateRequest, &result); err != nil {
 			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to update organization: %s", err))
 			return
@@ -411,7 +411,8 @@ func organizationUpdateChangesBudget(request map[string]interface{}) bool {
 
 func (r *OrganizationResource) lookupOrganizationBudgetID(ctx context.Context, organizationID string, configured types.String) (string, error) {
 	var result map[string]interface{}
-	endpoint := "/organization/info?organization_id=" + url.QueryEscape(organizationID)
+	query := url.Values{"organization_id": []string{organizationID}}
+	endpoint := endpointWithQuery("/organization/info", query)
 	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
 		return "", fmt.Errorf("unable to read authoritative organization budget: %w", err)
 	}
@@ -480,7 +481,8 @@ func (r *OrganizationResource) readOrganizationWithNumericOwnership(ctx context.
 		return fmt.Errorf("organization ID is empty, cannot read organization")
 	}
 	var result map[string]interface{}
-	endpoint := "/organization/info?organization_id=" + url.QueryEscape(organizationID)
+	query := url.Values{"organization_id": []string{organizationID}}
+	endpoint := endpointWithQuery("/organization/info", query)
 	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
 		return err
 	}
