@@ -69,7 +69,7 @@ class HarnessTests(unittest.TestCase):
         self.assertTrue(harness.scanned_report_bytes(valid_report([scenario])))
 
     def test_version_selection_gates_write_only_features(self):
-        self.assertFalse(harness.supports_optional_111("Terraform v1.0.11"))
+        self.assertFalse(harness.supports_optional_111("Terraform v1.1.0"))
         self.assertFalse(harness.supports_optional_111("OpenTofu v1.6.3"))
         self.assertTrue(harness.supports_optional_111("Terraform v1.11.4"))
         self.assertTrue(harness.supports_optional_111("OpenTofu v1.11.1"))

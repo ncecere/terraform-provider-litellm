@@ -12,6 +12,7 @@ ZERO_SHA = "0" * 40
 REVIEWED_ISSUE210_BASES = {
     "a5cca7a1a9e416e72c40de6a5aa8c8bdd63a7701",
     "be91657f738b5764aa09db4e38c69dcc09683198",
+    "d728ea5d8bb8d0fc5c6648e8d1e1b1d2f929601c",
 }
 REVIEWED_ISSUE210_PATHS = (
     "internal/provider/agent_ownership_pending_protocol_test.go",

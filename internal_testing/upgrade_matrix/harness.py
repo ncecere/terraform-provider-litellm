@@ -599,7 +599,7 @@ def validate_examples(cli: str, provider_binary: Path) -> list[dict]:
 
 
 def check_format(cli: str) -> None:
-    # Terraform 1.0 accepts one directory per fmt invocation.
+    # Older Terraform releases accept one directory per fmt invocation.
     for directory in ("examples", "internal_testing"):
         code, _ = safe_run([cli, "fmt", "-check", "-recursive", directory], ROOT)
         if code != 0:

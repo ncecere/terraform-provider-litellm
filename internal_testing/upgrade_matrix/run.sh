@@ -237,7 +237,7 @@ write_provider_config() {
   destination=$1
   cat >"$destination/provider.tf" <<'TF'
 terraform {
-  required_version = ">= 1.0.0"
+  required_version = ">= 1.1.0"
   required_providers {
     litellm = {
       source  = "registry.terraform.io/ncecere/litellm"

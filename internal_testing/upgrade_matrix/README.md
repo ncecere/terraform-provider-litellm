@@ -18,7 +18,7 @@ The execution matrix is exactly 166 scenarios. The Terraform 1.11.4 local lane i
 
 ## Provenance
 
-`tools.lock.json` pins Terraform 1.0.11/1.11.4 and OpenTofu 1.6.3/1.11.1 archives. It also pins the v2.0.1 Registry metadata, release key, full fingerprint, detached signature, checksum manifest, Registry manifest, archives, and extracted executable digests.
+`tools.lock.json` pins Terraform 1.1.0/1.11.4 and OpenTofu 1.6.3/1.11.1 archives. It also pins the v2.0.1 Registry metadata, release key, full fingerprint, detached signature, checksum manifest, Registry manifest, archives, and extracted executable digests.
 
 The installer:
 
