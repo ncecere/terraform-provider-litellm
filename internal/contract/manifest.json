@@ -1,36 +1,22 @@
 {
-  "excluded_non_durable_categories": [
-    {
-      "category": "operational actions",
-      "rationale": "Imperative start, stop, reset, rotation, and administrative actions are not durable resource candidates."
-    },
-    {
-      "category": "health",
-      "rationale": "Health and readiness probes report runtime state rather than durable desired state."
-    },
-    {
-      "category": "spend and analytics",
-      "rationale": "Spend, logs, and analytics are observations, not provider-owned configuration."
-    },
-    {
-      "category": "cache flush",
-      "rationale": "Cache flush endpoints are one-shot operational actions with no durable identity."
-    },
-    {
-      "category": "suggestions",
-      "rationale": "Suggestion and discovery endpoints return advisory data rather than durable objects."
-    },
-    {
-      "category": "inference",
-      "rationale": "Inference, embeddings, rerank, image, audio, and batch execution are workload APIs, not management resources."
-    }
-  ],
+  "classification": {
+    "excluded_non_durable": 447,
+    "operation_count": 670,
+    "path": "internal/contract/reviewed-operation-classification.json",
+    "sha256": "d3f8494de8fab93242975f0e1feb09c27b25d106e68c6fe10dd5d726f6ee2f7f",
+    "unsupported_durable": 223
+  },
   "generation_command": "make contract-update LITELLM_SOURCE=../litellm",
   "openapi": {
     "operation_count": 772,
     "path": "openapi.json",
     "path_count": 561,
     "sha256": "6b8e2cdc27aef0610375674a296a6a562aab268578bd9d8ca161babe1568ef9c"
+  },
+  "provider_golden": {
+    "operation_count": 103,
+    "path": "internal/contractapi/testdata/provider-operations.golden.json",
+    "sha256": "cd8f2ec17989bc3b5fcd3525442228df89ec195adb6c6d15bd443cd1b2be271f"
   },
   "provider_operations": [
     {
@@ -1463,6 +1449,10 @@
         {
           "file": "internal/provider/datasource_agents_list.go",
           "line": 130
+        },
+        {
+          "file": "internal/provider/resource_agent_lifecycle.go",
+          "line": 633
         }
       ],
       "method": "GET",
@@ -1474,7 +1464,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_agent.go",
-          "line": 357
+          "line": 361
         }
       ],
       "method": "POST",
@@ -1486,7 +1476,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_agent.go",
-          "line": 490
+          "line": 542
         }
       ],
       "method": "DELETE",
@@ -1504,11 +1494,15 @@
         },
         {
           "file": "internal/provider/resource_agent.go",
-          "line": 561
+          "line": 650
         },
         {
           "file": "internal/provider/resource_agent.go",
-          "line": 856
+          "line": 1043
+        },
+        {
+          "file": "internal/provider/resource_agent.go",
+          "line": 1045
         }
       ],
       "method": "GET",
@@ -1522,10 +1516,10 @@
       "evidence": [
         {
           "file": "internal/provider/resource_agent.go",
-          "line": 451
+          "line": 503
         }
       ],
-      "method": "PUT",
+      "method": "PATCH",
       "path": "/v1/agents/{agent_id}",
       "path_parameters": [
         "agent_id"
@@ -1719,91 +1713,12 @@
     "route_count": 1,
     "sha256": "ace3daa3c314036cb867bec67089307ace89fbc5ad83acda51408e9c3e3efc2e"
   },
-  "unsupported_durable_operations": [
-    {
-      "group": "credential inventories",
-      "issue": "#248",
-      "operations": [
-        "GET /credentials"
-      ],
-      "rationale": "List and bulk inventory semantics require a separate state, sensitivity, and identity review; the existing credential resource and lookup remain supported."
-    },
-    {
-      "group": "vector inventories",
-      "issue": "#249",
-      "operations": [
-        "GET /vector_stores",
-        "GET /vector_store/list"
-      ],
-      "rationale": "Durable vector-store inventory ownership and pagination are not established by the current single-object lifecycle."
-    },
-    {
-      "group": "JWT mappings",
-      "issue": "#250",
-      "operations": [
-        "/jwt/key/mapping durable CRUD"
-      ],
-      "rationale": "JWT mapping ownership, stable identity, and deletion semantics require a dedicated resource decision."
-    },
-    {
-      "group": "pass-through configuration",
-      "issue": "#251",
-      "operations": [
-        "durable pass-through endpoint CRUD"
-      ],
-      "rationale": "Pass-through endpoint configuration mixes routing and secret-bearing provider data and needs an explicit lifecycle design."
-    },
-    {
-      "group": "policy versions and attachments",
-      "issue": "#252",
-      "operations": [
-        "policy version CRUD",
-        "policy attachment CRUD"
-      ],
-      "rationale": "Versioned policies and many-to-many attachments need independent import, replacement, and drift semantics."
-    },
-    {
-      "group": "MCP toolsets",
-      "issue": "#207",
-      "operations": [
-        "MCP toolset durable CRUD and assignment"
-      ],
-      "rationale": "MCP toolset identity and assignment ownership are distinct from the supported MCP server lifecycle."
-    },
-    {
-      "group": "customer and end-user records",
-      "issue": "#207",
-      "operations": [
-        "customer CRUD",
-        "end-user CRUD"
-      ],
-      "rationale": "Customer and end-user identities overlap external systems and need an ownership and import decision."
-    },
-    {
-      "group": "SCIM",
-      "issue": "#207",
-      "operations": [
-        "SCIM users",
-        "SCIM groups"
-      ],
-      "rationale": "SCIM records are synchronization surfaces whose authority cannot be assumed by a Terraform resource."
-    },
-    {
-      "group": "global configuration",
-      "issue": "#207",
-      "operations": [
-        "global config",
-        "router settings",
-        "callback settings"
-      ],
-      "rationale": "Global proxy configuration has broad shared ownership and restart/merge behavior not modeled by current resources."
-    }
-  ],
   "upstream": {
     "commit": "d8f71d7bdbd7c9873d98293f83d64c6db72847e6",
     "python": "3.12.14",
     "repository": "https://github.com/BerriAI/litellm",
     "tag": "v1.98.0",
+    "uv": "0.12.6",
     "uv_lock_sha256": "a7cc57875c67de85bbae0f82b834f31fc9d0c029073ef29e0883787a31a985e8"
   }
 }

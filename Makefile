@@ -40,6 +40,10 @@ contract-update:
 contract-diff:
 	sh tools/litellm-contract/update.sh diff
 
+# Networked failure-injection test; requires the exact pinned LITELLM_SOURCE checkout.
+contract-update-atomicity-test:
+	sh tools/litellm-contract/test-failure-atomicity.sh
+
 lint:
 	golangci-lint run
 
@@ -74,4 +78,4 @@ smoke: build
 testacc: build
 	@sh internal_testing/acceptance.sh
 
-.PHONY: build install test coverage fmt vet contract-check contract-update contract-diff lint clean local logs smoke testacc
+.PHONY: build install test coverage fmt vet contract-check contract-update contract-diff contract-update-atomicity-test lint clean local logs smoke testacc

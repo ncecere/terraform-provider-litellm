@@ -223,9 +223,10 @@ names, schema versions and types, state values and IDs, and import formats are
 unchanged. Provider source identity and the one development-only migration case
 are documented in [Using the Provider](#using-the-provider).
 
-The checked LiteLLM OpenAPI, hidden-route supplement, provenance manifest, and
-offline Go verifier protect the provider's HTTP API boundary without adding any
-runtime Python or source dependency. See [API contract maintenance](docs/development/api-contract.md)
+The checked LiteLLM OpenAPI, hidden-route supplement, provider-operation golden,
+exact operation classification, separately reviewed pins, and offline Go verifier
+protect the provider's HTTP API boundary without adding any runtime Python or
+source dependency. See [API contract maintenance](docs/development/api-contract.md)
 for reproduction, upgrade review, and FastAPI/Pydantic limitations.
 
 ### Building the Provider
@@ -257,6 +258,7 @@ The Makefile provides several useful commands for development:
 - `make contract-check`: Verifies the checked LiteLLM API contract offline
 - `make contract-update`: Regenerates the contract from the exact pinned upstream source
 - `make contract-diff`: Reproduces and compares the pinned contract without modifying files
+- `make contract-update-atomicity-test`: Injects a pre-replacement failure and proves generated artifacts remain untouched
 - `make lint`: Runs golangci-lint
 - `make clean`: Removes build artifacts and installed provider
 

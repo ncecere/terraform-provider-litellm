@@ -1,12 +1,14 @@
 # LiteLLM API contract maintenance
 
-The provider is tested against exactly LiteLLM 1.98.0. Its reviewed management API contract consists of:
+The provider is tested against exactly LiteLLM 1.98.0. Its API review consists of:
 
-- `openapi.json`, generated from the exact upstream tag and commit after fail-closed registration of every lazy router used by the provider;
-- `internal/contract/supplemental-routes.json`, containing only explicitly reviewed hidden routes; and
-- `internal/contract/manifest.json`, which pins provenance, checksums, counts, provider call evidence, and the reviewed unsupported inventory.
+- generated `openapi.json`, after fail-closed registration of every lazy router used by the provider;
+- generated `internal/contract/supplemental-routes.json`, containing the explicitly reviewed hidden route;
+- generated `internal/contract/manifest.json` and `internal/contractapi/testdata/provider-operations.golden.json`;
+- reviewed `internal/contract/reviewed-operation-classification.json`, with one exact normalized `METHOD /path` entry for every operation not used by the provider; and
+- reviewed, non-generated `internal/contract/reviewed-pins.json`, which pins exact bytes and counts for all generated artifacts and the classification, plus category rationales and issue ownership.
 
-These are development and release-check artifacts. They are not embedded in the provider binary. Provider runtime behavior remains Go-only and uses the LiteLLM HTTP API; Python and an upstream source checkout are never runtime dependencies.
+The generated files and review files are development/release inputs. They are not embedded in the provider. Provider runtime remains Go-only and uses only LiteLLM's HTTP API.
 
 ## Offline verification
 
@@ -16,41 +18,78 @@ Run:
 make contract-check
 ```
 
-The verifier does not use the network or import Python. It parses non-test Go files under `internal/provider`, resolves the approved HTTP wrappers and URL helpers, and rejects unresolved HTTP calls or raw request construction. It then checks every extracted method, normalized path, path parameter, and query name against the checked OpenAPI and supplemental artifacts. Checksums, reviewed counts, operation evidence, stale manifest entries, and the unsupported inventory are also enforced.
+The verifier does not use the network or Python. It discovers `Client` transport methods by receiver and call graph, permits only the reviewed transport plumbing and wrappers, and rejects unknown `Client` HTTP abstractions, raw request construction (including in `client.go`), unresolved wrappers, methods, paths, or query names. It extracts every non-test provider call and compares method, normalized path boundaries, path parameters, and exact query names with OpenAPI plus the supplement.
 
-CI and the release workflow run only this offline check.
+Production verification also:
 
-## Reproducing or updating
+- verifies exact bytes for OpenAPI, supplement, manifest, provider-operation golden, and reviewed classification against `reviewed-pins.json`;
+- compares extraction with both the golden and manifest, including code evidence;
+- requires every OpenAPI/supplement operation to be either provider-used or classified exactly once;
+- rejects stale, renamed, duplicate, overlapping, unknown-category, or unclassified operations; and
+- verifies durable/non-durable disposition counts and required issue categories.
 
-An update requires the exact upstream source and dependencies resolved from its pinned `uv.lock`. With an existing checkout:
+CI and the release workflow run this offline gate. Release runs it before importing signing credentials.
+
+## Exact operation classification
+
+`reviewed-operation-classification.json` is an exhaustive set, not a prefix rule or generated catch-all. Each entry contains an exact uppercase method, normalized path, and one category defined in `reviewed-pins.json`.
+
+`unsupported_durable` categories are explicit Terraform resource decisions. They include credential inventory (#248), vector-store management (#249), JWT mappings (#250), configured pass-through endpoints (#251), policy versions/attachments (#252), and exact additional MCP, customer/end-user, SCIM, global configuration, and management operations (#207).
+
+`excluded_non_durable` categories remain explicit per operation. They include inference/workload execution, operational actions, health/status, spend/analytics, cache flush, suggestion/discovery, authentication flow, testing/validation, public metadata, and observability. A new route cannot inherit one of these categories by prefix: it fails verification until its exact operation is reviewed.
+
+## Reproducing generated artifacts
+
+Generation requires all of the following exact inputs:
+
+- upstream tag `v1.98.0` at commit `d8f71d7bdbd7c9873d98293f83d64c6db72847e6`;
+- Python `3.12.14`;
+- uv `0.12.6` (the local command rejects any other release); and
+- upstream `uv.lock` SHA256 `a7cc57875c67de85bbae0f82b834f31fc9d0c029073ef29e0883787a31a985e8`.
+
+With an existing exact checkout:
 
 ```sh
-make contract-update LITELLM_SOURCE=../litellm
+UV=/path/to/uv-0.12.6 \
+LITELLM_SOURCE=../litellm \
+make contract-diff
 ```
 
-Without `LITELLM_SOURCE`, the target clones the pinned upstream commit. It verifies that commit and its `v1.98.0` tag, verifies the lock checksum, creates the pinned Python 3.12.14/uv environment, exports with two different `PYTHONHASHSEED` values, and byte-compares both results before replacing checked files. `make contract-diff` performs the same networked reproduction but only compares generated output with the repository.
+Without `LITELLM_SOURCE`, the update script clones the pinned commit. It exports under two different `PYTHONHASHSEED` values and byte-compares them. `contract-diff` stages and diffs all four generated artifacts, reports their staged hashes, confirms reviewed inputs were not changed, and runs full verification against the reviewed pins. The manual **Reproduce LiteLLM API contract** workflow checks out the exact source and installs exactly uv 0.12.6.
 
-The manual **Reproduce LiteLLM API contract** workflow independently checks out the exact upstream commit and uses pinned Python and uv versions. It regenerates twice and fails on any diff.
+Do not substitute LiteLLM's checked OpenAPI. LiteLLM's runtime lazy loader warns and skips failed optional imports; this exporter fails closed if a required import, registration, route walk, or schema inclusion fails.
 
-Do not copy LiteLLM's checked OpenAPI file as a fallback. LiteLLM lazily imports some routers and its normal loader warns and skips failed optional imports. The exporter instead fails closed if a required provider router cannot import, register, or appear in the schema. A failed update must leave the prior reviewed artifacts intact.
+## Atomic update and review process
 
-## Upgrade review
+`make contract-update` never edits reviewed pins or classifications. It:
 
-A LiteLLM upgrade is a deliberate API review, separate from the client/import matrix tracked in #210:
+1. creates an isolated staging tree;
+2. regenerates OpenAPI and supplement twice;
+3. generates the manifest and provider-operation golden in staging;
+4. runs the complete production verifier in staging against the existing reviewed classification and pins;
+5. copies every validated output to destination-side temporary files; and
+6. replaces the four generated files only after every preceding step succeeds.
 
-1. Select an immutable upstream tag and commit and review its Python requirement and `uv.lock`.
-2. Update the pins in `tools/litellm-contract/export.py`, the manual workflow, and the manifest.
-3. Review the lazy-feature list and the single bounded hidden-route AST extraction. Do not broaden AST inference to manufacture an OpenAPI substitute.
-4. Run `make contract-update`, inspect the OpenAPI and operation inventory diffs, and update the unsupported durable-operation review.
-5. Run `make contract-check`, the complete Go test/vet/race suite, formatting checks, and release snapshot checks.
-6. Confirm the provider binary still contains no Python, LiteLLM source, OpenAPI, supplemental, or manifest payload.
+A validation, generation, injected, or staging failure leaves all four checked generated artifacts untouched. Reproduce that guarantee with:
 
-Route presence alone does not establish a safe Terraform lifecycle. Resource decisions, retries/absence, runtime escaping, and upgrade/import/client compatibility remain in #202, #203, #207/#248-252, and #210 respectively.
+```sh
+UV=/path/to/uv-0.12.6 \
+LITELLM_SOURCE=../litellm \
+make contract-update-atomicity-test
+```
+
+For an intentional LiteLLM/API change:
+
+1. Run `contract-diff` and inspect all exact route/schema/provider-call changes and reported staged hashes.
+2. Manually edit `reviewed-operation-classification.json` for every added, removed, or renamed operation. Do not use prefix defaults or broad placeholder entries.
+3. Manually update `reviewed-pins.json` with the reviewed classification hash/counts and the four generated hashes/counts reported by staging. This file is never generator-written.
+4. Run `contract-update`; it succeeds only when staged outputs exactly match those independently reviewed pins.
+5. Run `contract-diff`, `contract-check`, full test/vet/race/format/assembly checks, and confirm binary exclusion.
+
+This deliberate two-party-style step means coordinated edits to OpenAPI, manifest, or golden still fail unless the separately reviewed pins are changed visibly.
 
 ## Source and Pydantic limitations
 
-FastAPI's OpenAPI output reflects imported router objects and Pydantic models, not every executable Python branch. Routes marked `include_in_schema=false` are absent by design, and lazy routers are absent until registered. Pydantic aliases and dependency-injected query parameters can also differ from names suggested by function source. For that reason, the exporter walks registered FastAPI routes (including hidden routes), checks duplicate contracts, and uses bounded AST only for the explicitly reviewed hidden organization PATCH. The offline verifier compares URL-level method/path/query contracts; it does not claim to validate request or response semantics beyond the generated OpenAPI.
+FastAPI OpenAPI reflects imported router objects and Pydantic models, not every executable Python branch. Lazy routers are absent until registered, and `include_in_schema=false` routes are absent by design. Pydantic aliases and dependency-injected query parameters can differ from names suggested by source. The exporter therefore walks registered FastAPI routes, including hidden routes, checks duplicate contracts, and uses bounded AST only for the reviewed hidden organization PATCH. The offline verifier checks URL-level method/path/query contracts; it does not claim request/response semantic validation beyond generated OpenAPI.
 
-## Reviewed exclusions
-
-The manifest keeps durable but unsupported groups visible: credential and vector inventories, JWT mappings, pass-through configuration, policy versions and attachments, MCP toolsets, customer/end-user records, SCIM, and global configuration surfaces. Operational actions, health, spend/analytics, cache flushes, suggestions, and inference are explicitly classified as non-durable rather than Terraform resource candidates.
+Lifecycle decisions, retries/absence, runtime escaping, and upgrade/import/client compatibility remain scoped to #202, #203, #207/#248-252, and #210.

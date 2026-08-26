@@ -17,7 +17,7 @@ for marker in \
   a7cc57875c67de85bbae0f82b834f31fc9d0c029073ef29e0883787a31a985e8 \
   '/v1/mcp/server/{server_id}/oauth-user-credential/status' \
   'include_in_schema=false upstream route used by organization updates' \
-  'Versioned policies and many-to-many attachments' \
+  'Credential collection inventory is durable' \
   'required lazy feature metadata missing'
 do
   if LC_ALL=C grep -a -F "$marker" "$work/provider" >/dev/null; then

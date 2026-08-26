@@ -23,6 +23,7 @@ const (
 	pinnedTag          = "v1.98.0"
 	pinnedCommit       = "d8f71d7bdbd7c9873d98293f83d64c6db72847e6"
 	pinnedPython       = "3.12.14"
+	pinnedUV           = "0.12.6"
 	pinnedUVLockSHA256 = "a7cc57875c67de85bbae0f82b834f31fc9d0c029073ef29e0883787a31a985e8"
 )
 
@@ -31,10 +32,18 @@ var httpMethods = map[string]string{
 	"MethodDelete": "DELETE", "MethodHead": "HEAD", "MethodOptions": "OPTIONS",
 }
 
-var requestWrappers = map[string]int{
+var clientRequestMethods = map[string]int{
 	"DoRequest": 2, "DoRequestWithResponse": 2, "doRequestWithResponse": 2,
 	"doRequestWithResponseOptions": 2, "doFreshRequestWithResponse": 2,
-	"fetchTopLevelListObjects": 2, "fetchEnvelopeListObjects": 2, "readModelDataSourceWithRetry": 2, "readPromptDataSourceWithRetry": 2, "probeCredentialEndpoint": 2,
+}
+
+var helperRequestWrappers = map[string]int{
+	"fetchTopLevelListObjects": 2, "fetchEnvelopeListObjects": 2, "readModelDataSourceWithRetry": 2,
+	"readPromptDataSourceWithRetry": 2, "probeCredentialEndpoint": 2,
+}
+
+var approvedClientTransportInternals = map[string]bool{
+	"prepareRequest": true, "executeRequest": true, "executeRequestWithOptions": true,
 }
 
 type Evidence struct {
@@ -72,6 +81,7 @@ type Manifest struct {
 		Tag          string `json:"tag"`
 		Commit       string `json:"commit"`
 		Python       string `json:"python"`
+		UV           string `json:"uv"`
 		UVLockSHA256 string `json:"uv_lock_sha256"`
 	} `json:"upstream"`
 	GenerationCommand string `json:"generation_command"`
@@ -86,22 +96,67 @@ type Manifest struct {
 		SHA256     string `json:"sha256"`
 		RouteCount int    `json:"route_count"`
 	} `json:"supplemental"`
-	RequiredLazyFeatures []string           `json:"required_lazy_features"`
-	Operations           []Operation        `json:"provider_operations"`
-	Unsupported          []UnsupportedGroup `json:"unsupported_durable_operations"`
-	Excluded             []ExcludedCategory `json:"excluded_non_durable_categories"`
+	RequiredLazyFeatures []string    `json:"required_lazy_features"`
+	Operations           []Operation `json:"provider_operations"`
+	ProviderGolden       struct {
+		Path           string `json:"path"`
+		SHA256         string `json:"sha256"`
+		OperationCount int    `json:"operation_count"`
+	} `json:"provider_golden"`
+	Classification struct {
+		Path                    string `json:"path"`
+		SHA256                  string `json:"sha256"`
+		OperationCount          int    `json:"operation_count"`
+		UnsupportedDurableCount int    `json:"unsupported_durable"`
+		ExcludedNonDurableCount int    `json:"excluded_non_durable"`
+	} `json:"classification"`
 }
 
-type UnsupportedGroup struct {
-	Group      string   `json:"group"`
-	Issue      string   `json:"issue"`
-	Rationale  string   `json:"rationale"`
-	Operations []string `json:"operations"`
+type ReviewedPins struct {
+	SchemaVersion int `json:"schema_version"`
+	Upstream      struct {
+		Repository   string `json:"repository"`
+		Tag          string `json:"tag"`
+		Commit       string `json:"commit"`
+		Python       string `json:"python"`
+		UV           string `json:"uv"`
+		UVLockSHA256 string `json:"uv_lock_sha256"`
+	} `json:"upstream"`
+	Artifacts struct {
+		OpenAPI        ArtifactPin `json:"openapi"`
+		Supplemental   ArtifactPin `json:"supplemental"`
+		Manifest       ArtifactPin `json:"manifest"`
+		ProviderGolden ArtifactPin `json:"provider_golden"`
+		Classification ArtifactPin `json:"classification"`
+	} `json:"artifacts"`
+	Categories []CategoryDefinition `json:"categories"`
 }
 
-type ExcludedCategory struct {
-	Category  string `json:"category"`
-	Rationale string `json:"rationale"`
+type ArtifactPin struct {
+	Path                    string `json:"path"`
+	SHA256                  string `json:"sha256"`
+	PathCount               int    `json:"path_count,omitempty"`
+	OperationCount          int    `json:"operation_count,omitempty"`
+	UnsupportedDurableCount int    `json:"unsupported_durable_count,omitempty"`
+	ExcludedNonDurableCount int    `json:"excluded_non_durable_count,omitempty"`
+}
+
+type CategoryDefinition struct {
+	ID          string `json:"id"`
+	Disposition string `json:"disposition"`
+	Issue       string `json:"issue,omitempty"`
+	Rationale   string `json:"rationale"`
+}
+
+type ReviewedClassification struct {
+	SchemaVersion int                   `json:"schema_version"`
+	Operations    []ClassifiedOperation `json:"operations"`
+}
+
+type ClassifiedOperation struct {
+	Method   string `json:"method"`
+	Path     string `json:"path"`
+	Category string `json:"category"`
 }
 
 type contractOperation struct {
@@ -112,9 +167,10 @@ type contractOperation struct {
 }
 
 type value struct {
-	shapes  []string
-	queries map[string]bool
-	ok      bool
+	shapes          []string
+	queries         map[string]bool
+	unresolvedQuery bool
+	ok              bool
 }
 
 func literalValue(s string) value {
@@ -139,21 +195,24 @@ func mergeValues(values ...value) value {
 		for q := range v.queries {
 			out.queries[q] = true
 		}
+		out.unresolvedQuery = out.unresolvedQuery || v.unresolvedQuery
 	}
 	sort.Strings(out.shapes)
 	return out
 }
 
 type extractor struct {
-	root      string
-	fset      *token.FileSet
-	files     map[string]*ast.File
-	funcs     map[string]*ast.FuncDecl
-	constants map[string]string
+	root              string
+	fset              *token.FileSet
+	files             map[string]*ast.File
+	funcs             map[string]*ast.FuncDecl
+	constants         map[string]string
+	clientMethods     map[string]*ast.FuncDecl
+	clientMethodFiles map[string]string
 }
 
 func ExtractProvider(root string) ([]Operation, error) {
-	x := &extractor{root: root, fset: token.NewFileSet(), files: map[string]*ast.File{}, funcs: map[string]*ast.FuncDecl{}, constants: map[string]string{}}
+	x := &extractor{root: root, fset: token.NewFileSet(), files: map[string]*ast.File{}, funcs: map[string]*ast.FuncDecl{}, constants: map[string]string{}, clientMethods: map[string]*ast.FuncDecl{}, clientMethodFiles: map[string]string{}}
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return nil, err
@@ -172,12 +231,20 @@ func ExtractProvider(root string) ([]Operation, error) {
 			switch node := decl.(type) {
 			case *ast.FuncDecl:
 				x.funcs[node.Name.Name] = node
+				if receiverTypeName(node) == "Client" {
+					x.clientMethods[node.Name.Name] = node
+					x.clientMethodFiles[node.Name.Name] = path
+				}
 			case *ast.GenDecl:
 				if node.Tok == token.CONST {
 					x.collectConstants(node)
 				}
 			}
 		}
+	}
+
+	if err := x.validateClientTransport(); err != nil {
+		return nil, err
 	}
 
 	var extracted []Operation
@@ -189,7 +256,7 @@ func ExtractProvider(root string) ([]Operation, error) {
 			if !ok || fn.Body == nil {
 				continue
 			}
-			if base == "client.go" || fn.Name.Name == "fetchTopLevelListObjects" || fn.Name.Name == "fetchEnvelopeListObjects" || fn.Name.Name == "readModelDataSourceWithRetry" || fn.Name.Name == "readPromptDataSourceWithRetry" || fn.Name.Name == "probeCredentialEndpoint" {
+			if receiverTypeName(fn) == "Client" || fn.Name.Name == "fetchTopLevelListObjects" || fn.Name.Name == "fetchEnvelopeListObjects" || fn.Name.Name == "readModelDataSourceWithRetry" || fn.Name.Name == "readPromptDataSourceWithRetry" || fn.Name.Name == "probeCredentialEndpoint" {
 				continue
 			}
 			env := x.functionEnv(fn, nil, map[string]bool{})
@@ -220,16 +287,23 @@ func ExtractProvider(root string) ([]Operation, error) {
 					extracted = append(extracted, Operation{Method: "GET", Path: path, QueryParameters: sortedKeys(query), Evidence: []Evidence{{File: "internal/provider/" + base, Line: pos.Line}}})
 					return true
 				}
-				pathIndex, isRequest := requestWrappers[name]
-				if !isRequest {
-					return true
+				pathIndex, isClientRequest := clientRequestMethods[name]
+				if isClientRequest && !callHasClientReceiver(call, fn) {
+					isClientRequest = false
+				}
+				if !isClientRequest {
+					var isHelperRequest bool
+					pathIndex, isHelperRequest = helperRequestWrappers[name]
+					if !isHelperRequest {
+						return true
+					}
 				}
 				if len(call.Args) <= pathIndex {
 					problems = append(problems, fmt.Sprintf("%s:%d: malformed HTTP wrapper call", base, pos.Line))
 					return true
 				}
 				method := "GET"
-				if name != "fetchTopLevelListObjects" && name != "fetchEnvelopeListObjects" && name != "readModelDataSourceWithRetry" && name != "readPromptDataSourceWithRetry" && name != "probeCredentialEndpoint" {
+				if isClientRequest {
 					method = x.evalMethod(call.Args[pathIndex-1], env)
 				}
 				pv := x.eval(call.Args[pathIndex], env, map[string]bool{})
@@ -238,9 +312,13 @@ func ExtractProvider(root string) ([]Operation, error) {
 					return true
 				}
 				for _, shape := range pv.shapes {
-					pathShape, query := splitShape(shape)
+					pathShape, query, unresolvedQuery := splitShape(shape)
 					for q := range pv.queries {
 						query[q] = true
+					}
+					if pathShape == "{}" || !strings.HasPrefix(pathShape, "/") || pv.unresolvedQuery || unresolvedQuery {
+						problems = append(problems, fmt.Sprintf("%s:%d: unresolved dynamic HTTP path or query name", base, pos.Line))
+						continue
 					}
 					extracted = append(extracted, Operation{Method: method, Path: pathShape, QueryParameters: sortedKeys(query), Evidence: []Evidence{{File: "internal/provider/" + base, Line: pos.Line}}})
 				}
@@ -270,6 +348,229 @@ func (x *extractor) collectConstants(decl *ast.GenDecl) {
 			}
 		}
 	}
+}
+
+func receiverTypeName(fn *ast.FuncDecl) string {
+	if fn.Recv == nil || len(fn.Recv.List) != 1 {
+		return ""
+	}
+	typeExpr := fn.Recv.List[0].Type
+	if star, ok := typeExpr.(*ast.StarExpr); ok {
+		typeExpr = star.X
+	}
+	if id, ok := typeExpr.(*ast.Ident); ok {
+		return id.Name
+	}
+	return ""
+}
+
+func receiverName(fn *ast.FuncDecl) string {
+	if fn.Recv == nil || len(fn.Recv.List) != 1 || len(fn.Recv.List[0].Names) != 1 {
+		return ""
+	}
+	return fn.Recv.List[0].Names[0].Name
+}
+
+func callHasClientReceiver(call *ast.CallExpr, fn *ast.FuncDecl) bool {
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	switch receiver := selector.X.(type) {
+	case *ast.Ident:
+		if receiverTypeName(fn) == "Client" && receiver.Name == receiverName(fn) {
+			return true
+		}
+		if fn.Type.Params != nil {
+			for _, field := range fn.Type.Params.List {
+				fieldType := field.Type
+				if star, ok := fieldType.(*ast.StarExpr); ok {
+					fieldType = star.X
+				}
+				id, typedClient := fieldType.(*ast.Ident)
+				if !typedClient || id.Name != "Client" {
+					continue
+				}
+				for _, name := range field.Names {
+					if name.Name == receiver.Name {
+						return true
+					}
+				}
+			}
+		}
+	case *ast.SelectorExpr:
+		return receiver.Sel.Name == "client" || receiver.Sel.Name == "Client"
+	}
+	return false
+}
+
+func rawHTTPCallName(call *ast.CallExpr) (string, bool) {
+	name := callName(call.Fun)
+	rawHTTP := name == "NewRequest" || name == "NewRequestWithContext" || name == "Do" || name == "RoundTrip"
+	if selector, ok := call.Fun.(*ast.SelectorExpr); ok {
+		root := selectorRootName(selector.X)
+		if root == "http" && (name == "Get" || name == "Post" || name == "PostForm" || name == "Head") {
+			rawHTTP = true
+		}
+		if strings.Contains(strings.ToLower(root), "httpclient") && (name == "Get" || name == "Post" || name == "Head") {
+			rawHTTP = true
+		}
+	}
+	return name, rawHTTP
+}
+
+func (x *extractor) validateClientTransport() error {
+	freeFunctions := map[string]*ast.FuncDecl{}
+	for _, file := range x.files {
+		for _, declaration := range file.Decls {
+			if fn, ok := declaration.(*ast.FuncDecl); ok && fn.Recv == nil {
+				freeFunctions[fn.Name.Name] = fn
+			}
+		}
+	}
+	freeDirect := map[string]bool{}
+	freeEdges := map[string]map[string]bool{}
+	for name, fn := range freeFunctions {
+		freeEdges[name] = map[string]bool{}
+		ast.Inspect(fn.Body, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			if _, raw := rawHTTPCallName(call); raw {
+				freeDirect[name] = true
+			}
+			called := callName(call.Fun)
+			if callHasClientReceiver(call, fn) {
+				if _, ok := clientRequestMethods[called]; ok {
+					freeDirect[name] = true
+				}
+				if approvedClientTransportInternals[called] {
+					freeDirect[name] = true
+				}
+			}
+			if _, ok := helperRequestWrappers[called]; ok {
+				freeDirect[name] = true
+			}
+			if _, ok := call.Fun.(*ast.Ident); ok {
+				if _, exists := freeFunctions[called]; exists {
+					freeEdges[name][called] = true
+				}
+			}
+			return true
+		})
+	}
+	freeReaches := map[string]bool{}
+	changed := true
+	for changed {
+		changed = false
+		for name := range freeFunctions {
+			if freeReaches[name] {
+				continue
+			}
+			if freeDirect[name] {
+				freeReaches[name] = true
+				changed = true
+				continue
+			}
+			for called := range freeEdges[name] {
+				if freeReaches[called] {
+					freeReaches[name] = true
+					changed = true
+					break
+				}
+			}
+		}
+	}
+
+	direct := map[string]bool{}
+	edges := map[string]map[string]bool{}
+	for name, fn := range x.clientMethods {
+		receiver := receiverName(fn)
+		edges[name] = map[string]bool{}
+		ast.Inspect(fn.Body, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			if _, raw := rawHTTPCallName(call); raw {
+				direct[name] = true
+			}
+			if id, ok := call.Fun.(*ast.Ident); ok && freeReaches[id.Name] {
+				direct[name] = true
+			}
+			selector, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			id, ok := selector.X.(*ast.Ident)
+			if !ok || id.Name != receiver {
+				return true
+			}
+			called := selector.Sel.Name
+			if _, exists := x.clientMethods[called]; exists {
+				edges[name][called] = true
+			}
+			if _, transport := clientRequestMethods[called]; transport {
+				direct[name] = true
+			}
+			return true
+		})
+	}
+	reachesTransport := map[string]bool{}
+	changed = true
+	for changed {
+		changed = false
+		for method := range x.clientMethods {
+			if reachesTransport[method] {
+				continue
+			}
+			if direct[method] {
+				reachesTransport[method] = true
+				changed = true
+				continue
+			}
+			for called := range edges[method] {
+				if reachesTransport[called] {
+					reachesTransport[method] = true
+					changed = true
+					break
+				}
+			}
+		}
+	}
+	var problems []string
+	for method := range reachesTransport {
+		_, requestApproved := clientRequestMethods[method]
+		if !requestApproved && !approvedClientTransportInternals[method] {
+			position := x.fset.Position(x.clientMethods[method].Pos())
+			problems = append(problems, fmt.Sprintf("%s:%d: unknown Client HTTP abstraction %s", filepath.Base(x.clientMethodFiles[method]), position.Line, method))
+		}
+	}
+	for path, file := range x.files {
+		for _, declaration := range file.Decls {
+			fn, ok := declaration.(*ast.FuncDecl)
+			if !ok || fn.Body == nil || receiverTypeName(fn) == "Client" {
+				continue
+			}
+			ast.Inspect(fn.Body, func(node ast.Node) bool {
+				call, ok := node.(*ast.CallExpr)
+				if !ok || !callHasClientReceiver(call, fn) {
+					return true
+				}
+				if approvedClientTransportInternals[callName(call.Fun)] {
+					position := x.fset.Position(call.Pos())
+					problems = append(problems, fmt.Sprintf("%s:%d: internal Client transport method called outside Client implementation", filepath.Base(path), position.Line))
+				}
+				return true
+			})
+		}
+	}
+	if len(problems) > 0 {
+		sort.Strings(problems)
+		return errors.New(strings.Join(problems, "\n"))
+	}
+	return nil
 }
 
 func (x *extractor) functionEnv(fn *ast.FuncDecl, bindings map[string]value, stack map[string]bool) map[string]value {
@@ -344,14 +645,16 @@ func (x *extractor) functionEnv(fn *ast.FuncDecl, bindings map[string]value, sta
 				if (name == "Set" || name == "Add") && len(node.Args) > 0 {
 					if sel, ok := node.Fun.(*ast.SelectorExpr); ok {
 						if id, ok := sel.X.(*ast.Ident); ok {
-							if q, ok := stringLiteral(node.Args[0]); ok {
-								v := env[id.Name]
-								if v.queries == nil {
-									v = literalValue("")
-								}
-								v.queries[q] = true
-								env[id.Name] = v
+							v := env[id.Name]
+							if v.queries == nil {
+								v = literalValue("")
 							}
+							if q, ok := stringLiteral(node.Args[0]); ok {
+								v.queries[q] = true
+							} else {
+								v.unresolvedQuery = true
+							}
+							env[id.Name] = v
 						}
 					}
 				}
@@ -426,6 +729,7 @@ func (x *extractor) eval(expr ast.Expr, env map[string]value, stack map[string]b
 			for q := range b.queries {
 				out.queries[q] = true
 			}
+			out.unresolvedQuery = a.unresolvedQuery || b.unresolvedQuery
 			return out
 		}
 	case *ast.CompositeLit:
@@ -471,6 +775,7 @@ func (x *extractor) eval(expr ast.Expr, env map[string]value, stack map[string]b
 			for key := range q.queries {
 				p.queries[key] = true
 			}
+			p.unresolvedQuery = p.unresolvedQuery || q.unresolvedQuery
 			return p
 		}
 		if fn := x.funcs[name]; fn != nil && approvedURLHelper(name) && !stack[name] {
@@ -553,28 +858,28 @@ func (x *extractor) detectRawHTTP() error {
 	var bad []string
 	for path, file := range x.files {
 		base := filepath.Base(path)
-		ast.Inspect(file, func(n ast.Node) bool {
-			call, ok := n.(*ast.CallExpr)
-			if !ok {
+		for _, declaration := range file.Decls {
+			fn, ok := declaration.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				name, rawHTTP := rawHTTPCallName(call)
+				if !rawHTTP {
+					return true
+				}
+				approved := receiverTypeName(fn) == "Client" && ((fn.Name.Name == "prepareRequest" && name == "NewRequestWithContext") || (fn.Name.Name == "executeRequestWithOptions" && name == "Do"))
+				if !approved {
+					pos := x.fset.Position(call.Pos())
+					bad = append(bad, fmt.Sprintf("%s:%d: raw HTTP request construction is not approved", base, pos.Line))
+				}
 				return true
-			}
-			name := callName(call.Fun)
-			rawHTTP := name == "NewRequest" || name == "NewRequestWithContext" || name == "Do" || name == "RoundTrip"
-			if selector, ok := call.Fun.(*ast.SelectorExpr); ok {
-				root := selectorRootName(selector.X)
-				if root == "http" && (name == "Get" || name == "Post" || name == "PostForm" || name == "Head") {
-					rawHTTP = true
-				}
-				if strings.Contains(strings.ToLower(root), "httpclient") && (name == "Get" || name == "Post" || name == "Head") {
-					rawHTTP = true
-				}
-			}
-			if rawHTTP && base != "client.go" {
-				pos := x.fset.Position(call.Pos())
-				bad = append(bad, fmt.Sprintf("%s:%d: raw HTTP request construction is not approved", base, pos.Line))
-			}
-			return true
-		})
+			})
+		}
 	}
 	if len(bad) > 0 {
 		sort.Strings(bad)
@@ -615,18 +920,23 @@ func combineOperations(in []Operation) []Operation {
 	return out
 }
 
-func splitShape(shape string) (string, map[string]bool) {
+func splitShape(shape string) (string, map[string]bool, bool) {
 	query := map[string]bool{}
+	unresolved := false
 	parts := strings.SplitN(shape, "?", 2)
 	if len(parts) == 2 {
 		for _, piece := range strings.Split(parts[1], "&") {
 			name := strings.SplitN(piece, "=", 2)[0]
-			if decoded, err := url.QueryUnescape(name); err == nil && decoded != "" && decoded != "{}" {
-				query[decoded] = true
+			if decoded, err := url.QueryUnescape(name); err == nil && decoded != "" {
+				if strings.Contains(decoded, "{}") {
+					unresolved = true
+				} else {
+					query[decoded] = true
+				}
 			}
 		}
 	}
-	return parts[0], query
+	return parts[0], query, unresolved
 }
 
 func approvedURLHelper(name string) bool {
@@ -833,65 +1143,70 @@ func shapeMatches(shape, contract string) bool {
 }
 
 func Verify(repoRoot string) error {
-	manifestPath := filepath.Join(repoRoot, "internal/contract/manifest.json")
-	data, err := os.ReadFile(manifestPath)
-	if err != nil {
+	pinsPath := filepath.Join(repoRoot, "internal/contract/reviewed-pins.json")
+	var pins ReviewedPins
+	if err := readJSONFile(pinsPath, &pins); err != nil {
 		return err
 	}
+	if pins.SchemaVersion != 1 || pins.Upstream.Repository != pinnedRepository || pins.Upstream.Tag != pinnedTag || pins.Upstream.Commit != pinnedCommit || pins.Upstream.Python != pinnedPython || pins.Upstream.UV != pinnedUV || pins.Upstream.UVLockSHA256 != pinnedUVLockSHA256 {
+		return errors.New("reviewed pin provenance differs from the compiled contract verifier")
+	}
+	pinList := []ArtifactPin{pins.Artifacts.OpenAPI, pins.Artifacts.Supplemental, pins.Artifacts.Manifest, pins.Artifacts.ProviderGolden, pins.Artifacts.Classification}
+	for _, pin := range pinList {
+		if !safeManifestPath(pin.Path) || len(pin.SHA256) != sha256.Size*2 {
+			return fmt.Errorf("reviewed artifact pin is invalid for %q", pin.Path)
+		}
+		if err := verifyChecksum(filepath.Join(repoRoot, pin.Path), pin.SHA256); err != nil {
+			return err
+		}
+	}
+
+	manifestPath := filepath.Join(repoRoot, pins.Artifacts.Manifest.Path)
 	var manifest Manifest
-	if err = json.Unmarshal(data, &manifest); err != nil {
+	if err := readJSONFile(manifestPath, &manifest); err != nil {
 		return err
 	}
 	if manifest.SchemaVersion != 1 {
 		return fmt.Errorf("unsupported manifest schema version %d", manifest.SchemaVersion)
 	}
-	if manifest.Upstream.Repository != pinnedRepository || manifest.Upstream.Tag != pinnedTag || manifest.Upstream.Commit != pinnedCommit || manifest.Upstream.Python != pinnedPython || manifest.Upstream.UVLockSHA256 != pinnedUVLockSHA256 {
+	if manifest.Upstream.Repository != pinnedRepository || manifest.Upstream.Tag != pinnedTag || manifest.Upstream.Commit != pinnedCommit || manifest.Upstream.Python != pinnedPython || manifest.Upstream.UV != pinnedUV || manifest.Upstream.UVLockSHA256 != pinnedUVLockSHA256 {
 		return errors.New("manifest upstream provenance differs from the reviewed pin")
 	}
 	if strings.Contains(manifest.GenerationCommand, "/tmp/") || strings.Contains(manifest.GenerationCommand, "/Users/") {
 		return errors.New("manifest generation command contains a host-specific path")
 	}
-	if !safeManifestPath(manifest.OpenAPI.Path) || !safeManifestPath(manifest.Supplemental.Path) {
-		return errors.New("manifest artifact path is not repository-relative")
+	if manifest.OpenAPI.Path != pins.Artifacts.OpenAPI.Path || manifest.Supplemental.Path != pins.Artifacts.Supplemental.Path || manifest.ProviderGolden.Path != pins.Artifacts.ProviderGolden.Path || manifest.Classification.Path != pins.Artifacts.Classification.Path {
+		return errors.New("generated manifest artifact paths differ from reviewed pins")
 	}
-	openapiPath := filepath.Join(repoRoot, manifest.OpenAPI.Path)
-	suppPath := filepath.Join(repoRoot, manifest.Supplemental.Path)
-	if err = verifyChecksum(openapiPath, manifest.OpenAPI.SHA256); err != nil {
-		return err
+	if manifest.OpenAPI.SHA256 != pins.Artifacts.OpenAPI.SHA256 || manifest.Supplemental.SHA256 != pins.Artifacts.Supplemental.SHA256 || manifest.ProviderGolden.SHA256 != pins.Artifacts.ProviderGolden.SHA256 || manifest.Classification.SHA256 != pins.Artifacts.Classification.SHA256 {
+		return errors.New("generated manifest checksums differ from reviewed pins")
 	}
-	if err = verifyChecksum(suppPath, manifest.Supplemental.SHA256); err != nil {
-		return err
-	}
+
+	openapiPath := filepath.Join(repoRoot, pins.Artifacts.OpenAPI.Path)
+	suppPath := filepath.Join(repoRoot, pins.Artifacts.Supplemental.Path)
 	var versionDocument struct {
 		Info struct {
 			Version string `json:"version"`
 		} `json:"info"`
 	}
-	openapiData, readErr := os.ReadFile(openapiPath)
-	if readErr != nil {
-		return readErr
-	}
-	if err := json.Unmarshal(openapiData, &versionDocument); err != nil || versionDocument.Info.Version != "1.98.0" {
+	if err := readJSONFile(openapiPath, &versionDocument); err != nil || versionDocument.Info.Version != "1.98.0" {
 		return errors.New("OpenAPI info.version differs from the reviewed 1.98.0 pin")
 	}
 	contracts, pathCount, operationCount, err := LoadContracts(openapiPath, suppPath)
 	if err != nil {
 		return err
 	}
-	if pathCount != manifest.OpenAPI.PathCount || operationCount != manifest.OpenAPI.OperationCount {
-		return fmt.Errorf("OpenAPI counts changed: paths=%d operations=%d", pathCount, operationCount)
+	if pathCount != pins.Artifacts.OpenAPI.PathCount || operationCount != pins.Artifacts.OpenAPI.OperationCount || pathCount != manifest.OpenAPI.PathCount || operationCount != manifest.OpenAPI.OperationCount {
+		return fmt.Errorf("OpenAPI counts differ from reviewed pins: paths=%d operations=%d", pathCount, operationCount)
 	}
-	var artifact Artifact
-	suppData, _ := os.ReadFile(suppPath)
-	if err = json.Unmarshal(suppData, &artifact); err != nil {
+	var supplemental Artifact
+	if err := readJSONFile(suppPath, &supplemental); err != nil {
 		return err
 	}
-	if artifact.SchemaVersion != 1 || artifact.UpstreamCommit != pinnedCommit {
-		return errors.New("supplemental artifact provenance differs from the reviewed pin")
+	if supplemental.SchemaVersion != 1 || supplemental.UpstreamCommit != pinnedCommit || len(supplemental.Routes) != pins.Artifacts.Supplemental.OperationCount || len(supplemental.Routes) != manifest.Supplemental.RouteCount {
+		return errors.New("supplemental artifact metadata differs from reviewed pins")
 	}
-	if len(artifact.Routes) != manifest.Supplemental.RouteCount {
-		return fmt.Errorf("supplemental route count changed: %d", len(artifact.Routes))
-	}
+
 	extracted, err := ExtractProvider(filepath.Join(repoRoot, "internal/provider"))
 	if err != nil {
 		return err
@@ -900,10 +1215,34 @@ func Verify(repoRoot string) error {
 	if err != nil {
 		return err
 	}
-	if diff := compareInventory(resolved, manifest.Operations); diff != "" {
-		return errors.New(diff)
+	var golden []Operation
+	if err := readJSONFile(filepath.Join(repoRoot, pins.Artifacts.ProviderGolden.Path), &golden); err != nil {
+		return err
 	}
-	return validateReview(manifest)
+	if len(golden) != pins.Artifacts.ProviderGolden.OperationCount || len(golden) != manifest.ProviderGolden.OperationCount {
+		return errors.New("provider-operation golden count differs from reviewed pins")
+	}
+	if diff := compareInventory(resolved, golden); diff != "" {
+		return fmt.Errorf("provider-operation golden mismatch:\n%s", diff)
+	}
+	if diff := compareInventory(golden, manifest.Operations); diff != "" {
+		return fmt.Errorf("generated manifest provider inventory mismatch:\n%s", diff)
+	}
+
+	var classification ReviewedClassification
+	if err := readJSONFile(filepath.Join(repoRoot, pins.Artifacts.Classification.Path), &classification); err != nil {
+		return err
+	}
+	if classification.SchemaVersion != 1 || len(classification.Operations) != pins.Artifacts.Classification.OperationCount || len(classification.Operations) != manifest.Classification.OperationCount {
+		return errors.New("reviewed operation classification count differs from pins")
+	}
+	if manifest.Classification.UnsupportedDurableCount != pins.Artifacts.Classification.UnsupportedDurableCount || manifest.Classification.ExcludedNonDurableCount != pins.Artifacts.Classification.ExcludedNonDurableCount {
+		return errors.New("generated manifest classification counts differ from reviewed pins")
+	}
+	if err := validateReview(manifest, pins, classification, contracts, resolved); err != nil {
+		return err
+	}
+	return nil
 }
 
 func compareInventory(actual, want []Operation) string {
@@ -949,12 +1288,12 @@ func safeManifestPath(path string) bool {
 	return path != "" && !filepath.IsAbs(path) && filepath.Clean(path) == path && path != ".." && !strings.HasPrefix(path, ".."+string(filepath.Separator))
 }
 
-func validateReview(m Manifest) error {
+func validateReview(manifest Manifest, pins ReviewedPins, classification ReviewedClassification, contracts map[string][]contractOperation, supported []Operation) error {
 	requiredLazy := []string{"access_groups", "agents", "guardrails", "mcp_management", "prompts", "search_tools"}
-	if strings.Join(m.RequiredLazyFeatures, ",") != strings.Join(requiredLazy, ",") {
+	if strings.Join(manifest.RequiredLazyFeatures, ",") != strings.Join(requiredLazy, ",") {
 		return errors.New("required lazy feature review is stale")
 	}
-	for _, operation := range m.Operations {
+	for _, operation := range manifest.Operations {
 		if len(operation.Evidence) == 0 {
 			return fmt.Errorf("provider operation %s %s lacks code evidence", operation.Method, operation.Path)
 		}
@@ -964,45 +1303,104 @@ func validateReview(m Manifest) error {
 			}
 		}
 	}
-	requiredGroups := map[string]string{"credential inventories": "#248", "vector inventories": "#249", "JWT mappings": "#250", "pass-through configuration": "#251", "policy versions and attachments": "#252", "MCP toolsets": "#207", "customer and end-user records": "#207", "SCIM": "#207", "global configuration": "#207"}
-	seenGroups := map[string]bool{}
-	for _, g := range m.Unsupported {
-		if seenGroups[g.Group] {
-			return fmt.Errorf("unsupported durable group %q is duplicated", g.Group)
+
+	categories := map[string]CategoryDefinition{}
+	for _, category := range pins.Categories {
+		if category.ID == "" || category.Rationale == "" {
+			return errors.New("reviewed classification category lacks an ID or rationale")
 		}
-		seenGroups[g.Group] = true
-		if issue, ok := requiredGroups[g.Group]; ok {
-			if g.Issue != issue {
-				return fmt.Errorf("unsupported durable group %q must reference %s", g.Group, issue)
-			}
+		if _, exists := categories[category.ID]; exists {
+			return fmt.Errorf("reviewed classification category %q is duplicated", category.ID)
 		}
-		if g.Issue == "" || g.Rationale == "" || len(g.Operations) == 0 {
-			return fmt.Errorf("unsupported durable group %q lacks review metadata", g.Group)
+		if category.Disposition != "unsupported_durable" && category.Disposition != "excluded_non_durable" {
+			return fmt.Errorf("reviewed classification category %q has invalid disposition", category.ID)
+		}
+		if category.Disposition == "unsupported_durable" && category.Issue == "" {
+			return fmt.Errorf("durable classification category %q lacks an issue", category.ID)
+		}
+		if category.Disposition == "excluded_non_durable" && category.Issue != "" {
+			return fmt.Errorf("non-durable classification category %q must not claim a resource issue", category.ID)
+		}
+		categories[category.ID] = category
+	}
+	requiredDurable := map[string]string{
+		"credential_inventory": "#248", "vector_store_management": "#249", "jwt_mapping_management": "#250",
+		"pass_through_configuration": "#251", "policy_version_attachment_management": "#252",
+		"mcp_toolset_management": "#207", "customer_end_user_management": "#207", "scim_directory_management": "#207",
+		"global_proxy_configuration": "#207",
+	}
+	for id, issue := range requiredDurable {
+		category, ok := categories[id]
+		if !ok || category.Disposition != "unsupported_durable" || category.Issue != issue {
+			return fmt.Errorf("required durable category %q must be reviewed against %s", id, issue)
 		}
 	}
-	for group := range requiredGroups {
-		if !seenGroups[group] {
-			return fmt.Errorf("unsupported durable inventory omits %q", group)
+	for _, id := range []string{"operational_action", "health", "spend_analytics", "cache_flush", "suggestion_discovery", "inference_workload"} {
+		category, ok := categories[id]
+		if !ok || category.Disposition != "excluded_non_durable" {
+			return fmt.Errorf("required explicit non-durable category %q is absent", id)
 		}
 	}
-	requiredExcluded := map[string]bool{"operational actions": false, "health": false, "spend and analytics": false, "cache flush": false, "suggestions": false, "inference": false}
-	seenExcluded := map[string]bool{}
-	for _, c := range m.Excluded {
-		if seenExcluded[c.Category] {
-			return fmt.Errorf("excluded category %q is duplicated", c.Category)
-		}
-		seenExcluded[c.Category] = true
-		if _, ok := requiredExcluded[c.Category]; ok {
-			requiredExcluded[c.Category] = true
-		}
-		if c.Rationale == "" {
-			return fmt.Errorf("excluded category %q lacks rationale", c.Category)
+
+	contractSet := map[string]bool{}
+	for method, operations := range contracts {
+		for _, operation := range operations {
+			contractSet[method+" "+operation.path] = true
 		}
 	}
-	for c, ok := range requiredExcluded {
+	supportedSet := map[string]bool{}
+	for _, operation := range supported {
+		supportedSet[operation.Method+" "+operation.Path] = true
+	}
+	classifiedSet := map[string]bool{}
+	durableCount, excludedCount := 0, 0
+	for _, operation := range classification.Operations {
+		key := operation.Method + " " + operation.Path
+		if operation.Method != strings.ToUpper(operation.Method) || !safeNormalizedRoute(operation.Path) {
+			return fmt.Errorf("classification contains non-normalized operation %q", key)
+		}
+		if classifiedSet[key] {
+			return fmt.Errorf("classification duplicates operation %s", key)
+		}
+		classifiedSet[key] = true
+		if !contractSet[key] {
+			return fmt.Errorf("classification contains stale operation %s", key)
+		}
+		if supportedSet[key] {
+			return fmt.Errorf("supported provider operation %s is also classified unsupported", key)
+		}
+		category, ok := categories[operation.Category]
 		if !ok {
-			return fmt.Errorf("excluded non-durable inventory omits %q", c)
+			return fmt.Errorf("operation %s uses unknown classification category %q", key, operation.Category)
 		}
+		if category.Disposition == "unsupported_durable" {
+			durableCount++
+		} else {
+			excludedCount++
+		}
+	}
+	for key := range contractSet {
+		if !supportedSet[key] && !classifiedSet[key] {
+			return fmt.Errorf("unclassified API operation %s", key)
+		}
+	}
+	if durableCount != pins.Artifacts.Classification.UnsupportedDurableCount || excludedCount != pins.Artifacts.Classification.ExcludedNonDurableCount {
+		return fmt.Errorf("classification disposition counts changed: durable=%d excluded=%d", durableCount, excludedCount)
+	}
+	return nil
+}
+
+func safeNormalizedRoute(path string) bool {
+	return strings.HasPrefix(path, "/") && !strings.Contains(path, "?") && !strings.Contains(path, "//") && !strings.Contains(path, "{}")
+}
+
+func readJSONFile(path string, destination interface{}) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(data, destination); err != nil {
+		return fmt.Errorf("decode %s: %w", filepath.Base(path), err)
 	}
 	return nil
 }

@@ -1,0 +1,3355 @@
+{
+  "operations": [
+    {
+      "category": "suggestion_discovery",
+      "method": "GET",
+      "path": "/"
+    },
+    {
+      "category": "authentication_flow",
+      "method": "GET",
+      "path": "/.well-known/litellm-ui-config"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/a2a/{agent_id}"
+    },
+    {
+      "category": "authentication_flow",
+      "method": "GET",
+      "path": "/a2a/{agent_id}/.well-known/agent-card.json"
+    },
+    {
+      "category": "authentication_flow",
+      "method": "GET",
+      "path": "/a2a/{agent_id}/.well-known/agent.json"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/a2a/{agent_id}/message/send"
+    },
+    {
+      "category": "health",
+      "method": "GET",
+      "path": "/active/callbacks"
+    },
+    {
+      "category": "model_management",
+      "method": "GET",
+      "path": "/adaptive_router/state"
+    },
+    {
+      "category": "global_proxy_configuration",
+      "method": "POST",
+      "path": "/add/allowed_ip"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/agent/daily/activity"
+    },
+    {
+      "category": "inference_workload",
+      "method": "DELETE",
+      "path": "/anthropic/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/anthropic/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PATCH",
+      "path": "/anthropic/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/anthropic/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PUT",
+      "path": "/anthropic/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/api/event_logging/batch"
+    },
+    {
+      "category": "integration_callback_configuration",
+      "method": "GET",
+      "path": "/api/plugins"
+    },
+    {
+      "category": "integration_callback_configuration",
+      "method": "GET",
+      "path": "/api/plugins/auth-token"
+    },
+    {
+      "category": "guardrail_management",
+      "method": "POST",
+      "path": "/apply_guardrail"
+    },
+    {
+      "category": "inference_workload",
+      "method": "DELETE",
+      "path": "/assemblyai/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/assemblyai/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PATCH",
+      "path": "/assemblyai/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/assemblyai/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PUT",
+      "path": "/assemblyai/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/assistants"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/assistants"
+    },
+    {
+      "category": "inference_workload",
+      "method": "DELETE",
+      "path": "/assistants/{assistant_id}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/audio/speech"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/audio/transcriptions"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/audit"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/audit/{id}"
+    },
+    {
+      "category": "model_management",
+      "method": "GET",
+      "path": "/auto_router/benchmarks"
+    },
+    {
+      "category": "model_management",
+      "method": "GET",
+      "path": "/auto_router/classifier/default_prompt"
+    },
+    {
+      "category": "model_management",
+      "method": "GET",
+      "path": "/auto_router/shadow_eval"
+    },
+    {
+      "category": "model_management",
+      "method": "POST",
+      "path": "/auto_router/shadow_eval/start"
+    },
+    {
+      "category": "model_management",
+      "method": "GET",
+      "path": "/auto_router/shadow_eval/{job_id}"
+    },
+    {
+      "category": "model_management",
+      "method": "POST",
+      "path": "/auto_router/shadow_eval/{job_id}/stop"
+    },
+    {
+      "category": "testing_validation",
+      "method": "POST",
+      "path": "/auto_router/test_routing"
+    },
+    {
+      "category": "inference_workload",
+      "method": "DELETE",
+      "path": "/azure/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/azure/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PATCH",
+      "path": "/azure/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/azure/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PUT",
+      "path": "/azure/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "DELETE",
+      "path": "/azure_ai/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/azure_ai/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PATCH",
+      "path": "/azure_ai/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/azure_ai/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PUT",
+      "path": "/azure_ai/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/batches"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/batches"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/batches/{batch_id}"
+    },
+    {
+      "category": "operational_action",
+      "method": "POST",
+      "path": "/batches/{batch_id}/cancel"
+    },
+    {
+      "category": "inference_workload",
+      "method": "DELETE",
+      "path": "/bedrock/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/bedrock/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PATCH",
+      "path": "/bedrock/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/bedrock/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PUT",
+      "path": "/bedrock/{endpoint}"
+    },
+    {
+      "category": "user_budget_management",
+      "method": "GET",
+      "path": "/budget/settings"
+    },
+    {
+      "category": "cache_flush",
+      "method": "POST",
+      "path": "/cache/delete"
+    },
+    {
+      "category": "cache_flush",
+      "method": "POST",
+      "path": "/cache/flushall"
+    },
+    {
+      "category": "health",
+      "method": "GET",
+      "path": "/cache/ping"
+    },
+    {
+      "category": "health",
+      "method": "GET",
+      "path": "/cache/redis/info"
+    },
+    {
+      "category": "global_proxy_configuration",
+      "method": "GET",
+      "path": "/cache/settings"
+    },
+    {
+      "category": "global_proxy_configuration",
+      "method": "POST",
+      "path": "/cache/settings"
+    },
+    {
+      "category": "testing_validation",
+      "method": "POST",
+      "path": "/cache/settings/test"
+    },
+    {
+      "category": "integration_callback_configuration",
+      "method": "GET",
+      "path": "/callbacks/configs"
+    },
+    {
+      "category": "authentication_flow",
+      "method": "GET",
+      "path": "/callbacks/list"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/chat/completions"
+    },
+    {
+      "category": "suggestion_discovery",
+      "method": "GET",
+      "path": "/claude-code/marketplace.json"
+    },
+    {
+      "category": "integration_callback_configuration",
+      "method": "GET",
+      "path": "/claude-code/plugins"
+    },
+    {
+      "category": "integration_callback_configuration",
+      "method": "POST",
+      "path": "/claude-code/plugins"
+    },
+    {
+      "category": "integration_callback_configuration",
+      "method": "DELETE",
+      "path": "/claude-code/plugins/{plugin_name}"
+    },
+    {
+      "category": "integration_callback_configuration",
+      "method": "GET",
+      "path": "/claude-code/plugins/{plugin_name}"
+    },
+    {
+      "category": "integration_callback_configuration",
+      "method": "PUT",
+      "path": "/claude-code/plugins/{plugin_name}"
+    },
+    {
+      "category": "integration_callback_configuration",
+      "method": "POST",
+      "path": "/claude-code/plugins/{plugin_name}/disable"
+    },
+    {
+      "category": "integration_callback_configuration",
+      "method": "POST",
+      "path": "/claude-code/plugins/{plugin_name}/enable"
+    },
+    {
+      "category": "global_proxy_configuration",
+      "method": "DELETE",
+      "path": "/cloudzero/delete"
+    },
+    {
+      "category": "testing_validation",
+      "method": "POST",
+      "path": "/cloudzero/dry-run"
+    },
+    {
+      "category": "operational_action",
+      "method": "POST",
+      "path": "/cloudzero/export"
+    },
+    {
+      "category": "global_proxy_configuration",
+      "method": "POST",
+      "path": "/cloudzero/init"
+    },
+    {
+      "category": "global_proxy_configuration",
+      "method": "GET",
+      "path": "/cloudzero/settings"
+    },
+    {
+      "category": "global_proxy_configuration",
+      "method": "PUT",
+      "path": "/cloudzero/settings"
+    },
+    {
+      "category": "inference_workload",
+      "method": "DELETE",
+      "path": "/cohere/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/cohere/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PATCH",
+      "path": "/cohere/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/cohere/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PUT",
+      "path": "/cohere/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/completions"
+    },
+    {
+      "category": "testing_validation",
+      "method": "POST",
+      "path": "/compliance/eu-ai-act"
+    },
+    {
+      "category": "testing_validation",
+      "method": "POST",
+      "path": "/compliance/gdpr"
+    },
+    {
+      "category": "global_proxy_configuration",
+      "method": "GET",
+      "path": "/config/cost_discount_config"
+    },
+    {
+      "category": "global_proxy_configuration",
+      "method": "PATCH",
+      "path": "/config/cost_discount_config"
+    },
+    {
+      "category": "global_proxy_configuration",
+      "method": "GET",
+      "path": "/config/cost_margin_config"
+    },
+    {
+      "category": "global_proxy_configuration",
+      "method": "PATCH",
+      "path": "/config/cost_margin_config"
+    },
+    {
+      "category": "pass_through_configuration",
+      "method": "DELETE",
+      "path": "/config/pass_through_endpoint"
+    },
+    {
+      "category": "pass_through_configuration",
+      "method": "GET",
+      "path": "/config/pass_through_endpoint"
+    },
+    {
+      "category": "pass_through_configuration",
+      "method": "POST",
+      "path": "/config/pass_through_endpoint"
+    },
+    {
+      "category": "pass_through_configuration",
+      "method": "GET",
+      "path": "/config/pass_through_endpoint/team/{team_id}"
+    },
+    {
+      "category": "pass_through_configuration",
+      "method": "POST",
+      "path": "/config/pass_through_endpoint/{endpoint_id}"
+    },
+    {
+      "category": "global_proxy_configuration",
+      "method": "DELETE",
+      "path": "/config_overrides/hashicorp_vault"
+    },
+    {
+      "category": "global_proxy_configuration",
+      "method": "GET",
+      "path": "/config_overrides/hashicorp_vault"
+    },
+    {
+      "category": "global_proxy_configuration",
+      "method": "POST",
+      "path": "/config_overrides/hashicorp_vault"
+    },
+    {
+      "category": "testing_validation",
+      "method": "POST",
+      "path": "/config_overrides/hashicorp_vault/test_connection"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/containers"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/containers"
+    },
+    {
+      "category": "inference_workload",
+      "method": "DELETE",
+      "path": "/containers/{container_id}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/containers/{container_id}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/containers/{container_id}/files"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/containers/{container_id}/files"
+    },
+    {
+      "category": "inference_workload",
+      "method": "DELETE",
+      "path": "/containers/{container_id}/files/{file_id}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/containers/{container_id}/files/{file_id}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/containers/{container_id}/files/{file_id}/content"
+    },
+    {
+      "category": "global_proxy_configuration",
+      "method": "GET",
+      "path": "/coordination_redis/settings"
+    },
+    {
+      "category": "global_proxy_configuration",
+      "method": "POST",
+      "path": "/coordination_redis/settings"
+    },
+    {
+      "category": "testing_validation",
+      "method": "POST",
+      "path": "/coordination_redis/settings/test"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "POST",
+      "path": "/cost/estimate"
+    },
+    {
+      "category": "credential_inventory",
+      "method": "GET",
+      "path": "/credentials"
+    },
+    {
+      "category": "operational_action",
+      "method": "POST",
+      "path": "/credentials/migrate-encryption"
+    },
+    {
+      "category": "operational_action",
+      "method": "GET",
+      "path": "/credentials/migrate-encryption/check"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/cursor/chat/completions"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/cursor/models"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/cursor/v1/models"
+    },
+    {
+      "category": "inference_workload",
+      "method": "DELETE",
+      "path": "/cursor/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/cursor/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PATCH",
+      "path": "/cursor/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/cursor/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PUT",
+      "path": "/cursor/{endpoint}"
+    },
+    {
+      "category": "customer_end_user_management",
+      "method": "POST",
+      "path": "/customer/block"
+    },
+    {
+      "category": "customer_end_user_management",
+      "method": "GET",
+      "path": "/customer/daily/activity"
+    },
+    {
+      "category": "customer_end_user_management",
+      "method": "POST",
+      "path": "/customer/delete"
+    },
+    {
+      "category": "customer_end_user_management",
+      "method": "GET",
+      "path": "/customer/info"
+    },
+    {
+      "category": "customer_end_user_management",
+      "method": "GET",
+      "path": "/customer/list"
+    },
+    {
+      "category": "customer_end_user_management",
+      "method": "POST",
+      "path": "/customer/new"
+    },
+    {
+      "category": "customer_end_user_management",
+      "method": "POST",
+      "path": "/customer/unblock"
+    },
+    {
+      "category": "customer_end_user_management",
+      "method": "POST",
+      "path": "/customer/update"
+    },
+    {
+      "category": "audit_observability",
+      "method": "GET",
+      "path": "/debug/asyncio-tasks"
+    },
+    {
+      "category": "global_proxy_configuration",
+      "method": "POST",
+      "path": "/delete/allowed_ip"
+    },
+    {
+      "category": "integration_callback_configuration",
+      "method": "GET",
+      "path": "/email/event_settings"
+    },
+    {
+      "category": "integration_callback_configuration",
+      "method": "PATCH",
+      "path": "/email/event_settings"
+    },
+    {
+      "category": "operational_action",
+      "method": "POST",
+      "path": "/email/event_settings/reset"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/embeddings"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/engines/{model}/chat/completions"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/engines/{model}/completions"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/engines/{model}/embeddings"
+    },
+    {
+      "category": "inference_workload",
+      "method": "DELETE",
+      "path": "/eu.assemblyai/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/eu.assemblyai/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PATCH",
+      "path": "/eu.assemblyai/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/eu.assemblyai/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PUT",
+      "path": "/eu.assemblyai/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/files"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/files"
+    },
+    {
+      "category": "inference_workload",
+      "method": "DELETE",
+      "path": "/files/{file_id}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/files/{file_id}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/files/{file_id}/content"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/fine_tuning/jobs"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/fine_tuning/jobs"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/fine_tuning/jobs/{fine_tuning_job_id}"
+    },
+    {
+      "category": "operational_action",
+      "method": "POST",
+      "path": "/fine_tuning/jobs/{fine_tuning_job_id}/cancel"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/gateway/daily/activity"
+    },
+    {
+      "category": "inference_workload",
+      "method": "DELETE",
+      "path": "/gemini/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/gemini/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PATCH",
+      "path": "/gemini/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/gemini/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PUT",
+      "path": "/gemini/{endpoint}"
+    },
+    {
+      "category": "global_proxy_configuration",
+      "method": "GET",
+      "path": "/get/default_team_settings"
+    },
+    {
+      "category": "global_proxy_configuration",
+      "method": "GET",
+      "path": "/get/internal_user_settings"
+    },
+    {
+      "category": "global_proxy_configuration",
+      "method": "GET",
+      "path": "/get/mcp_semantic_filter_settings"
+    },
+    {
+      "category": "global_proxy_configuration",
+      "method": "GET",
+      "path": "/get/sso_settings"
+    },
+    {
+      "category": "global_proxy_configuration",
+      "method": "GET",
+      "path": "/get/ui_settings"
+    },
+    {
+      "category": "global_proxy_configuration",
+      "method": "GET",
+      "path": "/get/ui_theme_settings"
+    },
+    {
+      "category": "global_proxy_configuration",
+      "method": "GET",
+      "path": "/get/user_banner"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/global/spend/report"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "POST",
+      "path": "/global/spend/reset"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/global/spend/tags"
+    },
+    {
+      "category": "guardrail_management",
+      "method": "POST",
+      "path": "/guardrails/apply_guardrail"
+    },
+    {
+      "category": "guardrail_management",
+      "method": "GET",
+      "path": "/guardrails/list"
+    },
+    {
+      "category": "authentication_flow",
+      "method": "POST",
+      "path": "/guardrails/register"
+    },
+    {
+      "category": "guardrail_management",
+      "method": "GET",
+      "path": "/guardrails/submissions"
+    },
+    {
+      "category": "guardrail_management",
+      "method": "GET",
+      "path": "/guardrails/submissions/{guardrail_id}"
+    },
+    {
+      "category": "operational_action",
+      "method": "POST",
+      "path": "/guardrails/submissions/{guardrail_id}/approve"
+    },
+    {
+      "category": "operational_action",
+      "method": "POST",
+      "path": "/guardrails/submissions/{guardrail_id}/reject"
+    },
+    {
+      "category": "testing_validation",
+      "method": "POST",
+      "path": "/guardrails/test_custom_code"
+    },
+    {
+      "category": "guardrail_management",
+      "method": "GET",
+      "path": "/guardrails/ui/add_guardrail_settings"
+    },
+    {
+      "category": "guardrail_management",
+      "method": "GET",
+      "path": "/guardrails/ui/category_yaml/{category_name}"
+    },
+    {
+      "category": "guardrail_management",
+      "method": "GET",
+      "path": "/guardrails/ui/major_airlines"
+    },
+    {
+      "category": "guardrail_management",
+      "method": "GET",
+      "path": "/guardrails/ui/provider_specific_params"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/guardrails/usage/detail/{guardrail_id}"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/guardrails/usage/logs"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/guardrails/usage/overview"
+    },
+    {
+      "category": "testing_validation",
+      "method": "POST",
+      "path": "/guardrails/validate_blocked_words_file"
+    },
+    {
+      "category": "guardrail_management",
+      "method": "GET",
+      "path": "/guardrails/{guardrail_id}"
+    },
+    {
+      "category": "guardrail_management",
+      "method": "PATCH",
+      "path": "/guardrails/{guardrail_id}"
+    },
+    {
+      "category": "health",
+      "method": "GET",
+      "path": "/health"
+    },
+    {
+      "category": "health",
+      "method": "GET",
+      "path": "/health/backlog"
+    },
+    {
+      "category": "health",
+      "method": "GET",
+      "path": "/health/drain"
+    },
+    {
+      "category": "health",
+      "method": "GET",
+      "path": "/health/history"
+    },
+    {
+      "category": "health",
+      "method": "GET",
+      "path": "/health/latest"
+    },
+    {
+      "category": "health",
+      "method": "GET",
+      "path": "/health/license"
+    },
+    {
+      "category": "health",
+      "method": "GET",
+      "path": "/health/liveliness"
+    },
+    {
+      "category": "health",
+      "method": "OPTIONS",
+      "path": "/health/liveliness"
+    },
+    {
+      "category": "health",
+      "method": "GET",
+      "path": "/health/liveness"
+    },
+    {
+      "category": "health",
+      "method": "OPTIONS",
+      "path": "/health/liveness"
+    },
+    {
+      "category": "health",
+      "method": "GET",
+      "path": "/health/readiness"
+    },
+    {
+      "category": "health",
+      "method": "OPTIONS",
+      "path": "/health/readiness"
+    },
+    {
+      "category": "health",
+      "method": "GET",
+      "path": "/health/readiness/details"
+    },
+    {
+      "category": "health",
+      "method": "GET",
+      "path": "/health/services"
+    },
+    {
+      "category": "health",
+      "method": "GET",
+      "path": "/health/shared-status"
+    },
+    {
+      "category": "health",
+      "method": "POST",
+      "path": "/health/test_connection"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/images/edits"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/images/generations"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/interactions"
+    },
+    {
+      "category": "inference_workload",
+      "method": "DELETE",
+      "path": "/interactions/{interaction_id}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/interactions/{interaction_id}"
+    },
+    {
+      "category": "operational_action",
+      "method": "POST",
+      "path": "/interactions/{interaction_id}/cancel"
+    },
+    {
+      "category": "jwt_mapping_management",
+      "method": "POST",
+      "path": "/jwt/key/mapping/delete"
+    },
+    {
+      "category": "jwt_mapping_management",
+      "method": "GET",
+      "path": "/jwt/key/mapping/info"
+    },
+    {
+      "category": "jwt_mapping_management",
+      "method": "GET",
+      "path": "/jwt/key/mapping/list"
+    },
+    {
+      "category": "jwt_mapping_management",
+      "method": "POST",
+      "path": "/jwt/key/mapping/new"
+    },
+    {
+      "category": "jwt_mapping_management",
+      "method": "POST",
+      "path": "/jwt/key/mapping/update"
+    },
+    {
+      "category": "key_management",
+      "method": "GET",
+      "path": "/key/aliases"
+    },
+    {
+      "category": "key_management",
+      "method": "POST",
+      "path": "/key/bulk_update"
+    },
+    {
+      "category": "health",
+      "method": "POST",
+      "path": "/key/health"
+    },
+    {
+      "category": "key_management",
+      "method": "POST",
+      "path": "/key/regenerate"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/key/spend/report"
+    },
+    {
+      "category": "key_management",
+      "method": "POST",
+      "path": "/key/{key}/regenerate"
+    },
+    {
+      "category": "operational_action",
+      "method": "POST",
+      "path": "/key/{key}/reset_spend"
+    },
+    {
+      "category": "inference_workload",
+      "method": "DELETE",
+      "path": "/langfuse/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/langfuse/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PATCH",
+      "path": "/langfuse/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/langfuse/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PUT",
+      "path": "/langfuse/{endpoint}"
+    },
+    {
+      "category": "authentication_flow",
+      "method": "GET",
+      "path": "/litellm/.well-known/litellm-ui-config"
+    },
+    {
+      "category": "user_budget_management",
+      "method": "GET",
+      "path": "/management/v1/budgets"
+    },
+    {
+      "category": "customer_end_user_management",
+      "method": "GET",
+      "path": "/management/v1/spend_logs/end_users"
+    },
+    {
+      "category": "inference_workload",
+      "method": "DELETE",
+      "path": "/mcp"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/mcp"
+    },
+    {
+      "category": "inference_workload",
+      "method": "HEAD",
+      "path": "/mcp"
+    },
+    {
+      "category": "inference_workload",
+      "method": "OPTIONS",
+      "path": "/mcp"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PATCH",
+      "path": "/mcp"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/mcp"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PUT",
+      "path": "/mcp"
+    },
+    {
+      "category": "testing_validation",
+      "method": "POST",
+      "path": "/mcp-rest/test/connection"
+    },
+    {
+      "category": "testing_validation",
+      "method": "POST",
+      "path": "/mcp-rest/test/tools/list"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/mcp-rest/tools/call"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/mcp-rest/tools/list"
+    },
+    {
+      "category": "inference_workload",
+      "method": "DELETE",
+      "path": "/milvus/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/milvus/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PATCH",
+      "path": "/milvus/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/milvus/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PUT",
+      "path": "/milvus/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "DELETE",
+      "path": "/mistral/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/mistral/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PATCH",
+      "path": "/mistral/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/mistral/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PUT",
+      "path": "/mistral/{endpoint}"
+    },
+    {
+      "category": "operational_action",
+      "method": "POST",
+      "path": "/model/block"
+    },
+    {
+      "category": "operational_action",
+      "method": "POST",
+      "path": "/model/unblock"
+    },
+    {
+      "category": "model_management",
+      "method": "GET",
+      "path": "/model_group/info"
+    },
+    {
+      "category": "operational_action",
+      "method": "POST",
+      "path": "/model_group/make_public"
+    },
+    {
+      "category": "model_management",
+      "method": "POST",
+      "path": "/model_hub/update_useful_links"
+    },
+    {
+      "category": "model_management",
+      "method": "GET",
+      "path": "/models"
+    },
+    {
+      "category": "model_management",
+      "method": "GET",
+      "path": "/models/{model_id}"
+    },
+    {
+      "category": "model_management",
+      "method": "POST",
+      "path": "/models/{model_name}:countTokens"
+    },
+    {
+      "category": "model_management",
+      "method": "POST",
+      "path": "/models/{model_name}:generateContent"
+    },
+    {
+      "category": "model_management",
+      "method": "POST",
+      "path": "/models/{model_name}:streamGenerateContent"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/moderations"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/ocr"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/openai/deployments/{model}/chat/completions"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/openai/deployments/{model}/completions"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/openai/deployments/{model}/embeddings"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/openai/deployments/{model}/images/edits"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/openai/deployments/{model}/images/generations"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/openai/v1/realtime"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/openai/v1/realtime/calls"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/openai/v1/realtime/client_secrets"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/openai/v1/responses"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/openai/v1/responses/compact"
+    },
+    {
+      "category": "inference_workload",
+      "method": "DELETE",
+      "path": "/openai/v1/responses/{response_id}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/openai/v1/responses/{response_id}"
+    },
+    {
+      "category": "operational_action",
+      "method": "POST",
+      "path": "/openai/v1/responses/{response_id}/cancel"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/openai/v1/responses/{response_id}/input_items"
+    },
+    {
+      "category": "inference_workload",
+      "method": "DELETE",
+      "path": "/openai/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/openai/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PATCH",
+      "path": "/openai/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/openai/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PUT",
+      "path": "/openai/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "DELETE",
+      "path": "/openai_passthrough/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/openai_passthrough/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PATCH",
+      "path": "/openai_passthrough/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/openai_passthrough/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PUT",
+      "path": "/openai_passthrough/{endpoint}"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/organization/daily/activity"
+    },
+    {
+      "category": "organization_project_management",
+      "method": "POST",
+      "path": "/organization/info"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/organization/spend/report"
+    },
+    {
+      "category": "organization_project_management",
+      "method": "PATCH",
+      "path": "/organization/update"
+    },
+    {
+      "category": "policy_version_attachment_management",
+      "method": "POST",
+      "path": "/policies"
+    },
+    {
+      "category": "policy_version_attachment_management",
+      "method": "POST",
+      "path": "/policies/attachments"
+    },
+    {
+      "category": "policy_version_attachment_management",
+      "method": "POST",
+      "path": "/policies/attachments/estimate-impact"
+    },
+    {
+      "category": "policy_version_attachment_management",
+      "method": "GET",
+      "path": "/policies/attachments/list"
+    },
+    {
+      "category": "policy_version_attachment_management",
+      "method": "DELETE",
+      "path": "/policies/attachments/{attachment_id}"
+    },
+    {
+      "category": "policy_version_attachment_management",
+      "method": "GET",
+      "path": "/policies/attachments/{attachment_id}"
+    },
+    {
+      "category": "policy_version_attachment_management",
+      "method": "GET",
+      "path": "/policies/compare"
+    },
+    {
+      "category": "policy_version_attachment_management",
+      "method": "GET",
+      "path": "/policies/list"
+    },
+    {
+      "category": "policy_version_attachment_management",
+      "method": "DELETE",
+      "path": "/policies/name/{policy_name}/all-versions"
+    },
+    {
+      "category": "policy_version_attachment_management",
+      "method": "GET",
+      "path": "/policies/name/{policy_name}/versions"
+    },
+    {
+      "category": "policy_version_attachment_management",
+      "method": "POST",
+      "path": "/policies/name/{policy_name}/versions"
+    },
+    {
+      "category": "suggestion_discovery",
+      "method": "POST",
+      "path": "/policies/resolve"
+    },
+    {
+      "category": "testing_validation",
+      "method": "POST",
+      "path": "/policies/test-pipeline"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/policies/usage/overview"
+    },
+    {
+      "category": "policy_version_attachment_management",
+      "method": "DELETE",
+      "path": "/policies/{policy_id}"
+    },
+    {
+      "category": "policy_version_attachment_management",
+      "method": "GET",
+      "path": "/policies/{policy_id}"
+    },
+    {
+      "category": "policy_version_attachment_management",
+      "method": "PUT",
+      "path": "/policies/{policy_id}"
+    },
+    {
+      "category": "policy_version_attachment_management",
+      "method": "GET",
+      "path": "/policies/{policy_id}/resolved-guardrails"
+    },
+    {
+      "category": "policy_version_attachment_management",
+      "method": "PUT",
+      "path": "/policies/{policy_id}/status"
+    },
+    {
+      "category": "policy_version_attachment_management",
+      "method": "GET",
+      "path": "/policy/info/{policy_name}"
+    },
+    {
+      "category": "policy_version_attachment_management",
+      "method": "GET",
+      "path": "/policy/list"
+    },
+    {
+      "category": "policy_version_attachment_management",
+      "method": "GET",
+      "path": "/policy/templates"
+    },
+    {
+      "category": "suggestion_discovery",
+      "method": "POST",
+      "path": "/policy/templates/enrich"
+    },
+    {
+      "category": "suggestion_discovery",
+      "method": "POST",
+      "path": "/policy/templates/enrich/stream"
+    },
+    {
+      "category": "suggestion_discovery",
+      "method": "POST",
+      "path": "/policy/templates/suggest"
+    },
+    {
+      "category": "testing_validation",
+      "method": "POST",
+      "path": "/policy/templates/test"
+    },
+    {
+      "category": "testing_validation",
+      "method": "POST",
+      "path": "/policy/test"
+    },
+    {
+      "category": "testing_validation",
+      "method": "POST",
+      "path": "/policy/validate"
+    },
+    {
+      "category": "testing_validation",
+      "method": "POST",
+      "path": "/prompts/test"
+    },
+    {
+      "category": "agent_prompt_tool_management",
+      "method": "GET",
+      "path": "/prompts/{prompt_id}/info"
+    },
+    {
+      "category": "public_metadata",
+      "method": "GET",
+      "path": "/provider/budgets"
+    },
+    {
+      "category": "public_metadata",
+      "method": "GET",
+      "path": "/public/agent_hub"
+    },
+    {
+      "category": "suggestion_discovery",
+      "method": "GET",
+      "path": "/public/agents/fields"
+    },
+    {
+      "category": "public_metadata",
+      "method": "GET",
+      "path": "/public/endpoints"
+    },
+    {
+      "category": "public_metadata",
+      "method": "GET",
+      "path": "/public/litellm_blog_posts"
+    },
+    {
+      "category": "public_metadata",
+      "method": "GET",
+      "path": "/public/litellm_model_cost_map"
+    },
+    {
+      "category": "public_metadata",
+      "method": "GET",
+      "path": "/public/mcp_hub"
+    },
+    {
+      "category": "public_metadata",
+      "method": "GET",
+      "path": "/public/model_hub"
+    },
+    {
+      "category": "public_metadata",
+      "method": "GET",
+      "path": "/public/model_hub/info"
+    },
+    {
+      "category": "public_metadata",
+      "method": "GET",
+      "path": "/public/providers"
+    },
+    {
+      "category": "suggestion_discovery",
+      "method": "GET",
+      "path": "/public/providers/fields"
+    },
+    {
+      "category": "suggestion_discovery",
+      "method": "GET",
+      "path": "/public/skill_hub"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/rag/ingest"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/rag/query"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/realtime"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/realtime/calls"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/realtime/client_secrets"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/rerank"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/responses"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/responses"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/responses/compact"
+    },
+    {
+      "category": "inference_workload",
+      "method": "DELETE",
+      "path": "/responses/{response_id}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/responses/{response_id}"
+    },
+    {
+      "category": "operational_action",
+      "method": "POST",
+      "path": "/responses/{response_id}/cancel"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/responses/{response_id}/input_items"
+    },
+    {
+      "category": "suggestion_discovery",
+      "method": "GET",
+      "path": "/robots.txt"
+    },
+    {
+      "category": "suggestion_discovery",
+      "method": "GET",
+      "path": "/router/fields"
+    },
+    {
+      "category": "global_proxy_configuration",
+      "method": "GET",
+      "path": "/router/settings"
+    },
+    {
+      "category": "suggestion_discovery",
+      "method": "GET",
+      "path": "/routes"
+    },
+    {
+      "category": "scim_directory_management",
+      "method": "GET",
+      "path": "/scim/v2"
+    },
+    {
+      "category": "scim_directory_management",
+      "method": "GET",
+      "path": "/scim/v2/Groups"
+    },
+    {
+      "category": "scim_directory_management",
+      "method": "POST",
+      "path": "/scim/v2/Groups"
+    },
+    {
+      "category": "scim_directory_management",
+      "method": "DELETE",
+      "path": "/scim/v2/Groups/{group_id}"
+    },
+    {
+      "category": "scim_directory_management",
+      "method": "GET",
+      "path": "/scim/v2/Groups/{group_id}"
+    },
+    {
+      "category": "scim_directory_management",
+      "method": "PATCH",
+      "path": "/scim/v2/Groups/{group_id}"
+    },
+    {
+      "category": "scim_directory_management",
+      "method": "PUT",
+      "path": "/scim/v2/Groups/{group_id}"
+    },
+    {
+      "category": "scim_directory_management",
+      "method": "GET",
+      "path": "/scim/v2/ResourceTypes"
+    },
+    {
+      "category": "scim_directory_management",
+      "method": "GET",
+      "path": "/scim/v2/ResourceTypes/{resource_type_id}"
+    },
+    {
+      "category": "scim_directory_management",
+      "method": "GET",
+      "path": "/scim/v2/Schemas"
+    },
+    {
+      "category": "scim_directory_management",
+      "method": "GET",
+      "path": "/scim/v2/Schemas/{schema_id}"
+    },
+    {
+      "category": "scim_directory_management",
+      "method": "GET",
+      "path": "/scim/v2/ServiceProviderConfig"
+    },
+    {
+      "category": "scim_directory_management",
+      "method": "GET",
+      "path": "/scim/v2/Users"
+    },
+    {
+      "category": "scim_directory_management",
+      "method": "POST",
+      "path": "/scim/v2/Users"
+    },
+    {
+      "category": "scim_directory_management",
+      "method": "DELETE",
+      "path": "/scim/v2/Users/{user_id}"
+    },
+    {
+      "category": "scim_directory_management",
+      "method": "GET",
+      "path": "/scim/v2/Users/{user_id}"
+    },
+    {
+      "category": "scim_directory_management",
+      "method": "PATCH",
+      "path": "/scim/v2/Users/{user_id}"
+    },
+    {
+      "category": "scim_directory_management",
+      "method": "PUT",
+      "path": "/scim/v2/Users/{user_id}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/search"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/search/tools"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/search/{search_tool_name}"
+    },
+    {
+      "category": "testing_validation",
+      "method": "POST",
+      "path": "/search_tools/test_connection"
+    },
+    {
+      "category": "suggestion_discovery",
+      "method": "GET",
+      "path": "/search_tools/ui/available_providers"
+    },
+    {
+      "category": "health",
+      "method": "GET",
+      "path": "/settings"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "POST",
+      "path": "/spend/calculate"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/spend/logs"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/spend/logs/v2"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/spend/tags"
+    },
+    {
+      "category": "health",
+      "method": "GET",
+      "path": "/sso/readiness"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/tag/daily/activity"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/tag/dau"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/tag/distinct"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/tag/mau"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/tag/summary"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/tag/user-agent/per-user-analytics"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/tag/wau"
+    },
+    {
+      "category": "public_metadata",
+      "method": "GET",
+      "path": "/team/available"
+    },
+    {
+      "category": "team_management",
+      "method": "POST",
+      "path": "/team/bulk_member_add"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/team/daily/activity"
+    },
+    {
+      "category": "key_management",
+      "method": "POST",
+      "path": "/team/key/bulk_update"
+    },
+    {
+      "category": "team_management",
+      "method": "GET",
+      "path": "/team/metadata_schema"
+    },
+    {
+      "category": "team_management",
+      "method": "POST",
+      "path": "/team/model/add"
+    },
+    {
+      "category": "team_management",
+      "method": "POST",
+      "path": "/team/model/delete"
+    },
+    {
+      "category": "team_management",
+      "method": "POST",
+      "path": "/team/permissions_bulk_update"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/team/spend/report"
+    },
+    {
+      "category": "team_management",
+      "method": "PATCH",
+      "path": "/team/{team_id}"
+    },
+    {
+      "category": "authentication_flow",
+      "method": "GET",
+      "path": "/team/{team_id}/callback"
+    },
+    {
+      "category": "authentication_flow",
+      "method": "POST",
+      "path": "/team/{team_id}/callback"
+    },
+    {
+      "category": "team_management",
+      "method": "POST",
+      "path": "/team/{team_id}/disable_logging"
+    },
+    {
+      "category": "team_management",
+      "method": "GET",
+      "path": "/team/{team_id}/members/me"
+    },
+    {
+      "category": "health",
+      "method": "GET",
+      "path": "/test"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/threads"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/threads/{thread_id}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/threads/{thread_id}/messages"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/threads/{thread_id}/messages"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/threads/{thread_id}/runs"
+    },
+    {
+      "category": "inference_workload",
+      "method": "DELETE",
+      "path": "/toolset/{toolset_name}/mcp"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/toolset/{toolset_name}/mcp"
+    },
+    {
+      "category": "inference_workload",
+      "method": "HEAD",
+      "path": "/toolset/{toolset_name}/mcp"
+    },
+    {
+      "category": "inference_workload",
+      "method": "OPTIONS",
+      "path": "/toolset/{toolset_name}/mcp"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PATCH",
+      "path": "/toolset/{toolset_name}/mcp"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/toolset/{toolset_name}/mcp"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PUT",
+      "path": "/toolset/{toolset_name}/mcp"
+    },
+    {
+      "category": "global_proxy_configuration",
+      "method": "PATCH",
+      "path": "/update/default_team_settings"
+    },
+    {
+      "category": "global_proxy_configuration",
+      "method": "PATCH",
+      "path": "/update/internal_user_settings"
+    },
+    {
+      "category": "global_proxy_configuration",
+      "method": "PATCH",
+      "path": "/update/mcp_semantic_filter_settings"
+    },
+    {
+      "category": "global_proxy_configuration",
+      "method": "PATCH",
+      "path": "/update/sso_settings"
+    },
+    {
+      "category": "global_proxy_configuration",
+      "method": "PATCH",
+      "path": "/update/ui_settings"
+    },
+    {
+      "category": "global_proxy_configuration",
+      "method": "PATCH",
+      "path": "/update/ui_theme_settings"
+    },
+    {
+      "category": "global_proxy_configuration",
+      "method": "PATCH",
+      "path": "/update/user_banner"
+    },
+    {
+      "category": "global_proxy_configuration",
+      "method": "POST",
+      "path": "/upload/logo"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/usage/ai/chat"
+    },
+    {
+      "category": "suggestion_discovery",
+      "method": "GET",
+      "path": "/user/available_users"
+    },
+    {
+      "category": "user_budget_management",
+      "method": "POST",
+      "path": "/user/bulk_update"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/user/daily/activity"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/user/daily/activity/aggregated"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/user/spend/report"
+    },
+    {
+      "category": "testing_validation",
+      "method": "POST",
+      "path": "/utils/dotprompt_json_converter"
+    },
+    {
+      "category": "suggestion_discovery",
+      "method": "GET",
+      "path": "/utils/supported_openai_params"
+    },
+    {
+      "category": "testing_validation",
+      "method": "POST",
+      "path": "/utils/test_policies_and_guardrails"
+    },
+    {
+      "category": "authentication_flow",
+      "method": "POST",
+      "path": "/utils/token_counter"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/utils/transform_request"
+    },
+    {
+      "category": "suggestion_discovery",
+      "method": "GET",
+      "path": "/v1/a2a/discover"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/v1/a2a/{agent_id}/message/send"
+    },
+    {
+      "category": "operational_action",
+      "method": "POST",
+      "path": "/v1/agents/make_public"
+    },
+    {
+      "category": "agent_prompt_tool_management",
+      "method": "PUT",
+      "path": "/v1/agents/{agent_id}"
+    },
+    {
+      "category": "operational_action",
+      "method": "POST",
+      "path": "/v1/agents/{agent_id}/make_public"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/v1/assistants"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/v1/assistants"
+    },
+    {
+      "category": "inference_workload",
+      "method": "DELETE",
+      "path": "/v1/assistants/{assistant_id}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/v1/audio/speech"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/v1/audio/transcriptions"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/v1/batches"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/v1/batches"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/v1/batches/{batch_id}"
+    },
+    {
+      "category": "operational_action",
+      "method": "POST",
+      "path": "/v1/batches/{batch_id}/cancel"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/v1/chat/completions"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/v1/completions"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/v1/containers"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/v1/containers"
+    },
+    {
+      "category": "inference_workload",
+      "method": "DELETE",
+      "path": "/v1/containers/{container_id}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/v1/containers/{container_id}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/v1/containers/{container_id}/files"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/v1/containers/{container_id}/files"
+    },
+    {
+      "category": "inference_workload",
+      "method": "DELETE",
+      "path": "/v1/containers/{container_id}/files/{file_id}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/v1/containers/{container_id}/files/{file_id}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/v1/containers/{container_id}/files/{file_id}/content"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/v1/embeddings"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/v1/evals"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/v1/evals"
+    },
+    {
+      "category": "inference_workload",
+      "method": "DELETE",
+      "path": "/v1/evals/{eval_id}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/v1/evals/{eval_id}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/v1/evals/{eval_id}"
+    },
+    {
+      "category": "operational_action",
+      "method": "POST",
+      "path": "/v1/evals/{eval_id}/cancel"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/v1/evals/{eval_id}/runs"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/v1/evals/{eval_id}/runs"
+    },
+    {
+      "category": "inference_workload",
+      "method": "DELETE",
+      "path": "/v1/evals/{eval_id}/runs/{run_id}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/v1/evals/{eval_id}/runs/{run_id}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/v1/evals/{eval_id}/runs/{run_id}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/v1/files"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/v1/files"
+    },
+    {
+      "category": "inference_workload",
+      "method": "DELETE",
+      "path": "/v1/files/{file_id}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/v1/files/{file_id}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/v1/files/{file_id}/content"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/v1/fine_tuning/jobs"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/v1/fine_tuning/jobs"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/v1/fine_tuning/jobs/{fine_tuning_job_id}"
+    },
+    {
+      "category": "operational_action",
+      "method": "POST",
+      "path": "/v1/fine_tuning/jobs/{fine_tuning_job_id}/cancel"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/v1/images/edits"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/v1/images/generations"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/v1/indexes"
+    },
+    {
+      "category": "suggestion_discovery",
+      "method": "GET",
+      "path": "/v1/mcp/access_groups"
+    },
+    {
+      "category": "suggestion_discovery",
+      "method": "GET",
+      "path": "/v1/mcp/discover"
+    },
+    {
+      "category": "operational_action",
+      "method": "POST",
+      "path": "/v1/mcp/make_public"
+    },
+    {
+      "category": "health",
+      "method": "GET",
+      "path": "/v1/mcp/network/client-ip"
+    },
+    {
+      "category": "suggestion_discovery",
+      "method": "GET",
+      "path": "/v1/mcp/openapi-registry"
+    },
+    {
+      "category": "suggestion_discovery",
+      "method": "GET",
+      "path": "/v1/mcp/registry.json"
+    },
+    {
+      "category": "health",
+      "method": "GET",
+      "path": "/v1/mcp/server/health"
+    },
+    {
+      "category": "authentication_flow",
+      "method": "POST",
+      "path": "/v1/mcp/server/oauth/session"
+    },
+    {
+      "category": "authentication_flow",
+      "method": "POST",
+      "path": "/v1/mcp/server/register"
+    },
+    {
+      "category": "mcp_server_management",
+      "method": "GET",
+      "path": "/v1/mcp/server/submissions"
+    },
+    {
+      "category": "operational_action",
+      "method": "PUT",
+      "path": "/v1/mcp/server/{server_id}/approve"
+    },
+    {
+      "category": "mcp_credential_configuration",
+      "method": "DELETE",
+      "path": "/v1/mcp/server/{server_id}/oauth-user-credential"
+    },
+    {
+      "category": "mcp_credential_configuration",
+      "method": "POST",
+      "path": "/v1/mcp/server/{server_id}/oauth-user-credential"
+    },
+    {
+      "category": "mcp_credential_configuration",
+      "method": "GET",
+      "path": "/v1/mcp/server/{server_id}/oauth-user-credential/status"
+    },
+    {
+      "category": "operational_action",
+      "method": "PUT",
+      "path": "/v1/mcp/server/{server_id}/reject"
+    },
+    {
+      "category": "mcp_credential_configuration",
+      "method": "DELETE",
+      "path": "/v1/mcp/server/{server_id}/user-credential"
+    },
+    {
+      "category": "mcp_credential_configuration",
+      "method": "POST",
+      "path": "/v1/mcp/server/{server_id}/user-credential"
+    },
+    {
+      "category": "mcp_credential_configuration",
+      "method": "DELETE",
+      "path": "/v1/mcp/server/{server_id}/user-env-vars"
+    },
+    {
+      "category": "mcp_credential_configuration",
+      "method": "GET",
+      "path": "/v1/mcp/server/{server_id}/user-env-vars"
+    },
+    {
+      "category": "mcp_credential_configuration",
+      "method": "POST",
+      "path": "/v1/mcp/server/{server_id}/user-env-vars"
+    },
+    {
+      "category": "suggestion_discovery",
+      "method": "GET",
+      "path": "/v1/mcp/tools"
+    },
+    {
+      "category": "mcp_toolset_management",
+      "method": "GET",
+      "path": "/v1/mcp/toolset"
+    },
+    {
+      "category": "mcp_toolset_management",
+      "method": "POST",
+      "path": "/v1/mcp/toolset"
+    },
+    {
+      "category": "mcp_toolset_management",
+      "method": "PUT",
+      "path": "/v1/mcp/toolset"
+    },
+    {
+      "category": "mcp_toolset_management",
+      "method": "DELETE",
+      "path": "/v1/mcp/toolset/{toolset_id}"
+    },
+    {
+      "category": "mcp_toolset_management",
+      "method": "GET",
+      "path": "/v1/mcp/toolset/{toolset_id}"
+    },
+    {
+      "category": "mcp_credential_configuration",
+      "method": "GET",
+      "path": "/v1/mcp/user-credentials"
+    },
+    {
+      "category": "mcp_credential_configuration",
+      "method": "GET",
+      "path": "/v1/mcp/user-env-vars/status"
+    },
+    {
+      "category": "workflow_memory_management",
+      "method": "GET",
+      "path": "/v1/memory"
+    },
+    {
+      "category": "workflow_memory_management",
+      "method": "POST",
+      "path": "/v1/memory"
+    },
+    {
+      "category": "workflow_memory_management",
+      "method": "DELETE",
+      "path": "/v1/memory/{key}"
+    },
+    {
+      "category": "workflow_memory_management",
+      "method": "GET",
+      "path": "/v1/memory/{key}"
+    },
+    {
+      "category": "workflow_memory_management",
+      "method": "PUT",
+      "path": "/v1/memory/{key}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/v1/messages"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/v1/messages/count_tokens"
+    },
+    {
+      "category": "model_management",
+      "method": "GET",
+      "path": "/v1/model/info"
+    },
+    {
+      "category": "model_management",
+      "method": "GET",
+      "path": "/v1/models"
+    },
+    {
+      "category": "model_management",
+      "method": "GET",
+      "path": "/v1/models/{model_id}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/v1/moderations"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/v1/ocr"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/v1/rag/ingest"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/v1/rag/query"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/v1/realtime"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/v1/realtime/calls"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/v1/realtime/client_secrets"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/v1/rerank"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/v1/responses"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/v1/responses"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/v1/responses/compact"
+    },
+    {
+      "category": "inference_workload",
+      "method": "DELETE",
+      "path": "/v1/responses/{response_id}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/v1/responses/{response_id}"
+    },
+    {
+      "category": "operational_action",
+      "method": "POST",
+      "path": "/v1/responses/{response_id}/cancel"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/v1/responses/{response_id}/input_items"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "POST",
+      "path": "/v1/rust_control_plane/logs"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/v1/search"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/v1/search/tools"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/v1/search/{search_tool_name}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/v1/skills"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/v1/skills"
+    },
+    {
+      "category": "inference_workload",
+      "method": "DELETE",
+      "path": "/v1/skills/{skill_id}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/v1/skills/{skill_id}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/v1/threads"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/v1/threads/{thread_id}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/v1/threads/{thread_id}/messages"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/v1/threads/{thread_id}/messages"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/v1/threads/{thread_id}/runs"
+    },
+    {
+      "category": "agent_prompt_tool_management",
+      "method": "GET",
+      "path": "/v1/tool/list"
+    },
+    {
+      "category": "agent_prompt_tool_management",
+      "method": "POST",
+      "path": "/v1/tool/policy"
+    },
+    {
+      "category": "agent_prompt_tool_management",
+      "method": "GET",
+      "path": "/v1/tool/policy/options"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/v1/tool/spend"
+    },
+    {
+      "category": "agent_prompt_tool_management",
+      "method": "GET",
+      "path": "/v1/tool/{tool_name}"
+    },
+    {
+      "category": "agent_prompt_tool_management",
+      "method": "GET",
+      "path": "/v1/tool/{tool_name}/detail"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/v1/tool/{tool_name}/logs"
+    },
+    {
+      "category": "agent_prompt_tool_management",
+      "method": "DELETE",
+      "path": "/v1/tool/{tool_name}/overrides"
+    },
+    {
+      "category": "access_control_management",
+      "method": "GET",
+      "path": "/v1/unified_access_group"
+    },
+    {
+      "category": "access_control_management",
+      "method": "POST",
+      "path": "/v1/unified_access_group"
+    },
+    {
+      "category": "access_control_management",
+      "method": "DELETE",
+      "path": "/v1/unified_access_group/{access_group_id}"
+    },
+    {
+      "category": "access_control_management",
+      "method": "GET",
+      "path": "/v1/unified_access_group/{access_group_id}"
+    },
+    {
+      "category": "access_control_management",
+      "method": "PUT",
+      "path": "/v1/unified_access_group/{access_group_id}"
+    },
+    {
+      "category": "vector_store_management",
+      "method": "GET",
+      "path": "/v1/vector_store/list"
+    },
+    {
+      "category": "vector_store_management",
+      "method": "GET",
+      "path": "/v1/vector_stores"
+    },
+    {
+      "category": "vector_store_management",
+      "method": "POST",
+      "path": "/v1/vector_stores"
+    },
+    {
+      "category": "vector_store_management",
+      "method": "DELETE",
+      "path": "/v1/vector_stores/{vector_store_id}"
+    },
+    {
+      "category": "vector_store_management",
+      "method": "GET",
+      "path": "/v1/vector_stores/{vector_store_id}"
+    },
+    {
+      "category": "vector_store_management",
+      "method": "POST",
+      "path": "/v1/vector_stores/{vector_store_id}"
+    },
+    {
+      "category": "vector_store_management",
+      "method": "GET",
+      "path": "/v1/vector_stores/{vector_store_id}/files"
+    },
+    {
+      "category": "vector_store_management",
+      "method": "POST",
+      "path": "/v1/vector_stores/{vector_store_id}/files"
+    },
+    {
+      "category": "vector_store_management",
+      "method": "DELETE",
+      "path": "/v1/vector_stores/{vector_store_id}/files/{file_id}"
+    },
+    {
+      "category": "vector_store_management",
+      "method": "GET",
+      "path": "/v1/vector_stores/{vector_store_id}/files/{file_id}"
+    },
+    {
+      "category": "vector_store_management",
+      "method": "POST",
+      "path": "/v1/vector_stores/{vector_store_id}/files/{file_id}"
+    },
+    {
+      "category": "vector_store_management",
+      "method": "GET",
+      "path": "/v1/vector_stores/{vector_store_id}/files/{file_id}/content"
+    },
+    {
+      "category": "vector_store_management",
+      "method": "POST",
+      "path": "/v1/vector_stores/{vector_store_id}/search"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/v1/videos"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/v1/videos"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/v1/videos/characters"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/v1/videos/characters/{character_id}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/v1/videos/edits"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/v1/videos/extensions"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/v1/videos/{video_id}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/v1/videos/{video_id}/content"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/v1/videos/{video_id}/remix"
+    },
+    {
+      "category": "workflow_memory_management",
+      "method": "GET",
+      "path": "/v1/workflows/runs"
+    },
+    {
+      "category": "workflow_memory_management",
+      "method": "POST",
+      "path": "/v1/workflows/runs"
+    },
+    {
+      "category": "workflow_memory_management",
+      "method": "GET",
+      "path": "/v1/workflows/runs/{run_id}"
+    },
+    {
+      "category": "workflow_memory_management",
+      "method": "PATCH",
+      "path": "/v1/workflows/runs/{run_id}"
+    },
+    {
+      "category": "workflow_memory_management",
+      "method": "GET",
+      "path": "/v1/workflows/runs/{run_id}/events"
+    },
+    {
+      "category": "workflow_memory_management",
+      "method": "POST",
+      "path": "/v1/workflows/runs/{run_id}/events"
+    },
+    {
+      "category": "workflow_memory_management",
+      "method": "GET",
+      "path": "/v1/workflows/runs/{run_id}/messages"
+    },
+    {
+      "category": "workflow_memory_management",
+      "method": "POST",
+      "path": "/v1/workflows/runs/{run_id}/messages"
+    },
+    {
+      "category": "agent_prompt_tool_management",
+      "method": "GET",
+      "path": "/v1beta/agents"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/v1beta/interactions"
+    },
+    {
+      "category": "inference_workload",
+      "method": "DELETE",
+      "path": "/v1beta/interactions/{interaction_id}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/v1beta/interactions/{interaction_id}"
+    },
+    {
+      "category": "operational_action",
+      "method": "POST",
+      "path": "/v1beta/interactions/{interaction_id}/cancel"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/v1beta/models/{model_name}:countTokens"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/v1beta/models/{model_name}:generateContent"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/v1beta/models/{model_name}:streamGenerateContent"
+    },
+    {
+      "category": "model_management",
+      "method": "GET",
+      "path": "/v2/model/info"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/v2/rerank"
+    },
+    {
+      "category": "team_management",
+      "method": "GET",
+      "path": "/v2/team/list"
+    },
+    {
+      "category": "global_proxy_configuration",
+      "method": "DELETE",
+      "path": "/vantage/delete"
+    },
+    {
+      "category": "testing_validation",
+      "method": "POST",
+      "path": "/vantage/dry-run"
+    },
+    {
+      "category": "operational_action",
+      "method": "POST",
+      "path": "/vantage/export"
+    },
+    {
+      "category": "global_proxy_configuration",
+      "method": "POST",
+      "path": "/vantage/init"
+    },
+    {
+      "category": "global_proxy_configuration",
+      "method": "GET",
+      "path": "/vantage/settings"
+    },
+    {
+      "category": "global_proxy_configuration",
+      "method": "PUT",
+      "path": "/vantage/settings"
+    },
+    {
+      "category": "vector_store_management",
+      "method": "GET",
+      "path": "/vector_store/list"
+    },
+    {
+      "category": "vector_store_management",
+      "method": "GET",
+      "path": "/vector_stores"
+    },
+    {
+      "category": "vector_store_management",
+      "method": "POST",
+      "path": "/vector_stores"
+    },
+    {
+      "category": "vector_store_management",
+      "method": "DELETE",
+      "path": "/vector_stores/{vector_store_id}"
+    },
+    {
+      "category": "vector_store_management",
+      "method": "GET",
+      "path": "/vector_stores/{vector_store_id}"
+    },
+    {
+      "category": "vector_store_management",
+      "method": "POST",
+      "path": "/vector_stores/{vector_store_id}"
+    },
+    {
+      "category": "vector_store_management",
+      "method": "GET",
+      "path": "/vector_stores/{vector_store_id}/files"
+    },
+    {
+      "category": "vector_store_management",
+      "method": "POST",
+      "path": "/vector_stores/{vector_store_id}/files"
+    },
+    {
+      "category": "vector_store_management",
+      "method": "DELETE",
+      "path": "/vector_stores/{vector_store_id}/files/{file_id}"
+    },
+    {
+      "category": "vector_store_management",
+      "method": "GET",
+      "path": "/vector_stores/{vector_store_id}/files/{file_id}"
+    },
+    {
+      "category": "vector_store_management",
+      "method": "POST",
+      "path": "/vector_stores/{vector_store_id}/files/{file_id}"
+    },
+    {
+      "category": "vector_store_management",
+      "method": "GET",
+      "path": "/vector_stores/{vector_store_id}/files/{file_id}/content"
+    },
+    {
+      "category": "vector_store_management",
+      "method": "POST",
+      "path": "/vector_stores/{vector_store_id}/search"
+    },
+    {
+      "category": "inference_workload",
+      "method": "DELETE",
+      "path": "/vertex_ai/discovery/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/vertex_ai/discovery/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PATCH",
+      "path": "/vertex_ai/discovery/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/vertex_ai/discovery/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PUT",
+      "path": "/vertex_ai/discovery/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/vertex_ai/live"
+    },
+    {
+      "category": "inference_workload",
+      "method": "DELETE",
+      "path": "/vertex_ai/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/vertex_ai/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PATCH",
+      "path": "/vertex_ai/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/vertex_ai/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PUT",
+      "path": "/vertex_ai/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/videos"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/videos"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/videos/characters"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/videos/characters/{character_id}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/videos/edits"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/videos/extensions"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/videos/{video_id}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/videos/{video_id}/content"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/videos/{video_id}/remix"
+    },
+    {
+      "category": "inference_workload",
+      "method": "DELETE",
+      "path": "/vllm/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/vllm/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PATCH",
+      "path": "/vllm/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/vllm/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PUT",
+      "path": "/vllm/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "DELETE",
+      "path": "/watsonx/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/watsonx/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PATCH",
+      "path": "/watsonx/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/watsonx/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PUT",
+      "path": "/watsonx/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "DELETE",
+      "path": "/{mcp_server_name}/mcp"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/{mcp_server_name}/mcp"
+    },
+    {
+      "category": "inference_workload",
+      "method": "HEAD",
+      "path": "/{mcp_server_name}/mcp"
+    },
+    {
+      "category": "inference_workload",
+      "method": "OPTIONS",
+      "path": "/{mcp_server_name}/mcp"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PATCH",
+      "path": "/{mcp_server_name}/mcp"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/{mcp_server_name}/mcp"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PUT",
+      "path": "/{mcp_server_name}/mcp"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/{provider}/v1/batches"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/{provider}/v1/batches"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/{provider}/v1/batches/{batch_id}"
+    },
+    {
+      "category": "operational_action",
+      "method": "POST",
+      "path": "/{provider}/v1/batches/{batch_id}/cancel"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/{provider}/v1/files"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/{provider}/v1/files"
+    },
+    {
+      "category": "inference_workload",
+      "method": "DELETE",
+      "path": "/{provider}/v1/files/{file_id}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/{provider}/v1/files/{file_id}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/{provider}/v1/files/{file_id}/content"
+    }
+  ],
+  "schema_version": 1
+}

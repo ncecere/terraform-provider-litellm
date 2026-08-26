@@ -1,6 +1,8 @@
 package contractapi
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -133,6 +135,85 @@ func bad(ctx context.Context, c *Client) {
 	}
 }
 
+func TestExtractorRejectsUnknownClientHTTPAbstraction(t *testing.T) {
+	t.Run("direct", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFixture(t, dir, "client.go", `package provider
+import "context"
+type Client struct{}
+func (c *Client) Sneaky(ctx context.Context, path string) error {
+ return c.DoRequestWithResponse(ctx, "GET", path, nil, nil)
+}
+`)
+		_, err := ExtractProvider(dir)
+		if err == nil || !strings.Contains(err.Error(), "unknown Client HTTP abstraction Sneaky") {
+			t.Fatalf("unknown Client transport wrapper was accepted: %v", err)
+		}
+	})
+	t.Run("through-free-wrapper", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFixture(t, dir, "client.go", `package provider
+import "context"
+type Client struct{}
+func transport(ctx context.Context, client *Client, path string) error {
+ return client.DoRequestWithResponse(ctx, "GET", path, nil, nil)
+}
+func (c *Client) Sneaky(ctx context.Context, path string) error {
+ return transport(ctx, c, path)
+}
+`)
+		_, err := ExtractProvider(dir)
+		if err == nil || !strings.Contains(err.Error(), "unknown Client HTTP abstraction Sneaky") {
+			t.Fatalf("call-graph Client wrapper was accepted: %v", err)
+		}
+	})
+}
+
+func TestExtractorRejectsUnknownWrapperAndDynamicQuery(t *testing.T) {
+	t.Run("wrapper", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFixture(t, dir, "wrapper.go", `package provider
+import "context"
+type Client struct{}
+func wrapper(ctx context.Context, client *Client, requestPath string) error {
+ return client.DoRequestWithResponse(ctx, "GET", requestPath, nil, nil)
+}
+`)
+		_, err := ExtractProvider(dir)
+		if err == nil || !strings.Contains(err.Error(), "unresolved dynamic HTTP path") {
+			t.Fatalf("dynamic wrapper was accepted: %v", err)
+		}
+	})
+	t.Run("query-name", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFixture(t, dir, "query.go", `package provider
+import ("context"; "net/url")
+type Client struct{}
+func request(ctx context.Context, client *Client, queryName string) error {
+ query := url.Values{}
+ query.Set(queryName, "value")
+ return client.DoRequestWithResponse(ctx, "GET", endpointWithQuery("/things", query), nil, nil)
+}
+`)
+		_, err := ExtractProvider(dir)
+		if err == nil || !strings.Contains(err.Error(), "unresolved dynamic HTTP path or query name") {
+			t.Fatalf("dynamic query name was accepted: %v", err)
+		}
+	})
+}
+
+func TestExtractorAllowsNonHTTPClientHelper(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir, "helper.go", `package provider
+type Client struct{}
+func (c *Client) Label() string { return "safe" }
+`)
+	operations, err := ExtractProvider(dir)
+	if err != nil || len(operations) != 0 {
+		t.Fatalf("non-HTTP Client helper produced a false positive: operations=%v error=%v", operations, err)
+	}
+}
+
 func TestResolveRejectsWrongMethodAndQueryParameter(t *testing.T) {
 	contracts := map[string][]contractOperation{
 		"GET": {{method: "GET", path: "/things/{thing_id}", pathParams: []string{"thing_id"}, queryParams: map[string]bool{"page": true}}},
@@ -169,14 +250,225 @@ func TestManifestPinnedMetadataCountsAndReviewInventory(t *testing.T) {
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		t.Fatal(err)
 	}
-	if manifest.Upstream.Tag != "v1.98.0" || manifest.Upstream.Commit != "d8f71d7bdbd7c9873d98293f83d64c6db72847e6" || manifest.Upstream.Python != "3.12.14" {
+	if manifest.Upstream.Tag != "v1.98.0" || manifest.Upstream.Commit != "d8f71d7bdbd7c9873d98293f83d64c6db72847e6" || manifest.Upstream.Python != "3.12.14" || manifest.Upstream.UV != "0.12.6" {
 		t.Fatalf("upstream provenance is not pinned: %+v", manifest.Upstream)
 	}
 	if manifest.OpenAPI.PathCount != 561 || manifest.OpenAPI.OperationCount != 772 || manifest.Supplemental.RouteCount != 1 {
 		t.Fatalf("artifact review counts changed: %+v %+v", manifest.OpenAPI, manifest.Supplemental)
 	}
-	if err := validateReview(manifest); err != nil {
+	var pins ReviewedPins
+	pinsData, err := os.ReadFile(filepath.Join(root, "internal", "contract", "reviewed-pins.json"))
+	if err != nil || json.Unmarshal(pinsData, &pins) != nil {
+		t.Fatalf("load reviewed pins: %v", err)
+	}
+	if pins.Upstream.UV != "0.12.6" || pins.Artifacts.ProviderGolden.OperationCount != 103 || pins.Artifacts.Classification.OperationCount != 670 {
+		t.Fatalf("reviewed pins changed unexpectedly: %+v", pins.Artifacts)
+	}
+}
+
+func TestReviewedClassificationRejectsCoverageDrift(t *testing.T) {
+	root := repositoryRoot(t)
+	load := func(t *testing.T) (Manifest, ReviewedPins, ReviewedClassification, map[string][]contractOperation, []Operation) {
+		t.Helper()
+		var manifest Manifest
+		var pins ReviewedPins
+		var classification ReviewedClassification
+		if err := readJSONFile(filepath.Join(root, "internal", "contract", "manifest.json"), &manifest); err != nil {
+			t.Fatal(err)
+		}
+		if err := readJSONFile(filepath.Join(root, "internal", "contract", "reviewed-pins.json"), &pins); err != nil {
+			t.Fatal(err)
+		}
+		if err := readJSONFile(filepath.Join(root, "internal", "contract", "reviewed-operation-classification.json"), &classification); err != nil {
+			t.Fatal(err)
+		}
+		contracts, _, _, err := LoadContracts(filepath.Join(root, "openapi.json"), filepath.Join(root, "internal", "contract", "supplemental-routes.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		extracted, err := ExtractProvider(filepath.Join(root, "internal", "provider"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		supported, err := ResolveOperations(extracted, contracts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return manifest, pins, classification, contracts, supported
+	}
+
+	t.Run("unclassified-route", func(t *testing.T) {
+		manifest, pins, classification, contracts, supported := load(t)
+		classification.Operations = classification.Operations[1:]
+		if err := validateReview(manifest, pins, classification, contracts, supported); err == nil || !strings.Contains(err.Error(), "unclassified API operation") {
+			t.Fatalf("removed classification was accepted: %v", err)
+		}
+	})
+	t.Run("stale-route", func(t *testing.T) {
+		manifest, pins, classification, contracts, supported := load(t)
+		classification.Operations = append(classification.Operations, ClassifiedOperation{Method: "GET", Path: "/removed-route", Category: "health"})
+		if err := validateReview(manifest, pins, classification, contracts, supported); err == nil || !strings.Contains(err.Error(), "stale operation") {
+			t.Fatalf("stale classification was accepted: %v", err)
+		}
+	})
+	t.Run("new-openapi-route", func(t *testing.T) {
+		manifest, pins, classification, contracts, supported := load(t)
+		contracts["GET"] = append(contracts["GET"], contractOperation{method: "GET", path: "/new-durable-record", queryParams: map[string]bool{}})
+		if err := validateReview(manifest, pins, classification, contracts, supported); err == nil || !strings.Contains(err.Error(), "unclassified API operation GET /new-durable-record") {
+			t.Fatalf("new API route was accepted without review: %v", err)
+		}
+	})
+	t.Run("unknown-category", func(t *testing.T) {
+		manifest, pins, classification, contracts, supported := load(t)
+		classification.Operations[0].Category = "catch_all"
+		if err := validateReview(manifest, pins, classification, contracts, supported); err == nil || !strings.Contains(err.Error(), "unknown classification category") {
+			t.Fatalf("unknown category was accepted: %v", err)
+		}
+	})
+}
+
+func TestLazyExpansionHasExactReviewedClassification(t *testing.T) {
+	root := repositoryRoot(t)
+	var classification ReviewedClassification
+	if err := readJSONFile(filepath.Join(root, "internal", "contract", "reviewed-operation-classification.json"), &classification); err != nil {
 		t.Fatal(err)
+	}
+	var golden []Operation
+	if err := readJSONFile(filepath.Join(root, "internal", "contractapi", "testdata", "provider-operations.golden.json"), &golden); err != nil {
+		t.Fatal(err)
+	}
+	classified := map[string]string{}
+	for _, operation := range classification.Operations {
+		classified[operation.Method+" "+operation.Path] = operation.Category
+	}
+	supported := map[string]bool{}
+	for _, operation := range golden {
+		supported[operation.Method+" "+operation.Path] = true
+	}
+	var openapi struct {
+		Paths map[string]map[string]json.RawMessage `json:"paths"`
+	}
+	if err := readJSONFile(filepath.Join(root, "openapi.json"), &openapi); err != nil {
+		t.Fatal(err)
+	}
+	counts := map[string]int{}
+	for path, item := range openapi.Paths {
+		group := ""
+		switch {
+		case strings.HasPrefix(path, "/v1/mcp/"):
+			group = "mcp"
+		case strings.HasPrefix(path, "/prompts") || path == "/utils/dotprompt_json_converter":
+			group = "prompt"
+		case strings.HasPrefix(path, "/cloudzero") || strings.HasPrefix(path, "/vantage") || strings.HasPrefix(path, "/config_overrides"):
+			group = "integration"
+		}
+		if group == "" {
+			continue
+		}
+		for method := range item {
+			upper := strings.ToUpper(method)
+			if _, ok := map[string]bool{"GET": true, "POST": true, "PUT": true, "PATCH": true, "DELETE": true, "HEAD": true, "OPTIONS": true, "TRACE": true}[upper]; !ok {
+				continue
+			}
+			counts[group]++
+			key := upper + " " + path
+			if !supported[key] && classified[key] == "" {
+				t.Errorf("lazy expansion operation lacks exact review: %s", key)
+			}
+		}
+	}
+	if counts["mcp"] != 33 || counts["prompt"] != 10 || counts["integration"] != 16 {
+		t.Fatalf("lazy expansion counts changed: %v", counts)
+	}
+	for key, category := range map[string]string{
+		"GET /v1/mcp/toolset":                             "mcp_toolset_management",
+		"POST /v1/mcp/server/{server_id}/user-credential": "mcp_credential_configuration",
+		"GET /prompts/{prompt_id}/info":                   "agent_prompt_tool_management",
+		"POST /prompts/test":                              "testing_validation",
+		"POST /cloudzero/init":                            "global_proxy_configuration",
+		"POST /vantage/export":                            "operational_action",
+		"POST /config_overrides/hashicorp_vault":          "global_proxy_configuration",
+	} {
+		if classified[key] != category {
+			t.Errorf("%s category = %q, want %q", key, classified[key], category)
+		}
+	}
+}
+
+func TestReviewedPinsRejectCoordinatedGeneratedArtifactEdits(t *testing.T) {
+	root := repositoryRoot(t)
+	stage := t.TempDir()
+	for _, relative := range []string{
+		"openapi.json",
+		"internal/contract/supplemental-routes.json",
+		"internal/contract/manifest.json",
+		"internal/contract/reviewed-pins.json",
+		"internal/contract/reviewed-operation-classification.json",
+		"internal/contractapi/testdata/provider-operations.golden.json",
+	} {
+		source := filepath.Join(root, relative)
+		destination := filepath.Join(stage, relative)
+		if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		body, err := os.ReadFile(source)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(destination, body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(stage, "internal"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "internal", "provider"), filepath.Join(stage, "internal", "provider")); err != nil {
+		t.Fatal(err)
+	}
+
+	openapiPath := filepath.Join(stage, "openapi.json")
+	body, err := os.ReadFile(openapiPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(openapiPath, append(body, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var manifest Manifest
+	manifestPath := filepath.Join(stage, "internal", "contract", "manifest.json")
+	if err := readJSONFile(manifestPath, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(append(body, '\n'))
+	manifest.OpenAPI.SHA256 = hex.EncodeToString(sum[:])
+	encoded, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifestPath, append(encoded, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Verify(stage); err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
+		t.Fatalf("coordinated generated artifact edits bypassed reviewed pins: %v", err)
+	}
+}
+
+func TestProviderGoldenPinRejectsByteChange(t *testing.T) {
+	root := repositoryRoot(t)
+	var pins ReviewedPins
+	if err := readJSONFile(filepath.Join(root, "internal", "contract", "reviewed-pins.json"), &pins); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(root, pins.Artifacts.ProviderGolden.Path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := filepath.Join(t.TempDir(), "provider-operations.golden.json")
+	if err := os.WriteFile(changed, append(body, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyChecksum(changed, pins.Artifacts.ProviderGolden.SHA256); err == nil {
+		t.Fatal("byte-changed provider golden matched reviewed pin")
 	}
 }
 
