@@ -1,109 +1,84 @@
-# Previous-release upgrade and import matrix
+# Previous-release execution matrix
 
-This directory is the fail-closed validation harness for provider issue #210. It inventories every registered provider type and reports **resource coverage separately** from upgrade, lifecycle, import, drift, replacement, failure-recovery, data-source, and documentation scenarios.
+This directory contains the issue #210 execution harness. `matrix.json` is an inventory and scenario specification, not evidence that a scenario passed. Only records emitted after a scenario command completes can appear in a destructive report. Report summaries are recalculated from those records.
 
-## Coverage contract
+## Inventory
 
-| Category | Count | Notes |
-|---|---:|---|
-| Registered resources | 23 | Exact comparison with provider registration and resource docs |
-| v2.0.1 upgrades | 23 | Same canonical provider address, HCL, state, resource address/type, schema, and import identity |
-| Lifecycle | 23 | Project runs only in the licensed lane; action resources are reported explicitly |
-| Imports | 23 | Import, refresh, no-drift, then `terraform state rm`; imported objects are never destroyed |
-| Drift | 23 | Refresh/no-drift and out-of-band inventory contract |
-| Intentional replacements | 2 | Unsupported model clear and immutable team-member identity |
-| Failed-create recovery | 2 | Model and team-member retry/cleanup |
-| Data sources | 33 | Single and list inventories, with expected limitations accounted for |
-| Documentation | 3 | Registry examples, import docs, and release metadata |
+The harness compares the checked-in inventory to provider registration:
 
-`matrix.json` is authoritative and machine-readable. Assembly fails if its 23/33 inventories differ from the provider, a fixture or import section is missing, a scenario count changes, or a skip has no allowlisted reason.
+- 23 resources;
+- 33 data sources;
+- 23 upgrade scenarios;
+- 23 import scenarios;
+- 2 replacement scenarios; and
+- 2 controlled-fault recovery scenarios.
 
-The two action resources are `litellm_key_block` and `litellm_team_block`. They are importable but destructive and are never pointed at non-disposable objects. `litellm_project`, `litellm_project` data, and `litellm_projects` inventory are Enterprise-only. Agent/prompt inventories may be deferred only when the pinned API lacks the inventory endpoint. Key regeneration is deliberately not attempted: LiteLLM cannot safely return a replacement secret. These are expected limitations, not silent skips.
+Assembly validates inventory, HCL formatting, and provider schemas. Its execution-category pass counts are always zero. Enterprise, unavailable API, and pre-1.11 features are explicit skips with controlled reasons; they are never counted as passes. Local execution fails if any resource, data source, or required category lacks one result.
 
-## Reproducible tools and previous provider
+## Provenance
 
-`tools.lock.json` pins archive checksums for:
+`tools.lock.json` pins Terraform 1.0.11/1.11.4 and OpenTofu 1.6.3/1.11.1 archives. It also pins the v2.0.1 Registry metadata, release key, full fingerprint, detached signature, checksum manifest, Registry manifest, archives, and extracted executable digests.
 
-- Terraform 1.0.11 and 1.11.4;
-- OpenTofu 1.6.3 and 1.11.1;
-- published provider v2.0.1 archives, its checksum file, and Registry manifest.
+The installer:
 
-Both products therefore have their required baseline and a `>=1.11` lane. The optional `key_wo` and `send_invite_email` scenarios are selected only when `supports_optional_111` succeeds. Tool installation is cache-local and atomic:
+1. uses a mode-0700 cache and an exclusive lock;
+2. rejects symlinked/non-regular/hard-linked cache entries;
+3. uses unique O_EXCL partial files, bounded size, timeouts, and retries;
+4. verifies Registry metadata and the exact public key digest/key ID;
+5. verifies `SHA256SUMS.sig` against fingerprint `C753834A70062246C92CEF56F0A1AEC231353F8B` in a fresh GnuPG home;
+6. trusts archive and manifest checksums only after signature verification;
+7. extracts into a fresh private directory while rejecting links and unsafe paths; and
+8. verifies the exact executable name and digest before constructing the mirror.
 
-```sh
-python3 internal_testing/upgrade_matrix/harness.py install-tool terraform 1.0.11
-python3 internal_testing/upgrade_matrix/harness.py install-tool opentofu 1.6.3
-python3 internal_testing/upgrade_matrix/harness.py install-previous
-```
+Every current-provider dev override receives a dedicated private directory containing exactly one verified executable. Execution records include only safe SHA-256 provenance and the current canonical provider-schema fingerprint.
 
-Pass `--offline` to require an already verified cache entry. A missing or mismatched archive fails; the harness never falls back to a PATH version or builds v2.0.1 source. The previous-provider installer verifies the known checksum-file digest, selected archive digest, archive entry in `SHA256SUMS`, and exact protocol manifest before constructing a filesystem mirror. During upgrade, unchanged HCL remains pinned to canonical `registry.terraform.io/ncecere/litellm` v2.0.1 while a CLI `dev_overrides` entry selects the current binary. A detailed-exitcode plan and HMAC-only state contract prove no replacement, address/type/schema change, or remote-ID change.
-
-## Assembly (safe default)
-
-Assembly performs no API or backend request and needs no credentials:
+## Assembly
 
 ```sh
-sh internal_testing/upgrade_matrix/run.sh assembly
+mkdir -m 700 /tmp/issue210-report
+MATRIX_REPORT=/tmp/issue210-report/assembly.json \
+  sh internal_testing/upgrade_matrix/run.sh assembly
 python3 -m unittest discover -s internal_testing/upgrade_matrix/tests -p 'test_*.py'
+sh internal_testing/upgrade_matrix/tests/safety_test.sh
 ```
 
-If a current provider binary exists, each resource fixture is also validated through a private `dev_overrides` directory. Otherwise assembly still enforces inventories, import documentation, release metadata, Terraform formatting, checksums, feature gates, skip accounting, and fixture presence. Set `MATRIX_REPORT` to choose the JSON result location. Reports contain controlled scenario labels, statuses, skip reasons, counts, tool versions, and diagnostic **titles only**—never diagnostic bodies.
+Reports are strict schema-version 2 JSON. They reject arbitrary fields and diagnostics, protected field names, secrets, credentials, UUIDs, URLs, response bodies, and filesystem paths. Diagnostic titles are mapped internally to controlled codes. Writes use a private unique temporary file, fsync, and atomic create-only linking; an existing or symlink destination fails.
 
-Registry examples and documentation HCL are format checked during assembly. Provider-backed fixture validation is offline. The destructive matrix additionally plans the same assembled configurations with both CLI families.
+## Local execution
 
-## Destructive local lane
-
-The exact LiteLLM image remains `docker.litellm.ai/berriai/litellm:v1.98.0`, bound to loopback by `docker-compose.yml`. Compose project and database volume names are checkout-specific. Start a new isolated stack and build the current provider, then provide both confirmations:
+The backend is the disposable loopback-only LiteLLM v1.98.0 Compose stack. Each command has a wall deadline, child output is bounded and private, curl operations have connect/total timeouts, and cleanup failure overrides success.
 
 ```sh
 internal_testing/compose.sh up -d
-make build
+mkdir -m 700 /tmp/issue210-report
 TF_ACC=1 \
 LITELLM_ACCEPTANCE_CONFIRM=local-v1.98.0 \
-MATRIX_CLI="$HOME/.cache/terraform-provider-litellm/tools/terraform/1.0.11/$(go env GOOS)_$(go env GOARCH)/terraform" \
+MATRIX_CLI="$HOME/.cache/terraform-provider-litellm/tools/terraform/1.11.4/$(go env GOOS)_$(go env GOARCH)/terraform" \
+MATRIX_REPORT=/tmp/issue210-report/result.json \
 sh internal_testing/upgrade_matrix/run.sh local
+internal_testing/compose.sh down -v
 ```
 
-The runner verifies the loopback target and reported 1.98.0 version again. It captures all child output in a mode-0700 temporary directory, limits durable output to the summary, removes scratch data on every signal, and treats cleanup errors as test failures. Upgrade-created fixtures may be destroyed because the harness owns them. Import fixtures use only state detach for cleanup. Never replace those commands with `destroy`.
+Repository-owned non-PR workflow jobs execute this lane against a new local backend with all four pinned CLIs. Pull requests and forks run assembly only. There is no workflow-enabled remote mutation lane; adding one requires a separate future gate and reviewed scenario allowlist.
 
-Run the four pinned CLI versions separately to produce the release matrix. Do not run destructive lanes as part of this change review.
+## Import ownership
 
-## Remote development lane
+Owned-object import tests use two workspaces and a cryptographically random namespace:
 
-The approved remote deployment has a separate gate and is never inferred from local confirmation. It requires all of:
+- the producer creates and retains target/dependency state;
+- the importer receives private dependency context, removes only the target address, imports, refreshes, and proves no drift;
+- importer cleanup removes only the imported target address;
+- the producer destroys everything it owns; and
+- a source-free re-import must fail, proving authoritative absence.
 
-```sh
-TF_ACC=1
-LITELLM_REMOTE_ACCEPTANCE_CONFIRM=dev-disposable-objects-only
-LITELLM_TEST_NAMESPACE=issue210-<8-to-32-lowercase-letters-or-digits>
-LITELLM_API_BASE=https://dev.api.ai.it.ufl.edu
-LITELLM_API_KEY=<credential>
-```
+A genuine-preexisting mode may only detach imported state and must never call destroy. It is not inferred from the owned producer mode.
 
-Only a manually dispatched, repository-owned workflow may use this lane. Remote fixtures must include the unique namespace, prove exact-name absence before create, mutate only objects created in that run, and delete only those recorded owned objects. Pre-existing import inventories are read/refreshed and detached from state; they are never destroyed or updated. The checked-in runner currently stops after the remote safety preflight and offline assembly even when manually dispatched; remote mutation remains disabled until a reviewed scenario allowlist is added.
+## Replacement and recovery
 
-## Replacement and recovery evidence
+Replacement plans require exact ordered `["create", "delete"]` actions because both reviewed fixtures use distinct server identities and explicit `create_before_destroy`. Any dependency action is rejected. Apply JSON must show target create before target delete. Process-local HMAC comparisons prove target identity changed while dependency identity stayed stable; state address and dependency relation converge with no drift. Destroy must leave empty state and authoritative re-import must fail.
 
-Replacement fixtures are disposable. The runner records only HMAC comparisons of old/new LiteLLM IDs; the values themselves never appear in output. Evidence requires:
+Recovery uses `fault_proxy.py`, a loopback-only proxy that faults one allowlisted endpoint before forwarding. Dependencies are created first. Evidence requires a target request attempt, zero target forwards/commits, exact allowlisted diagnostic mapping, no target identity/private state, successful retry, no drift, empty cleanup state, and authoritative absence. A dead base URL is not a recovery scenario.
 
-1. stable Terraform address;
-2. different old/new remote identity;
-3. the documented ordering (`create_before_destroy` for the model and destination-before-source-removal for membership);
-4. dependent-resource convergence;
-5. a post-replacement detailed-exitcode 0 plan;
-6. retry after failed create; and
-7. successful cleanup.
+## Upgrade comparison
 
-A cleanup error overrides scenario success. The tests exercise private ID comparison and cleanup-failure behavior without using real IDs.
-
-## Data handling
-
-- `umask 077`, mode-0700 scratch directories, bounded child output, and cleanup traps are mandatory.
-- Terraform/OpenTofu stdout and stderr, state, plans, logs, IDs, URLs, and secrets stay in scratch space and are never uploaded.
-- JSON artifacts are allowlisted and scanned for credential, URL, and labeled-value patterns.
-- Only diagnostic titles may be reported.
-- Ambient `TF_LOG`, CLI flags, and provider variables are cleared before execution.
-- `dev.env` remains ignored and is never read or copied.
-- Import cleanup is `state rm` only. An unexplained skip or cleanup failure fails the run.
-
-CI runs assembly and unit/shell safety tests only. Destructive jobs use `workflow_dispatch`, an environment gate, explicit confirmations, and a same-repository condition, so forks and pull requests cannot trigger them.
+The exact signed v2.0.1 executable applies unchanged HCL first. The exact current executable then performs a no-change plan and refresh-only apply. Canonical comparison covers addresses, types, schema versions, every non-sensitive semantic value, identifier equality through a process-local HMAC, and provider-private presence signals. Reviewed computed migrations must be listed per type in `matrix.json`; the default allowlist is empty. The HMAC key is created inside the comparator and is never exported to Terraform or provider children. State and HCL are not rewritten during upgrade.

@@ -7,14 +7,6 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
-      destructive_target:
-        description: Destructive target (local or remote)
-        required: true
-        default: local
-        type: choice
-        options:
-          - local
-          - remote
       confirmation:
         description: Type run-issue210-destructive to enable the manual job
         required: true
@@ -37,6 +29,7 @@ jobs:
   assembly:
     name: Offline assembly (${{ matrix.product }} ${{ matrix.version }})
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -68,16 +61,20 @@ jobs:
           python3 internal_testing/upgrade_matrix/harness.py install-tool \
             "${{ matrix.product }}" "${{ matrix.version }}" --cache "$RUNNER_TEMP/tools" --offline
       - name: Build current provider outside the repository
-        run: go build -o "$RUNNER_TEMP/provider/terraform-provider-litellm" .
+        run: |
+          mkdir -m 700 "$RUNNER_TEMP/provider"
+          go build -o "$RUNNER_TEMP/provider/terraform-provider-litellm" .
       - name: Python safety and assembly tests
         run: python3 -m unittest discover -s internal_testing/upgrade_matrix/tests -p 'test_*.py'
       - name: Shell safety tests
         run: sh internal_testing/upgrade_matrix/tests/safety_test.sh
       - name: Non-destructive offline assembly
+        run: mkdir -m 700 "$RUNNER_TEMP/reports"
+      - name: Validate non-destructive offline assembly
         env:
           MATRIX_CLI: ${{ runner.temp }}/tools/${{ matrix.product }}/${{ matrix.version }}/linux_amd64/${{ matrix.executable }}
           MATRIX_PROVIDER_BINARY: ${{ runner.temp }}/provider/terraform-provider-litellm
-          MATRIX_REPORT: ${{ runner.temp }}/upgrade-matrix-${{ matrix.product }}-${{ matrix.version }}.json
+          MATRIX_REPORT: ${{ runner.temp }}/reports/upgrade-matrix-${{ matrix.product }}-${{ matrix.version }}.json
         run: sh internal_testing/upgrade_matrix/run.sh assembly
       - name: Publish concise scenario summary
         if: ${{ !cancelled() }}
@@ -87,18 +84,80 @@ jobs:
             echo ''
             echo '| Category | Count |'
             echo '|---|---:|'
-            python3 - <<'PY'
-          import json
-          value=json.load(open('internal_testing/upgrade_matrix/matrix.json', encoding='utf-8'))
-          for name,count in value['scenario_counts'].items():
-              print(f'| {name.replace("_", " ")} | {count} |')
+            python3 - "$RUNNER_TEMP/reports/upgrade-matrix-${{ matrix.product }}-${{ matrix.version }}.json" <<'PY'
+          import json,sys
+          value=json.load(open(sys.argv[1], encoding='utf-8'))
+          for name,counts in value['summary'].items():
+              print(f'| {name.replace("_", " ")} | {counts["passed"]} |')
           PY
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload machine-readable release matrix result
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: upgrade-matrix-${{ matrix.product }}-${{ matrix.version }}
-          path: ${{ runner.temp }}/upgrade-matrix-${{ matrix.product }}-${{ matrix.version }}.json
+          path: ${{ runner.temp }}/reports/upgrade-matrix-${{ matrix.product }}-${{ matrix.version }}.json
+          if-no-files-found: error
+
+  local-backend:
+    name: Local execution (${{ matrix.product }} ${{ matrix.version }})
+    if: github.event_name != 'pull_request' && github.repository == 'ncecere/terraform-provider-litellm'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - product: terraform
+            version: 1.0.11
+            executable: terraform
+          - product: terraform
+            version: 1.11.4
+            executable: terraform
+          - product: opentofu
+            version: 1.6.3
+            executable: tofu
+          - product: opentofu
+            version: 1.11.1
+            executable: tofu
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install exact CLI and current provider
+        run: |
+          python3 internal_testing/upgrade_matrix/harness.py install-tool \
+            "${{ matrix.product }}" "${{ matrix.version }}" --cache "$RUNNER_TEMP/tools"
+          mkdir -m 700 "$RUNNER_TEMP/provider" "$RUNNER_TEMP/report"
+          go build -o "$RUNNER_TEMP/provider/terraform-provider-litellm" .
+      - name: Start exact disposable local backend
+        run: |
+          internal_testing/compose.sh up -d
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent --connect-timeout 3 --max-time 10 \
+              http://localhost:4000/health/liveliness >/dev/null; then exit 0; fi
+            sleep 2
+          done
+          exit 1
+      - name: Execute repository-owned scenario matrix
+        env:
+          TF_ACC: '1'
+          LITELLM_ACCEPTANCE_CONFIRM: local-v1.98.0
+          MATRIX_CLI: ${{ runner.temp }}/tools/${{ matrix.product }}/${{ matrix.version }}/linux_amd64/${{ matrix.executable }}
+          MATRIX_PROVIDER_BINARY: ${{ runner.temp }}/provider/terraform-provider-litellm
+          MATRIX_CACHE: ${{ runner.temp }}/matrix-cache
+          MATRIX_REPORT: ${{ runner.temp }}/report/result.json
+        run: sh internal_testing/upgrade_matrix/run.sh local
+      - name: Verify isolated backend cleanup
+        if: always()
+        run: internal_testing/compose.sh down -v
+      - name: Upload executed-evidence report
+        if: success()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: local-execution-${{ matrix.product }}-${{ matrix.version }}
+          path: ${{ runner.temp }}/report/result.json
           if-no-files-found: error
 
   destructive-manual:
@@ -108,6 +167,7 @@ jobs:
       github.repository == 'ncecere/terraform-provider-litellm' &&
       inputs.confirmation == 'run-issue210-destructive'
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     environment: destructive-acceptance
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
@@ -127,13 +187,14 @@ jobs:
           python3 internal_testing/upgrade_matrix/harness.py install-tool "$product" "$version" --cache "$RUNNER_TEMP/tools"
           echo "path=$RUNNER_TEMP/tools/$product/$version/linux_amd64/$executable" >> "$GITHUB_OUTPUT"
       - name: Build current provider
-        run: go build -o "$RUNNER_TEMP/provider/terraform-provider-litellm" .
+        run: |
+          mkdir -m 700 "$RUNNER_TEMP/provider" "$RUNNER_TEMP/report"
+          go build -o "$RUNNER_TEMP/provider/terraform-provider-litellm" .
       - name: Start exact isolated local stack
-        if: inputs.destructive_target == 'local'
         run: |
           internal_testing/compose.sh up -d
           for attempt in $(seq 1 60); do
-            if curl --fail --silent http://localhost:4000/health/liveliness >/dev/null; then exit 0; fi
+            if curl --fail --silent --connect-timeout 3 --max-time 10 http://localhost:4000/health/liveliness >/dev/null; then exit 0; fi
             sleep 2
           done
           exit 1
@@ -141,21 +202,19 @@ jobs:
         env:
           TF_ACC: '1'
           LITELLM_ACCEPTANCE_CONFIRM: local-v1.98.0
-          LITELLM_REMOTE_ACCEPTANCE_CONFIRM: dev-disposable-objects-only
-          LITELLM_TEST_NAMESPACE: issue210-${{ github.run_id }}${{ github.run_attempt }}
-          LITELLM_API_BASE: ${{ inputs.destructive_target == 'remote' && 'https://dev.api.ai.it.ufl.edu' || 'http://localhost:4000' }}
-          LITELLM_API_KEY: ${{ inputs.destructive_target == 'remote' && secrets.LITELLM_DEV_API_KEY || 'sk-testing-key' }}
+          LITELLM_API_BASE: http://localhost:4000
+          LITELLM_API_KEY: sk-testing-key
           MATRIX_CLI: ${{ steps.cli.outputs.path }}
           MATRIX_PROVIDER_BINARY: ${{ runner.temp }}/provider/terraform-provider-litellm
-          MATRIX_REPORT: ${{ runner.temp }}/upgrade-matrix-result.json
-        run: sh internal_testing/upgrade_matrix/run.sh "${{ inputs.destructive_target }}"
+          MATRIX_REPORT: ${{ runner.temp }}/report/upgrade-matrix-result.json
+        run: sh internal_testing/upgrade_matrix/run.sh local
       - name: Wipe isolated local stack
-        if: always() && inputs.destructive_target == 'local'
+        if: always()
         run: internal_testing/compose.sh down -v
       - name: Upload redacted result only
         if: success()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: destructive-upgrade-matrix-result
-          path: ${{ runner.temp }}/upgrade-matrix-result.json
+          path: ${{ runner.temp }}/report/upgrade-matrix-result.json
           if-no-files-found: error

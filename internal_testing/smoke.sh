@@ -12,6 +12,8 @@ RESOURCES="$INTERNAL_TESTING/resources"
 DATASOURCES="$INTERNAL_TESTING/datasources"
 PROVIDER_DIR=${PROVIDER_DIR:-$REPO_ROOT}
 SMOKE_ASSEMBLY_ONLY=${SMOKE_ASSEMBLY_ONLY:-0}
+SMOKE_PRIVATE_ROOT=${SMOKE_PRIVATE_ROOT:-$INTERNAL_TESTING}
+SMOKE_DELETE_LOGS=${SMOKE_DELETE_LOGS:-0}
 
 if [ "$SMOKE_ASSEMBLY_ONLY" != "1" ] && [ ! -f "$PROVIDER_DIR/terraform-provider-litellm" ]; then
   echo "Provider binary not found at $PROVIDER_DIR/terraform-provider-litellm; run 'make build'." >&2
@@ -26,9 +28,12 @@ if ! command -v python3 >/dev/null 2>&1; then
   exit 1
 fi
 
-mkdir -p "$INTERNAL_TESTING/.smoke-logs"
-SMOKE_DIR=$(mktemp -d "$INTERNAL_TESTING/.smoke.XXXXXX")
-SMOKE_LOG="$INTERNAL_TESTING/.smoke-logs/$(date '+%Y%m%d-%H%M%S')-$$.log"
+mkdir -p "$SMOKE_PRIVATE_ROOT/.smoke-logs"
+chmod 700 "$SMOKE_PRIVATE_ROOT" "$SMOKE_PRIVATE_ROOT/.smoke-logs"
+SMOKE_DIR=$(mktemp -d "$SMOKE_PRIVATE_ROOT/.smoke.XXXXXX")
+SMOKE_LOG="$SMOKE_PRIVATE_ROOT/.smoke-logs/$(date '+%Y%m%d-%H%M%S')-$$.log"
+: >"$SMOKE_LOG"
+chmod 600 "$SMOKE_LOG"
 APPLY_STARTED=0
 SUCCESS=0
 CLEANUP_ARGS=
@@ -39,6 +44,7 @@ cleanup() {
   trap - EXIT INT TERM HUP
   if [ "$SUCCESS" -eq 1 ]; then
     rm -rf "$SMOKE_DIR"
+    [ "$SMOKE_DELETE_LOGS" = 1 ] && rm -f "$SMOKE_LOG"
     exit 0
   fi
 
@@ -324,6 +330,13 @@ PY
   STEADY_ARGS='-var=agent_lifecycle_phase=adversarial'
   CLEANUP_ARGS=$STEADY_ARGS
 fi
+
+echo '=== REFRESH CANONICAL STATE ==='
+# Data-source inventories read during the initial plan before their producer
+# resources exist. Persist the authoritative post-apply reads, then require a
+# second plan to be exactly stable.
+# shellcheck disable=SC2086 # STEADY_ARGS intentionally expands to an optional complete argument.
+terraform apply -refresh-only -auto-approve $STEADY_ARGS
 
 echo '=== NO-DRIFT PLAN ==='
 set +e

@@ -35,11 +35,19 @@
   "previous_provider": {
     "version":"2.0.1",
     "release":"github:ncecere/terraform-provider-litellm@v2.0.1",
+    "registry_metadata_sha256":{"darwin_arm64":"0d426ce5fc1f8a14620228cb96ffc033a6c5e09e36d24ae68e69b314c076bac1","linux_amd64":"8961954c6446729e912ae3f1ace5e55871640f8ee90fafc8016b81faba651ca0"},
     "checksums_file_sha256":"47e71bf3b3878c3b357c9e9ef0320acae3a07943e8045a950adf480fa7271e63",
+    "signature_sha256":"6f85f1f7a2bfe47e6776f41dd8d4b05ebcb0ec9c07924703bcc288f6b15a1316",
     "manifest_sha256":"f809ab383cca0a5f83072981c64208cbd7fa67e986a86ee02dd2c82333221e32",
+    "signing_key": {
+      "file":"release-key.asc",
+      "sha256":"ac65972f56daa9dd741708a6d5d2ee61ce6777bdde76261a67e7a56469f1e94c",
+      "fingerprint":"C753834A70062246C92CEF56F0A1AEC231353F8B",
+      "key_id":"F0A1AEC231353F8B"
+    },
     "archives": {
-      "darwin_arm64":"3cc94f775f8161f459601864e2db00ef439aad8b21e417303f87291f61576bd5",
-      "linux_amd64":"81777dae4c993db90950516b37a2c13c1891bd55c058b87ffdd485cf3a4a40be"
+      "darwin_arm64":{"sha256":"3cc94f775f8161f459601864e2db00ef439aad8b21e417303f87291f61576bd5","executable_sha256":"c76ca1cdce96ce0aff3530d30c5d8cd71d48ae7f168150004b09eadfc21e2350"},
+      "linux_amd64":{"sha256":"81777dae4c993db90950516b37a2c13c1891bd55c058b87ffdd485cf3a4a40be","executable_sha256":"60f0c8d0826c590d11460e8c729e7cb9b92d219a36785cb560f88e8d959ca665"}
     }
   }
 }
