@@ -3,6 +3,8 @@ package provider
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -37,10 +39,6 @@ type HTTPFailureClassification struct {
 	HasRetryAfter     bool
 	RequestDispatched bool
 	ResponseAccepted  bool
-
-	// retryAfterDeadline is retained only for HTTP-date scheduling. It is not
-	// exported or rendered and lets slow body reads consume the server's wait.
-	retryAfterDeadline time.Time
 }
 
 // ClassifyHTTPFailure returns a typed, content-free classification for err.
@@ -68,12 +66,12 @@ func ClassifyHTTPFailure(err error) HTTPFailureClassification {
 
 	var apiErr *APIError
 	if errors.As(err, &apiErr) {
+		retryAfter, hasRetryAfter := safeRetryScheduleFromError(err)
 		classification := HTTPFailureClassification{
-			StatusCode:         apiErr.StatusCode,
-			RetryAfter:         apiErr.retryAfter,
-			HasRetryAfter:      apiErr.hasRetryAfter,
-			RequestDispatched:  true,
-			retryAfterDeadline: apiErr.retryAfterDeadline,
+			StatusCode:        apiErr.StatusCode,
+			RetryAfter:        retryAfter.delay,
+			HasRetryAfter:     hasRetryAfter,
+			RequestDispatched: true,
 		}
 		if isTransientHTTPStatus(apiErr.StatusCode) {
 			classification.Kind = HTTPFailureTransientResponse
@@ -85,14 +83,14 @@ func ClassifyHTTPFailure(err error) HTTPFailureClassification {
 
 	var responseErr *safeResponseError
 	if errors.As(err, &responseErr) {
+		retryAfter, hasRetryAfter := safeRetryScheduleFromError(err)
 		classification := HTTPFailureClassification{
-			Kind:               HTTPFailureContractOrLocal,
-			StatusCode:         responseErr.statusCode,
-			RetryAfter:         responseErr.retryAfter,
-			HasRetryAfter:      responseErr.hasRetryAfter,
-			RequestDispatched:  responseErr.dispatched,
-			ResponseAccepted:   responseErr.accepted,
-			retryAfterDeadline: responseErr.retryAfterDeadline,
+			Kind:              HTTPFailureContractOrLocal,
+			StatusCode:        responseErr.statusCode,
+			RetryAfter:        retryAfter.delay,
+			HasRetryAfter:     hasRetryAfter,
+			RequestDispatched: responseErr.dispatched,
+			ResponseAccepted:  responseErr.accepted,
 		}
 		switch {
 		case errors.Is(responseErr, context.Canceled):
@@ -132,6 +130,45 @@ const maxAcceptedRetryAfter = 5 * time.Minute
 type safeRetryAfterSpec struct {
 	delay    time.Duration
 	deadline time.Time
+}
+
+// safeRetryScheduledError keeps an absolute HTTP-date out of the exported
+// classification value and exported APIError. Its formatter deliberately
+// renders only the wrapped provider error's already-sanitized message.
+type safeRetryScheduledError struct {
+	err      error
+	schedule safeRetryAfterSpec
+}
+
+func (e *safeRetryScheduledError) Error() string { return e.err.Error() }
+func (e *safeRetryScheduledError) Unwrap() error { return e.err }
+func (e *safeRetryScheduledError) Format(state fmt.State, verb rune) {
+	message := e.Error()
+	switch verb {
+	case 'q':
+		_, _ = fmt.Fprintf(state, "%q", message)
+	case 'x':
+		_, _ = fmt.Fprintf(state, "%x", message)
+	case 'X':
+		_, _ = fmt.Fprintf(state, "%X", message)
+	default:
+		_, _ = io.WriteString(state, message)
+	}
+}
+
+func withSafeRetrySchedule(err error, schedule safeRetryAfterSpec, ok bool) error {
+	if err == nil || !ok {
+		return err
+	}
+	return &safeRetryScheduledError{err: err, schedule: schedule}
+}
+
+func safeRetryScheduleFromError(err error) (safeRetryAfterSpec, bool) {
+	var scheduled *safeRetryScheduledError
+	if !errors.As(err, &scheduled) {
+		return safeRetryAfterSpec{}, false
+	}
+	return scheduled.schedule, true
 }
 
 func safeRetryAfter(headers http.Header, now time.Time, maximum time.Duration) (time.Duration, bool) {

@@ -18,7 +18,6 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
-	"time"
 	"unicode"
 	"unicode/utf8"
 )
@@ -93,18 +92,15 @@ const (
 )
 
 type safeResponseError struct {
-	statusCode         int
-	requestID          string
-	kind               string
-	identity           error
-	retryable          bool
-	safeReadTransient  bool
-	stage              safeResponseFailureStage
-	retryAfter         time.Duration
-	retryAfterDeadline time.Time
-	hasRetryAfter      bool
-	dispatched         bool
-	accepted           bool
+	statusCode        int
+	requestID         string
+	kind              string
+	identity          error
+	retryable         bool
+	safeReadTransient bool
+	stage             safeResponseFailureStage
+	dispatched        bool
+	accepted          bool
 }
 
 func (e *safeResponseError) Error() string {
@@ -127,29 +123,32 @@ func safeTransportFailure(err error) error {
 	canceled := false
 	deadline := false
 	retryCategory := safeTransportRetryNone
+	terminal := false
+
+	// Error chains, including errors.Join trees, are classified by a fixed
+	// fail-closed priority: cancellation, terminal TLS/protocol/local
+	// configuration, deadline, transient transport, then opaque local failure.
 	switch {
 	case errors.Is(err, context.Canceled):
 		kind = "LiteLLM HTTP request was canceled"
 		identity = context.Canceled
 		canceled = true
-	case errors.Is(err, context.DeadlineExceeded):
-		kind = "LiteLLM HTTP request timed out"
-		identity = context.DeadlineExceeded
-		timedOut = true
-		deadline = true
-		retryCategory = safeTransportRetryTimeout
 	default:
+		if terminalKind, ok := terminalTransportFailure(err); ok {
+			kind = terminalKind
+			terminal = true
+			break
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			kind = "LiteLLM HTTP request timed out"
+			identity = context.DeadlineExceeded
+			timedOut = true
+			deadline = true
+			retryCategory = safeTransportRetryTimeout
+			break
+		}
 		var netErr net.Error
-		var certErr x509.UnknownAuthorityError
-		var hostErr x509.HostnameError
-		var invalidCertErr x509.CertificateInvalidError
-		var rootsErr x509.SystemRootsError
-		var verificationErr *tls.CertificateVerificationError
-		var recordErr tls.RecordHeaderError
 		switch {
-		case errors.As(err, &certErr), errors.As(err, &hostErr), errors.As(err, &invalidCertErr), errors.As(err, &rootsErr), errors.As(err, &verificationErr), errors.As(err, &recordErr):
-			// TLS verification and local trust/configuration failures are terminal.
-			kind = "LiteLLM TLS verification failed"
 		case errors.As(err, &netErr) && netErr.Timeout():
 			kind = "LiteLLM HTTP request timed out"
 			identity = context.DeadlineExceeded
@@ -168,15 +167,60 @@ func safeTransportFailure(err error) error {
 		canceled:          canceled,
 		deadline:          deadline,
 		retryCategory:     retryCategory,
-		safeReadTransient: retryCategory != safeTransportRetryNone || safeReadTransientFailure(err),
+		safeReadTransient: !terminal && (retryCategory != safeTransportRetryNone || safeReadTransientFailure(err)),
 	}
+}
+
+// terminalTransportFailure recognizes typed failures for which another request
+// cannot repair the peer protocol, trust, address, or local transport setup.
+// It deliberately runs before all net.Error and errno transient traits.
+func terminalTransportFailure(err error) (string, bool) {
+	if err == nil {
+		return "", false
+	}
+
+	var unknownAuthority x509.UnknownAuthorityError
+	var hostname x509.HostnameError
+	var invalidCertificate x509.CertificateInvalidError
+	var systemRoots x509.SystemRootsError
+	var constraintViolation x509.ConstraintViolationError
+	var insecureAlgorithm x509.InsecureAlgorithmError
+	var unhandledExtension x509.UnhandledCriticalExtension
+	var verification *tls.CertificateVerificationError
+	var recordHeader tls.RecordHeaderError
+	var alert tls.AlertError
+	if errors.As(err, &unknownAuthority) || errors.As(err, &hostname) ||
+		errors.As(err, &invalidCertificate) || errors.As(err, &systemRoots) ||
+		errors.As(err, &constraintViolation) || errors.As(err, &insecureAlgorithm) ||
+		errors.As(err, &unhandledExtension) || errors.As(err, &verification) ||
+		errors.As(err, &recordHeader) || errors.As(err, &alert) {
+		return "LiteLLM TLS verification or protocol failed", true
+	}
+
+	var protocol *http.ProtocolError
+	var invalidAddress net.InvalidAddrError
+	var unknownNetwork net.UnknownNetworkError
+	var parse *net.ParseError
+	var invalidHost url.InvalidHostError
+	if errors.Is(err, http.ErrSchemeMismatch) || errors.Is(err, http.ErrNotSupported) ||
+		errors.Is(err, errors.ErrUnsupported) || errors.As(err, &protocol) ||
+		errors.As(err, &invalidAddress) || errors.As(err, &unknownNetwork) ||
+		errors.As(err, &parse) || errors.As(err, &invalidHost) {
+		return "LiteLLM HTTP transport configuration or protocol failed", true
+	}
+	return "", false
 }
 
 // safeReadTransientFailure is deliberately broader than safeTransportError's
 // legacy Retryable/Temporary contract. Only the GET/HEAD safe-read layer uses
-// these additional content-free network categories.
+// these additional content-free network categories. Its priority matches
+// safeTransportFailure so terminal traits cannot be masked by a joined
+// temporary error.
 func safeReadTransientFailure(err error) bool {
 	if err == nil || errors.Is(err, context.Canceled) {
+		return false
+	}
+	if _, terminal := terminalTransportFailure(err); terminal {
 		return false
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
@@ -197,6 +241,9 @@ func safeTemporaryResponseFailure(err error) bool {
 	if err == nil || errors.Is(err, context.Canceled) {
 		return false
 	}
+	if _, terminal := terminalTransportFailure(err); terminal {
+		return false
+	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}
@@ -208,9 +255,13 @@ func safeErrorIdentity(err error) error {
 	switch {
 	case errors.Is(err, context.Canceled):
 		return context.Canceled
-	case errors.Is(err, context.DeadlineExceeded):
-		return context.DeadlineExceeded
 	default:
+		if _, terminal := terminalTransportFailure(err); terminal {
+			return nil
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return context.DeadlineExceeded
+		}
 		return nil
 	}
 }

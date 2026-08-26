@@ -106,8 +106,9 @@ func retrySafeRead(ctx context.Context, policy safeReadRetryPolicy, hooks safeRe
 		delay := safeReadRetryDelay(policy, hooks, attempt)
 		if classification.HasRetryAfter {
 			retryAfter := classification.RetryAfter
-			if !classification.retryAfterDeadline.IsZero() {
-				retryAfter = classification.retryAfterDeadline.Sub(hooks.now())
+			schedule, hasSchedule := safeRetryScheduleFromError(err)
+			if hasSchedule && !schedule.deadline.IsZero() {
+				retryAfter = schedule.deadline.Sub(hooks.now())
 				if retryAfter < 0 {
 					retryAfter = 0
 				}
@@ -115,7 +116,8 @@ func retrySafeRead(ctx context.Context, policy safeReadRetryPolicy, hooks safeRe
 					retryAfter = policy.maxRetryAfter
 				}
 				// An HTTP-date is an absolute server time, not a duration that
-				// restarts after a slow response-body read.
+				// restarts after a slow response-body read. The absolute value
+				// remains solely on the private provider error wrapper.
 				delay = retryAfter
 			} else {
 				if retryAfter > policy.maxRetryAfter {

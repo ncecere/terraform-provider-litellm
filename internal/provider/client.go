@@ -24,10 +24,7 @@ type APIError struct {
 	DetailOmitted bool
 	BodyTruncated bool
 
-	fallbackNotReady   bool
-	retryAfter         time.Duration
-	retryAfterDeadline time.Time
-	hasRetryAfter      bool
+	fallbackNotReady bool
 }
 
 func (e *APIError) Error() string {
@@ -205,15 +202,12 @@ func (c *Client) doRequestWithResponseOptions(ctx context.Context, method, reque
 	}
 	if response.ContentLength > limit {
 		if !accepted {
-			return false, &APIError{
-				StatusCode:         response.StatusCode,
-				RequestID:          requestID,
-				DetailOmitted:      true,
-				BodyTruncated:      true,
-				retryAfter:         retryAfter.delay,
-				retryAfterDeadline: retryAfter.deadline,
-				hasRetryAfter:      hasRetryAfter,
-			}
+			return false, withSafeRetrySchedule(&APIError{
+				StatusCode:    response.StatusCode,
+				RequestID:     requestID,
+				DetailOmitted: true,
+				BodyTruncated: true,
+			}, retryAfter, hasRetryAfter)
 		}
 		return true, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "LiteLLM response exceeded the provider safety limit", stage: safeResponseFailureContract, dispatched: true, accepted: true}
 	}
@@ -221,37 +215,31 @@ func (c *Client) doRequestWithResponseOptions(ctx context.Context, method, reque
 
 	if !accepted {
 		if readErr != nil {
-			return false, &safeResponseError{
-				statusCode:         response.StatusCode,
-				requestID:          requestID,
-				kind:               "failed to read LiteLLM error response",
-				identity:           safeErrorIdentity(readErr),
-				retryable:          safeTemporaryResponseFailure(readErr),
-				safeReadTransient:  safeReadTransientFailure(readErr),
-				stage:              safeResponseFailureStatusBodyRead,
-				retryAfter:         retryAfter.delay,
-				retryAfterDeadline: retryAfter.deadline,
-				hasRetryAfter:      hasRetryAfter,
-				dispatched:         true,
-			}
+			return false, withSafeRetrySchedule(&safeResponseError{
+				statusCode:        response.StatusCode,
+				requestID:         requestID,
+				kind:              "failed to read LiteLLM error response",
+				identity:          safeErrorIdentity(readErr),
+				retryable:         safeTemporaryResponseFailure(readErr),
+				safeReadTransient: safeReadTransientFailure(readErr),
+				stage:             safeResponseFailureStatusBodyRead,
+				dispatched:        true,
+			}, retryAfter, hasRetryAfter)
 		}
 		fallbackNotReady := classifyFallbackNotReadyBody(bodyBytes)
 		detail, detailOmitted := "", true
 		if !truncated && (response.StatusCode < http.StatusMultipleChoices || response.StatusCode >= http.StatusBadRequest) {
 			detail, detailOmitted = safeResponseDetail(bodyBytes, response.Header.Get("Content-Type"), safety)
 		}
-		return false, &APIError{
-			StatusCode:         response.StatusCode,
-			Body:               detail,
-			RequestID:          requestID,
-			Detail:             detail,
-			DetailOmitted:      detailOmitted,
-			BodyTruncated:      truncated,
-			fallbackNotReady:   fallbackNotReady,
-			retryAfter:         retryAfter.delay,
-			retryAfterDeadline: retryAfter.deadline,
-			hasRetryAfter:      hasRetryAfter,
-		}
+		return false, withSafeRetrySchedule(&APIError{
+			StatusCode:       response.StatusCode,
+			Body:             detail,
+			RequestID:        requestID,
+			Detail:           detail,
+			DetailOmitted:    detailOmitted,
+			BodyTruncated:    truncated,
+			fallbackNotReady: fallbackNotReady,
+		}, retryAfter, hasRetryAfter)
 	}
 
 	if readErr != nil {

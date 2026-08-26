@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -133,6 +134,62 @@ func TestParseRetryAfter(t *testing.T) {
 	ambiguous := http.Header{"Retry-After": []string{"1", "2"}}
 	if delay, ok := safeRetryAfter(ambiguous, now, maximum); ok || delay != 0 {
 		t.Fatalf("ambiguous Retry-After was retained: %v/%t", delay, ok)
+	}
+}
+
+func TestHTTPFailureClassificationFormattingCannotExposeRetryDate(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	retryDate := now.Add(5 * time.Second)
+	rawHeader := retryDate.Format(http.TimeFormat)
+	client := testRetryClient(func(request *http.Request) (*http.Response, error) {
+		return testHTTPResponse(request, http.StatusServiceUnavailable, http.Header{"Retry-After": []string{rawHeader}}), nil
+	})
+	err := func() error {
+		_, requestErr := client.doRequestWithResponseOptions(context.Background(), http.MethodGet, "/safe", nil, nil, clientRequestOptions{now: func() time.Time { return now }})
+		return requestErr
+	}()
+	err = fmt.Errorf("wrapped provider failure: %w", err)
+	classification := ClassifyHTTPFailure(err)
+	if classification.Kind != HTTPFailureTransientResponse || classification.StatusCode != http.StatusServiceUnavailable ||
+		classification.RetryAfter != 5*time.Second || !classification.HasRetryAfter {
+		t.Fatalf("classification=%#v error=%v", classification, err)
+	}
+
+	schedule, ok := safeRetryScheduleFromError(err)
+	if !ok || !schedule.deadline.Equal(retryDate) {
+		t.Fatalf("private schedule=%#v/%t", schedule, ok)
+	}
+
+	classificationType := reflect.TypeOf(classification)
+	allowedFields := map[string]bool{
+		"Kind": true, "StatusCode": true, "RetryAfter": true, "HasRetryAfter": true,
+		"RequestDispatched": true, "ResponseAccepted": true,
+	}
+	if classificationType.NumField() != len(allowedFields) {
+		t.Fatalf("classification has %d fields, want %d", classificationType.NumField(), len(allowedFields))
+	}
+	for i := 0; i < classificationType.NumField(); i++ {
+		field := classificationType.Field(i)
+		if field.PkgPath != "" || !allowedFields[field.Name] {
+			t.Fatalf("classification exposed unexpected field %#v", field)
+		}
+	}
+
+	for name, rendered := range map[string]string{
+		"classification-v":       fmt.Sprintf("%v", classification),
+		"classification-plus-v":  fmt.Sprintf("%+v", classification),
+		"classification-sharp-v": fmt.Sprintf("%#v", classification),
+		"error-v":                fmt.Sprintf("%v", err),
+		"error-plus-v":           fmt.Sprintf("%+v", err),
+		"error-sharp-v":          fmt.Sprintf("%#v", err),
+	} {
+		for _, forbidden := range []string{rawHeader, "2026", "January", "GMT", "retryAfterDeadline", "Retry-After"} {
+			if strings.Contains(rendered, forbidden) {
+				t.Fatalf("%s exposed %q: %q", name, forbidden, rendered)
+			}
+		}
 	}
 }
 
@@ -355,7 +412,7 @@ func TestDoReadWithResponseRetryAfterAndMethodBoundary(t *testing.T) {
 	slept = 0
 	err := retrySafeRead(context.Background(), policy, hooks, func(context.Context) error {
 		if calls.Add(1) == 1 {
-			return &APIError{StatusCode: http.StatusTooManyRequests, retryAfter: time.Minute, hasRetryAfter: true}
+			return withSafeRetrySchedule(&APIError{StatusCode: http.StatusTooManyRequests}, safeRetryAfterSpec{delay: time.Minute}, true)
 		}
 		return nil
 	})

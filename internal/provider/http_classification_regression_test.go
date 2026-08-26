@@ -2,9 +2,12 @@ package provider
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"reflect"
@@ -290,6 +293,104 @@ func TestLegacySpecializedRetryPredicatesRemainExact(t *testing.T) {
 		if shouldRetryCredentialRecoveryRead(err) || isRetryableTeamMemberAddReadError(err) || shouldRetryUnifiedAccessGroupVerification(err) {
 			t.Fatalf("%v broadened a specialized phase-1 loop", cause)
 		}
+	}
+}
+
+func TestTerminalTransportTraitsDominateJoinedTransients(t *testing.T) {
+	terminalCauses := []struct {
+		name string
+		err  error
+	}{
+		{"certificate", x509.UnknownAuthorityError{}},
+		{"tls-protocol", tls.RecordHeaderError{}},
+		{"http-protocol", &http.ProtocolError{ErrorString: "invalid response framing"}},
+		{"configuration", net.InvalidAddrError("invalid local address")},
+	}
+	for _, terminalCause := range terminalCauses {
+		terminalCause := terminalCause
+		t.Run(terminalCause.name, func(t *testing.T) {
+			for _, reverse := range []bool{false, true} {
+				joined := errors.Join(terminalCause.err, temporaryTransportTestError{})
+				if reverse {
+					joined = errors.Join(temporaryTransportTestError{}, fmt.Errorf("wrapped terminal: %w", terminalCause.err))
+				}
+
+				transportErr := safeTransportFailure(fmt.Errorf("outer wrapper: %w", joined))
+				var safeErr *safeTransportError
+				if !errors.As(transportErr, &safeErr) {
+					t.Fatal("safe transport error was not retained")
+				}
+				classification := ClassifyHTTPFailure(transportErr)
+				if classification.Kind != HTTPFailureContractOrLocal || safeErr.safeReadTransient ||
+					safeErr.Retryable() || safeErr.Temporary() || shouldRetryCredentialRecoveryRead(transportErr) ||
+					isRetryableTeamMemberAddReadError(transportErr) || shouldRetryUnifiedAccessGroupVerification(transportErr) {
+					t.Fatalf("reverse=%t classification=%#v transport=%#v", reverse, classification, safeErr)
+				}
+			}
+
+			var calls atomic.Int32
+			client := testRetryClient(func(*http.Request) (*http.Response, error) {
+				calls.Add(1)
+				return nil, errors.Join(terminalCause.err, temporaryTransportTestError{})
+			})
+			err := client.doReadWithResponsePolicy(context.Background(), http.MethodGet, "/safe", nil, nil, testReadPolicy(3), noWaitRetryHooks())
+			classification := ClassifyHTTPFailure(err)
+			var safeErr *safeTransportError
+			if !errors.As(err, &safeErr) || calls.Load() != 1 || classification.Kind != HTTPFailureContractOrLocal ||
+				!classification.RequestDispatched || classification.ResponseAccepted || safeErr.safeReadTransient ||
+				safeErr.Retryable() || safeErr.Temporary() {
+				t.Fatalf("calls=%d classification=%#v transport=%#v error=%v", calls.Load(), classification, safeErr, err)
+			}
+		})
+	}
+}
+
+func TestTransportTraitPriorityIsDeterministicAcrossJoinedErrors(t *testing.T) {
+	terminal := x509.UnknownAuthorityError{}
+	transient := temporaryTransportTestError{}
+	tests := []struct {
+		name            string
+		err             error
+		kind            HTTPFailureKind
+		legacyRetryable bool
+	}{
+		{"cancellation-over-all", errors.Join(transient, terminal, context.DeadlineExceeded, context.Canceled), HTTPFailureCanceled, false},
+		{"cancellation-over-all-reversed", errors.Join(context.Canceled, context.DeadlineExceeded, terminal, transient), HTTPFailureCanceled, false},
+		{"terminal-over-deadline-and-transient", errors.Join(transient, terminal, context.DeadlineExceeded), HTTPFailureContractOrLocal, false},
+		{"terminal-over-deadline-and-transient-reversed", errors.Join(context.DeadlineExceeded, terminal, transient), HTTPFailureContractOrLocal, false},
+		{"deadline-over-transient", errors.Join(transient, context.DeadlineExceeded), HTTPFailureDeadline, true},
+		{"terminal-over-transient", errors.Join(transient, terminal), HTTPFailureContractOrLocal, false},
+		{"transient-over-opaque", errors.Join(errors.New("opaque"), transient), HTTPFailureTransientTransport, true},
+		{"opaque", errors.New("opaque"), HTTPFailureContractOrLocal, false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := safeTransportFailure(fmt.Errorf("wrapped: %w", test.err))
+			classification := ClassifyHTTPFailure(err)
+			var safeErr *safeTransportError
+			if !errors.As(err, &safeErr) || classification.Kind != test.kind ||
+				safeErr.Retryable() != test.legacyRetryable || safeErr.Temporary() != test.legacyRetryable {
+				t.Fatalf("classification=%#v transport=%#v", classification, safeErr)
+			}
+		})
+	}
+}
+
+func TestAcceptedBodyReadTerminalTraitsAreNotSafeReadTransient(t *testing.T) {
+	var calls atomic.Int32
+	client := testRetryClient(func(request *http.Request) (*http.Response, error) {
+		calls.Add(1)
+		response := testHTTPResponse(request, http.StatusOK, nil)
+		response.Body = failingReadCloser{err: errors.Join(x509.UnknownAuthorityError{}, context.DeadlineExceeded, temporaryTransportTestError{})}
+		return response, nil
+	})
+	var result map[string]interface{}
+	err := client.doReadWithResponsePolicy(context.Background(), http.MethodGet, "/safe", nil, &result, testReadPolicy(3), noWaitRetryHooks())
+	classification := ClassifyHTTPFailure(err)
+	var responseErr *safeResponseError
+	if !errors.As(err, &responseErr) || calls.Load() != 1 || classification.Kind != HTTPFailureContractOrLocal ||
+		!classification.RequestDispatched || !classification.ResponseAccepted || responseErr.safeReadTransient || responseErr.Temporary() {
+		t.Fatalf("calls=%d classification=%#v response=%#v error=%v", calls.Load(), classification, responseErr, err)
 	}
 }
 
