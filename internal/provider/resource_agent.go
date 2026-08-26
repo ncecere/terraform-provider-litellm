@@ -467,7 +467,10 @@ func (r *AgentResource) Read(ctx context.Context, req resource.ReadRequest, resp
 		resp.Private = req.Private
 		return
 	}
-	apiOwned := bundle.committed
+	// Reads may use a working ownership copy to reconcile the public projection,
+	// but an ordinary refresh has no configuration or planned transition to
+	// confirm. It must therefore leave committed and pending provenance intact.
+	apiOwned := cloneAgentFieldSet(bundle.committed)
 	imported := string(importedMarker) == "true"
 
 	var rawResult map[string]interface{}
@@ -483,19 +486,25 @@ func (r *AgentResource) Read(ctx context.Context, req resource.ReadRequest, resp
 	}
 
 	resolveAgentUnknowns(&data)
+	if !imported {
+		resp.Private = req.Private
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
-	if !resp.Diagnostics.HasError() && resp.Private != nil {
-		if imported {
-			apiOwned = agentImportedFieldsFromWire(data, rawResult)
-		} else if bundle.pending != nil {
-			apiOwned = bundle.pending
-		}
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if !imported {
+		// Only a successfully confirmed Create or Update may promote pending
+		// ownership. Preserve ordinary-read private state byte-for-byte, including
+		// a canonical pending transition whose API-owned field is omitted or null.
+		return
+	}
+	if resp.Private != nil {
+		apiOwned = agentImportedFieldsFromWire(data, rawResult)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentImportedFieldsPrivateKey, encodeAgentFieldSet(apiOwned))...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipInitializedPrivateKey, []byte("true"))...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipPendingPrivateKey, nil)...)
-		if imported {
-			resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, nil)...)
-		}
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, nil)...)
 	}
 }
 
