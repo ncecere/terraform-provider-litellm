@@ -123,7 +123,7 @@ func (d *KeysListDataSource) Configure(ctx context.Context, req datasource.Confi
 		return
 	}
 
-	client, ok := req.ProviderData.(*Client)
+	client, ok := configuredClient(req.ProviderData)
 	if !ok {
 		resp.Diagnostics.AddError(
 			"Unexpected Data Source Configure Type",

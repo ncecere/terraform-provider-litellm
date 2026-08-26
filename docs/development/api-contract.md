@@ -18,7 +18,9 @@ Run:
 make contract-check
 ```
 
-The verifier does not use the network or Python. It discovers `Client` transport methods by receiver and call graph, permits only the reviewed transport plumbing and wrappers, and rejects unknown `Client` HTTP abstractions, raw request construction (including in `client.go`), unresolved wrappers, methods, paths, or query names. It extracts every non-test provider call and compares method, normalized path boundaries, path parameters, and exact query names with OpenAPI plus the supplement.
+The verifier does not use the network or Python. It type-checks the complete non-test provider package and fails on every type diagnostic or checker error before using type information. Its deliberately restrictive source policy requires each provider operation to be a direct selector call to an exact reviewed `Client` transport method or wrapper. Transport methods and raw `net/http` primitives may not be function values; `Client` may not be converted, assigned, passed, or returned as an interface; promoted `http.Client` transport methods and unknown `Client` HTTP abstractions fail. Only `prepareRequest`'s direct `http.NewRequestWithContext` call and `executeRequestWithOptions`' direct `http.Client.Do` call are raw transport exceptions.
+
+Query review is similarly inventory-based rather than a general taint analysis. Dynamic `url.Values` `Set`, `Add`, literal, or index keys fail globally, except that the exact `addKnownStringFilter` definition may receive a dynamic parameter and every call to it must supply a literal key. Passing `url.Values` is limited to the exact reviewed helpers `endpointWithQuery`, `cloneURLValues`, `safeListDiagnostic`, `addKnownStringFilter`, `listKeys`, and `listUsers`; `cloneURLValues` is the only dynamic-index copy exception. These restrictions make aliases, parameters, returns, and cross-file/higher-order indirection fail closed. The verifier then extracts every non-test provider call and compares method, normalized path boundaries, path parameters, and exact query names with OpenAPI plus the supplement.
 
 Production verification also:
 
@@ -34,7 +36,7 @@ CI and the release workflow run this offline gate. Release runs it before import
 
 `reviewed-operation-classification.json` is an exhaustive set, not a prefix rule or generated catch-all. Each entry contains an exact uppercase method, normalized path, and one category defined in `reviewed-pins.json`.
 
-`unsupported_durable` categories are explicit Terraform resource decisions. They include credential inventory (#248), vector-store management (#249), JWT mappings (#250), configured pass-through endpoints (#251), policy versions/attachments (#252), and exact additional MCP, customer/end-user, SCIM, global configuration, and management operations (#207).
+`unsupported_durable` categories are explicit Terraform resource decisions. They include credential inventory (#248), vector-store management (#249)—including both `GET` and durable creation through `POST /v1/indexes`—JWT mappings (#250), configured pass-through endpoints (#251), policy versions/attachments (#252), and exact additional MCP, customer/end-user, SCIM, global configuration, and management operations (#207). The adjacent `/v1beta/agents` collection and identity/version routes remain durable agent management; `/v1beta/interactions` and model generation/count routes remain workload or operational calls.
 
 `excluded_non_durable` categories remain explicit per operation. They include inference/workload execution, operational actions, health/status, spend/analytics, cache flush, suggestion/discovery, authentication flow, testing/validation, public metadata, and observability. A new route cannot inherit one of these categories by prefix: it fails verification until its exact operation is reviewed.
 
@@ -69,18 +71,18 @@ The source actually contains 33 `LAZY_FEATURES` definitions at the pin. Complete
 2. regenerates OpenAPI and supplement twice;
 3. generates the manifest and provider-operation golden in staging;
 4. runs the complete production verifier in staging against the existing reviewed classification and pins;
-5. copies every validated output to destination-side temporary files while retaining each destination's permissions;
-6. creates destination-side backups for all four current files;
+5. atomically acquires the repository-wide `.contract-artifact-writer.lock` before creating any backup or destination-side temporary file;
+6. creates destination-side backups and copies every validated output to destination-side temporary files while retaining each destination's permissions;
 7. replaces the four generated files; and
-8. removes backups and staging only after all replacements succeed.
+8. removes backups, staging, and its owned lock only after all replacements succeed.
 
-On an ordinary command error or caught `HUP`, `INT`, or `TERM`, the installer restores every destination from its backup before exiting and removes backups and staging. Thus, after the installer returns, all four files are either the old validated set or the new validated set, never a mixed final set. The offline failure-injection test fails and interrupts after each of the four replacements, tests success, and verifies contents, permissions, and cleanup:
+A concurrent writer fails safely with status 75 before backup or replacement. The lock contains an ownership token, and cleanup removes it only when the token still belongs to that process. An ownerless lock is not guessed stale: after proving no installer is active, an operator must remove it explicitly. On an ordinary command error or caught `HUP`, `INT`, or `TERM`, the installer restores every destination from its backup before exiting and removes backups, staging, and its lock. Thus, after the installer returns, all four files are either the old validated set or the new validated set, never a mixed final set. The offline failure-injection test fails and interrupts after each replacement; exercises concurrent success/failure and signal interleavings, lock exclusion and cleanup, stale-lock refusal, permissions, and ordinary success:
 
 ```sh
 make contract-update-atomicity-test
 ```
 
-Four independent filesystem names cannot provide a single visibility instant to concurrent readers. During replacement or rollback a reader can observe an intermediate set. An uncatchable `SIGKILL`, power loss, kernel failure, or storage failure can also stop rollback and leave an intermediate set; recovery is to restore the reviewed commit or rerun the validated update. The guarantee above is a caught-failure final-state guarantee, not a multi-file filesystem transaction.
+Four independent filesystem names cannot provide a single visibility instant to readers that do not honor the writer lock. During replacement or rollback such a reader can observe an intermediate set. An uncatchable `SIGKILL`, power loss, kernel failure, or storage failure can also stop rollback, leave an intermediate set, and leave the lock behind. Recovery is to prove no writer is active, restore the reviewed commit (or otherwise restore one complete set), remove the stale lock, and rerun the validated update. The guarantee above is exclusive-writer serialization plus a caught-failure final-state guarantee, not a multi-file filesystem transaction.
 
 For an intentional LiteLLM/API change:
 

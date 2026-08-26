@@ -40,7 +40,7 @@ contract-update:
 contract-diff:
 	sh tools/litellm-contract/update.sh diff
 
-# Offline failure/signal injection for every artifact replacement stage.
+# Offline failure/signal injection plus exclusive-writer interleavings and stale-lock refusal.
 contract-update-atomicity-test:
 	sh tools/litellm-contract/test-failure-atomicity.sh
 

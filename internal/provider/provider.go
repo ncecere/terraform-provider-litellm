@@ -41,6 +41,23 @@ type Client struct {
 	HTTPClient       *http.Client
 }
 
+// configuredProviderData prevents the HTTP client itself from being stored in
+// or invoked through the framework's untyped provider-data channel.
+type configuredProviderData struct {
+	client *Client
+}
+
+func configuredClient(data any) (*Client, bool) {
+	switch value := data.(type) {
+	case *configuredProviderData:
+		return value.client, value.client != nil
+	case *Client: // Retained for package tests that configure resources directly.
+		return value, value != nil
+	default:
+		return nil, false
+	}
+}
+
 func (p *LiteLLMProvider) Metadata(ctx context.Context, req provider.MetadataRequest, resp *provider.MetadataResponse) {
 	resp.TypeName = "litellm"
 	resp.Version = p.version
@@ -136,8 +153,9 @@ func (p *LiteLLMProvider) Configure(ctx context.Context, req provider.ConfigureR
 		},
 	}
 
-	resp.DataSourceData = client
-	resp.ResourceData = client
+	configured := &configuredProviderData{client: client}
+	resp.DataSourceData = configured
+	resp.ResourceData = configured
 }
 
 func (p *LiteLLMProvider) Resources(ctx context.Context) []func() resource.Resource {

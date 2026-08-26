@@ -12,8 +12,10 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
+	"io"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -289,9 +291,22 @@ func ExtractProvider(root string) ([]Operation, error) {
 	sort.Slice(parsedFiles, func(i, j int) bool {
 		return x.fset.Position(parsedFiles[i].Pos()).Filename < x.fset.Position(parsedFiles[j].Pos()).Filename
 	})
-	config := &types.Config{Importer: importer.Default(), Error: func(error) {}}
-	_, _ = config.Check("github.com/nicholas-cecere/terraform-provider-litellm/internal/provider", x.fset, parsedFiles, x.typesInfo)
+	var typeDiagnostics []string
+	config := &types.Config{Importer: sourceImporter(x.fset), Error: func(err error) {
+		typeDiagnostics = append(typeDiagnostics, err.Error())
+	}}
+	_, checkErr := config.Check("github.com/nicholas-cecere/terraform-provider-litellm/internal/provider", x.fset, parsedFiles, x.typesInfo)
+	if checkErr != nil || len(typeDiagnostics) != 0 {
+		if checkErr != nil && len(typeDiagnostics) == 0 {
+			typeDiagnostics = append(typeDiagnostics, checkErr.Error())
+		}
+		sort.Strings(typeDiagnostics)
+		return nil, fmt.Errorf("provider source must be a complete type-correct package:\n%s", strings.Join(typeDiagnostics, "\n"))
+	}
 
+	if err := x.validateStrictSourcePolicy(); err != nil {
+		return nil, err
+	}
 	if err := x.validateClientTransport(); err != nil {
 		return nil, err
 	}
@@ -380,6 +395,22 @@ func ExtractProvider(root string) ([]Operation, error) {
 	return combineOperations(extracted), nil
 }
 
+func sourceImporter(fset *token.FileSet) types.Importer {
+	return importer.ForCompiler(fset, "gc", func(importPath string) (io.ReadCloser, error) {
+		command := exec.Command("go", "list", "-export", "-f", "{{.Export}}", importPath)
+		command.Env = append(os.Environ(), "GOPROXY=off")
+		output, err := command.Output()
+		if err != nil {
+			return nil, fmt.Errorf("resolve import %q: %w", importPath, err)
+		}
+		exportPath := strings.TrimSpace(string(output))
+		if exportPath == "" {
+			return nil, fmt.Errorf("resolve import %q: go list returned no export data", importPath)
+		}
+		return os.Open(exportPath)
+	})
+}
+
 func (x *extractor) collectConstants(decl *ast.GenDecl) {
 	for _, spec := range decl.Specs {
 		vs := spec.(*ast.ValueSpec)
@@ -419,8 +450,9 @@ func (x *extractor) isClientType(t types.Type) bool {
 	if t == nil {
 		return false
 	}
+	t = types.Unalias(t)
 	if pointer, ok := t.(*types.Pointer); ok {
-		t = pointer.Elem()
+		t = types.Unalias(pointer.Elem())
 	}
 	named, ok := t.(*types.Named)
 	return ok && named.Obj() != nil && named.Obj().Name() == "Client" && named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == "github.com/nicholas-cecere/terraform-provider-litellm/internal/provider"
@@ -631,6 +663,308 @@ func (x *extractor) rawHTTPAliases(fn *ast.FuncDecl) map[string]string {
 		return true
 	})
 	return aliases
+}
+
+func isInterfaceType(t types.Type) bool {
+	if t == nil {
+		return false
+	}
+	_, ok := t.Underlying().(*types.Interface)
+	return ok
+}
+
+func (x *extractor) isClientTransportObject(object types.Object) bool {
+	function, ok := object.(*types.Func)
+	if !ok || function.Type().(*types.Signature).Recv() == nil {
+		return false
+	}
+	return x.isClientType(function.Type().(*types.Signature).Recv().Type()) && clientRequestMethods[function.Name()] != 0
+}
+
+func (x *extractor) isNetHTTPTransportObject(object types.Object) bool {
+	if object == nil || object.Pkg() == nil || object.Pkg().Path() != "net/http" {
+		return false
+	}
+	function, ok := object.(*types.Func)
+	if !ok {
+		return false
+	}
+	if function.Type().(*types.Signature).Recv() == nil {
+		return map[string]bool{
+			"NewRequest": true, "NewRequestWithContext": true, "Get": true,
+			"Post": true, "PostForm": true, "Head": true,
+		}[function.Name()]
+	}
+	receiver := function.Type().(*types.Signature).Recv().Type()
+	if pointer, ok := receiver.(*types.Pointer); ok {
+		receiver = pointer.Elem()
+	}
+	named, _ := receiver.(*types.Named)
+	if named == nil || named.Obj() == nil {
+		return false
+	}
+	return function.Name() == "RoundTrip" ||
+		(named.Obj().Name() == "Client" && map[string]bool{"Get": true, "Post": true, "PostForm": true, "Head": true, "Do": true}[function.Name()])
+}
+
+func (x *extractor) isDirectCall(selector *ast.SelectorExpr, parents map[ast.Node]ast.Node) bool {
+	call, ok := parents[selector].(*ast.CallExpr)
+	return ok && call.Fun == selector
+}
+
+func (x *extractor) validateStrictSourcePolicy() error {
+	var problems []string
+	for path, file := range x.files {
+		parents := map[ast.Node]ast.Node{}
+		ast.Inspect(file, func(node ast.Node) bool {
+			if node == nil {
+				return false
+			}
+			ast.Inspect(node, func(child ast.Node) bool {
+				if child != nil && child != node {
+					if _, exists := parents[child]; !exists {
+						parents[child] = node
+					}
+					return false
+				}
+				return true
+			})
+			return true
+		})
+		base := filepath.Base(path)
+		for _, declaration := range file.Decls {
+			fn, ok := declaration.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			ast.Inspect(fn.Body, func(node ast.Node) bool {
+				switch item := node.(type) {
+				case *ast.SelectorExpr:
+					selection := x.typesInfo.Selections[item]
+					object := x.typesInfo.Uses[item.Sel]
+					if object == nil && selection != nil {
+						object = selection.Obj()
+					}
+					position := x.fset.Position(item.Pos())
+					if x.isNetHTTPTransportObject(object) {
+						approved := x.isDirectCall(item, parents) && receiverTypeName(fn) == "Client" &&
+							((fn.Name.Name == "prepareRequest" && object.Name() == "NewRequestWithContext") ||
+								(fn.Name.Name == "executeRequestWithOptions" && object.Name() == "Do"))
+						if !approved {
+							problems = append(problems, fmt.Sprintf("%s:%d: raw net/http transport reference is not an exact reviewed Client implementation call", base, position.Line))
+						}
+					}
+					if selection != nil && x.isClientTransportObject(selection.Obj()) {
+						if !x.isClientType(selection.Recv()) {
+							problems = append(problems, fmt.Sprintf("%s:%d: Client transport calls require an exact Client receiver; embedding and promotion are forbidden", base, position.Line))
+						} else if !x.isDirectCall(item, parents) {
+							problems = append(problems, fmt.Sprintf("%s:%d: Client transport methods may not be used as values", base, position.Line))
+						}
+					}
+				case *ast.AssignStmt:
+					for index, right := range item.Rhs {
+						if index < len(item.Lhs) && x.isClientType(x.typesInfo.TypeOf(right)) && isInterfaceType(x.typesInfo.TypeOf(item.Lhs[index])) {
+							position := x.fset.Position(right.Pos())
+							problems = append(problems, fmt.Sprintf("%s:%d: Client-to-interface assignment is forbidden", base, position.Line))
+						}
+					}
+				case *ast.DeclStmt:
+					general, ok := item.Decl.(*ast.GenDecl)
+					if !ok {
+						break
+					}
+					for _, specification := range general.Specs {
+						values, ok := specification.(*ast.ValueSpec)
+						if !ok || values.Type == nil || !isInterfaceType(x.typesInfo.TypeOf(values.Type)) {
+							continue
+						}
+						for _, right := range values.Values {
+							if x.isClientType(x.typesInfo.TypeOf(right)) {
+								position := x.fset.Position(right.Pos())
+								problems = append(problems, fmt.Sprintf("%s:%d: Client-to-interface assignment is forbidden", base, position.Line))
+							}
+						}
+					}
+				case *ast.ReturnStmt:
+					function, _ := x.typesInfo.Defs[fn.Name].(*types.Func)
+					if function != nil {
+						signature := function.Type().(*types.Signature)
+						for index, result := range item.Results {
+							if index < signature.Results().Len() && x.isClientType(x.typesInfo.TypeOf(result)) && isInterfaceType(signature.Results().At(index).Type()) {
+								position := x.fset.Position(result.Pos())
+								problems = append(problems, fmt.Sprintf("%s:%d: returning Client as an interface is forbidden", base, position.Line))
+							}
+						}
+					}
+				case *ast.CallExpr:
+					if len(item.Args) == 1 && x.typesInfo.Types[item.Fun].IsType() && isInterfaceType(x.typesInfo.TypeOf(item)) && x.isClientType(x.typesInfo.TypeOf(item.Args[0])) {
+						position := x.fset.Position(item.Pos())
+						problems = append(problems, fmt.Sprintf("%s:%d: Client-to-interface conversion is forbidden", base, position.Line))
+					}
+					signature, _ := x.typesInfo.TypeOf(item.Fun).(*types.Signature)
+					if signature != nil {
+						for index, argument := range item.Args {
+							parameterIndex := index
+							if signature.Variadic() && parameterIndex >= signature.Params().Len()-1 {
+								parameterIndex = signature.Params().Len() - 1
+							}
+							var parameterType types.Type
+							if parameterIndex >= 0 && parameterIndex < signature.Params().Len() {
+								parameterType = signature.Params().At(parameterIndex).Type()
+								if signature.Variadic() && parameterIndex == signature.Params().Len()-1 {
+									parameterType = parameterType.(*types.Slice).Elem()
+								}
+							}
+							if x.isClientType(x.typesInfo.TypeOf(argument)) && isInterfaceType(parameterType) {
+								position := x.fset.Position(argument.Pos())
+								problems = append(problems, fmt.Sprintf("%s:%d: passing Client to an interface parameter is forbidden", base, position.Line))
+							}
+						}
+					}
+					queryHelpers := map[string]bool{
+						"endpointWithQuery": true, "cloneURLValues": true, "safeListDiagnostic": true,
+						"addKnownStringFilter": true, "listKeys": true, "listUsers": true,
+					}
+					for _, argument := range item.Args {
+						if !x.isURLValuesExpr(argument) {
+							continue
+						}
+						object := calledFunctionObject(x.typesInfo, item.Fun)
+						if _, builtin := object.(*types.Builtin); builtin {
+							continue
+						}
+						_, isFunction := object.(*types.Func)
+						approved := isFunction && object.Pkg() != nil && object.Pkg().Path() == "github.com/nicholas-cecere/terraform-provider-litellm/internal/provider" && queryHelpers[object.Name()]
+						if !approved {
+							position := x.fset.Position(argument.Pos())
+							problems = append(problems, fmt.Sprintf("%s:%d: url.Values may only be passed to an exact reviewed query helper", base, position.Line))
+						}
+					}
+					if callName(item.Fun) == "addKnownStringFilter" {
+						object := calledFunctionObject(x.typesInfo, item.Fun)
+						if object == nil || object.Pkg() == nil || object.Pkg().Path() != "github.com/nicholas-cecere/terraform-provider-litellm/internal/provider" || len(item.Args) < 2 {
+							position := x.fset.Position(item.Pos())
+							problems = append(problems, fmt.Sprintf("%s:%d: unresolved reviewed query helper call", base, position.Line))
+						} else if _, literal := stringLiteral(item.Args[1]); !literal {
+							position := x.fset.Position(item.Args[1].Pos())
+							problems = append(problems, fmt.Sprintf("%s:%d: reviewed query helper requires a literal key", base, position.Line))
+						}
+					}
+					selector, ok := item.Fun.(*ast.SelectorExpr)
+					if ok && (selector.Sel.Name == "Set" || selector.Sel.Name == "Add") && x.isURLValuesExpr(selector.X) && len(item.Args) > 0 {
+						if _, literal := stringLiteral(item.Args[0]); !literal && fn.Name.Name != "addKnownStringFilter" {
+							position := x.fset.Position(item.Args[0].Pos())
+							problems = append(problems, fmt.Sprintf("%s:%d: dynamic url.Values Set/Add key is forbidden", base, position.Line))
+						}
+					}
+				case *ast.CompositeLit:
+					switch compositeType := x.typesInfo.TypeOf(item).Underlying().(type) {
+					case *types.Slice:
+						if isInterfaceType(compositeType.Elem()) {
+							for _, element := range item.Elts {
+								if x.isClientType(x.typesInfo.TypeOf(element)) {
+									position := x.fset.Position(element.Pos())
+									problems = append(problems, fmt.Sprintf("%s:%d: storing Client in an interface collection is forbidden", base, position.Line))
+								}
+							}
+						}
+					case *types.Map:
+						if isInterfaceType(compositeType.Elem()) {
+							for _, element := range item.Elts {
+								if pair, ok := element.(*ast.KeyValueExpr); ok && x.isClientType(x.typesInfo.TypeOf(pair.Value)) {
+									position := x.fset.Position(pair.Value.Pos())
+									problems = append(problems, fmt.Sprintf("%s:%d: storing Client in an interface collection is forbidden", base, position.Line))
+								}
+							}
+						}
+					case *types.Struct:
+						for index, element := range item.Elts {
+							valueExpression := ast.Expr(element)
+							fieldIndex := index
+							if pair, keyed := element.(*ast.KeyValueExpr); keyed {
+								valueExpression = pair.Value
+								fieldIndex = -1
+								if name, ok := pair.Key.(*ast.Ident); ok {
+									for candidate := 0; candidate < compositeType.NumFields(); candidate++ {
+										if compositeType.Field(candidate).Name() == name.Name {
+											fieldIndex = candidate
+											break
+										}
+									}
+								}
+							}
+							if fieldIndex >= 0 && fieldIndex < compositeType.NumFields() && isInterfaceType(compositeType.Field(fieldIndex).Type()) && x.isClientType(x.typesInfo.TypeOf(valueExpression)) {
+								position := x.fset.Position(valueExpression.Pos())
+								problems = append(problems, fmt.Sprintf("%s:%d: storing Client in an interface field is forbidden", base, position.Line))
+							}
+						}
+					}
+					if x.isURLValuesExpr(item) {
+						for _, element := range item.Elts {
+							if pair, ok := element.(*ast.KeyValueExpr); ok {
+								if _, literal := stringLiteral(pair.Key); !literal {
+									position := x.fset.Position(pair.Key.Pos())
+									problems = append(problems, fmt.Sprintf("%s:%d: dynamic url.Values literal key is forbidden", base, position.Line))
+								}
+							}
+						}
+					}
+				case *ast.Ident:
+					object := x.typesInfo.Uses[item]
+					parentSelector, selectorIdentifier := parents[item].(*ast.SelectorExpr)
+					if x.isNetHTTPTransportObject(object) && (!selectorIdentifier || parentSelector.Sel != item) {
+						position := x.fset.Position(item.Pos())
+						problems = append(problems, fmt.Sprintf("%s:%d: raw net/http transport reference is not an exact reviewed Client implementation call", base, position.Line))
+					}
+					function, ok := object.(*types.Func)
+					if ok && function.Pkg() != nil && function.Pkg().Path() == "github.com/nicholas-cecere/terraform-provider-litellm/internal/provider" && function.Name() == "addKnownStringFilter" {
+						call, direct := parents[item].(*ast.CallExpr)
+						if !direct || call.Fun != item {
+							position := x.fset.Position(item.Pos())
+							problems = append(problems, fmt.Sprintf("%s:%d: reviewed query helper may not be used as a value", base, position.Line))
+						}
+					}
+				}
+				return true
+			})
+			ast.Inspect(fn.Body, func(node ast.Node) bool {
+				assignment, ok := node.(*ast.AssignStmt)
+				if !ok {
+					return true
+				}
+				for _, left := range assignment.Lhs {
+					index, ok := left.(*ast.IndexExpr)
+					if !ok || !x.isURLValuesExpr(index.X) {
+						continue
+					}
+					if _, literal := stringLiteral(index.Index); !literal && fn.Name.Name != "cloneURLValues" {
+						position := x.fset.Position(index.Index.Pos())
+						problems = append(problems, fmt.Sprintf("%s:%d: dynamic url.Values index key is forbidden", base, position.Line))
+					}
+				}
+				return true
+			})
+		}
+	}
+	if len(problems) != 0 {
+		sort.Strings(problems)
+		return errors.New(strings.Join(problems, "\n"))
+	}
+	return nil
+}
+
+func calledFunctionObject(info *types.Info, expression ast.Expr) types.Object {
+	switch item := expression.(type) {
+	case *ast.Ident:
+		return info.Uses[item]
+	case *ast.SelectorExpr:
+		if selection := info.Selections[item]; selection != nil {
+			return selection.Obj()
+		}
+		return info.Uses[item.Sel]
+	default:
+		return nil
+	}
 }
 
 func (x *extractor) validateClientTransport() error {
@@ -1237,7 +1571,7 @@ func stringLiteral(expr ast.Expr) (string, bool) {
 	return constant.StringVal(v), true
 }
 func (x *extractor) isURLValuesExpr(expr ast.Expr) bool {
-	t := x.typesInfo.TypeOf(expr)
+	t := types.Unalias(x.typesInfo.TypeOf(expr))
 	named, ok := t.(*types.Named)
 	return ok && named.Obj() != nil && named.Obj().Name() == "Values" && named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == "net/url"
 }

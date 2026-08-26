@@ -2521,7 +2521,7 @@
       "path": "/v1/indexes"
     },
     {
-      "category": "inference_workload",
+      "category": "vector_store_management",
       "method": "POST",
       "path": "/v1/indexes"
     },

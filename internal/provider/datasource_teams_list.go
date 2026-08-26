@@ -104,7 +104,7 @@ func (d *TeamsListDataSource) Configure(ctx context.Context, req datasource.Conf
 		return
 	}
 
-	client, ok := req.ProviderData.(*Client)
+	client, ok := configuredClient(req.ProviderData)
 	if !ok {
 		resp.Diagnostics.AddError(
 			"Unexpected Data Source Configure Type",

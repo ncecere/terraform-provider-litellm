@@ -1,10 +1,10 @@
 {
   "classification": {
-    "excluded_non_durable": 505,
+    "excluded_non_durable": 504,
     "operation_count": 698,
     "path": "internal/contract/reviewed-operation-classification.json",
-    "sha256": "cd1159929111e499b029e200fa784f922549d3bf3ce1d4f41fd23cb585f435ab",
-    "unsupported_durable": 193
+    "sha256": "fca72e8a35ca5a8f30db1e8f9ba253e87352443856bdd0def9971ef507b53478",
+    "unsupported_durable": 194
   },
   "generation_command": "make contract-update LITELLM_SOURCE=../litellm",
   "openapi": {

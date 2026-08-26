@@ -73,7 +73,7 @@ func (d *CredentialDataSource) Configure(ctx context.Context, req datasource.Con
 	if req.ProviderData == nil {
 		return
 	}
-	client, ok := req.ProviderData.(*Client)
+	client, ok := configuredClient(req.ProviderData)
 	if !ok {
 		resp.Diagnostics.AddError("Unexpected Data Source Configure Type", fmt.Sprintf("Expected *Client, got: %T.", req.ProviderData))
 		return

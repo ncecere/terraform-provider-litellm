@@ -1,15 +1,15 @@
 {
   "artifacts": {
     "classification": {
-      "excluded_non_durable_count": 505,
+      "excluded_non_durable_count": 504,
       "operation_count": 698,
       "path": "internal/contract/reviewed-operation-classification.json",
-      "sha256": "cd1159929111e499b029e200fa784f922549d3bf3ce1d4f41fd23cb585f435ab",
-      "unsupported_durable_count": 193
+      "sha256": "fca72e8a35ca5a8f30db1e8f9ba253e87352443856bdd0def9971ef507b53478",
+      "unsupported_durable_count": 194
     },
     "manifest": {
       "path": "internal/contract/manifest.json",
-      "sha256": "2202dc9a2c40a45c007dd1718d1ee696a39626d42666c21feea97814f38dee50"
+      "sha256": "721d91f95c54c469981200f0beea41c4be85548566e7bbd98db5db2a98821f33"
     },
     "openapi": {
       "operation_count": 800,

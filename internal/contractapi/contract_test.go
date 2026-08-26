@@ -120,17 +120,19 @@ func TestExtractionCoversReviewedSpecialRoutes(t *testing.T) {
 
 func TestExtractorRejectsUnresolvedAndRawHTTP(t *testing.T) {
 	dir := t.TempDir()
+	writeHTTPFixtureSupport(t, dir)
 	writeFixture(t, dir, "bad.go", `package provider
 import ("context"; "net/http")
+func externalBuilder() string { return "" }
 func bad(ctx context.Context, c *Client) {
  endpoint := externalBuilder()
  c.DoRequestWithResponse(ctx, http.MethodGet, endpoint, nil, nil)
- http.NewRequest(http.MethodGet, endpoint, nil)
- http.Get(endpoint)
+ _, _ = http.NewRequest(http.MethodGet, endpoint, nil)
+ _, _ = http.Get(endpoint)
 }
 `)
 	_, err := ExtractProvider(dir)
-	if err == nil || !strings.Contains(err.Error(), "unresolved HTTP") || !strings.Contains(err.Error(), "raw HTTP request construction") {
+	if err == nil || !strings.Contains(err.Error(), "raw net/http transport reference") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -138,9 +140,9 @@ func bad(ctx context.Context, c *Client) {
 func TestExtractorRejectsUnknownClientHTTPAbstraction(t *testing.T) {
 	t.Run("direct", func(t *testing.T) {
 		dir := t.TempDir()
+		writeHTTPFixtureSupport(t, dir)
 		writeFixture(t, dir, "client.go", `package provider
 import "context"
-type Client struct{}
 func (c *Client) Sneaky(ctx context.Context, path string) error {
  return c.DoRequestWithResponse(ctx, "GET", path, nil, nil)
 }
@@ -152,9 +154,9 @@ func (c *Client) Sneaky(ctx context.Context, path string) error {
 	})
 	t.Run("through-free-wrapper", func(t *testing.T) {
 		dir := t.TempDir()
+		writeHTTPFixtureSupport(t, dir)
 		writeFixture(t, dir, "client.go", `package provider
 import "context"
-type Client struct{}
 func transport(ctx context.Context, client *Client, path string) error {
  return client.DoRequestWithResponse(ctx, "GET", path, nil, nil)
 }
@@ -173,9 +175,9 @@ func (c *Client) Sneaky(ctx context.Context, path string) error {
 func TestExtractorRejectsUnknownWrapperAndDynamicQuery(t *testing.T) {
 	t.Run("wrapper", func(t *testing.T) {
 		dir := t.TempDir()
+		writeHTTPFixtureSupport(t, dir)
 		writeFixture(t, dir, "wrapper.go", `package provider
 import "context"
-type Client struct{}
 func wrapper(ctx context.Context, client *Client, requestPath string) error {
  return client.DoRequestWithResponse(ctx, "GET", requestPath, nil, nil)
 }
@@ -187,9 +189,9 @@ func wrapper(ctx context.Context, client *Client, requestPath string) error {
 	})
 	t.Run("query-name", func(t *testing.T) {
 		dir := t.TempDir()
+		writeHTTPFixtureSupport(t, dir)
 		writeFixture(t, dir, "query.go", `package provider
 import ("context"; "net/url")
-type Client struct{}
 func request(ctx context.Context, client *Client, queryName string) error {
  query := url.Values{}
  query.Set(queryName, "value")
@@ -197,7 +199,7 @@ func request(ctx context.Context, client *Client, queryName string) error {
 }
 `)
 		_, err := ExtractProvider(dir)
-		if err == nil || !strings.Contains(err.Error(), "unresolved dynamic HTTP path or query name") {
+		if err == nil || !strings.Contains(err.Error(), "dynamic url.Values") {
 			t.Fatalf("dynamic query name was accepted: %v", err)
 		}
 	})
@@ -207,7 +209,6 @@ func TestExtractorRejectsClientAliasesAndMethodValues(t *testing.T) {
 	fixtures := map[string]string{
 		"receiver-alias": `package provider
 import "context"
-type Client struct{}
 func bad(ctx context.Context, c *Client, endpoint string) {
  alias := c
  alias.DoRequestWithResponse(ctx, "GET", endpoint, nil, nil)
@@ -235,10 +236,185 @@ func bad(ctx context.Context, c *Client, endpoint string) {
 	for name, fixture := range fixtures {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
+			if name == "receiver-alias" {
+				writeHTTPFixtureSupport(t, dir)
+			}
 			writeFixture(t, dir, "bad.go", fixture)
 			_, err := ExtractProvider(dir)
-			if err == nil || (!strings.Contains(err.Error(), "unresolved HTTP method or path") && !strings.Contains(err.Error(), "unresolved dynamic HTTP path or query name")) {
-				t.Fatalf("aliased Client transport escaped extraction: %v", err)
+			if err == nil {
+				t.Fatalf("aliased Client transport escaped extraction")
+			}
+		})
+	}
+}
+
+func TestStrictHTTPPolicyRejectsTypeCorrectBypasses(t *testing.T) {
+	type fixture struct {
+		files map[string]string
+		want  string
+	}
+	fixtures := map[string]fixture{
+		"method-value-in-client-go": {files: map[string]string{"client.go": `package provider
+import "context"
+func invokeTransport(operation func(context.Context, string, string, any, any) error) {}
+func (c *Client) passTransport() { invokeTransport(c.DoRequestWithResponse) }
+`}, want: "Client transport methods may not be used as values"},
+		"package-client-alias": {files: map[string]string{"bad.go": `package provider
+import "context"
+type ProviderClient = Client
+func badAlias(c *ProviderClient) { operation := c.DoRequestWithResponse; _ = operation; _ = context.Background() }
+`}, want: "Client transport methods may not be used as values"},
+		"method-value-return": {files: map[string]string{"bad.go": `package provider
+import "context"
+func returnTransport(c *Client) func(context.Context, string, string, any, any) error { return c.DoRequestWithResponse }
+`}, want: "Client transport methods may not be used as values"},
+		"nested-higher-order": {files: map[string]string{"bad.go": `package provider
+import "context"
+type operation func(context.Context, string, string, any, any) error
+func outer(value operation) operation { return value }
+func inner(value operation) operation { return value }
+func badNested(c *Client) { _ = outer(inner(c.DoRequestWithResponse)) }
+`}, want: "Client transport methods may not be used as values"},
+		"cross-file-higher-order": {files: map[string]string{
+			"pass.go": `package provider
+import "context"
+type requestOperation func(context.Context, string, string, any, any) error
+func pass(operation requestOperation) requestOperation { return operation }
+`,
+			"use.go": `package provider
+func badCrossFile(c *Client) { _ = pass(c.DoRequestWithResponse) }
+`,
+		}, want: "Client transport methods may not be used as values"},
+		"client-interface-assignment": {files: map[string]string{"bad.go": `package provider
+import "context"
+type requester interface { DoRequestWithResponse(context.Context, string, string, any, any) error }
+func badInterface(ctx context.Context, c *Client) error { var transport requester = c; return transport.DoRequestWithResponse(ctx, "GET", "/hidden", nil, nil) }
+`}, want: "Client-to-interface assignment is forbidden"},
+		"client-interface-conversion": {files: map[string]string{"bad.go": `package provider
+import "context"
+type requester interface { DoRequestWithResponse(context.Context, string, string, any, any) error }
+func badConversion(ctx context.Context, c *Client) error { transport := requester(c); return transport.DoRequestWithResponse(ctx, "GET", "/hidden", nil, nil) }
+`}, want: "Client-to-interface conversion is forbidden"},
+		"client-interface-parameter": {files: map[string]string{"bad.go": `package provider
+import "context"
+type requester interface { DoRequestWithResponse(context.Context, string, string, any, any) error }
+func callRequester(ctx context.Context, transport requester) error { return transport.DoRequestWithResponse(ctx, "GET", "/hidden", nil, nil) }
+func badParameter(ctx context.Context, c *Client) error { return callRequester(ctx, c) }
+`}, want: "passing Client to an interface parameter is forbidden"},
+		"client-interface-return": {files: map[string]string{"bad.go": `package provider
+import "context"
+type requester interface { DoRequestWithResponse(context.Context, string, string, any, any) error }
+func badReturn(c *Client) requester { return c }
+`}, want: "returning Client as an interface is forbidden"},
+		"client-interface-field": {files: map[string]string{"bad.go": `package provider
+import "context"
+type requester interface { DoRequestWithResponse(context.Context, string, string, any, any) error }
+type holder struct { transport requester }
+func badField(c *Client) holder { return holder{transport: c} }
+`}, want: "storing Client in an interface field is forbidden"},
+		"promoted-client-transport": {files: map[string]string{"bad.go": `package provider
+import "context"
+type wrappedClient struct { *Client }
+func badPromoted(ctx context.Context, c *wrappedClient) error { return c.DoRequestWithResponse(ctx, "GET", "/hidden", nil, nil) }
+`}, want: "embedding and promotion are forbidden"},
+		"raw-function-value": {files: map[string]string{"bad.go": `package provider
+import h "net/http"
+func badRawValue() { operation := h.Get; _ = operation }
+`}, want: "raw net/http transport reference"},
+		"embedded-promoted-do": {files: map[string]string{"bad.go": `package provider
+import h "net/http"
+type wrapper struct { *h.Client }
+func badEmbedded(value *wrapper, request *h.Request) { _, _ = value.Do(request) }
+`}, want: "raw net/http transport reference"},
+	}
+	for name, fixture := range fixtures {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeHTTPFixtureSupport(t, dir)
+			for filename, contents := range fixture.files {
+				writeFixture(t, dir, filename, contents)
+			}
+			_, err := ExtractProvider(dir)
+			if err == nil || !strings.Contains(err.Error(), fixture.want) {
+				t.Fatalf("strict HTTP policy bypass was accepted: %v", err)
+			}
+		})
+	}
+}
+
+func TestExtractorRejectsIncompletePackages(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir, "bad.go", `package provider
+func bad() { missing() }
+`)
+	_, err := ExtractProvider(dir)
+	if err == nil || !strings.Contains(err.Error(), "complete type-correct package") || !strings.Contains(err.Error(), "undefined: missing") {
+		t.Fatalf("missing type information was accepted: %v", err)
+	}
+}
+
+func TestStrictQueryPolicyRejectsHelperAndCrossFileMutation(t *testing.T) {
+	fixtures := map[string]map[string]string{
+		"set-helper": {"bad.go": `package provider
+import "net/url"
+func addFilter(query url.Values, key string) { query.Set(key, "value") }
+func bad(query url.Values, key string) { addFilter(query, key) }
+`},
+		"add-helper": {"bad.go": `package provider
+import "net/url"
+func addFilter(query url.Values, key string) { query.Add(key, "value") }
+func bad(query url.Values, key string) { addFilter(query, key) }
+`},
+		"index-helper": {"bad.go": `package provider
+import "net/url"
+func addFilter(query url.Values, key string) { query[key] = []string{"value"} }
+func bad(query url.Values, key string) { addFilter(query, key) }
+`},
+		"alias-helper": {"bad.go": `package provider
+import "net/url"
+func addFilter(query url.Values, key string) { query.Set(key, "value") }
+func bad(query url.Values, key string) { mutate := addFilter; mutate(query, key) }
+`},
+		"alias-fixed-helper": {"bad.go": `package provider
+import "net/url"
+func addFilter(query url.Values) { query.Set("hidden", "value") }
+func bad(query url.Values) { mutate := addFilter; mutate(query) }
+`},
+		"return-helper": {"bad.go": `package provider
+import "net/url"
+func addFilter(query url.Values, key string) url.Values { query.Set(key, "value"); return query }
+func bad(query url.Values, key string) { _ = addFilter(query, key) }
+`},
+		"package-values-alias": {"bad.go": `package provider
+import "net/url"
+type Query = url.Values
+func bad(query Query, key string) { query.Add(key, "value") }
+`},
+		"fixed-unknown-helper": {"bad.go": `package provider
+import "net/url"
+func mutate(query url.Values) { query.Set("hidden", "value") }
+func bad(query url.Values) { mutate(query) }
+`},
+		"cross-file": {
+			"mutate.go": `package provider
+import "net/url"
+func mutateCrossFile(query url.Values, key string) { query.Set(key, "value") }
+`,
+			"use.go": `package provider
+import "net/url"
+func badCrossFileQuery(query url.Values, key string) { mutateCrossFile(query, key) }
+`,
+		},
+	}
+	for name, files := range fixtures {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			for filename, contents := range files {
+				writeFixture(t, dir, filename, contents)
+			}
+			_, err := ExtractProvider(dir)
+			if err == nil || (!strings.Contains(err.Error(), "dynamic url.Values") && !strings.Contains(err.Error(), "exact reviewed query helper")) {
+				t.Fatalf("query mutation bypass was accepted: %v", err)
 			}
 		})
 	}
@@ -255,7 +431,7 @@ func bad(endpoint string) {
 }
 `)
 		_, err := ExtractProvider(dir)
-		if err == nil || !strings.Contains(err.Error(), "raw HTTP request construction") {
+		if err == nil || !strings.Contains(err.Error(), "raw net/http transport reference") {
 			t.Fatalf("aliased net/http call escaped detection: %v", err)
 		}
 	})
@@ -265,16 +441,16 @@ func bad(endpoint string) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
+			writeHTTPFixtureSupport(t, dir)
 			writeFixture(t, dir, "bad.go", `package provider
 import ("context"; "net/url")
-type Client struct{}
 func bad(ctx context.Context, c *Client, name string) {
  `+mutation+`
  c.DoRequestWithResponse(ctx, "GET", endpointWithQuery("/things", query), nil, nil)
 }
 `)
 			_, err := ExtractProvider(dir)
-			if err == nil || !strings.Contains(err.Error(), "unresolved dynamic HTTP path or query name") {
+			if err == nil || !strings.Contains(err.Error(), "dynamic url.Values") {
 				t.Fatalf("dynamic url.Values key escaped detection: %v", err)
 			}
 		})
@@ -347,6 +523,39 @@ func TestManifestPinnedMetadataCountsAndReviewInventory(t *testing.T) {
 	}
 	if pins.Upstream.UV != "0.12.6" || pins.Artifacts.ProviderGolden.OperationCount != 103 || pins.Artifacts.Classification.OperationCount != 698 || len(pins.LazyFeatures) != 33 {
 		t.Fatalf("reviewed pins changed unexpectedly: artifacts=%+v lazy=%d", pins.Artifacts, len(pins.LazyFeatures))
+	}
+}
+
+func TestReviewedAdjacentIndexAndV1BetaClassifications(t *testing.T) {
+	root := repositoryRoot(t)
+	var classification ReviewedClassification
+	if err := readJSONFile(filepath.Join(root, "internal", "contract", "reviewed-operation-classification.json"), &classification); err != nil {
+		t.Fatal(err)
+	}
+	actual := map[string]string{}
+	for _, operation := range classification.Operations {
+		actual[operation.Method+" "+operation.Path] = operation.Category
+	}
+	want := map[string]string{
+		"GET /v1/indexes":                                        "vector_store_management",
+		"POST /v1/indexes":                                       "vector_store_management",
+		"GET /v1beta/agents":                                     "agent_prompt_tool_management",
+		"POST /v1beta/agents":                                    "agent_prompt_tool_management",
+		"DELETE /v1beta/agents/{name}":                           "agent_prompt_tool_management",
+		"GET /v1beta/agents/{name}":                              "agent_prompt_tool_management",
+		"GET /v1beta/agents/{name}/versions":                     "agent_prompt_tool_management",
+		"POST /v1beta/interactions":                              "inference_workload",
+		"DELETE /v1beta/interactions/{interaction_id}":           "inference_workload",
+		"GET /v1beta/interactions/{interaction_id}":              "inference_workload",
+		"POST /v1beta/interactions/{interaction_id}/cancel":      "operational_action",
+		"POST /v1beta/models/{model_name}:countTokens":           "inference_workload",
+		"POST /v1beta/models/{model_name}:generateContent":       "inference_workload",
+		"POST /v1beta/models/{model_name}:streamGenerateContent": "inference_workload",
+	}
+	for operation, category := range want {
+		if actual[operation] != category {
+			t.Errorf("%s category = %q, want %q", operation, actual[operation], category)
+		}
 	}
 }
 
@@ -607,6 +816,19 @@ func TestStaleManifestEntryFails(t *testing.T) {
 	if diff := compareInventory(actual, want); !strings.Contains(diff, "parameters stale") {
 		t.Fatalf("stale path parameters were not detected: %q", diff)
 	}
+}
+
+func writeHTTPFixtureSupport(t *testing.T, dir string) {
+	t.Helper()
+	writeFixture(t, dir, "support.go", `package provider
+import (
+ "context"
+ "net/url"
+)
+type Client struct{}
+func (*Client) DoRequestWithResponse(context.Context, string, string, any, any) error { return nil }
+func endpointWithQuery(path string, values url.Values) string { return path + "?" + values.Encode() }
+`)
 }
 
 func writeFixture(t *testing.T, dir, name, content string) {

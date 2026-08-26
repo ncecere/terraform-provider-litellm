@@ -87,7 +87,7 @@ func (d *SearchToolsListDataSource) Configure(ctx context.Context, req datasourc
 		return
 	}
 
-	client, ok := req.ProviderData.(*Client)
+	client, ok := configuredClient(req.ProviderData)
 	if !ok {
 		resp.Diagnostics.AddError(
 			"Unexpected Data Source Configure Type",

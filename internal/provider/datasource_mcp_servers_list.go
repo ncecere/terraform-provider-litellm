@@ -123,7 +123,7 @@ func (d *MCPServersListDataSource) Configure(ctx context.Context, req datasource
 		return
 	}
 
-	client, ok := req.ProviderData.(*Client)
+	client, ok := configuredClient(req.ProviderData)
 	if !ok {
 		resp.Diagnostics.AddError(
 			"Unexpected Data Source Configure Type",

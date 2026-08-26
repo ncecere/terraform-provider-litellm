@@ -99,7 +99,7 @@ func (r *FallbackResource) Configure(ctx context.Context, req resource.Configure
 	if req.ProviderData == nil {
 		return
 	}
-	client, ok := req.ProviderData.(*Client)
+	client, ok := configuredClient(req.ProviderData)
 	if !ok {
 		resp.Diagnostics.AddError(
 			"Unexpected Resource Configure Type",
