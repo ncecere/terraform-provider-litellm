@@ -561,7 +561,7 @@ func TestMCPServerUpgradeStateV0ToV1ExtraHeadersMapToList(t *testing.T) {
 	}
 }
 
-func TestReadMCPServerResolvesUnknownNestedToolCostMap(t *testing.T) {
+func TestReadMCPServerPreservesUnknownNestedToolCostMapOnAPIOmission(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -603,8 +603,8 @@ func TestReadMCPServerResolvesUnknownNestedToolCostMap(t *testing.T) {
 	if data.MCPInfo == nil || data.MCPInfo.MCPServerCostInfo == nil {
 		t.Fatal("mcp_info.mcp_server_cost_info should be present after read")
 	}
-	if data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery.IsUnknown() {
-		t.Fatal("tool_name_to_cost_per_query should be known after read")
+	if !data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery.IsUnknown() {
+		t.Fatal("API omission must preserve the prior tool_name_to_cost_per_query value")
 	}
 }
 

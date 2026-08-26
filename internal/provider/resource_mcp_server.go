@@ -395,8 +395,9 @@ func (r *MCPServerResource) ModifyPlan(ctx context.Context, req resource.ModifyP
 		return
 	}
 
-	var plan MCPServerResourceModel
+	var plan, config MCPServerResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -428,6 +429,75 @@ func (r *MCPServerResource) ModifyPlan(ctx context.Context, req resource.ModifyP
 			"Unsupported Deprecated MCP Configuration",
 			"LiteLLM v1.98 does not accept this compatibility field. A historical true value may remain unchanged, but a new or changed true value is unsafe.",
 		)
+	}
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	prior, privateDiags := readMCPInfoProvenance(ctx, req.Private)
+	resp.Diagnostics.Append(privateDiags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	candidate := deriveMCPInfoPlanProvenance(prior, config, state)
+
+	// Optional mcp_info is null in Terraform's real ProposedNewState when HCL
+	// omits it. Preserve only exact API-owned numeric leaves; never copy sibling
+	// strings or infer ownership from the shell itself.
+	planInfoChanged := false
+	if hasState && config.MCPInfo == nil && len(candidate.API) > 0 && state.MCPInfo != nil && state.MCPInfo.MCPServerCostInfo != nil {
+		if plan.MCPInfo == nil {
+			plan.MCPInfo = &MCPInfoModel{}
+			planInfoChanged = true
+		}
+		if plan.MCPInfo.MCPServerCostInfo == nil {
+			plan.MCPInfo.MCPServerCostInfo = &MCPServerCostInfoModel{
+				DefaultCostPerQuery:    types.Float64Null(),
+				ToolNameToCostPerQuery: types.MapNull(types.Float64Type),
+			}
+			planInfoChanged = true
+		}
+		if candidate.API[mcpInfoDefaultCostLeaf] && !plan.MCPInfo.MCPServerCostInfo.DefaultCostPerQuery.Equal(state.MCPInfo.MCPServerCostInfo.DefaultCostPerQuery) {
+			plan.MCPInfo.MCPServerCostInfo.DefaultCostPerQuery = state.MCPInfo.MCPServerCostInfo.DefaultCostPerQuery
+			planInfoChanged = true
+		}
+		if candidate.API[mcpInfoToolCostsLeaf] && !plan.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery.Equal(state.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery) {
+			plan.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery = state.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery
+			planInfoChanged = true
+		}
+	}
+	if planInfoChanged {
+		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("mcp_info"), plan.MCPInfo)...)
+		// Setting one nested attribute materializes the framework's internally
+		// unknown Optional+Computed siblings. Restore only omitted siblings from
+		// prior state so the cost-shell preservation remains a true no-op.
+		for _, item := range []struct {
+			name       string
+			configured attr.Value
+			planned    attr.Value
+			prior      attr.Value
+		}{
+			{name: "mcp_access_groups", configured: config.MCPAccessGroups, planned: plan.MCPAccessGroups, prior: state.MCPAccessGroups},
+			{name: "args", configured: config.Args, planned: plan.Args, prior: state.Args},
+			{name: "env", configured: config.Env, planned: plan.Env, prior: state.Env},
+			{name: "credentials", configured: config.Credentials, planned: plan.Credentials, prior: state.Credentials},
+			{name: "allowed_tools", configured: config.AllowedTools, planned: plan.AllowedTools, prior: state.AllowedTools},
+			{name: "extra_headers", configured: config.ExtraHeaders, planned: plan.ExtraHeaders, prior: state.ExtraHeaders},
+			{name: "static_headers", configured: config.StaticHeaders, planned: plan.StaticHeaders, prior: state.StaticHeaders},
+		} {
+			if item.configured.IsNull() && item.planned.IsUnknown() && !item.prior.IsUnknown() {
+				resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root(item.name), item.prior)...)
+			}
+		}
+	}
+	if resp.Private != nil {
+		resp.Diagnostics.Append(writePendingMCPInfoProvenance(ctx, resp.Private, candidate)...)
+	}
+
+	// Provenance changes, including equal-value takeover and removal after an API
+	// null, must pass through Apply so they are committed only after confirmation.
+	if hasState && (!mcpInfoLeafSetsEqual(prior.Terraform, candidate.Terraform) || !mcpInfoLeafSetsEqual(prior.API, candidate.API)) {
+		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("id"), types.StringUnknown())...)
 	}
 }
 
@@ -511,9 +581,11 @@ func (r *MCPServerResource) Configure(ctx context.Context, req resource.Configur
 }
 
 func (r *MCPServerResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
-	var data MCPServerResourceModel
+	var data, config MCPServerResourceModel
 
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+	plannedOwnership := deriveMCPInfoPlanProvenance(mcpInfoProvenance{Terraform: mcpInfoLeafSet{}, API: mcpInfoLeafSet{}}, config, MCPServerResourceModel{})
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -548,13 +620,14 @@ func (r *MCPServerResource) Create(ctx context.Context, req resource.CreateReque
 	// failed or inconsistent read retains only the confirmed identity so the
 	// remote object remains recoverable without publishing planned endpoint data.
 	planned := data
-	if err := r.readMCPServer(ctx, &data); err != nil {
+	confirmedLeaves, _, err := r.readMCPServerWithProvenance(ctx, &data, plannedOwnership, false)
+	if err != nil {
 		partial := partialMCPServerState(serverID)
 		resp.Diagnostics.Append(resp.State.Set(ctx, &partial)...)
 		resp.Diagnostics.AddError("MCP Server Readback Not Confirmed", "LiteLLM accepted the create, but authoritative readback failed. Only the confirmed identity was retained for recovery.")
 		return
 	}
-	if mcpOwnedEndpointReadbackMismatch(&planned, &data, nil) {
+	if mcpOwnedEndpointReadbackMismatch(&planned, &data, nil) || mcpInfoReadbackMismatch(planned, data, plannedOwnership, confirmedLeaves) {
 		partial := partialMCPServerState(serverID)
 		resp.Diagnostics.Append(resp.State.Set(ctx, &partial)...)
 		resp.Diagnostics.AddError("Inconsistent MCP Endpoint Readback", "LiteLLM accepted the create but did not persist the requested endpoint or transport. Only the confirmed identity was retained for recovery.")
@@ -563,6 +636,9 @@ func (r *MCPServerResource) Create(ctx context.Context, req resource.CreateReque
 	resolveUnknownMCPServerState(&data, nil)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	if !resp.Diagnostics.HasError() && resp.Private != nil {
+		resp.Diagnostics.Append(writeMCPInfoProvenance(ctx, resp.Private, plannedOwnership)...)
+	}
 }
 
 func (r *MCPServerResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -571,37 +647,56 @@ func (r *MCPServerResource) Read(ctx context.Context, req resource.ReadRequest, 
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
 	importedMarker, privateDiags := req.Private.GetKey(ctx, numericImportedPrivateKey)
 	resp.Diagnostics.Append(privateDiags...)
+	ownership, ownershipDiags := readMCPInfoProvenance(ctx, req.Private)
+	resp.Diagnostics.Append(ownershipDiags...)
 	if resp.Diagnostics.HasError() {
+		resp.State = req.State
+		resp.Private = req.Private
 		return
 	}
 	imported := string(importedMarker) == "true"
 
-	if err := r.readMCPServerWithNumericOwnership(ctx, &data, imported); err != nil {
+	_, adoptedAPI, err := r.readMCPServerWithProvenance(ctx, &data, ownership, imported)
+	if err != nil {
 		if IsAPIErrorStatus(err, 404) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read MCP server: %s", err))
+		resp.State = req.State
+		resp.Private = req.Private
+		resp.Diagnostics.AddError("Client Error", "Unable to read MCP server because LiteLLM did not return an authoritative response. Prior public and private state was retained.")
 		return
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
-	if !resp.Diagnostics.HasError() && imported {
+	if !resp.Diagnostics.HasError() && resp.Private != nil && imported {
+		ownership.API = adoptedAPI
+		ownership.Versioned = true
+		resp.Diagnostics.Append(writeMCPInfoProvenance(ctx, resp.Private, ownership)...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, nil)...)
 	}
 }
 
 func (r *MCPServerResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var data MCPServerResourceModel
+	var data, config MCPServerResourceModel
 
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
 	if resp.Diagnostics.HasError() {
+		resp.State = req.State
+		resp.Private = req.Private
 		return
 	}
 
 	var state MCPServerResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	committed, privateDiags := readMCPInfoProvenance(ctx, req.Private)
+	resp.Diagnostics.Append(privateDiags...)
+	plannedOwnership, pendingDiags := readPendingMCPInfoProvenance(ctx, req.Private, deriveMCPInfoPlanProvenance(committed, config, state))
+	resp.Diagnostics.Append(pendingDiags...)
 	if resp.Diagnostics.HasError() {
+		resp.State = req.State
+		resp.Private = req.Private
 		return
 	}
 
@@ -611,6 +706,8 @@ func (r *MCPServerResource) Update(ctx context.Context, req resource.UpdateReque
 
 	mcpReq, err := r.buildMCPServerRequest(ctx, &data)
 	if err != nil {
+		resp.State = req.State
+		resp.Private = req.Private
 		resp.Diagnostics.AddError("Invalid MCP Numeric Map", err.Error())
 		return
 	}
@@ -624,12 +721,16 @@ func (r *MCPServerResource) Update(ctx context.Context, req resource.UpdateReque
 
 	var updateResult map[string]interface{}
 	if err := r.client.DoRequestWithResponse(ctx, "PUT", "/v1/mcp/server", mcpReq, &updateResult); err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to update MCP server: %s", err))
+		resp.State = req.State
+		resp.Private = req.Private
+		resp.Diagnostics.AddError("Client Error", "LiteLLM did not confirm the MCP server update. Prior public and private state was retained.")
 		return
 	}
 	if len(updateResult) > 0 {
 		if err := validateMCPServerResponse(updateResult, data.ServerID.ValueString()); err != nil {
-			resp.Diagnostics.AddError("Invalid Update Response", "LiteLLM accepted the MCP server update but returned a malformed required response shape. Prior state was preserved.")
+			resp.State = req.State
+			resp.Private = req.Private
+			resp.Diagnostics.AddError("Invalid Update Response", "LiteLLM accepted the MCP server update but returned a malformed required response shape. Prior public and private state was retained.")
 			return
 		}
 	}
@@ -646,17 +747,25 @@ func (r *MCPServerResource) Update(ctx context.Context, req resource.UpdateReque
 	if mcpEndpointWasCleared(state.SpecPath, planned.SpecPath) {
 		data.SpecPath = types.StringUnknown()
 	}
-	if err := r.readMCPServer(ctx, &data); err != nil {
-		resp.Diagnostics.AddError("Read Error", fmt.Sprintf("MCP server update was accepted but authoritative readback failed: %s", err))
+	confirmedLeaves, _, err := r.readMCPServerWithProvenance(ctx, &data, plannedOwnership, false)
+	if err != nil {
+		resp.State = req.State
+		resp.Private = req.Private
+		resp.Diagnostics.AddError("Read Error", "The MCP server update was accepted, but authoritative readback failed. Prior public and private state was retained.")
 		return
 	}
-	if mcpOwnedEndpointReadbackMismatch(&planned, &data, &state) {
-		resp.Diagnostics.AddError("Inconsistent MCP Endpoint Readback", "LiteLLM accepted the update but did not persist the requested endpoint or transport. Prior Terraform state was retained for recovery.")
+	if mcpOwnedEndpointReadbackMismatch(&planned, &data, &state) || mcpInfoReadbackMismatch(planned, data, plannedOwnership, confirmedLeaves) {
+		resp.State = req.State
+		resp.Private = req.Private
+		resp.Diagnostics.AddError("Inconsistent MCP Endpoint Readback", "LiteLLM accepted the update but did not confirm the requested owned values. Prior public and private state was retained for recovery.")
 		return
 	}
 	resolveUnknownMCPServerState(&data, &state)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	if !resp.Diagnostics.HasError() && resp.Private != nil {
+		resp.Diagnostics.Append(writeMCPInfoProvenance(ctx, resp.Private, plannedOwnership)...)
+	}
 }
 
 func (r *MCPServerResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
@@ -686,6 +795,7 @@ func (r *MCPServerResource) ImportState(ctx context.Context, req resource.Import
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("server_id"), req.ID)...)
 	if resp.Private != nil {
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, []byte("true"))...)
+		resp.Diagnostics.Append(writeMCPInfoProvenance(ctx, resp.Private, mcpInfoProvenance{Terraform: mcpInfoLeafSet{}, API: mcpInfoLeafSet{}, Versioned: true})...)
 	}
 }
 
@@ -916,6 +1026,37 @@ func mcpOwnedEndpointReadbackMismatch(planned, observed, previous *MCPServerReso
 	return false
 }
 
+func mcpInfoReadbackMismatch(planned, observed MCPServerResourceModel, ownership mcpInfoProvenance, confirmed mcpInfoLeafSet) bool {
+	for leaf := range ownership.Terraform {
+		if !confirmed[leaf] {
+			return true
+		}
+		switch leaf {
+		case mcpInfoServerNameLeaf:
+			if planned.MCPInfo == nil || observed.MCPInfo == nil || !planned.MCPInfo.ServerName.Equal(observed.MCPInfo.ServerName) {
+				return true
+			}
+		case mcpInfoDescriptionLeaf:
+			if planned.MCPInfo == nil || observed.MCPInfo == nil || !planned.MCPInfo.Description.Equal(observed.MCPInfo.Description) {
+				return true
+			}
+		case mcpInfoLogoURLLeaf:
+			if planned.MCPInfo == nil || observed.MCPInfo == nil || !planned.MCPInfo.LogoURL.Equal(observed.MCPInfo.LogoURL) {
+				return true
+			}
+		case mcpInfoDefaultCostLeaf:
+			if planned.MCPInfo == nil || observed.MCPInfo == nil || planned.MCPInfo.MCPServerCostInfo == nil || observed.MCPInfo.MCPServerCostInfo == nil || !planned.MCPInfo.MCPServerCostInfo.DefaultCostPerQuery.Equal(observed.MCPInfo.MCPServerCostInfo.DefaultCostPerQuery) {
+				return true
+			}
+		case mcpInfoToolCostsLeaf:
+			if planned.MCPInfo == nil || observed.MCPInfo == nil || planned.MCPInfo.MCPServerCostInfo == nil || observed.MCPInfo.MCPServerCostInfo == nil || !planned.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery.Equal(observed.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func partialMCPServerState(serverID string) MCPServerResourceModel {
 	return MCPServerResourceModel{
 		ID:              types.StringValue(serverID),
@@ -1103,10 +1244,26 @@ func validateMCPServerResponse(result map[string]interface{}, expectedServerID s
 }
 
 func (r *MCPServerResource) readMCPServer(ctx context.Context, data *MCPServerResourceModel) error {
-	return r.readMCPServerWithNumericOwnership(ctx, data, false)
+	_, _, err := r.readMCPServerWithProvenance(ctx, data, mcpInfoProvenance{Terraform: mcpInfoLeafSet{}, API: mcpInfoLeafSet{}}, false)
+	return err
 }
 
+// readMCPServerWithNumericOwnership remains as a narrow compatibility helper
+// for tests of first-import numeric decoding. Production lifecycle paths always
+// pass versioned private provenance to readMCPServerWithProvenance.
 func (r *MCPServerResource) readMCPServerWithNumericOwnership(ctx context.Context, data *MCPServerResourceModel, imported bool) error {
+	_, _, err := r.readMCPServerWithProvenance(ctx, data, mcpInfoProvenance{Terraform: mcpInfoLeafSet{}, API: mcpInfoLeafSet{}}, imported)
+	return err
+}
+
+func (r *MCPServerResource) readMCPServerWithProvenance(ctx context.Context, data *MCPServerResourceModel, ownership mcpInfoProvenance, imported bool) (mcpInfoLeafSet, mcpInfoLeafSet, error) {
+	confirmed := mcpInfoLeafSet{}
+	adoptedAPI := cloneMCPInfoLeafSet(ownership.API)
+	err := r.readMCPServerProjection(ctx, data, ownership, imported, confirmed, adoptedAPI)
+	return confirmed, adoptedAPI, err
+}
+
+func (r *MCPServerResource) readMCPServerProjection(ctx context.Context, data *MCPServerResourceModel, ownership mcpInfoProvenance, imported bool, confirmed, adoptedAPI mcpInfoLeafSet) error {
 	serverID := data.ID.ValueString()
 	if serverID == "" {
 		serverID = data.ServerID.ValueString()
@@ -1272,44 +1429,111 @@ func (r *MCPServerResource) readMCPServerWithNumericOwnership(ctx context.Contex
 		data.AllowAllKeys = types.BoolValue(allowAllKeys)
 	}
 
-	// The import marker is deliberately scoped to numeric cost ownership. When
-	// mcp_info was not configured, import may create only the nested shells needed
-	// to expose visible cost fields; reconstructing heterogeneous mcp_info belongs
-	// to #213 and remains out of scope.
-	if mcpInfoRaw, ok := result["mcp_info"].(map[string]interface{}); ok && (data.MCPInfo != nil || imported) {
+	// mcp_info is reconciled only through exact private leaf provenance. Public
+	// values and structural shells are never evidence of ownership.
+	mcpInfoRaw, mcpInfoPresence, err := apiJSONObject(result, "mcp_info")
+	if err != nil {
+		return fmt.Errorf("invalid MCP server response: mcp_info must be an object or null")
+	}
+	var costInfoRaw map[string]interface{}
+	costInfoPresence := apiValueAbsent
+	defaultPresence, toolsPresence := apiValueAbsent, apiValueAbsent
+	if mcpInfoPresence == apiValuePresent {
+		for _, field := range []string{"server_name", "description", "logo_url"} {
+			if raw, present := mcpInfoRaw[field]; present && raw != nil {
+				if _, ok := raw.(string); !ok {
+					return fmt.Errorf("invalid MCP server response: mcp_info contains a malformed optional string field")
+				}
+			}
+		}
+		costInfoRaw, costInfoPresence, err = apiJSONObject(mcpInfoRaw, "mcp_server_cost_info")
+		if err != nil {
+			return fmt.Errorf("invalid MCP server response: mcp_info.mcp_server_cost_info must be an object or null")
+		}
+		if costInfoPresence == apiValuePresent {
+			_, defaultPresence, err = apiFloat64At(costInfoRaw, "default_cost_per_query")
+			if err != nil {
+				return err
+			}
+			_, toolsPresence, err = apiFloat64MapAt(costInfoRaw, "tool_name_to_cost_per_query")
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	if imported {
+		if defaultPresence == apiValuePresent {
+			adoptedAPI[mcpInfoDefaultCostLeaf] = true
+		}
+		if toolsPresence == apiValuePresent {
+			adoptedAPI[mcpInfoToolCostsLeaf] = true
+		}
+	}
+	leafOwned := func(leaf string) bool {
+		return ownership.Terraform[leaf] || ownership.API[leaf] || adoptedAPI[leaf]
+	}
+	ensureInfo := func() *MCPInfoModel {
 		if data.MCPInfo == nil {
 			data.MCPInfo = &MCPInfoModel{}
 		}
-		if !imported {
-			if serverName, ok := mcpInfoRaw["server_name"].(string); ok {
-				data.MCPInfo.ServerName = types.StringValue(serverName)
-			}
-			if description, ok := mcpInfoRaw["description"].(string); ok {
-				data.MCPInfo.Description = types.StringValue(description)
-			}
-			if logoURL, ok := mcpInfoRaw["logo_url"].(string); ok {
-				data.MCPInfo.LogoURL = types.StringValue(logoURL)
+		return data.MCPInfo
+	}
+	ensureCosts := func() *MCPServerCostInfoModel {
+		info := ensureInfo()
+		if info.MCPServerCostInfo == nil {
+			info.MCPServerCostInfo = &MCPServerCostInfoModel{
+				DefaultCostPerQuery:    types.Float64Null(),
+				ToolNameToCostPerQuery: types.MapNull(types.Float64Type),
 			}
 		}
+		return info.MCPServerCostInfo
+	}
 
-		if costInfoRaw, ok := mcpInfoRaw["mcp_server_cost_info"].(map[string]interface{}); ok {
-			if data.MCPInfo.MCPServerCostInfo == nil {
-				data.MCPInfo.MCPServerCostInfo = &MCPServerCostInfoModel{}
+	// A missing or null parent is role sanitization in the v1.98 response and
+	// preserves every tracked leaf uniformly. Only a present child null clears
+	// its public value, while provenance remains intact for later reappearance.
+	if mcpInfoPresence == apiValuePresent {
+		for _, field := range []struct {
+			name string
+			leaf string
+			set  func(*MCPInfoModel, types.String)
+		}{
+			{name: "server_name", leaf: mcpInfoServerNameLeaf, set: func(info *MCPInfoModel, value types.String) { info.ServerName = value }},
+			{name: "description", leaf: mcpInfoDescriptionLeaf, set: func(info *MCPInfoModel, value types.String) { info.Description = value }},
+			{name: "logo_url", leaf: mcpInfoLogoURLLeaf, set: func(info *MCPInfoModel, value types.String) { info.LogoURL = value }},
+		} {
+			if !leafOwned(field.leaf) {
+				continue
 			}
-			defaultOwned := imported || (!data.MCPInfo.MCPServerCostInfo.DefaultCostPerQuery.IsNull() && !data.MCPInfo.MCPServerCostInfo.DefaultCostPerQuery.IsUnknown())
-			if err := updateFloat64FromAPI(&data.MCPInfo.MCPServerCostInfo.DefaultCostPerQuery, costInfoRaw, defaultOwned, defaultOwned, "default_cost_per_query"); err != nil {
-				return err
+			raw, present := mcpInfoRaw[field.name]
+			if !present {
+				continue
 			}
-
-			toolCostsOwned := imported || (!data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery.IsNull() && !data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery.IsUnknown())
-			if err := updateFloat64MapFromAPI(&data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery, costInfoRaw, toolCostsOwned, toolCostsOwned, "tool_name_to_cost_per_query"); err != nil {
-				return err
+			confirmed[field.leaf] = true
+			if raw == nil {
+				field.set(ensureInfo(), types.StringNull())
+			} else {
+				field.set(ensureInfo(), types.StringValue(raw.(string)))
 			}
-		} else if data.MCPInfo.MCPServerCostInfo != nil && data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery.IsUnknown() {
-			data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery, _ = types.MapValue(types.Float64Type, map[string]attr.Value{})
 		}
-	} else if data.MCPInfo != nil && data.MCPInfo.MCPServerCostInfo != nil && data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery.IsUnknown() {
-		data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery, _ = types.MapValue(types.Float64Type, map[string]attr.Value{})
+	}
+
+	if mcpInfoPresence == apiValuePresent && costInfoPresence == apiValuePresent {
+		if leafOwned(mcpInfoDefaultCostLeaf) && defaultPresence != apiValueAbsent {
+			confirmed[mcpInfoDefaultCostLeaf] = true
+			costs := ensureCosts()
+			if err := updateFloat64FromAPI(&costs.DefaultCostPerQuery, costInfoRaw, false, true, "default_cost_per_query"); err != nil {
+				return err
+			}
+		}
+		if leafOwned(mcpInfoToolCostsLeaf) && toolsPresence != apiValueAbsent {
+			confirmed[mcpInfoToolCostsLeaf] = true
+			costs := ensureCosts()
+			if err := updateFloat64MapFromAPI(&costs.ToolNameToCostPerQuery, costInfoRaw, false, true, "tool_name_to_cost_per_query"); err != nil {
+				return err
+			}
+		}
 	}
 
 	return nil
