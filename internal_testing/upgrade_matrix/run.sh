@@ -427,31 +427,11 @@ run_upgrade() {
 
 assert_authoritative_not_found() {
   evidence=$1 resource_type=$2
-  python3 - "$evidence" "$resource_type" <<'PY' || fail 'post-destroy check was not an exact provider/API not-found result'
-from pathlib import Path
-import re,sys
-text=Path(sys.argv[1]).read_text(encoding="utf-8",errors="replace")
-if len(text.encode()) > 2*1024*1024: raise SystemExit(1)
-lower=text.lower()
-# Terraform's exact import wrapper is emitted only after provider Read returns
-# remote absence. Reject argument/configuration/plan failures explicitly.
-forbidden=("invalid address", "configuration is invalid", "variables not allowed", "provider configuration", "failed to load plugin schemas")
-if any(value in lower for value in forbidden): raise SystemExit(1)
-standard=any(value in lower for value in ("cannot import non-existent remote object", "remote object does not exist", "not found", "status code: 404", "status=404"))
-# LiteLLM v1.98 uses an endpoint-specific 400 absence for several info routes.
-# Accept it only through the provider's exact bounded read diagnostic; a plan,
-# parse, address, or configuration failure cannot match this contract.
-bounded=bool(re.search(r"unable to read [a-z0-9 _-]+: api request failed with status (?:400|404); response detail\s+omitted",lower))
-endpoint_exact={
- "litellm_budget": "unable to read budget: budget import read response did not contain exactly one budget",
- "litellm_fallback": "error: fallback import read error litellm returned http status 404 while attempting to read during import the fallback.",
-}
-resource=sys.argv[2]
-normalized=" ".join(lower.split())
-exact=endpoint_exact.get(resource) in normalized if resource in endpoint_exact else False
-if not (standard or bounded or exact): raise SystemExit(1)
-if not re.fullmatch(r"litellm_[a-z_]+",resource): raise SystemExit(1)
-PY
+  # Fail closed on exact Terraform Core wrappers, bounded provider API
+  # diagnostics, and two reviewed endpoint-specific absence contracts. Generic
+  # "not found" or HTTP-status text can describe unrelated plugin failures.
+  python3 "$SCRIPT_DIR/absence_diagnostic.py" "$evidence" "$resource_type" || \
+    fail 'post-destroy check was not an exact provider/API not-found result'
 }
 
 assert_agent_role_redaction_skip() {
