@@ -425,6 +425,225 @@ var bad = url.PathEscape
 	}
 }
 
+func TestExtractorRejectsTransformedRawInputProvenance(t *testing.T) {
+	fixtures := map[string]string{
+		"path-replace": `package provider
+import "strings"
+func bad(value string) string { return endpointWithPathSegment("/things/", strings.ReplaceAll(value, "/", "%2F"), "") }
+`,
+		"path-concatenation": `package provider
+func bad(value string) string { return endpointWithPathSegment("/things/", value + "-suffix", "") }
+`,
+		"path-manual-percent-escape": `package provider
+func bad(value string) string { return endpointWithPathSegment("/things/", value + "%2Fchild", "") }
+`,
+		"path-custom-wrapper": `package provider
+import "strings"
+func rewrite(value string) string { return strings.ReplaceAll(value, "/", "%2F") }
+func bad(value string) string { return endpointWithPathSegment("/things/", rewrite(value), "") }
+`,
+		"path-builder-wrapper-call": `package provider
+import "strings"
+func thingPath(value string) string { return endpointWithPathSegment("/things/", value, "") }
+func bad(value string) string { return thingPath(strings.ReplaceAll(value, "/", "%2F")) }
+`,
+		"path-local-alias": `package provider
+import "strings"
+func bad(value string) string {
+ rewritten := strings.ReplaceAll(value, "/", "%2F")
+ alias := rewritten
+ return endpointWithPathSegment("/things/", alias, "")
+}
+`,
+		"path-indirect-assignment": `package provider
+import "strings"
+func bad(value string) string {
+ raw := value
+ var alias string
+ alias = raw
+ alias = strings.ReplaceAll(alias, "/", "%2F")
+ return endpointWithPathSegment("/things/", alias, "")
+}
+`,
+		"path-parameter-reassignment": `package provider
+import "strings"
+func bad(value string) string {
+ value = strings.ReplaceAll(value, "/", "%2F")
+ return endpointWithPathSegment("/things/", value, "")
+}
+`,
+		"path-higher-order": `package provider
+func apply(transform func(string) string, value string) string { return transform(value) }
+func identity(value string) string { return value }
+func bad(value string) string { return endpointWithPathSegment("/things/", apply(identity, value), "") }
+`,
+		"path-interface": `package provider
+type transformer interface { Transform(string) string }
+func bad(transformer transformer, value string) string { return endpointWithPathSegment("/things/", transformer.Transform(value), "") }
+`,
+		"path-interface-recovery": `package provider
+import "strings"
+func bad(value string) string {
+ var hidden any = strings.ReplaceAll(value, "/", "%2F")
+ return endpointWithPathSegment("/things/", hidden.(string), "")
+}
+`,
+		"path-local-map-wrapper": `package provider
+import "strings"
+func bad(value string) string {
+ hidden := map[string]any{}
+ hidden["id"] = strings.ReplaceAll(value, "/", "%2F")
+ return endpointWithPathSegment("/things/", hidden["id"].(string), "")
+}
+`,
+		"path-string-map-wrapper": `package provider
+import "strings"
+func bad(value string) string {
+ hidden := map[string]string{"id": strings.ReplaceAll(value, "/", "%2F")}
+ return endpointWithPathSegment("/things/", hidden["id"], "")
+}
+`,
+		"path-generic": `package provider
+func transform[T ~string](value T) string { return string(value) }
+func bad(value string) string { return endpointWithPathSegment("/things/", transform(value), "") }
+`,
+		"query-composite-replace": `package provider
+import (
+ "net/url"
+ "strings"
+)
+func bad(value string) string { return endpointWithQuery("/things", url.Values{"scope": []string{strings.ReplaceAll(value, "/", "%2F")}}) }
+`,
+		"query-set-concatenation": `package provider
+import "net/url"
+func bad(value string) string {
+ query := url.Values{}
+ query.Set("scope", value + "%2F")
+ return endpointWithQuery("/things", query)
+}
+`,
+		"query-add-wrapper": `package provider
+import "net/url"
+func rewrite(value string) string { return value + "-changed" }
+func bad(value string) string {
+ query := url.Values{}
+ query.Add("scope", rewrite(value))
+ return endpointWithQuery("/things", query)
+}
+`,
+		"query-index-assignment": `package provider
+import (
+ "net/url"
+ "strings"
+)
+func bad(value string) string {
+ query := url.Values{}
+ query["scope"] = []string{strings.ReplaceAll(value, "/", "%2F")}
+ return endpointWithQuery("/things", query)
+}
+`,
+		"query-builder-wrapper-call": `package provider
+import (
+ "net/url"
+ "strings"
+)
+func requestPath(values url.Values) string { return endpointWithQuery("/things", values) }
+func bad(value string) string {
+ return requestPath(url.Values{"scope": []string{strings.ReplaceAll(value, "/", "%2F")}})
+}
+`,
+		"query-clone-flow": `package provider
+import (
+ "net/url"
+ "strings"
+)
+func cloneURLValues(values url.Values) url.Values { return values }
+func bad(values url.Values, value string) string {
+ query := cloneURLValues(values)
+ query.Set("scope", strings.ReplaceAll(value, "/", "%2F"))
+ return endpointWithQuery("/things", query)
+}
+`,
+	}
+	for name, fixture := range fixtures {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeHTTPFixtureSupport(t, dir)
+			writeFixture(t, dir, "bad.go", fixture)
+			if _, err := ExtractProvider(dir); err == nil || !strings.Contains(err.Error(), "raw-input provenance") {
+				t.Fatalf("transformed builder input was accepted: %v", err)
+			}
+		})
+	}
+}
+
+func TestExtractorRejectsMaliciousEndpointBuilderBodies(t *testing.T) {
+	fixtures := map[string]string{
+		"discard": `func endpointWithPathCapture(prefix, value, suffix string) string {
+ _ = url.PathEscape(value)
+ return prefix + value + suffix
+}`,
+		"reassignment": `func endpointWithPathCapture(prefix, value, suffix string) string {
+ escaped := url.PathEscape(value)
+ escaped = value
+ return prefix + escaped + suffix
+}`,
+		"post-transform": `func endpointWithPathCapture(prefix, value, suffix string) string {
+ escaped := url.PathEscape(value)
+ return prefix + strings.ReplaceAll(escaped, "A", "B") + suffix
+}`,
+		"second-escape": `func endpointWithPathCapture(prefix, value, suffix string) string {
+ escaped := url.PathEscape(value)
+ return prefix + url.PathEscape(escaped) + suffix
+}`,
+		"raw-return": `func endpointWithPathCapture(prefix, value, suffix string) string {
+ escaped := url.PathEscape(value)
+ if value == "" { return prefix + value + suffix }
+ return prefix + escaped + suffix
+}`,
+		"duplicate-result": `func endpointWithPathCapture(prefix, value, suffix string) string {
+ escaped := url.PathEscape(value)
+ return prefix + escaped + escaped + suffix
+}`,
+		"discard-boundary": `func endpointWithPathCapture(prefix, value, suffix string) string {
+ escaped := url.PathEscape(value)
+ return "/different/" + escaped + suffix
+}`,
+		"query-discard": `func endpointWithQuery(path string, values url.Values) string {
+ _ = values.Encode()
+ return path
+}`,
+		"query-reassignment": `func endpointWithQuery(path string, values url.Values) string {
+ encoded := values.Encode()
+ encoded = "fixed=true"
+ return path + "?" + encoded
+}`,
+		"query-post-transform": `func endpointWithQuery(path string, values url.Values) string {
+ return path + "?" + strings.ReplaceAll(values.Encode(), "+", "%20")
+}`,
+		"query-altered-return": `func endpointWithQuery(path string, values url.Values) string {
+ if strings.ContainsAny(path, "?#") { panic("endpoint path must not contain a query or fragment") }
+ return "/different?" + values.Encode()
+}`,
+	}
+	for name, body := range fixtures {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFixture(t, dir, "bad.go", `package provider
+import (
+ "net/url"
+ "strings"
+)
+var _ = strings.Builder{}
+var _ = url.Values{}
+`+body+"\n")
+			if _, err := ExtractProvider(dir); err == nil || !strings.Contains(err.Error(), "escape result") {
+				t.Fatalf("malicious endpoint builder body was accepted: %v", err)
+			}
+		})
+	}
+}
+
 func TestExtractorRejectsClientAliasesAndMethodValues(t *testing.T) {
 	fixtures := map[string]string{
 		"receiver-alias": `package provider
@@ -1809,13 +2028,32 @@ func writeHTTPFixtureSupport(t *testing.T, dir string) {
 import (
  "context"
  "net/url"
+ "strings"
 )
+const invalidReviewedEndpoint = "/.terraform-provider-litellm-invalid-reviewed-endpoint"
 type Client struct{}
 func (*Client) DoRequestWithResponse(context.Context, string, string, any, any) error { return nil }
-func endpointWithPathSegment(prefix, value, suffix string) string { return prefix + url.PathEscape(value) + suffix }
-func endpointWithPathCapture(prefix, value, suffix string) string { return prefix + url.PathEscape(value) + suffix }
-func endpointWithFallbackPathSegment(prefix, value, suffix string) string { return prefix + url.PathEscape(value) + suffix }
-func endpointWithQuery(path string, values url.Values) string { return path + "?" + values.Encode() }
+func hardenDotSegment(value string) string { return value }
+func containsDotPathComponent(string) bool { return false }
+func endpointWithPathSegment(prefix, value, suffix string) string {
+ if strings.Contains(value, "/") { return invalidReviewedEndpoint }
+ escaped := url.PathEscape(value)
+ return prefix + hardenDotSegment(escaped) + suffix
+}
+func endpointWithPathCapture(prefix, value, suffix string) string {
+ if containsDotPathComponent(value) { return invalidReviewedEndpoint }
+ escaped := url.PathEscape(value)
+ return prefix + escaped + suffix
+}
+func endpointWithFallbackPathSegment(prefix, value, suffix string) string {
+ escaped := url.PathEscape(value)
+ return prefix + hardenDotSegment(escaped) + suffix
+}
+func endpointWithQuery(path string, values url.Values) string {
+ if strings.ContainsAny(path, "?#") { panic("endpoint path must not contain a query or fragment") }
+ if len(values) == 0 { return path }
+ return path + "?" + values.Encode()
+}
 `)
 }
 
