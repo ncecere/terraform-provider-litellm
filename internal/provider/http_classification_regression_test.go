@@ -449,7 +449,7 @@ func TestRetryAfterSurvivesTransientStatusBodyReadFailures(t *testing.T) {
 		})
 		err := client.DoRequestWithResponse(context.Background(), http.MethodGet, "/safe", nil, nil)
 		classification := ClassifyHTTPFailure(err)
-		if classification.Kind != HTTPFailureTransientResponse || classification.StatusCode != status ||
+		if classification.Kind != HTTPFailureTransientTransport || classification.StatusCode != status ||
 			classification.RetryAfter != 3*time.Second || !classification.HasRetryAfter ||
 			!classification.RequestDispatched || classification.ResponseAccepted {
 			t.Fatalf("status=%d classification=%#v error=%v", status, classification, err)
@@ -534,7 +534,7 @@ func TestHTTPFailureDispatchAndAcceptanceFlagsByStage(t *testing.T) {
 			response.Body = failingReadCloser{err: io.ErrUnexpectedEOF}
 			return response, nil
 		})
-		assert(t, client.DoRequestWithResponse(context.Background(), http.MethodGet, "/safe", nil, nil), HTTPFailureTerminalResponse, http.StatusBadRequest, true, false)
+		assert(t, client.DoRequestWithResponse(context.Background(), http.MethodGet, "/safe", nil, nil), HTTPFailureTransientTransport, http.StatusBadRequest, true, false)
 	})
 	t.Run("accepted-body-read", func(t *testing.T) {
 		client := testRetryClient(func(request *http.Request) (*http.Response, error) {

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -167,6 +168,58 @@ func TestAcceptedBodyReadTraitsAreSanitizedAndGloballyPrioritized(t *testing.T) 
 	}
 }
 
+type bodyReadTimeoutTestError struct{}
+
+func (bodyReadTimeoutTestError) Error() string   { return "body-read-timeout-secret" }
+func (bodyReadTimeoutTestError) Timeout() bool   { return true }
+func (bodyReadTimeoutTestError) Temporary() bool { return false }
+
+func TestNonAcceptedStatusBodyReadTransientTraitsDominateEveryStatus(t *testing.T) {
+	causes := []struct {
+		name string
+		err  error
+	}{
+		{"timeout", bodyReadTimeoutTestError{}},
+		{"reset", syscall.ECONNRESET},
+		{"unexpected-eof", io.ErrUnexpectedEOF},
+	}
+	for _, status := range []int{
+		http.StatusNotFound,
+		http.StatusBadRequest,
+		http.StatusRequestTimeout,
+		http.StatusTooManyRequests,
+		http.StatusInternalServerError,
+	} {
+		for _, cause := range causes {
+			t.Run(fmt.Sprintf("%d-%s", status, cause.name), func(t *testing.T) {
+				var calls atomic.Int32
+				client := testRetryClient(func(request *http.Request) (*http.Response, error) {
+					calls.Add(1)
+					response := testHTTPResponse(request, status, http.Header{"Retry-After": []string{"2"}})
+					response.Body = failingReadCloser{err: cause.err}
+					return response, nil
+				})
+				err := client.doReadWithResponsePolicy(
+					context.Background(), http.MethodGet, "/safe", nil, nil, testReadPolicy(2), noWaitRetryHooks(),
+				)
+				classification := ClassifyHTTPFailure(err)
+				if calls.Load() != 2 || classification.Kind != HTTPFailureTransientTransport || classification.StatusCode != status ||
+					classification.RetryAfter != 2*time.Second || !classification.HasRetryAfter ||
+					!classification.RequestDispatched || classification.ResponseAccepted ||
+					IsAPIErrorStatus(err, status) || IsNotFoundError(err) {
+					t.Fatalf("classification=%#v api_status=%t not_found=%t error=%v",
+						classification, IsAPIErrorStatus(err, status), IsNotFoundError(err), err)
+				}
+				for _, rendered := range []string{err.Error(), fmt.Sprintf("%+v", err), fmt.Sprintf("%#v", err), fmt.Sprint(classification)} {
+					if strings.Contains(rendered, "body-read-timeout-secret") {
+						t.Fatalf("body read cause escaped: %q", rendered)
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestStatusBodyReadHigherTraitsPreventRetryInBothJoinOrders(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -208,6 +261,122 @@ func TestStatusBodyReadHigherTraitsPreventRetryInBothJoinOrders(t *testing.T) {
 	}
 }
 
+func TestGlobalStatusAndRetryAfterCandidatesAreOrderIndependent(t *testing.T) {
+	accepted200 := &safeResponseError{
+		statusCode: http.StatusOK, kind: "accepted contract", stage: safeResponseFailureContract,
+		dispatched: true, accepted: true,
+	}
+	api404 := &APIError{StatusCode: http.StatusNotFound}
+	api503 := &APIError{StatusCode: http.StatusServiceUnavailable}
+
+	for _, test := range []struct {
+		name  string
+		left  error
+		right error
+		kind  HTTPFailureKind
+	}{
+		{"accepted-200-and-404", accepted200, api404, HTTPFailureTerminalResponse},
+		{"404-and-503", api404, api503, HTTPFailureTransientResponse},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			for _, err := range []error{
+				errors.Join(test.left, test.right),
+				errors.Join(test.right, test.left),
+				fmt.Errorf("outer: %w", errors.Join(fmt.Errorf("nested: %w", test.right), test.left)),
+			} {
+				classification := ClassifyHTTPFailure(err)
+				if classification.Kind != test.kind || classification.StatusCode != 0 ||
+					classification.HasRetryAfter || IsAPIErrorStatus(err, http.StatusNotFound) ||
+					IsAPIErrorStatus(err, http.StatusServiceUnavailable) {
+					t.Fatalf("classification=%#v error=%v", classification, err)
+				}
+			}
+		})
+	}
+
+	scheduled503 := func(delay time.Duration) error {
+		return withSafeRetrySchedule(
+			&APIError{StatusCode: http.StatusServiceUnavailable},
+			safeRetryAfterSpec{delay: delay},
+			true,
+		)
+	}
+	for _, err := range []error{
+		errors.Join(scheduled503(time.Second), scheduled503(2*time.Second)),
+		errors.Join(scheduled503(2*time.Second), scheduled503(time.Second)),
+		fmt.Errorf("outer: %w", errors.Join(scheduled503(time.Second), fmt.Errorf("nested: %w", scheduled503(2*time.Second)))),
+		errors.Join(scheduled503(time.Second), &APIError{StatusCode: http.StatusServiceUnavailable}),
+	} {
+		classification := ClassifyHTTPFailure(err)
+		if classification.Kind != HTTPFailureTransientResponse || classification.StatusCode != http.StatusServiceUnavailable ||
+			classification.HasRetryAfter || classification.RetryAfter != 0 {
+			t.Fatalf("ambiguous Retry-After survived: %#v / %v", classification, err)
+		}
+	}
+}
+
+func TestRetryAfterRequiresRetryableFinalKindAndOneResponse(t *testing.T) {
+	for _, status := range []int{
+		http.StatusBadRequest,
+		http.StatusUnauthorized,
+		http.StatusForbidden,
+		http.StatusNotFound,
+	} {
+		client := testRetryClient(func(request *http.Request) (*http.Response, error) {
+			return testHTTPResponse(request, status, http.Header{"Retry-After": []string{"4"}}), nil
+		})
+		err := client.DoRequestWithResponse(context.Background(), http.MethodGet, "/safe", nil, nil)
+		classification := ClassifyHTTPFailure(err)
+		if classification.Kind != HTTPFailureTerminalResponse || classification.StatusCode != status ||
+			classification.HasRetryAfter || classification.RetryAfter != 0 {
+			t.Fatalf("status=%d classification=%#v error=%v", status, classification, err)
+		}
+	}
+
+	acceptedClient := testRetryClient(func(request *http.Request) (*http.Response, error) {
+		response := testHTTPResponse(request, http.StatusOK, http.Header{"Retry-After": []string{"4"}})
+		response.Body = failingReadCloser{err: io.ErrUnexpectedEOF}
+		return response, nil
+	})
+	var result map[string]interface{}
+	acceptedErr := acceptedClient.DoRequestWithResponse(context.Background(), http.MethodGet, "/safe", nil, &result)
+	accepted := ClassifyHTTPFailure(acceptedErr)
+	if accepted.Kind != HTTPFailureTransientAcceptedResponse || accepted.StatusCode != http.StatusOK ||
+		!accepted.HasRetryAfter || accepted.RetryAfter != 4*time.Second {
+		t.Fatalf("accepted classification=%#v error=%v", accepted, acceptedErr)
+	}
+
+	local := ClassifyHTTPFailure(withSafeRetrySchedule(&safeResponseError{
+		statusCode: http.StatusOK,
+		kind:       "local response contract",
+		stage:      safeResponseFailureContract,
+		dispatched: true,
+		accepted:   true,
+	}, safeRetryAfterSpec{delay: 4 * time.Second}, true))
+	if local.Kind != HTTPFailureContractOrLocal || local.StatusCode != http.StatusOK ||
+		local.HasRetryAfter || local.RetryAfter != 0 {
+		t.Fatalf("local classification=%#v", local)
+	}
+
+	scheduled := withSafeRetrySchedule(
+		&APIError{StatusCode: http.StatusServiceUnavailable},
+		safeRetryAfterSpec{delay: 4 * time.Second},
+		true,
+	)
+	for _, higher := range []error{
+		context.Canceled,
+		x509.UnknownAuthorityError{},
+		context.DeadlineExceeded,
+	} {
+		for _, err := range []error{errors.Join(scheduled, higher), errors.Join(higher, scheduled)} {
+			classification := ClassifyHTTPFailure(err)
+			if classification.HasRetryAfter || classification.RetryAfter != 0 || classification.StatusCode != 0 {
+				t.Fatalf("higher trait retained metadata: %#v / %v", classification, err)
+			}
+		}
+	}
+}
+
 func TestExplicitCancellationPrecedesPreparationButDeadlineDoesNot(t *testing.T) {
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -220,10 +389,24 @@ func TestExplicitCancellationPrecedesPreparationButDeadlineDoesNot(t *testing.T)
 		return nil, errors.New("must not dispatch")
 	})
 	invalidURLClient := &Client{APIBase: "://invalid", APIKey: "admin", HTTPClient: client.HTTPClient}
+	invalidSchemeClient := &Client{APIBase: "ftp://pre-dispatch-secret.invalid", APIKey: "admin", HTTPClient: client.HTTPClient}
+	emptyHostClient := &Client{APIBase: "https:///pre-dispatch-secret", APIKey: "admin", HTTPClient: client.HTTPClient}
+	typedNilTransportClient := &Client{
+		APIBase: "https://example.invalid",
+		APIKey:  "admin",
+		HTTPClient: &http.Client{
+			Transport: (*http.Transport)(nil),
+		},
+	}
 
 	canceledErrors := []error{
+		client.DoRequestWithResponse(canceled, "BAD METHOD", "/safe", nil, nil),
 		client.DoRequestWithResponse(canceled, http.MethodPost, "/safe", make(chan int), nil),
 		invalidURLClient.DoRequestWithResponse(canceled, http.MethodGet, "/safe", nil, nil),
+		invalidSchemeClient.DoRequestWithResponse(canceled, http.MethodGet, "/safe", nil, nil),
+		emptyHostClient.DoReadWithResponse(canceled, http.MethodGet, "/safe", nil, nil),
+		client.doFreshRequestWithResponse(canceled, http.MethodGet, "/safe", nil, nil),
+		typedNilTransportClient.doFreshRequestWithResponse(canceled, http.MethodGet, "/safe", nil, nil),
 		client.DoReadWithResponse(canceled, http.MethodPost, "/safe", make(chan int), nil),
 		client.doReadWithResponsePolicy(canceled, http.MethodGet, "/safe", nil, nil, safeReadRetryPolicy{}, safeReadRetryHooks{}),
 	}
@@ -235,8 +418,13 @@ func TestExplicitCancellationPrecedesPreparationButDeadlineDoesNot(t *testing.T)
 	}
 
 	deadlineErrors := []error{
+		client.DoRequestWithResponse(deadline, "BAD METHOD", "/safe", nil, nil),
 		client.DoRequestWithResponse(deadline, http.MethodPost, "/safe", make(chan int), nil),
 		invalidURLClient.DoRequestWithResponse(deadline, http.MethodGet, "/safe", nil, nil),
+		invalidSchemeClient.DoRequestWithResponse(deadline, http.MethodGet, "/safe", nil, nil),
+		emptyHostClient.DoReadWithResponse(deadline, http.MethodGet, "/safe", nil, nil),
+		client.doFreshRequestWithResponse(deadline, http.MethodGet, "/safe", nil, nil),
+		typedNilTransportClient.doFreshRequestWithResponse(deadline, http.MethodGet, "/safe", nil, nil),
 		client.DoReadWithResponse(deadline, http.MethodPost, "/safe", nil, nil),
 		client.doReadWithResponsePolicy(deadline, http.MethodGet, "/safe", nil, nil, safeReadRetryPolicy{}, safeReadRetryHooks{}),
 	}
@@ -244,6 +432,11 @@ func TestExplicitCancellationPrecedesPreparationButDeadlineDoesNot(t *testing.T)
 		classification := ClassifyHTTPFailure(err)
 		if classification.Kind != HTTPFailureContractOrLocal || classification.RequestDispatched {
 			t.Fatalf("deadline hid terminal/local configuration: %#v / %v", classification, err)
+		}
+		for _, rendered := range []string{err.Error(), fmt.Sprintf("%+v", err), fmt.Sprintf("%#v", err), fmt.Sprint(classification)} {
+			if strings.Contains(rendered, "pre-dispatch-secret") {
+				t.Fatalf("pre-dispatch configuration leaked: %q", rendered)
+			}
 		}
 	}
 	if calls.Load() != 0 {

@@ -68,9 +68,15 @@ func (c *Client) doReadWithResponsePolicy(ctx context.Context, method, requestPa
 		return safeTransportFailure(context.Canceled)
 	}
 	if method != http.MethodGet && method != http.MethodHead {
-		return &safeResponseError{kind: "safe read requests require GET or HEAD"}
+		return &safeResponseError{kind: "safe read requests require GET or HEAD", terminal: true, stage: safeResponseFailureLocal}
 	}
 	if err := validateSafeReadRetryPolicy(policy, hooks); err != nil {
+		return err
+	}
+	// Validate every request-local requirement before retrySafeRead consults an
+	// already-expired deadline. This is deliberately non-dispatching; each
+	// attempt still receives its own request and context below.
+	if _, _, err := c.prepareRequest(ctx, method, requestPath, body); err != nil {
 		return err
 	}
 	return retrySafeRead(ctx, policy, hooks, func(attemptCtx context.Context) error {
@@ -83,7 +89,7 @@ func validateSafeReadRetryPolicy(policy safeReadRetryPolicy, hooks safeReadRetry
 	if policy.maxAttempts < 1 || policy.maxElapsed <= 0 || policy.initialDelay < 0 ||
 		policy.maxDelay < policy.initialDelay || policy.maxRetryAfter < 0 ||
 		hooks.now == nil || hooks.sleep == nil || hooks.randomUnit == nil {
-		return &safeResponseError{kind: "safe read retry policy is invalid"}
+		return &safeResponseError{kind: "safe read retry policy is invalid", terminal: true, stage: safeResponseFailureLocal}
 	}
 	return nil
 }

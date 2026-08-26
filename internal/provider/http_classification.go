@@ -54,7 +54,7 @@ type httpStatusCandidate struct {
 }
 
 func (c *httpStatusCandidate) add(statusCode int) {
-	if statusCode < 100 || statusCode > 599 {
+	if statusCode == 0 {
 		return
 	}
 	if !c.set {
@@ -68,7 +68,7 @@ func (c *httpStatusCandidate) add(statusCode int) {
 }
 
 func (c httpStatusCandidate) value() int {
-	if !c.set || c.ambiguous {
+	if !c.set || c.ambiguous || c.code < 100 || c.code > 599 {
 		return 0
 	}
 	return c.code
@@ -84,10 +84,8 @@ type httpFailureTraits struct {
 	terminalStatus     bool
 	dispatched         bool
 	accepted           bool
-	transientCode      httpStatusCandidate
-	terminalCode       httpStatusCandidate
-	acceptedCode       httpStatusCandidate
-	contractCode       httpStatusCandidate
+	responseNodes      int
+	status             httpStatusCandidate
 }
 
 // ClassifyHTTPFailure walks the complete error tree and aggregates only
@@ -116,35 +114,39 @@ func ClassifyHTTPFailure(err error) HTTPFailureClassification {
 			traits.deadline = traits.deadline || typed.deadline
 			traits.dispatched = traits.dispatched || typed.dispatched
 			traits.accepted = traits.accepted || typed.accepted
+			if typed.statusCode != 0 {
+				traits.responseNodes++
+				traits.status.add(typed.statusCode)
+			}
 
 			if typed.accepted {
 				if typed.stage == safeResponseFailureAcceptedBodyRead && typed.safeReadTransient {
 					traits.transientAccepted = true
-					traits.acceptedCode.add(typed.statusCode)
-				} else {
-					traits.contractCode.add(typed.statusCode)
 				}
 			} else if typed.dispatched && typed.statusCode >= http.StatusMultipleChoices && typed.statusCode <= 599 {
 				if isTransientHTTPStatus(typed.statusCode) {
 					traits.transientStatus = true
-					traits.transientCode.add(typed.statusCode)
 				} else {
 					traits.terminalStatus = true
-					traits.terminalCode.add(typed.statusCode)
 				}
-			}
-			if typed.safeReadTransient && typed.stage == safeResponseFailureAcceptedBodyRead {
-				traits.transientAccepted = true
+				if typed.stage == safeResponseFailureStatusBodyRead && typed.safeReadTransient {
+					// A status line alone does not prove a terminal response when
+					// consuming that response failed with a timeout, reset, or
+					// truncated stream. Safe reads may retry this transport failure.
+					traits.transientTransport = true
+				}
 			}
 			return false
 		case *APIError:
 			traits.dispatched = true
+			if typed.StatusCode != 0 {
+				traits.responseNodes++
+				traits.status.add(typed.StatusCode)
+			}
 			if isTransientHTTPStatus(typed.StatusCode) {
 				traits.transientStatus = true
-				traits.transientCode.add(typed.StatusCode)
 			} else if typed.StatusCode >= http.StatusMultipleChoices && typed.StatusCode <= 599 {
 				traits.terminalStatus = true
-				traits.terminalCode.add(typed.StatusCode)
 			}
 			return false
 		case *safeRetryScheduledError:
@@ -205,29 +207,29 @@ func ClassifyHTTPFailure(err error) HTTPFailureClassification {
 		classification.Kind = HTTPFailureDeadline
 	case traits.transientTransport:
 		classification.Kind = HTTPFailureTransientTransport
-		classification.StatusCode = traits.transientCode.value()
-		if classification.StatusCode == 0 {
-			classification.StatusCode = traits.terminalCode.value()
-		}
 	case traits.transientAccepted:
 		classification.Kind = HTTPFailureTransientAcceptedResponse
-		classification.StatusCode = traits.acceptedCode.value()
 	case traits.transientStatus:
 		classification.Kind = HTTPFailureTransientResponse
-		classification.StatusCode = traits.transientCode.value()
 	case traits.terminalStatus:
 		classification.Kind = HTTPFailureTerminalResponse
-		classification.StatusCode = traits.terminalCode.value()
-	default:
-		classification.StatusCode = traits.contractCode.value()
 	}
 
-	// Status and schedule metadata remain available when a transient trait wins,
-	// but are suppressed whenever cancellation, terminal transport/configuration,
-	// or deadline controls the result. Exact-status predicates still require a
-	// response kind, so a joined transient transport plus HTTP 404 is not absence.
-	if classification.StatusCode != 0 && !traits.canceled && !traits.terminal && !traits.deadline {
-		retryAfter, ok := safeRetryScheduleFromError(err)
+	// A status is global metadata, not metadata for the winning failure kind.
+	// Retain it only when every response-bearing node reports the same valid
+	// status, and suppress it when a higher cancellation, terminal, or deadline
+	// trait controls the result.
+	if !traits.canceled && !traits.terminal && !traits.deadline {
+		classification.StatusCode = traits.status.value()
+	}
+
+	// Retry-After is actionable only for a retryable final kind. It must also
+	// belong to the sole unambiguous response represented by the error tree;
+	// joined response branches are intentionally not assigned one branch's
+	// schedule, even when their numeric statuses happen to agree.
+	if classification.StatusCode != 0 && traits.responseNodes == 1 &&
+		retryableSafeReadClassification(classification) {
+		retryAfter, ok := safeRetryScheduleForStatus(err, classification.StatusCode)
 		if ok {
 			classification.RetryAfter = retryAfter.delay
 			classification.HasRetryAfter = true
@@ -291,8 +293,9 @@ type safeRetryAfterSpec struct {
 // classification value and exported APIError. Its formatter deliberately
 // renders only the wrapped provider error's already-sanitized message.
 type safeRetryScheduledError struct {
-	err      error
-	schedule safeRetryAfterSpec
+	err        error
+	schedule   safeRetryAfterSpec
+	statusCode int
 }
 
 func (e *safeRetryScheduledError) Error() string { return e.err.Error() }
@@ -315,27 +318,58 @@ func withSafeRetrySchedule(err error, schedule safeRetryAfterSpec, ok bool) erro
 	if err == nil || !ok {
 		return err
 	}
-	return &safeRetryScheduledError{err: err, schedule: schedule}
+	statusCode := 0
+	switch responseErr := err.(type) {
+	case *APIError:
+		statusCode = responseErr.StatusCode
+	case *safeResponseError:
+		statusCode = responseErr.statusCode
+	}
+	return &safeRetryScheduledError{err: err, schedule: schedule, statusCode: statusCode}
 }
 
-func safeRetryScheduleFromError(err error) (safeRetryAfterSpec, bool) {
+func safeRetryScheduleForStatus(err error, statusCode int) (safeRetryAfterSpec, bool) {
 	var selected safeRetryAfterSpec
 	found := false
+	ambiguous := false
 	walkErrorTree(err, func(node error) {
 		scheduled, ok := node.(*safeRetryScheduledError)
 		if !ok {
 			return
 		}
-		candidate := scheduled.schedule
-		// Multiple schedules are not expected from one request, but joined errors
-		// still need an order-independent conservative result.
-		if !found || candidate.delay > selected.delay ||
-			(candidate.delay == selected.delay && candidate.deadline.After(selected.deadline)) {
-			selected = candidate
-			found = true
+		if scheduled.statusCode != statusCode {
+			ambiguous = true
+			return
 		}
+		if found && scheduled.schedule != selected {
+			ambiguous = true
+			return
+		}
+		selected = scheduled.schedule
+		found = true
 	})
-	return selected, found
+	return selected, found && !ambiguous
+}
+
+func safeRetryScheduleFromError(err error) (safeRetryAfterSpec, bool) {
+	var selected safeRetryAfterSpec
+	found := false
+	ambiguous := false
+	walkErrorTree(err, func(node error) {
+		scheduled, ok := node.(*safeRetryScheduledError)
+		if !ok {
+			return
+		}
+		if found {
+			// More than one response schedule has no uniquely selected response,
+			// even if the sanitized durations happen to match.
+			ambiguous = true
+			return
+		}
+		selected = scheduled.schedule
+		found = true
+	})
+	return selected, found && !ambiguous
 }
 
 func safeRetryAfter(headers http.Header, now time.Time, maximum time.Duration) (time.Duration, bool) {

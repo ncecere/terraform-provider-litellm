@@ -52,14 +52,31 @@ func (c *Client) prepareRequest(ctx context.Context, method, requestPath string,
 	if body != nil {
 		encoded, err := json.Marshal(body)
 		if err != nil {
-			return nil, requestSafety{}, &safeResponseError{kind: "failed to encode LiteLLM request", identity: safeErrorIdentity(err), stage: safeResponseFailureLocal}
+			return nil, requestSafety{}, &safeResponseError{
+				kind:     "failed to encode LiteLLM request",
+				identity: safeErrorIdentity(err),
+				terminal: true,
+				stage:    safeResponseFailureLocal,
+			}
 		}
 		jsonBody = encoded
 	}
 
 	request, err := http.NewRequestWithContext(ctx, method, c.APIBase+requestPath, bytes.NewReader(jsonBody))
 	if err != nil {
-		return nil, requestSafety{}, safeTransportFailure(err)
+		// Preserve the established sanitized diagnostic while recording that
+		// request construction is terminal local validation, not transport.
+		return nil, requestSafety{}, &safeTransportError{
+			kind:     safeTransportFailure(err).Error(),
+			terminal: true,
+		}
+	}
+	if (request.URL.Scheme != "http" && request.URL.Scheme != "https") || request.URL.Host == "" {
+		return nil, requestSafety{}, &safeResponseError{
+			kind:     "LiteLLM API URL configuration is invalid",
+			terminal: true,
+			stage:    safeResponseFailureLocal,
+		}
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "application/json")
@@ -92,8 +109,10 @@ func (c *Client) executeRequestWithOptions(request *http.Request, options client
 	if configuredClient == nil {
 		configuredClient = http.DefaultClient
 	}
-	if err := request.Context().Err(); err != nil {
-		return nil, safeTransportFailure(err)
+	// Cancellation always dominates local execution configuration. Deadlines are
+	// checked only after the terminal fresh-transport requirement below.
+	if err := request.Context().Err(); errors.Is(err, context.Canceled) {
+		return nil, safeTransportFailure(context.Canceled)
 	}
 
 	// Redirect policy is mutable client configuration. Clone the value for every
@@ -112,17 +131,24 @@ func (c *Client) executeRequestWithOptions(request *http.Request, options client
 			transport = http.DefaultTransport
 		}
 		baseTransport, ok := transport.(*http.Transport)
-		if !ok {
-			// request.Close is only a hint to an arbitrary RoundTripper. Worker
-			// sampling and PATCH fan-out must not claim independent connections
-			// unless the provider can clone and isolate the transport explicitly.
-			return nil, &safeTransportError{kind: "fresh LiteLLM connection is unavailable for the configured HTTP transport"}
+		if !ok || baseTransport == nil {
+			// Validate the terminal freshness requirement before consulting an
+			// expired deadline. request.Close is only a hint to an arbitrary
+			// RoundTripper, so independent connections cannot otherwise be proved.
+			return nil, &safeTransportError{
+				kind:     "fresh LiteLLM connection is unavailable for the configured HTTP transport",
+				terminal: true,
+			}
 		}
 		request.Close = true
 		freshTransport := baseTransport.Clone()
 		freshTransport.DisableKeepAlives = true
 		httpClient.Transport = freshTransport
 		cleanup = freshTransport.CloseIdleConnections
+	}
+	if err := request.Context().Err(); err != nil {
+		cleanup()
+		return nil, safeTransportFailure(err)
 	}
 	response, err := httpClient.Do(request)
 	if err != nil {
@@ -255,7 +281,7 @@ func (c *Client) doRequestWithResponseOptions(ctx context.Context, method, reque
 
 	if readErr != nil {
 		traits := collectRawHTTPFailureTraits(readErr)
-		return true, &safeResponseError{
+		return true, withSafeRetrySchedule(&safeResponseError{
 			statusCode:        response.StatusCode,
 			requestID:         requestID,
 			kind:              "failed to read LiteLLM response",
@@ -268,7 +294,7 @@ func (c *Client) doRequestWithResponseOptions(ctx context.Context, method, reque
 			stage:             safeResponseFailureAcceptedBodyRead,
 			dispatched:        true,
 			accepted:          true,
-		}
+		}, retryAfter, hasRetryAfter)
 	}
 	if truncated {
 		return true, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "LiteLLM response exceeded the provider safety limit", stage: safeResponseFailureContract, dispatched: true, accepted: true}
