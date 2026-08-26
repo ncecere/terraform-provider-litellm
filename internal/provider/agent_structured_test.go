@@ -3,8 +3,10 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"testing"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	datasourceschema "github.com/hashicorp/terraform-plugin-framework/datasource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -463,6 +465,117 @@ func agentWireModelsForSkillsForTest(byID map[string]map[string]interface{}) []A
 		result = append(result, AgentSkillModel{ID: types.StringValue(id), Name: types.StringValue(raw["name"].(string))})
 	}
 	return result
+}
+
+func TestAgentMergedLifecycleFixtureClearOverlay(t *testing.T) {
+	securityType := types.MapType{ElemType: types.ListType{ElemType: types.StringType}}
+	security := types.ListValueMust(securityType, []attr.Value{
+		types.MapValueMust(types.ListType{ElemType: types.StringType}, map[string]attr.Value{
+			"oauth2": types.ListValueMust(types.StringType, []attr.Value{types.StringValue("read"), types.StringValue("read")}),
+		}),
+	})
+	prior := emptyKnownAgentResourceModel()
+	prior.AgentName = types.StringValue("smoke-agent-lifecycle")
+	prior.AgentCard = &AgentCardModel{
+		Name: types.StringValue("Smoke Agent Lifecycle"), Description: types.StringValue("set then clear"), URL: types.StringValue("https://agent.example.com/lifecycle"),
+		Version: types.StringValue("1.0.0"), ProtocolVersion: types.StringValue("1.0"), DefaultInputModes: stringListValue("text"), DefaultOutputModes: stringListValue("text"),
+		PreferredTransport: types.StringValue("JSONRPC"), IconURL: types.StringValue("https://agent.example.com/icon.png"), DocumentationURL: types.StringValue("https://agent.example.com/docs"), SupportsAuthenticatedExtendedCard: types.BoolValue(true),
+		Capabilities: &AgentCapabilitiesModel{Streaming: types.BoolValue(true), PushNotifications: types.BoolValue(false), StateTransitionHistory: types.BoolValue(false)},
+		Provider:     &AgentProviderModel{Organization: types.StringValue("Acceptance"), URL: types.StringValue("https://agent.example.com")},
+		Skills: []AgentSkillModel{{
+			ID: types.StringValue("acceptance"), Name: types.StringValue("Acceptance"), Description: types.StringValue("set then clear"),
+			Tags: stringListValue("lifecycle"), Examples: stringListValue("test"), InputModes: stringListValue("text"), OutputModes: stringListValue("text"), Security: security, SecurityJSON: types.StringNull(),
+		}},
+		Signatures: []AgentCardSignatureModel{
+			{Protected: types.StringValue("acceptance-protected"), Signature: types.StringValue("acceptance-signature"), Header: types.StringValue(`{"duplicate":0,"exact":9007199254740993}`), HeaderJSON: types.StringNull()},
+			{Protected: types.StringValue("acceptance-protected"), Signature: types.StringValue("acceptance-signature"), Header: types.StringValue(`{"duplicate":1,"exact":9007199254740993}`), HeaderJSON: types.StringNull()},
+		},
+	}
+	plan := cloneAgentResourceModel(prior)
+	plan.AgentCard.Description = types.StringNull()
+	plan.AgentCard.PreferredTransport = types.StringNull()
+	plan.AgentCard.IconURL = types.StringNull()
+	plan.AgentCard.DocumentationURL = types.StringNull()
+	plan.AgentCard.SupportsAuthenticatedExtendedCard = types.BoolValue(false)
+	plan.AgentCard.Capabilities = &AgentCapabilitiesModel{Streaming: types.BoolValue(false), PushNotifications: types.BoolValue(false), StateTransitionHistory: types.BoolValue(false)}
+	plan.AgentCard.Provider.Organization = types.StringNull()
+	plan.AgentCard.Skills[0].Description = types.StringNull()
+	plan.AgentCard.Skills[0].Tags = stringListValue()
+	plan.AgentCard.Skills[0].Examples = stringListValue()
+	plan.AgentCard.Skills[0].InputModes = stringListValue()
+	plan.AgentCard.Skills[0].OutputModes = stringListValue()
+	plan.AgentCard.Skills[0].Security = types.ListValueMust(securityType, []attr.Value{})
+	plan.AgentCard.Signatures = []AgentCardSignatureModel{}
+	config := cloneAgentResourceModel(plan)
+
+	base := map[string]interface{}{
+		"name": "Smoke Agent Lifecycle", "description": "set then clear", "url": "https://agent.example.com/lifecycle", "version": "1.0.0", "protocolVersion": "1.0",
+		"defaultInputModes": []interface{}{"text"}, "defaultOutputModes": []interface{}{"text"}, "preferredTransport": "JSONRPC", "iconUrl": "https://agent.example.com/icon.png", "documentationUrl": "https://agent.example.com/docs", "supportsAuthenticatedExtendedCard": true,
+		"capabilities": map[string]interface{}{"streaming": true}, "provider": map[string]interface{}{"organization": "Acceptance", "url": "https://agent.example.com"},
+		"skills": []interface{}{map[string]interface{}{
+			"id": "acceptance", "name": "Acceptance", "description": "set then clear", "tags": []interface{}{"lifecycle"}, "examples": []interface{}{"test"}, "inputModes": []interface{}{"text"}, "outputModes": []interface{}{"text"},
+			"security": []interface{}{map[string]interface{}{"oauth2": []interface{}{"read", "read"}}}, "x-api-owned": map[string]interface{}{"exact": json.Number("9007199254740993"), "present": nil},
+		}},
+		"signatures": []interface{}{
+			map[string]interface{}{"protected": "acceptance-protected", "signature": "acceptance-signature", "header": map[string]interface{}{"duplicate": json.Number("0"), "exact": json.Number("9007199254740993")}},
+			map[string]interface{}{"protected": "acceptance-protected", "signature": "acceptance-signature", "header": map[string]interface{}{"duplicate": json.Number("1"), "exact": json.Number("9007199254740993")}},
+		},
+		"security": []interface{}{}, "securitySchemes": map[string]interface{}{}, "supportedInterfaces": []interface{}{},
+	}
+	patch, err := overlayAgentCardRaw(base, plan, prior, config, agentFieldSet{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, present := patch["capabilities"]; present {
+		t.Fatalf("false capability clear was not normalized to v1.98 wire omission: %#v", patch["capabilities"])
+	}
+	if err := validateAgentCardV198RoundTrip(patch); err != nil {
+		t.Fatalf("exact merged lifecycle clear failed preflight: %v", err)
+	}
+	for _, cleared := range []string{"description", "preferredTransport", "iconUrl", "documentationUrl"} {
+		if _, present := patch[cleared]; present {
+			t.Fatalf("card clear retained %s", cleared)
+		}
+	}
+	if patch["supportsAuthenticatedExtendedCard"] != false {
+		t.Fatal("authenticated-card flag did not clear")
+	}
+	provider := agentWireObject(patch["provider"])
+	if _, present := provider["organization"]; present || provider["url"] != "https://agent.example.com" {
+		t.Fatal("provider leaf clear changed its configured sibling")
+	}
+	skill := agentSkillRawByID(patch)["acceptance"]
+	if skill == nil || !exactJSONValuesEqual(skill["x-api-owned"], base["skills"].([]interface{})[0].(map[string]interface{})["x-api-owned"]) {
+		t.Fatal("API-owned unknown structured skill value was not preserved exactly")
+	}
+	if _, present := skill["description"]; present {
+		t.Fatal("skill description clear was not represented by omission")
+	}
+	for _, cleared := range []string{"tags", "examples", "inputModes", "outputModes", "security"} {
+		items := reflect.ValueOf(skill[cleared])
+		if !items.IsValid() || items.Kind() != reflect.Slice || items.Len() != 0 {
+			t.Fatalf("skill collection clear did not remain explicit empty: %s", cleared)
+		}
+	}
+	if signatures := agentWireObjectList(patch["signatures"]); len(signatures) != 0 {
+		t.Fatalf("signature clear retained %d entries", len(signatures))
+	}
+	for _, adversarial := range []map[string]interface{}{
+		func() map[string]interface{} {
+			value := cloneAgentWireObject(patch)
+			value["x-unknown"] = true
+			return value
+		}(),
+		func() map[string]interface{} {
+			value := cloneAgentWireObject(patch)
+			value["capabilities"] = map[string]interface{}{"unknown": true}
+			return value
+		}(),
+	} {
+		if validateAgentCardV198RoundTrip(adversarial) == nil {
+			t.Fatal("adversarial filtered key passed the strict v1.98 preflight")
+		}
+	}
 }
 
 func TestAgentV198RoundTripPreflightRejectsFilteredPaths(t *testing.T) {

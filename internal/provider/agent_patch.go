@@ -362,9 +362,23 @@ func overlayAgentCardRaw(base map[string]interface{}, plan, prior, config AgentR
 		}
 		desiredObject := agentWireObject(desired[wire.wire])
 		for field, childWire := range wire.leaves {
-			if usePlan(field) {
-				setAgentWireField(current, desiredObject, childWire)
+			if !usePlan(field) {
+				continue
 			}
+			// LiteLLM v1.98 stores only truthy streaming in capabilities.
+			// A configured false is therefore a legitimate clear represented by
+			// wire omission, not a false value that the round-trip preflight must
+			// reject as lossy. Other nested objects retain ordinary exact
+			// omission/null/value overlay semantics.
+			if wire.wire == "capabilities" {
+				if value, present := desiredObject[childWire]; present {
+					if enabled, isBool := value.(bool); isBool && !enabled {
+						delete(current, childWire)
+						continue
+					}
+				}
+			}
+			setAgentWireField(current, desiredObject, childWire)
 		}
 		if len(current) == 0 {
 			delete(patch, wire.wire)
