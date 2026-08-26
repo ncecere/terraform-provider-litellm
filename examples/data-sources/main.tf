@@ -2,7 +2,7 @@
 # This example demonstrates using data sources to reference existing resources
 
 terraform {
-  required_version = ">= 1.0.0"
+  required_version = ">= 1.1.0"
 
   required_providers {
     litellm = {
