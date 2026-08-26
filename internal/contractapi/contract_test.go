@@ -3264,60 +3264,64 @@ func TestReviewedAdjacentIndexAndV1BetaClassifications(t *testing.T) {
 
 func TestReviewedClassificationRejectsCoverageDrift(t *testing.T) {
 	root := repositoryRoot(t)
-	load := func(t *testing.T) (Manifest, ReviewedPins, ReviewedClassification, map[string][]contractOperation, []Operation) {
-		t.Helper()
-		var manifest Manifest
-		var pins ReviewedPins
-		var classification ReviewedClassification
-		if err := readJSONFile(filepath.Join(root, "internal", "contract", "manifest.json"), &manifest); err != nil {
-			t.Fatal(err)
-		}
-		if err := readJSONFile(filepath.Join(root, "internal", "contract", "reviewed-pins.json"), &pins); err != nil {
-			t.Fatal(err)
-		}
-		if err := readJSONFile(filepath.Join(root, "internal", "contract", "reviewed-operation-classification.json"), &classification); err != nil {
-			t.Fatal(err)
-		}
-		contracts, _, _, err := LoadContracts(filepath.Join(root, "openapi.json"), filepath.Join(root, "internal", "contract", "supplemental-routes.json"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		extracted, err := ExtractProvider(filepath.Join(root, "internal", "provider"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		supported, err := ResolveOperations(extracted, contracts)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return manifest, pins, classification, contracts, supported
+	var manifest Manifest
+	var pins ReviewedPins
+	var classification ReviewedClassification
+	if err := readJSONFile(filepath.Join(root, "internal", "contract", "manifest.json"), &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if err := readJSONFile(filepath.Join(root, "internal", "contract", "reviewed-pins.json"), &pins); err != nil {
+		t.Fatal(err)
+	}
+	if err := readJSONFile(filepath.Join(root, "internal", "contract", "reviewed-operation-classification.json"), &classification); err != nil {
+		t.Fatal(err)
+	}
+	contracts, _, _, err := LoadContracts(filepath.Join(root, "openapi.json"), filepath.Join(root, "internal", "contract", "supplemental-routes.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	extracted, err := ExtractProvider(filepath.Join(root, "internal", "provider"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	supported, err := ResolveOperations(extracted, contracts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	copyClassification := func() ReviewedClassification {
+		result := classification
+		result.Operations = append([]ClassifiedOperation(nil), classification.Operations...)
+		return result
 	}
 
 	t.Run("unclassified-route", func(t *testing.T) {
-		manifest, pins, classification, contracts, supported := load(t)
-		classification.Operations = classification.Operations[1:]
-		if err := validateReview(manifest, pins, classification, contracts, supported); err == nil || !strings.Contains(err.Error(), "unclassified API operation") {
+		candidate := copyClassification()
+		candidate.Operations = candidate.Operations[1:]
+		if err := validateReview(manifest, pins, candidate, contracts, supported); err == nil || !strings.Contains(err.Error(), "unclassified API operation") {
 			t.Fatalf("removed classification was accepted: %v", err)
 		}
 	})
 	t.Run("stale-route", func(t *testing.T) {
-		manifest, pins, classification, contracts, supported := load(t)
-		classification.Operations = append(classification.Operations, ClassifiedOperation{Method: "GET", Path: "/removed-route", Category: "health"})
-		if err := validateReview(manifest, pins, classification, contracts, supported); err == nil || !strings.Contains(err.Error(), "stale operation") {
+		candidate := copyClassification()
+		candidate.Operations = append(candidate.Operations, ClassifiedOperation{Method: "GET", Path: "/removed-route", Category: "health"})
+		if err := validateReview(manifest, pins, candidate, contracts, supported); err == nil || !strings.Contains(err.Error(), "stale operation") {
 			t.Fatalf("stale classification was accepted: %v", err)
 		}
 	})
 	t.Run("new-openapi-route", func(t *testing.T) {
-		manifest, pins, classification, contracts, supported := load(t)
-		contracts["GET"] = append(contracts["GET"], contractOperation{method: "GET", path: "/new-durable-record", queryParams: map[string]bool{}})
-		if err := validateReview(manifest, pins, classification, contracts, supported); err == nil || !strings.Contains(err.Error(), "unclassified API operation GET /new-durable-record") {
+		candidateContracts := make(map[string][]contractOperation, len(contracts))
+		for method, operations := range contracts {
+			candidateContracts[method] = operations
+		}
+		candidateContracts["GET"] = append(append([]contractOperation(nil), contracts["GET"]...), contractOperation{method: "GET", path: "/new-durable-record", queryParams: map[string]bool{}})
+		if err := validateReview(manifest, pins, classification, candidateContracts, supported); err == nil || !strings.Contains(err.Error(), "unclassified API operation GET /new-durable-record") {
 			t.Fatalf("new API route was accepted without review: %v", err)
 		}
 	})
 	t.Run("unknown-category", func(t *testing.T) {
-		manifest, pins, classification, contracts, supported := load(t)
-		classification.Operations[0].Category = "catch_all"
-		if err := validateReview(manifest, pins, classification, contracts, supported); err == nil || !strings.Contains(err.Error(), "unknown classification category") {
+		candidate := copyClassification()
+		candidate.Operations[0].Category = "catch_all"
+		if err := validateReview(manifest, pins, candidate, contracts, supported); err == nil || !strings.Contains(err.Error(), "unknown classification category") {
 			t.Fatalf("unknown category was accepted: %v", err)
 		}
 	})
