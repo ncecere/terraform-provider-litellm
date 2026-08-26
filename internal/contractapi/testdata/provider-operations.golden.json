@@ -1,0 +1,1673 @@
+[
+  {
+    "method": "GET",
+    "path": "/access_group/list",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/datasource_access_groups_list.go",
+        "line": 91
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/access_group/new",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_access_group.go",
+        "line": 108
+      }
+    ]
+  },
+  {
+    "method": "DELETE",
+    "path": "/access_group/{access_group}/delete",
+    "path_parameters": [
+      "access_group"
+    ],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_access_group.go",
+        "line": 195
+      }
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/access_group/{access_group}/info",
+    "path_parameters": [
+      "access_group"
+    ],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/datasource_access_group.go",
+        "line": 82
+      },
+      {
+        "file": "internal/provider/resource_access_group.go",
+        "line": 323
+      }
+    ]
+  },
+  {
+    "method": "PUT",
+    "path": "/access_group/{access_group}/update",
+    "path_parameters": [
+      "access_group"
+    ],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_access_group.go",
+        "line": 173
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/budget/delete",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_budget.go",
+        "line": 267
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/budget/info",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/datasource_budget.go",
+        "line": 120
+      },
+      {
+        "file": "internal/provider/resource_budget.go",
+        "line": 337
+      }
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/budget/list",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/datasource_budgets_list.go",
+        "line": 135
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/budget/new",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_budget.go",
+        "line": 156
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/budget/update",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_budget.go",
+        "line": 241
+      },
+      {
+        "file": "internal/provider/resource_project.go",
+        "line": 239
+      },
+      {
+        "file": "internal/provider/resource_project.go",
+        "line": 371
+      },
+      {
+        "file": "internal/provider/resource_tag.go",
+        "line": 300
+      },
+      {
+        "file": "internal/provider/resource_tag.go",
+        "line": 509
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/credentials",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_credential.go",
+        "line": 379
+      }
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/credentials/by_model/{model_id}",
+    "path_parameters": [
+      "model_id"
+    ],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/datasource_credential.go",
+        "line": 101
+      }
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/credentials/by_name/{credential_name}",
+    "path_parameters": [
+      "credential_name"
+    ],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/datasource_credential.go",
+        "line": 101
+      },
+      {
+        "file": "internal/provider/resource_credential.go",
+        "line": 354
+      },
+      {
+        "file": "internal/provider/resource_credential.go",
+        "line": 543
+      },
+      {
+        "file": "internal/provider/resource_credential.go",
+        "line": 683
+      },
+      {
+        "file": "internal/provider/resource_credential.go",
+        "line": 756
+      },
+      {
+        "file": "internal/provider/resource_credential.go",
+        "line": 832
+      },
+      {
+        "file": "internal/provider/resource_credential.go",
+        "line": 1372
+      },
+      {
+        "file": "internal/provider/resource_credential.go",
+        "line": 1464
+      },
+      {
+        "file": "internal/provider/resource_credential.go",
+        "line": 1513
+      },
+      {
+        "file": "internal/provider/resource_credential.go",
+        "line": 1566
+      }
+    ]
+  },
+  {
+    "method": "DELETE",
+    "path": "/credentials/{credential_name}",
+    "path_parameters": [
+      "credential_name"
+    ],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_credential.go",
+        "line": 860
+      }
+    ]
+  },
+  {
+    "method": "PATCH",
+    "path": "/credentials/{credential_name}",
+    "path_parameters": [
+      "credential_name"
+    ],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_credential.go",
+        "line": 1167
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/fallback",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_fallback.go",
+        "line": 278
+      }
+    ]
+  },
+  {
+    "method": "DELETE",
+    "path": "/fallback/{model}",
+    "path_parameters": [
+      "model"
+    ],
+    "query_parameters": [
+      "fallback_type"
+    ],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_fallback.go",
+        "line": 179
+      },
+      {
+        "file": "internal/provider/resource_fallback.go",
+        "line": 179
+      },
+      {
+        "file": "internal/provider/resource_fallback.go",
+        "line": 179
+      }
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/fallback/{model}",
+    "path_parameters": [
+      "model"
+    ],
+    "query_parameters": [
+      "fallback_type"
+    ],
+    "evidence": [
+      {
+        "file": "internal/provider/datasource_fallback.go",
+        "line": 116
+      },
+      {
+        "file": "internal/provider/datasource_fallback.go",
+        "line": 116
+      },
+      {
+        "file": "internal/provider/datasource_fallback.go",
+        "line": 116
+      },
+      {
+        "file": "internal/provider/resource_fallback.go",
+        "line": 363
+      },
+      {
+        "file": "internal/provider/resource_fallback.go",
+        "line": 363
+      },
+      {
+        "file": "internal/provider/resource_fallback.go",
+        "line": 363
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/guardrails",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_guardrail.go",
+        "line": 136
+      }
+    ]
+  },
+  {
+    "method": "DELETE",
+    "path": "/guardrails/{guardrail_id}",
+    "path_parameters": [
+      "guardrail_id"
+    ],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_guardrail.go",
+        "line": 248
+      }
+    ]
+  },
+  {
+    "method": "PUT",
+    "path": "/guardrails/{guardrail_id}",
+    "path_parameters": [
+      "guardrail_id"
+    ],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_guardrail.go",
+        "line": 224
+      }
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/guardrails/{guardrail_id}/info",
+    "path_parameters": [
+      "guardrail_id"
+    ],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/datasource_guardrail.go",
+        "line": 115
+      },
+      {
+        "file": "internal/provider/resource_guardrail.go",
+        "line": 363
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/key/block",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_key_block.go",
+        "line": 274
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/key/delete",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_key.go",
+        "line": 571
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/key/generate",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_key.go",
+        "line": 447
+      }
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/key/info",
+    "path_parameters": [],
+    "query_parameters": [
+      "key"
+    ],
+    "evidence": [
+      {
+        "file": "internal/provider/datasource_key.go",
+        "line": 213
+      },
+      {
+        "file": "internal/provider/resource_key.go",
+        "line": 922
+      },
+      {
+        "file": "internal/provider/resource_key_block.go",
+        "line": 301
+      },
+      {
+        "file": "internal/provider/resource_unified_access_group.go",
+        "line": 860
+      }
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/key/list",
+    "path_parameters": [],
+    "query_parameters": [
+      "access_group_id",
+      "page",
+      "return_full_object",
+      "size",
+      "sort_by",
+      "sort_order",
+      "team_id",
+      "user_id"
+    ],
+    "evidence": [
+      {
+        "file": "internal/provider/datasource_keys_list.go",
+        "line": 148
+      },
+      {
+        "file": "internal/provider/datasource_keys_list.go",
+        "line": 183
+      },
+      {
+        "file": "internal/provider/resource_unified_access_group.go",
+        "line": 1103
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/key/service-account/generate",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_key.go",
+        "line": 447
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/key/unblock",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_key_block.go",
+        "line": 370
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/key/update",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_key.go",
+        "line": 536
+      },
+      {
+        "file": "internal/provider/resource_unified_access_group.go",
+        "line": 537
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/model/delete",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_model.go",
+        "line": 780
+      }
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/model/info",
+    "path_parameters": [],
+    "query_parameters": [
+      "litellm_model_id",
+      "teamId"
+    ],
+    "evidence": [
+      {
+        "file": "internal/provider/datasource_model.go",
+        "line": 132
+      },
+      {
+        "file": "internal/provider/datasource_models_list.go",
+        "line": 126
+      },
+      {
+        "file": "internal/provider/resource_model.go",
+        "line": 966
+      },
+      {
+        "file": "internal/provider/resource_model.go",
+        "line": 968
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/model/new",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_model.go",
+        "line": 951
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/model/update",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_model.go",
+        "line": 951
+      }
+    ]
+  },
+  {
+    "method": "PATCH",
+    "path": "/model/{model_id}/update",
+    "path_parameters": [
+      "model_id"
+    ],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_model.go",
+        "line": 2059
+      }
+    ]
+  },
+  {
+    "method": "DELETE",
+    "path": "/organization/delete",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_organization.go",
+        "line": 293
+      }
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/organization/info",
+    "path_parameters": [],
+    "query_parameters": [
+      "organization_id"
+    ],
+    "evidence": [
+      {
+        "file": "internal/provider/datasource_organization.go",
+        "line": 94
+      },
+      {
+        "file": "internal/provider/resource_organization.go",
+        "line": 415
+      },
+      {
+        "file": "internal/provider/resource_organization.go",
+        "line": 484
+      },
+      {
+        "file": "internal/provider/resource_organization_member.go",
+        "line": 435
+      }
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/organization/list",
+    "path_parameters": [],
+    "query_parameters": [
+      "org_alias"
+    ],
+    "evidence": [
+      {
+        "file": "internal/provider/datasource_organizations_list.go",
+        "line": 91
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/organization/member_add",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_organization_member.go",
+        "line": 543
+      }
+    ]
+  },
+  {
+    "method": "DELETE",
+    "path": "/organization/member_delete",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_organization_member.go",
+        "line": 855
+      }
+    ]
+  },
+  {
+    "method": "PATCH",
+    "path": "/organization/member_update",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_organization_member.go",
+        "line": 633
+      },
+      {
+        "file": "internal/provider/resource_organization_member.go",
+        "line": 756
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/organization/new",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_organization.go",
+        "line": 153
+      }
+    ]
+  },
+  {
+    "method": "DELETE",
+    "path": "/project/delete",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_project.go",
+        "line": 425
+      }
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/project/info",
+    "path_parameters": [],
+    "query_parameters": [
+      "project_id"
+    ],
+    "evidence": [
+      {
+        "file": "internal/provider/datasource_project.go",
+        "line": 99
+      },
+      {
+        "file": "internal/provider/resource_project.go",
+        "line": 634
+      },
+      {
+        "file": "internal/provider/resource_project.go",
+        "line": 672
+      }
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/project/list",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/datasource_projects_list.go",
+        "line": 96
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/project/new",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_project.go",
+        "line": 207
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/project/update",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_project.go",
+        "line": 351
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/prompts",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_prompt.go",
+        "line": 183
+      }
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/prompts/list",
+    "path_parameters": [],
+    "query_parameters": [
+      "environment"
+    ],
+    "evidence": [
+      {
+        "file": "internal/provider/datasource_prompts_list.go",
+        "line": 200
+      },
+      {
+        "file": "internal/provider/datasource_prompts_list.go",
+        "line": 221
+      },
+      {
+        "file": "internal/provider/datasource_prompts_list.go",
+        "line": 221
+      }
+    ]
+  },
+  {
+    "method": "DELETE",
+    "path": "/prompts/{prompt_id}",
+    "path_parameters": [
+      "prompt_id"
+    ],
+    "query_parameters": [
+      "environment"
+    ],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_prompt.go",
+        "line": 305
+      },
+      {
+        "file": "internal/provider/resource_prompt.go",
+        "line": 320
+      }
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/prompts/{prompt_id}",
+    "path_parameters": [
+      "prompt_id"
+    ],
+    "query_parameters": [
+      "environment"
+    ],
+    "evidence": [
+      {
+        "file": "internal/provider/datasource_prompt.go",
+        "line": 154
+      },
+      {
+        "file": "internal/provider/datasource_prompts_list.go",
+        "line": 239
+      },
+      {
+        "file": "internal/provider/prompt_helpers.go",
+        "line": 74
+      },
+      {
+        "file": "internal/provider/resource_prompt.go",
+        "line": 260
+      },
+      {
+        "file": "internal/provider/resource_prompt.go",
+        "line": 311
+      },
+      {
+        "file": "internal/provider/resource_prompt.go",
+        "line": 322
+      },
+      {
+        "file": "internal/provider/resource_prompt.go",
+        "line": 513
+      }
+    ]
+  },
+  {
+    "method": "PATCH",
+    "path": "/prompts/{prompt_id}",
+    "path_parameters": [
+      "prompt_id"
+    ],
+    "query_parameters": [
+      "environment"
+    ],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_prompt.go",
+        "line": 319
+      }
+    ]
+  },
+  {
+    "method": "PUT",
+    "path": "/prompts/{prompt_id}",
+    "path_parameters": [
+      "prompt_id"
+    ],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_prompt.go",
+        "line": 283
+      }
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/prompts/{prompt_id}/versions",
+    "path_parameters": [
+      "prompt_id"
+    ],
+    "query_parameters": [
+      "environment"
+    ],
+    "evidence": [
+      {
+        "file": "internal/provider/prompt_helpers.go",
+        "line": 84
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/search_tools",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_search_tool.go",
+        "line": 131
+      }
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/search_tools/list",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/datasource_search_tools_list.go",
+        "line": 111
+      }
+    ]
+  },
+  {
+    "method": "DELETE",
+    "path": "/search_tools/{search_tool_id}",
+    "path_parameters": [
+      "search_tool_id"
+    ],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_search_tool.go",
+        "line": 242
+      }
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/search_tools/{search_tool_id}",
+    "path_parameters": [
+      "search_tool_id"
+    ],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/datasource_search_tool.go",
+        "line": 106
+      },
+      {
+        "file": "internal/provider/resource_search_tool.go",
+        "line": 312
+      }
+    ]
+  },
+  {
+    "method": "PUT",
+    "path": "/search_tools/{search_tool_id}",
+    "path_parameters": [
+      "search_tool_id"
+    ],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_search_tool.go",
+        "line": 215
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/tag/delete",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_tag.go",
+        "line": 573
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/tag/info",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/datasource_tag.go",
+        "line": 79
+      },
+      {
+        "file": "internal/provider/resource_tag.go",
+        "line": 668
+      }
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/tag/list",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/datasource_tags_list.go",
+        "line": 86
+      },
+      {
+        "file": "internal/provider/resource_tag.go",
+        "line": 650
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/tag/new",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_tag.go",
+        "line": 256
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/tag/update",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_tag.go",
+        "line": 495
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/team/block",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_team_block.go",
+        "line": 98
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/team/delete",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_team.go",
+        "line": 486
+      }
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/team/info",
+    "path_parameters": [],
+    "query_parameters": [
+      "team_id"
+    ],
+    "evidence": [
+      {
+        "file": "internal/provider/datasource_team.go",
+        "line": 142
+      },
+      {
+        "file": "internal/provider/resource_team.go",
+        "line": 753
+      },
+      {
+        "file": "internal/provider/resource_team_block.go",
+        "line": 121
+      },
+      {
+        "file": "internal/provider/resource_team_member_add.go",
+        "line": 1144
+      }
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/team/list",
+    "path_parameters": [],
+    "query_parameters": [
+      "organization_id"
+    ],
+    "evidence": [
+      {
+        "file": "internal/provider/datasource_teams_list.go",
+        "line": 131
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/team/member_add",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_team_member.go",
+        "line": 827
+      },
+      {
+        "file": "internal/provider/resource_team_member_add.go",
+        "line": 338
+      },
+      {
+        "file": "internal/provider/resource_team_member_add.go",
+        "line": 665
+      },
+      {
+        "file": "internal/provider/resource_user.go",
+        "line": 760
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/team/member_delete",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_team_member.go",
+        "line": 1252
+      },
+      {
+        "file": "internal/provider/resource_team_member_add.go",
+        "line": 848
+      },
+      {
+        "file": "internal/provider/resource_team_member_add.go",
+        "line": 1041
+      },
+      {
+        "file": "internal/provider/resource_user.go",
+        "line": 766
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/team/member_update",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_team_member.go",
+        "line": 1107
+      },
+      {
+        "file": "internal/provider/resource_team_member_add.go",
+        "line": 760
+      },
+      {
+        "file": "internal/provider/resource_team_member_add.go",
+        "line": 793
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/team/new",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_team.go",
+        "line": 372
+      }
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/team/permissions_list",
+    "path_parameters": [],
+    "query_parameters": [
+      "team_id"
+    ],
+    "evidence": [
+      {
+        "file": "internal/provider/datasource_team.go",
+        "line": 236
+      },
+      {
+        "file": "internal/provider/resource_team.go",
+        "line": 981
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/team/permissions_update",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_team.go",
+        "line": 462
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/team/unblock",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_team_block.go",
+        "line": 188
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/team/update",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_team.go",
+        "line": 443
+      },
+      {
+        "file": "internal/provider/resource_team.go",
+        "line": 449
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/user/delete",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_user.go",
+        "line": 326
+      }
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/user/info",
+    "path_parameters": [],
+    "query_parameters": [
+      "user_id"
+    ],
+    "evidence": [
+      {
+        "file": "internal/provider/datasource_user.go",
+        "line": 135
+      },
+      {
+        "file": "internal/provider/invite_email.go",
+        "line": 87
+      },
+      {
+        "file": "internal/provider/resource_user.go",
+        "line": 556
+      }
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/user/list",
+    "path_parameters": [],
+    "query_parameters": [
+      "page",
+      "page_size",
+      "role",
+      "sort_by",
+      "sort_order",
+      "user_email"
+    ],
+    "evidence": [
+      {
+        "file": "internal/provider/datasource_users_list.go",
+        "line": 132
+      },
+      {
+        "file": "internal/provider/datasource_users_list.go",
+        "line": 168
+      },
+      {
+        "file": "internal/provider/resource_team_member.go",
+        "line": 546
+      },
+      {
+        "file": "internal/provider/resource_user.go",
+        "line": 360
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/user/new",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_user.go",
+        "line": 198
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/user/update",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_user.go",
+        "line": 292
+      },
+      {
+        "file": "internal/provider/resource_user.go",
+        "line": 455
+      }
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/v1/access_group",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/datasource_unified_access_groups_list.go",
+        "line": 59
+      },
+      {
+        "file": "internal/provider/resource_unified_access_group.go",
+        "line": 1458
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/v1/access_group",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_unified_access_group.go",
+        "line": 231
+      }
+    ]
+  },
+  {
+    "method": "DELETE",
+    "path": "/v1/access_group/{access_group_id}",
+    "path_parameters": [
+      "access_group_id"
+    ],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_unified_access_group.go",
+        "line": 609
+      }
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/v1/access_group/{access_group_id}",
+    "path_parameters": [
+      "access_group_id"
+    ],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/datasource_unified_access_group.go",
+        "line": 92
+      },
+      {
+        "file": "internal/provider/resource_unified_access_group.go",
+        "line": 416
+      },
+      {
+        "file": "internal/provider/resource_unified_access_group.go",
+        "line": 442
+      },
+      {
+        "file": "internal/provider/resource_unified_access_group.go",
+        "line": 626
+      }
+    ]
+  },
+  {
+    "method": "PUT",
+    "path": "/v1/access_group/{access_group_id}",
+    "path_parameters": [
+      "access_group_id"
+    ],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_unified_access_group.go",
+        "line": 474
+      },
+      {
+        "file": "internal/provider/resource_unified_access_group.go",
+        "line": 505
+      }
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/v1/agents",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/datasource_agents_list.go",
+        "line": 130
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/v1/agents",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_agent.go",
+        "line": 357
+      }
+    ]
+  },
+  {
+    "method": "DELETE",
+    "path": "/v1/agents/{agent_id}",
+    "path_parameters": [
+      "agent_id"
+    ],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_agent.go",
+        "line": 490
+      }
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/v1/agents/{agent_id}",
+    "path_parameters": [
+      "agent_id"
+    ],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/datasource_agent.go",
+        "line": 143
+      },
+      {
+        "file": "internal/provider/resource_agent.go",
+        "line": 561
+      },
+      {
+        "file": "internal/provider/resource_agent.go",
+        "line": 856
+      }
+    ]
+  },
+  {
+    "method": "PUT",
+    "path": "/v1/agents/{agent_id}",
+    "path_parameters": [
+      "agent_id"
+    ],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_agent.go",
+        "line": 451
+      }
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/v1/mcp/server",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/datasource_mcp_servers_list.go",
+        "line": 147
+      },
+      {
+        "file": "internal/provider/resource_mcp_server.go",
+        "line": 1051
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/v1/mcp/server",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_mcp_server.go",
+        "line": 528
+      }
+    ]
+  },
+  {
+    "method": "PUT",
+    "path": "/v1/mcp/server",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_mcp_server.go",
+        "line": 626
+      }
+    ]
+  },
+  {
+    "method": "DELETE",
+    "path": "/v1/mcp/server/{server_id}",
+    "path_parameters": [
+      "server_id"
+    ],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_mcp_server.go",
+        "line": 676
+      }
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/v1/mcp/server/{server_id}",
+    "path_parameters": [
+      "server_id"
+    ],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/datasource_mcp_server.go",
+        "line": 214
+      },
+      {
+        "file": "internal/provider/resource_mcp_server.go",
+        "line": 1041
+      }
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/v2/guardrails/list",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/datasource_guardrails_list.go",
+        "line": 163
+      }
+    ]
+  },
+  {
+    "method": "PATCH",
+    "path": "/v2/organization/{organization_id}",
+    "path_parameters": [
+      "organization_id"
+    ],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_organization.go",
+        "line": 175
+      },
+      {
+        "file": "internal/provider/resource_organization.go",
+        "line": 252
+      }
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/v2/user/info",
+    "path_parameters": [],
+    "query_parameters": [
+      "user_id"
+    ],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_team_member.go",
+        "line": 572
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/vector_store/delete",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_vector_store.go",
+        "line": 357
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/vector_store/info",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/datasource_vector_store.go",
+        "line": 122
+      },
+      {
+        "file": "internal/provider/resource_vector_store.go",
+        "line": 578
+      },
+      {
+        "file": "internal/provider/resource_vector_store.go",
+        "line": 580
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/vector_store/new",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_vector_store.go",
+        "line": 250
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/vector_store/update",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_vector_store.go",
+        "line": 320
+      }
+    ]
+  }
+]

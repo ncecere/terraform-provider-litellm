@@ -25,6 +25,8 @@ jobs:
           terraform_wrapper: false
       - name: Metadata, HCL, entrypoint, and release-note contracts
         run: go test . ./internal/contract ./internal/cmd/release-notes -count=1
+      - name: Offline LiteLLM API contract check
+        run: make contract-check
       - name: Verify go.mod and go.sum are tidy
         run: |
           go mod tidy

@@ -27,6 +27,19 @@ fmt:
 vet:
 	go vet ./...
 
+# Offline: verifies checked artifacts, reviewed inventory, and every provider HTTP call.
+contract-check:
+	go run ./internal/cmd/contract-check
+	sh tools/litellm-contract/check-binary.sh
+
+# Networked unless LITELLM_SOURCE points at an existing exact upstream checkout.
+contract-update:
+	sh tools/litellm-contract/update.sh update
+
+# Reproduce without modifying checked files and show any generated contract drift.
+contract-diff:
+	sh tools/litellm-contract/update.sh diff
+
 lint:
 	golangci-lint run
 
@@ -61,4 +74,4 @@ smoke: build
 testacc: build
 	@sh internal_testing/acceptance.sh
 
-.PHONY: build install test coverage fmt vet lint clean local logs smoke testacc
+.PHONY: build install test coverage fmt vet contract-check contract-update contract-diff lint clean local logs smoke testacc

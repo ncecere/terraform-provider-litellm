@@ -25,6 +25,8 @@ jobs:
         with:
           go-version-file: 'go.mod'
           cache: true
+      - name: Verify checked LiteLLM API contract
+        run: make contract-check
       - name: Generate exact-tag release notes
         run: |
           go run ./internal/cmd/release-notes \
