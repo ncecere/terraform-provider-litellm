@@ -1052,17 +1052,90 @@ func sameCallableSignature(left, right *types.Signature) bool {
 	return types.Identical(left.Params(), right.Params()) && types.Identical(left.Results(), right.Results())
 }
 
+func (x *extractor) endpointReachabilityClosed(body *ast.BlockStmt, visiting map[*types.Func]bool) (bool, bool) {
+	if body == nil {
+		return false, false
+	}
+	reaches, closed := false, true
+	ast.Inspect(body, func(node ast.Node) bool {
+		if reaches || !closed {
+			return false
+		}
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if x.typesInfo.Types[call.Fun].IsType() {
+			return true
+		}
+		object := calledFunctionObject(x.typesInfo, call.Fun)
+		if x.exactEndpointBuilder(object) {
+			reaches = true
+			return false
+		}
+		if _, builtin := object.(*types.Builtin); builtin {
+			return true
+		}
+		function, exact := object.(*types.Func)
+		if !exact {
+			// Function variables, closures, and unresolved selectors are dynamic
+			// targets. Their endpoint reachability cannot be proven closed.
+			closed = false
+			return false
+		}
+		signature := function.Type().(*types.Signature)
+		if signatureUsesTypeParameters(signature) || signature.Recv() != nil && isInterfaceType(signature.Recv().Type()) {
+			closed = false
+			return false
+		}
+		if function.Pkg() == nil || function.Pkg().Path() != providerPackagePath {
+			return true
+		}
+		declaration := x.funcDeclForObject(function)
+		if declaration == nil {
+			closed = false
+			return false
+		}
+		if visiting[function] {
+			return true
+		}
+		visiting[function] = true
+		calleeReaches, calleeClosed := x.endpointReachabilityClosed(declaration.Body, visiting)
+		delete(visiting, function)
+		reaches = reaches || calleeReaches
+		closed = closed && calleeClosed
+		return !reaches && closed
+	})
+	return reaches, closed
+}
+
 func (x *extractor) interfaceEndpointDispatchCollision(function *types.Func) bool {
 	if function == nil {
 		return false
 	}
 	signature := function.Type().(*types.Signature)
-	if signature.Recv() == nil || !isInterfaceType(signature.Recv().Type()) {
+	if signature.Recv() == nil || !isInterfaceType(signature.Recv().Type()) || signature.Results().Len() != 1 || !types.Identical(signature.Results().At(0).Type(), types.Typ[types.String]) {
+		return false
+	}
+	hasStringInput := false
+	for index := 0; index < signature.Params().Len(); index++ {
+		hasStringInput = hasStringInput || types.Identical(signature.Params().At(index).Type(), types.Typ[types.String])
+	}
+	if !hasStringInput {
 		return false
 	}
 	for candidate, declaration := range x.funcDecls {
 		candidateSignature := candidate.Type().(*types.Signature)
-		if candidate != function && candidate.Name() == function.Name() && candidateSignature.Recv() != nil && !isInterfaceType(candidateSignature.Recv().Type()) && sameCallableSignature(signature, candidateSignature) && x.functionDirectlyUsesEndpoint(declaration) {
+		if candidate == function || candidate.Name() != function.Name() || candidateSignature.Recv() == nil || isInterfaceType(candidateSignature.Recv().Type()) || !sameCallableSignature(signature, candidateSignature) {
+			continue
+		}
+		// Inspect the complete statically resolved local call graph. A concrete
+		// method can otherwise hide its endpoint builder behind one or more free
+		// function or method wrappers. funcDecls is complete before validation,
+		// so this is independent of source declaration order. Unknown dynamic
+		// targets fail closed because their reachability cannot be proven.
+		reaches, closed := x.endpointReachabilityClosed(declaration.Body, map[*types.Func]bool{candidate: true})
+		if reaches || !closed {
 			return true
 		}
 	}
@@ -1173,16 +1246,18 @@ var reviewedPaginationFunctions = map[string]bool{
 	"listUnifiedAccessGroupKeys": true, "findExistingUserByExactEmail": true,
 }
 
-// These hashes pin the canonical, typed AST and complete local call graph of
-// the small set of raw-identity helpers. Any implementation change must be
-// independently reviewed before its new proof is admitted here.
+// These hashes pin a closed semantic dependency proof for the small set of
+// raw-identity helpers and promptEnvironment. Any implementation or dependency
+// change must be independently reviewed before its new proof is admitted here.
 var reviewedRawIdentityProofs = map[string]string{
-	"keyDataSourceLookup":          "a04513082d7710c90708c7cddd259a2356c057c7e6aa87993ec86b5bf81c957d",
-	"keyLookupIdentifier":          "654f6da1fcd0b89615df738fae5396243bcd10bc0d3c8506370db4d9b52e3d99",
-	"keyBlockStateIdentity":        "cb1083da11ef9270cf84055df0b67ff49cff811cfe9667e2f61b1d2abdacc44c",
-	"batchTeamID":                  "0047b04caf06ddcca4f3bead46ec8ae4039826d25491832ba04c3f37c1693333",
-	"teamMemberConfiguredIdentity": "094386574099a66a9a23663419151947a97746e356026617483703a211e638ae",
+	"keyDataSourceLookup":          "66b45bdf6345c6fd53c26d179d19b4aaf2d4e93603482bd47fe4d19f6ca2b409",
+	"keyLookupIdentifier":          "bfd8cead959c92f655df4cebf8816b216b3517b2b5d5ea5b57c08b8ad3e7a773",
+	"keyBlockStateIdentity":        "e2d298e1bd668b2b7e25c1037bf00a41f193b5ba89b1d72584914114fa3fb0ca",
+	"batchTeamID":                  "c3e1cc482481411c1551448ae66a86a7b1f1ab15541157598ecd4b6c079b1884",
+	"teamMemberConfiguredIdentity": "edb6d37deb5a402facf3f29e8f9371fb641c0c8bfdb5075b93fdf103a442a923",
 }
+
+var reviewedPromptEnvironmentProof = "6402f03748d72e305b05e40a59fa8c787eb81ab8abf735a3e86a5d03715e275f"
 
 func canonicalTypeString(t types.Type) string {
 	if t == nil {
@@ -1204,18 +1279,62 @@ func canonicalObjectString(object types.Object) string {
 	if object.Pkg() != nil {
 		packagePath = object.Pkg().Path()
 	}
-	return fmt.Sprintf("%T|%s|%s|%s", object, packagePath, object.Name(), canonicalTypeString(object.Type()))
+	value := ""
+	if object, ok := object.(*types.Const); ok {
+		// A constant's name and type do not prove its semantic value. ExactString
+		// is stable for all constant kinds and makes every used constant value a
+		// reviewed part of the proof.
+		value = "|VALUE:" + object.Val().ExactString()
+	}
+	return fmt.Sprintf("%T|%s|%s|%s%s", object, packagePath, object.Name(), canonicalTypeString(object.Type()), value)
 }
 
+func exactApprovedRawProofExternalFunction(function *types.Func) bool {
+	if function == nil || function.Pkg() == nil {
+		return false
+	}
+	approved := map[string]map[string]bool{
+		"crypto/sha256": {"Sum256": true},
+		"encoding/hex":  {"DecodeString": true},
+		"errors":        {"New": true},
+		"fmt":           {"Errorf": true, "Sprintf": true},
+		"strings":       {"HasPrefix": true, "ToLower": true, "TrimPrefix": true},
+	}
+	return approved[function.Pkg().Path()][function.Name()]
+}
+
+func exactApprovedRawProofMethod(function *types.Func) bool {
+	if function == nil || function.Pkg() == nil || function.Pkg().Path() != "github.com/hashicorp/terraform-plugin-framework/types/basetypes" {
+		return false
+	}
+	signature := function.Type().(*types.Signature)
+	return signature.Recv() != nil && exactNamedType(signature.Recv().Type(), "github.com/hashicorp/terraform-plugin-framework/types/basetypes", "StringValue") &&
+		map[string]bool{"IsNull": true, "IsUnknown": true, "ValueString": true}[function.Name()]
+}
+
+func signatureUsesTypeParameters(signature *types.Signature) bool {
+	if signature == nil {
+		return true
+	}
+	return signature.TypeParams() != nil && signature.TypeParams().Len() != 0 || signature.RecvTypeParams() != nil && signature.RecvTypeParams().Len() != 0
+}
+
+// canonicalRawIdentityProof constructs a proof only when the helper's entire
+// semantic dependency closure is available. It intentionally accepts a small
+// pure language: parameters, locals, field reads, literals, constants (with
+// values), exact conversions/builtins, exact approved external pure calls, and
+// recursively proven package-local free functions. Everything whose runtime
+// meaning can live elsewhere fails closed.
 func (x *extractor) canonicalRawIdentityProof(function *types.Func, visiting map[*types.Func]bool) (string, bool) {
-	if function == nil {
+	if function == nil || function.Pkg() == nil || function.Pkg().Path() != providerPackagePath {
 		return "", false
 	}
-	if visiting[function] {
-		return "CYCLE:" + canonicalObjectString(function), true
+	signature, _ := function.Type().(*types.Signature)
+	if signature == nil || signature.Recv() != nil || signatureUsesTypeParameters(signature) || visiting[function] {
+		return "", false
 	}
 	declaration := x.funcDeclForObject(function)
-	if declaration == nil || declaration.Body == nil {
+	if declaration == nil || declaration.Body == nil || declaration.Type.TypeParams != nil {
 		return "", false
 	}
 	visiting[function] = true
@@ -1231,25 +1350,106 @@ func (x *extractor) canonicalRawIdentityProof(function *types.Func, visiting map
 		if !valid {
 			return false
 		}
-		if expression, ok := node.(ast.Expr); ok {
-			fmt.Fprintf(&canonical, "EXPR:%T:%s\n", expression, canonicalTypeString(x.typesInfo.TypeOf(expression)))
-		}
-		if identifier, ok := node.(*ast.Ident); ok {
-			fmt.Fprintf(&canonical, "IDENT:%s:%s\n", identifier.Name, canonicalObjectString(x.typesInfo.ObjectOf(identifier)))
-		}
-		call, ok := node.(*ast.CallExpr)
-		if !ok || x.typesInfo.Types[call.Fun].IsType() {
-			return true
-		}
-		callee, _ := calledFunctionObject(x.typesInfo, call.Fun).(*types.Func)
-		fmt.Fprintf(&canonical, "CALL:%s\n", canonicalObjectString(callee))
-		if callee != nil && callee.Pkg() != nil && callee.Pkg().Path() == providerPackagePath && x.funcDeclForObject(callee) != nil {
-			proof, ok := x.canonicalRawIdentityProof(callee, visiting)
-			if !ok {
+		switch item := node.(type) {
+		case *ast.FuncLit:
+			// Function values and closures have bodies and captures that cannot be
+			// represented as an exact statically called free-function dependency.
+			valid = false
+			return false
+		case *ast.SelectorExpr:
+			selection := x.typesInfo.Selections[item]
+			if selection == nil && x.typesInfo.Uses[item.Sel] == nil {
 				valid = false
 				return false
 			}
-			fmt.Fprintf(&canonical, "CALLEE:%s\n", proof)
+		case *ast.Ident:
+			object := x.typesInfo.ObjectOf(item)
+			fmt.Fprintf(&canonical, "IDENT:%s:%s\n", item.Name, canonicalObjectString(object))
+			if _, instantiated := x.typesInfo.Instances[item]; instantiated {
+				valid = false
+				return false
+			}
+			if object == nil {
+				// nil, true, false, and the blank identifier have no types.Object.
+				if item.Name != "nil" && item.Name != "true" && item.Name != "false" && item.Name != "_" {
+					valid = false
+				}
+				return valid
+			}
+			if object.Pkg() != nil && (object.Pkg().Path() == "reflect" || object.Pkg().Path() == "unsafe") {
+				valid = false
+				return false
+			}
+			switch object := object.(type) {
+			case *types.Var:
+				// Fields, parameters, results, and locals are represented by the
+				// typed declaration. Package variables can be initialized or mutated
+				// by arbitrary package initialization and are never proof inputs.
+				if object.Pkg() != nil && object.Parent() == object.Pkg().Scope() {
+					valid = false
+					return false
+				}
+			case *types.TypeName:
+				if _, typeParameter := object.Type().(*types.TypeParam); typeParameter {
+					valid = false
+					return false
+				}
+			}
+		}
+		if expression, ok := node.(ast.Expr); ok {
+			fmt.Fprintf(&canonical, "EXPR:%T:%s\n", expression, canonicalTypeString(x.typesInfo.TypeOf(expression)))
+		}
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if x.typesInfo.Types[call.Fun].IsType() {
+			// Type conversions are fully represented by their typed AST. Generic
+			// instantiations and type parameters were rejected above.
+			fmt.Fprintf(&canonical, "CONVERSION:%s\n", canonicalTypeString(x.typesInfo.TypeOf(call.Fun)))
+			return true
+		}
+		object := calledFunctionObject(x.typesInfo, call.Fun)
+		if builtin, ok := object.(*types.Builtin); ok {
+			if builtin.Name() != "len" {
+				valid = false
+				return false
+			}
+			fmt.Fprintf(&canonical, "BUILTIN:%s\n", canonicalObjectString(builtin))
+			return true
+		}
+		callee, ok := object.(*types.Func)
+		if !ok {
+			// Includes function variables, closures, and unresolved selectors.
+			valid = false
+			return false
+		}
+		calleeSignature, _ := callee.Type().(*types.Signature)
+		if signatureUsesTypeParameters(calleeSignature) {
+			// Generic callees and instantiations are outside the proof language.
+			valid = false
+			return false
+		}
+		fmt.Fprintf(&canonical, "CALL:%s\n", canonicalObjectString(callee))
+		if calleeSignature.Recv() != nil {
+			if !exactApprovedRawProofMethod(callee) {
+				valid = false
+				return false
+			}
+			return true
+		}
+		if callee.Pkg() != nil && callee.Pkg().Path() == providerPackagePath {
+			proof, closed := x.canonicalRawIdentityProof(callee, visiting)
+			if !closed {
+				valid = false
+				return false
+			}
+			fmt.Fprintf(&canonical, "CALLEE:%s:%s\n", canonicalObjectString(callee), proof)
+			return true
+		}
+		if !exactApprovedRawProofExternalFunction(callee) {
+			valid = false
+			return false
 		}
 		return true
 	})
@@ -1270,6 +1470,14 @@ func (x *extractor) reviewedRawIdentityHelperValid(function *types.Func) bool {
 	}
 	proof, valid := x.canonicalRawIdentityProof(function, map[*types.Func]bool{})
 	return valid && proof == expected
+}
+
+func (x *extractor) reviewedPromptEnvironmentValid(function *types.Func) bool {
+	if function == nil || function.Name() != "promptEnvironment" || function.Pkg() == nil || function.Pkg().Path() != providerPackagePath {
+		return false
+	}
+	proof, valid := x.canonicalRawIdentityProof(function, map[*types.Func]bool{})
+	return valid && proof == reviewedPromptEnvironmentProof
 }
 
 func (x *extractor) exactLocalAliases(fn *ast.FuncDecl, object types.Object) map[types.Object]bool {
@@ -1755,7 +1963,7 @@ func (x *extractor) rawStringProvenance(expr ast.Expr, fn *ast.FuncDecl, seen ma
 		if function.Pkg() != nil && function.Pkg().Path() == "strconv" && function.Name() == "Itoa" && len(item.Args) == 1 && x.reviewedPaginationDeclaration(fn) {
 			return true
 		}
-		if function.Pkg() != nil && function.Pkg().Path() == providerPackagePath && function.Name() == "promptEnvironment" && len(item.Args) == 1 {
+		if len(item.Args) == 1 && x.reviewedPromptEnvironmentValid(function) {
 			return x.rawStringProvenance(item.Args[0], fn, map[types.Object]bool{})
 		}
 	}

@@ -4,6 +4,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"go/ast"
+	"go/importer"
+	"go/parser"
+	"go/token"
+	"go/types"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -972,6 +977,179 @@ func bad(value string) string {
 	}
 }
 
+func fixtureRawDependencyProof(t *testing.T, source string) (string, bool) {
+	t.Helper()
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "fixture.go", source, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := &types.Info{
+		Types:      map[ast.Expr]types.TypeAndValue{},
+		Defs:       map[*ast.Ident]types.Object{},
+		Uses:       map[*ast.Ident]types.Object{},
+		Selections: map[*ast.SelectorExpr]*types.Selection{},
+		Instances:  map[*ast.Ident]types.Instance{},
+	}
+	configuration := &types.Config{Importer: importer.Default()}
+	if _, err := configuration.Check(providerPackagePath, fset, []*ast.File{file}, info); err != nil {
+		t.Fatal(err)
+	}
+	x := &extractor{
+		fset:      fset,
+		files:     map[string]*ast.File{"fixture.go": file},
+		funcDecls: map[*types.Func]*ast.FuncDecl{},
+		typesInfo: info,
+	}
+	var reviewed *types.Func
+	for _, declaration := range file.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if !ok {
+			continue
+		}
+		object, _ := info.Defs[function.Name].(*types.Func)
+		x.funcDecls[object] = function
+		if function.Name.Name == "proof" {
+			reviewed = object
+		}
+	}
+	if reviewed == nil {
+		t.Fatal("fixture omitted proof function")
+	}
+	return x.canonicalRawIdentityProof(reviewed, map[*types.Func]bool{})
+}
+
+func TestRawHelperProofClosesEverySemanticDependencyClass(t *testing.T) {
+	base, valid := fixtureRawDependencyProof(t, `package provider
+const semanticValue = "safe"
+func proof(value string) string { return value + semanticValue }
+`)
+	changed, changedValid := fixtureRawDependencyProof(t, `package provider
+const semanticValue = "changed"
+func proof(value string) string { return value + semanticValue }
+`)
+	if !valid || !changedValid || base == changed {
+		t.Fatalf("constant semantic value was absent from proof: base=(%t,%q) changed=(%t,%q)", valid, base, changedValid, changed)
+	}
+
+	fixtures := map[string]string{
+		"package-global-initializer": `package provider
+var semanticValue = "safe"
+func proof(value string) string { return value + semanticValue }
+`,
+		"init-mutated-global": `package provider
+var semanticValue = "safe"
+func init() { semanticValue = "changed" }
+func proof(value string) string { return value + semanticValue }
+`,
+		"function-variable-closure": `package provider
+func proof(value string) string {
+ transform := func(input string) string { return input + "changed" }
+ return transform(value)
+}
+`,
+		"interface-concrete-body": `package provider
+type normalizer interface { normalize(string) string }
+type concreteNormalizer struct{}
+func (concreteNormalizer) normalize(value string) string { return value + "changed" }
+func proof(value string, transform normalizer) string { return transform.normalize(value) }
+`,
+		"generic-callee": `package provider
+func transform[T ~string](value T) string { return string(value) }
+func proof(value string) string { return transform(value) }
+`,
+	}
+	for name, fixture := range fixtures {
+		t.Run(name, func(t *testing.T) {
+			if proof, closed := fixtureRawDependencyProof(t, fixture); closed {
+				t.Fatalf("unclosed semantic dependency was proven: %q", proof)
+			}
+		})
+	}
+}
+
+func TestRawHelperProofAllowsClosedLocalFreeFunction(t *testing.T) {
+	source := `package provider
+import "strings"
+func normalize(value string) string { return strings.ToLower(value) }
+func proof(value string) string { return normalize(value) }
+`
+	first, valid := fixtureRawDependencyProof(t, source)
+	second, repeatedValid := fixtureRawDependencyProof(t, source)
+	if !valid || !repeatedValid || first == "" || first != second {
+		t.Fatalf("unchanged closed helper proof is not stable: first=(%t,%q) second=(%t,%q)", valid, first, repeatedValid, second)
+	}
+}
+
+func TestExtractorPinsPromptEnvironmentFreeHelper(t *testing.T) {
+	fixtures := map[string]string{
+		"transformed-free-function": `package provider
+import (
+ "context"
+ "net/url"
+ "strings"
+)
+const defaultPromptEnvironment = "development"
+func promptEnvironment(value string) string {
+ if value == "" { return defaultPromptEnvironment }
+ return strings.ReplaceAll(value, "/", "%2F")
+}
+func bad(ctx context.Context, client *Client, value string) {
+ query := url.Values{}
+ query.Set("environment", promptEnvironment(value))
+ client.DoRequestWithResponse(ctx, "GET", endpointWithQuery("/prompts/list", query), nil, nil)
+}
+`,
+		"same-name-receiver-method": `package provider
+import (
+ "context"
+ "net/url"
+)
+type promptSpoof struct{}
+func (promptSpoof) promptEnvironment(value string) string { return value }
+func bad(ctx context.Context, client *Client, value string) {
+ query := url.Values{}
+ query.Set("environment", (promptSpoof{}).promptEnvironment(value))
+ client.DoRequestWithResponse(ctx, "GET", endpointWithQuery("/prompts/list", query), nil, nil)
+}
+`,
+	}
+	for name, fixture := range fixtures {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeHTTPFixtureSupport(t, dir)
+			writeFixture(t, dir, "bad.go", fixture)
+			if _, err := ExtractProvider(dir); err == nil || !strings.Contains(err.Error(), "raw-input provenance") {
+				t.Fatalf("unreviewed prompt environment helper was accepted: %v", err)
+			}
+		})
+	}
+}
+
+func TestExtractorAllowsExactPromptEnvironmentFreeHelper(t *testing.T) {
+	dir := t.TempDir()
+	writeHTTPFixtureSupport(t, dir)
+	writeFixture(t, dir, "safe.go", `package provider
+import (
+ "context"
+ "net/url"
+)
+const defaultPromptEnvironment = "development"
+func promptEnvironment(value string) string {
+ if value == "" { return defaultPromptEnvironment }
+ return value
+}
+func safe(ctx context.Context, client *Client, value string) {
+ query := url.Values{}
+ query.Set("environment", promptEnvironment(value))
+ client.DoRequestWithResponse(ctx, "GET", endpointWithQuery("/prompts/list", query), nil, nil)
+}
+`)
+	if _, err := ExtractProvider(dir); err != nil {
+		t.Fatalf("exact unchanged prompt environment helper was rejected: %v", err)
+	}
+}
+
 func TestExtractorRejectsCallableIdentityCollisions(t *testing.T) {
 	fixtures := map[string]string{
 		"interface-first-value-receiver": `
@@ -1022,6 +1200,32 @@ func (*endpointRoute) route(value string) string { return endpointWithPathSegmen
 func route(value string) string { return value }
 type benignRoute struct{}
 func (benignRoute) route(value string) string { return route(value) }
+func bad(dispatch routeDispatcher, value string) string { return dispatch.route(strings.ReplaceAll(value, "/", "%2F")) }
+`,
+		"transitive-wrapper-value-receiver-interface-first": `
+type routeDispatcher interface { route(string) string }
+func endpointRouteWrapper(value string) string { return endpointWithPathSegment("/things/", value, "") }
+type endpointRoute struct{}
+func (endpointRoute) route(value string) string { return endpointRouteWrapper(value) }
+type benignRoute struct{}
+func (benignRoute) route(value string) string { return value }
+func bad(dispatch routeDispatcher, value string) string { return dispatch.route(strings.ReplaceAll(value, "/", "%2F")) }
+`,
+		"transitive-wrapper-pointer-receiver-interface-last": `
+type endpointRoute struct{}
+func (*endpointRoute) inner(value string) string { return endpointWithPathSegment("/things/", value, "") }
+func (route *endpointRoute) route(value string) string { return route.inner(value) }
+type benignRoute struct{}
+func (*benignRoute) route(value string) string { return value }
+type routeDispatcher interface { route(string) string }
+func bad(dispatch routeDispatcher, value string) string { return dispatch.route(strings.ReplaceAll(value, "/", "%2F")) }
+`,
+		"unknown-dynamic-target": `
+type routeDispatcher interface { route(string) string }
+type endpointRoute struct { build func(string) string }
+func (route endpointRoute) route(value string) string { return route.build(value) }
+type benignRoute struct{}
+func (benignRoute) route(value string) string { return value }
 func bad(dispatch routeDispatcher, value string) string { return dispatch.route(strings.ReplaceAll(value, "/", "%2F")) }
 `,
 	}
