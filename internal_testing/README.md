@@ -94,6 +94,7 @@ internal_testing/
     key_service_account.tf
     key_block_minimal.tf       # blocks the minimal key via legacy stateful input
     key_block_hash.tf          # blocks a distinct key via hash-only identity
+    jwt_key_mapping.tf         # claim-to-existing-key mapping lifecycle
     team_minimal.tf
     team_full.tf
     team_block_minimal.tf      # blocks the minimal team (destructive)

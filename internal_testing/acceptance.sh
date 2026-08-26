@@ -83,6 +83,7 @@ run_fallback_import_case
 run_case guardrail resources guardrail_minimal.tf
 run_case guardrail_structured_mode resources guardrail_full.tf
 run_case key resources key_minimal.tf,key_router_settings.tf,send_invite_email.tf datasources key.tf
+run_case jwt_key_mapping resources key_minimal.tf,jwt_key_mapping.tf datasources jwt_key_mapping.tf,jwt_key_mappings_list.tf
 run_case key_block resources key_minimal.tf,key_block_minimal.tf,key_block_hash.tf
 run_case mcp_server resources mcp_server_minimal.tf datasources mcp_server.tf,mcp_servers_list.tf
 run_case model resources model_minimal.tf
@@ -104,5 +105,5 @@ run_case vector_store resources vector_store_minimal.tf
 if [ "$ASSEMBLY_ONLY" = "1" ]; then
   printf '\nAcceptance assembly passed: every matrix case produced collision-free, parseable HCL.\n'
 else
-  printf '\nAcceptance passed: 22/23 resources (project is enterprise-only).\n'
+  printf '\nAcceptance passed: 23/24 resources (project is enterprise-only).\n'
 fi

@@ -47,6 +47,7 @@ var expectedResourceTypeNames = []string{
 	"litellm_fallback",
 	"litellm_agent",
 	"litellm_project",
+	"litellm_jwt_key_mapping",
 }
 
 var expectedDataSourceTypeNames = []string{
@@ -68,6 +69,7 @@ var expectedDataSourceTypeNames = []string{
 	"litellm_fallback",
 	"litellm_agent",
 	"litellm_project",
+	"litellm_jwt_key_mapping",
 	"litellm_models",
 	"litellm_keys",
 	"litellm_teams",
@@ -83,6 +85,7 @@ var expectedDataSourceTypeNames = []string{
 	"litellm_search_tools",
 	"litellm_agents",
 	"litellm_projects",
+	"litellm_jwt_key_mappings",
 }
 
 func newTestProvider() provider.Provider {
@@ -382,7 +385,7 @@ func TestResourcesImportState(t *testing.T) {
 		// the framework RPC path. Neither can be exercised safely with this direct
 		// synthetic ImportStateResponse; both are covered by live lifecycle/import
 		// testing instead.
-		if metaResp.TypeName == "litellm_fallback" || metaResp.TypeName == "litellm_model" {
+		if metaResp.TypeName == "litellm_fallback" || metaResp.TypeName == "litellm_model" || metaResp.TypeName == "litellm_jwt_key_mapping" {
 			continue
 		}
 
