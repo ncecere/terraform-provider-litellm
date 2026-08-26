@@ -51,7 +51,7 @@
     "replacement":3,
     "failure_recovery":2,
     "data_source":35,
-    "documentation":4
+    "documentation":3
   },
   "upgrade_expected_computed_migrations": {
     "litellm_agent": ["extra_headers"],
@@ -86,9 +86,21 @@
     {"name":"team_failed_create_retry","fixture":"fixtures/failure_recovery/team_failed_create.tf","fault_endpoint":"/team/new","dependency_address":"","target_address":"litellm_team.failed_create","expected_diagnostic_title":"Client Error","expected_diagnostic_code":"team-create-error","cleanup_required":true}
   ],
   "optional_features": ["key_wo", "send_invite_email", "jwt_key_mapping_key_wo"],
-  "documentation_scenarios": ["registry-examples-format-validate","resource-import-doc-contract","release-artifact-manifest-contract","mcp-immediate-import-no-drift-provenance"],
+  "documentation_scenarios": ["registry-examples-format-validate","resource-import-doc-contract","release-artifact-manifest-contract"],
   "current_provider_only_scenarios": [
-    {"name":"mcp-immediate-import-no-drift-provenance","fixture":"mcp_server_import.tf","resource_type":"litellm_mcp_server","prior_release_expected":false,"assertions":["immediate-import","two-refresh-only-no-drift","provenance-preserved"]}
+    {"name":"mcp-immediate-import-no-drift-provenance","fixture":"mcp_server_import.tf","resource_type":"litellm_mcp_server","scenario":"import:litellm_mcp_server","prior_release_expected":false,"assertions":["immediate-import","two-refresh-only-no-drift","provenance-preserved"]}
+  ],
+  "terraform_1_11_4_expected_skips": [
+    {"category":"resource_coverage","subject":"litellm_project","reason":"enterprise-license-required"},
+    {"category":"upgrade","subject":"litellm_jwt_key_mapping","reason":"previous-release-resource-unavailable"},
+    {"category":"upgrade","subject":"litellm_project","reason":"enterprise-license-required"},
+    {"category":"lifecycle","subject":"litellm_project","reason":"enterprise-license-required"},
+    {"category":"import","subject":"litellm_agent","reason":"role-redacted-state-requires-admin"},
+    {"category":"import","subject":"litellm_project","reason":"enterprise-license-required"},
+    {"category":"drift","subject":"litellm_project","reason":"enterprise-license-required"},
+    {"category":"data_source","subject":"litellm_project","reason":"enterprise-license-required"},
+    {"category":"data_source","subject":"litellm_projects","reason":"enterprise-license-required"},
+    {"category":"optional_feature","subject":"key_wo","reason":"api-endpoint-unavailable"}
   ],
   "allowed_skip_reasons": [
     "enterprise-license-required",

@@ -4,7 +4,7 @@
 set -eu
 
 ASSEMBLY_ONLY=${LITELLM_ACCEPTANCE_ASSEMBLY_ONLY:-0}
-REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
+REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
 API_BASE=http://localhost:4000
 CLI_VERSION=$(terraform version 2>/dev/null | sed -n '1{s/^[^0-9]*//;s/[^0-9.].*$//;p;}')
 CLI_SUPPORTS_111=$(python3 -c 'import sys; p=tuple(int(v) for v in sys.argv[1].split(".")); print(1 if p >= (1, 11, 0) else 0)' "${CLI_VERSION:-0.0.0}")
@@ -45,6 +45,7 @@ emit_controlled_record() {
   category=$1 subject=$2 status=$3 reason=${4:-} diagnostic=${5:-} evidence=${6:-$MATRIX_PRIVATE_LOG}
   assertion=bounded-feature-attempt
   [ "$category" != documentation ] || assertion=validated-documentation
+  [ "$category" != import ] || assertion=import-immediate-no-drift-provenance
   [ "$status" != skipped ] || assertion=allowlisted-unavailability
   set -- --session "$MATRIX_EVIDENCE_SESSION" --name "$category:$subject" --category "$category" \
     --status "$status" --assertion "$assertion" --evidence "$evidence"
@@ -81,7 +82,8 @@ run_fallback_import_case() {
 
 run_mcp_import_case() {
   printf '\n===== ACCEPTANCE: mcp_import_projection =====\n'
-  SMOKE_ASSEMBLY_ONLY=$ASSEMBLY_ONLY SMOKE_MCP_IMPORT=1 sh "$REPO_ROOT/internal_testing/smoke.sh" "$REPO_ROOT" resources mcp_server_import.tf
+  SMOKE_ASSEMBLY_ONLY=$ASSEMBLY_ONLY SMOKE_MCP_IMPORT=1 SMOKE_MCP_EVIDENCE=${SMOKE_MCP_EVIDENCE:-} \
+    sh "$REPO_ROOT/internal_testing/smoke.sh" "$REPO_ROOT" resources mcp_server_import.tf
 }
 
 run_agent_lifecycle_case() {
@@ -143,8 +145,11 @@ else
 fi
 run_case key_block resources key_minimal.tf,key_block_minimal.tf,key_block_hash.tf
 run_case mcp_server resources mcp_server_minimal.tf datasources mcp_server.tf,mcp_servers_list.tf
-run_mcp_import_case
-emit_controlled_record documentation mcp-immediate-import-no-drift-provenance passed
+mcp_evidence="$SMOKE_PRIVATE_ROOT/.smoke-logs/mcp-immediate-import-evidence.json"
+rm -f "$mcp_evidence"
+SMOKE_MCP_EVIDENCE=$mcp_evidence run_mcp_import_case
+emit_controlled_record import litellm_mcp_server passed '' '' "$mcp_evidence"
+rm -f "$mcp_evidence"
 run_case model resources model_minimal.tf datasources model.tf,models_list.tf
 run_case organization resources organization_minimal.tf datasources organization.tf,organizations_list.tf
 run_case organization_member resources organization_minimal.tf,organization_member_minimal.tf

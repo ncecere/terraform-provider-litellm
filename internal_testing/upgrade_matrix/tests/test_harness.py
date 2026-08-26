@@ -36,6 +36,8 @@ class HarnessTests(unittest.TestCase):
         harness.check_inventory(matrix)
         self.assertEqual(len(matrix["resources"]), 24)
         self.assertEqual(len(matrix["data_sources"]), 35)
+        self.assertEqual(sum(matrix["scenario_counts"].values()) + len(matrix["optional_features"]), 166)
+        self.assertEqual(len(matrix["terraform_1_11_4_expected_skips"]), 10)
         self.assertEqual(sum(bool(item["action"]) for item in matrix["resources"]), 2)
 
     def test_version_selection_gates_write_only_features(self):
@@ -119,6 +121,32 @@ class HarnessTests(unittest.TestCase):
                 with self.assertRaises(harness.HarnessError):
                     harness.write_report(Path(raw) / "report.json", report)
 
+    def test_execution_artifacts_allow_safe_hmac_and_publish_report_last(self):
+        receipt = "hmac-sha256:" + "1234" + "a" * 60
+        ledger = (json.dumps({"receipt_hmac": receipt}, sort_keys=True) + "\n").encode()
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw).resolve()
+            report_path = root / "result.json"
+            evidence_path = root / "result.evidence.jsonl"
+            published = []
+            def publish(path, encoded):
+                published.append(path)
+                path.write_bytes(encoded)
+            with mock.patch.object(harness, "atomic_exclusive_write", side_effect=publish):
+                harness.publish_execution_artifacts(report_path, evidence_path, valid_report(), ledger)
+            self.assertEqual(published, [evidence_path, report_path])
+
+    def test_unsafe_ledger_publishes_neither_evidence_nor_report(self):
+        ledger = b'{"note":"https://private.invalid/value"}\n'
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw).resolve()
+            report_path = root / "result.json"
+            evidence_path = root / "result.evidence.jsonl"
+            with self.assertRaises(harness.HarnessError):
+                harness.publish_execution_artifacts(report_path, evidence_path, valid_report(), ledger)
+            self.assertFalse(report_path.exists())
+            self.assertFalse(evidence_path.exists())
+
     def test_report_rejects_symlink_ancestor_and_survives_mid_swap(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw).resolve()
@@ -149,6 +177,133 @@ class HarnessTests(unittest.TestCase):
                 harness.write_report(parent / "report.json", valid_report())
             self.assertTrue((moved / "report.json").is_file())
             self.assertFalse((victim / "report.json").exists())
+
+    def test_refresh_completion_derives_all_35_not_only_28_plan_changes(self):
+        matrix = harness.load_json(harness.MATRIX_PATH)
+        types = matrix["data_sources"]
+        configured = [
+            {"mode": "data", "type": resource_type, "address": f"data.{resource_type}.all"}
+            for resource_type in types
+        ]
+        configured.append({
+            "mode": "data", "type": "litellm_credential",
+            "address": "data.litellm_credential.full",
+        })
+        plan = {
+            "configuration": {"root_module": {"resources": configured}},
+            "resource_changes": [
+                {"mode": "data", "type": resource_type, "change": {"actions": ["read"]}}
+                for resource_type in types[:28]
+            ],
+        }
+        raw_state = {
+            "resources": [
+                {"mode": "data", "type": resource_type, "name": "all", "instances": [{}]}
+                for resource_type in types
+            ] + [{"mode": "data", "type": "litellm_credential", "name": "full", "instances": [{}]}]
+        }
+        show_state = {
+            "values": {"root_module": {"resources": [
+                {"mode": "managed", "type": "litellm_model", "address": "litellm_model.test"},
+                *[
+                    {"mode": "data", "type": resource_type, "address": f"data.{resource_type}.all"}
+                    for resource_type in types
+                ] + [{"mode": "data", "type": "litellm_credential", "address": "data.litellm_credential.full"}],
+            ]}}
+        }
+        steady = {"resource_changes": []}
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            paths = {
+                "plan": root / "plan.json", "refresh_state": root / "refresh.tfstate",
+                "state": root / "state.json", "steady_plan": root / "steady.json",
+                "final_state": root / "final.list",
+            }
+            for name, value in (("plan", plan), ("refresh_state", raw_state), ("state", show_state), ("steady_plan", steady)):
+                paths[name].write_text(json.dumps(value), encoding="utf-8")
+            paths["final_state"].write_text("", encoding="utf-8")
+            digest = harness._assertion_digest(
+                [paths["plan"], paths["refresh_state"]], "refresh-only-config-state-zero-drift"
+            )
+            phase = {"record_type": "phase", "subjects": sorted(types), "assertion_sha256": digest}
+            observed = []
+            args = type("Args", (), {"session": str(root / "session.json"), **{key: str(value) for key, value in paths.items()}})()
+            with mock.patch.object(harness, "_read_session", return_value={}), \
+                 mock.patch.object(harness, "_ledger_values", return_value=[phase]), \
+                 mock.patch.object(harness, "_append_scenario", side_effect=lambda *a, **kw: observed.append(kw)):
+                harness.observe_smoke(args)
+            data_records = [item for item in observed if item["category"] == "data_source"]
+            self.assertEqual(len(plan["resource_changes"]), 28)
+            self.assertEqual({item["name"].split(":", 1)[1] for item in data_records}, set(types))
+            self.assertTrue(all(item["command_record"] is phase for item in data_records))
+
+    def test_refresh_phase_requires_exact_successful_refresh_only_argv(self):
+        plan = {"configuration": {"root_module": {"resources": [
+            {"mode": "data", "type": "litellm_models", "address": "data.litellm_models.all"},
+            {"mode": "data", "type": "litellm_models", "address": "data.litellm_models.filtered"},
+        ]}}}
+        state = {"resources": [
+            {"mode": "data", "type": "litellm_models", "name": "all", "instances": [{}]},
+            {"mode": "data", "type": "litellm_models", "name": "filtered", "instances": [{}]},
+        ]}
+        bindings = {
+            "run_nonce": "1" * 64, "cli_lane": "terraform-1.11.4",
+            "candidate_commit": "2" * 40, "provider_sha256": "3" * 64,
+            "provider_schema_sha256": "4" * 64, "harness_sha256": "5" * 64,
+            "matrix_sha256": "6" * 64,
+        }
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            plan_path, state_path = root / "plan.json", root / "state.json"
+            plan_path.write_text(json.dumps(plan), encoding="utf-8")
+            state_path.write_text(json.dumps(state), encoding="utf-8")
+            session = {**bindings, "ledger": str(root / "ledger"), "key_file": str(root / "key")}
+            args = type("Args", (), {
+                "session": str(root / "session"), "plan": str(plan_path),
+                "refresh_state": str(state_path), "cli": "/trusted/terraform",
+                "refresh_argument": [],
+            })()
+            wrong = {"record_type": "command", **bindings, "exit_code": 0,
+                     "command_sha256": "7" * 64, "result_sha256": "8" * 64}
+            with mock.patch.object(harness, "_read_session", return_value=session), \
+                 mock.patch.object(harness, "_ledger_values", return_value=[wrong]), \
+                 self.assertRaisesRegex(harness.HarnessError, "exact supervised argv"):
+                harness.capture_refresh_phase(args)
+            exact = {**wrong, "command_sha256": harness._command_digest([
+                "/trusted/terraform", "apply", "-refresh-only", "-auto-approve"
+            ])}
+            appended = []
+            with mock.patch.object(harness, "_read_session", return_value=session), \
+                 mock.patch.object(harness, "_ledger_values", return_value=[exact]), \
+                 mock.patch.object(harness, "_session_key", return_value=b"k" * 32), \
+                 mock.patch.object(harness, "_append_ledger", side_effect=lambda path, item: appended.append(item)):
+                harness.capture_refresh_phase(args)
+            self.assertEqual(appended[0]["command_sha256"], exact["command_sha256"])
+            self.assertEqual(appended[0]["subjects"], ["litellm_models"])
+
+    def test_phase_only_records_cannot_finalize(self):
+        bindings = {
+            "run_nonce": "1" * 64, "cli_lane": "terraform-1.11.4",
+            "candidate_commit": "2" * 40, "provider_sha256": "3" * 64,
+            "provider_schema_sha256": "4" * 64, "harness_sha256": "5" * 64,
+            "matrix_sha256": "6" * 64,
+        }
+        command = {
+            "record_type": "command", **bindings, "command_sha256": "7" * 64,
+            "result_sha256": "8" * 64, "exit_code": 0, "output_bytes": 0,
+            "receipt_hmac": "hmac-sha256:" + "9" * 64,
+        }
+        phase = {
+            "record_type": "phase", **bindings, "phase": "refresh-only-data-sources",
+            "subjects": ["litellm_model"], "command_sha256": "7" * 64,
+            "result_sha256": "8" * 64, "command_exit_code": 0,
+            "assertion_sha256": "a" * 64, "receipt_hmac": "hmac-sha256:" + "b" * 64,
+        }
+        args = type("Args", (), {"session": "unused", "cli": "unused", "previous_provider_binary": "unused", "report": "unused", "evidence_report": "unused"})()
+        with mock.patch.object(harness, "_read_session", return_value=bindings), \
+             mock.patch.object(harness, "_ledger_values", return_value=[{"record_type": "session"}, command, phase]), \
+             self.assertRaisesRegex(harness.HarnessError, "exact scenario set"):
+            harness.finalize_evidence(args)
 
     def test_digest_ledger_tampering_fails_signature_validation(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -278,6 +433,59 @@ class HarnessTests(unittest.TestCase):
             self.assertEqual(harness.hash_file(next(bundle.iterdir())), digest)
             with self.assertRaises(harness.HarnessError):
                 harness.provider_schema_fingerprint("/bin/sh", binary)
+
+    def test_cache_paths_allow_trusted_macos_tmp_alias_but_reject_attacker_ancestor(self):
+        tmp = Path("/tmp")
+        canonical = harness.canonicalize_trusted_os_alias(tmp / "issue210-cache")
+        if tmp.is_symlink():
+            self.assertEqual(canonical, tmp.resolve() / "issue210-cache")
+        else:
+            self.assertEqual(canonical, tmp / "issue210-cache")
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw).resolve()
+            real = root / "real"
+            real.mkdir(mode=0o700)
+            attacker = root / "attacker"
+            attacker.symlink_to(real, target_is_directory=True)
+            with self.assertRaises(harness.HarnessError):
+                harness.secure_directory(attacker / "cache")
+
+    def test_session_key_is_unlinked_after_report_or_cleanup_failure(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw).resolve()
+            root.chmod(0o700)
+            key = root / ".ledger-key-test"
+            key.write_bytes(b"k" * 32)
+            key.chmod(0o600)
+            session_path = root / "session.json"
+            session = {
+                "schema_version": harness.EVIDENCE_SCHEMA_VERSION,
+                "run_nonce": "1" * 64, "cli_lane": "terraform-1.11.4",
+                "candidate_commit": "2" * 40, "provider_sha256": "3" * 64,
+                "provider_schema_sha256": "4" * 64, "harness_sha256": "5" * 64,
+                "matrix_sha256": "6" * 64, "ledger": str(root / "ledger.jsonl"),
+                "key_file": str(key),
+            }
+            session_path.write_text(json.dumps(session), encoding="utf-8")
+            session_path.chmod(0o600)
+            harness.remove_session_key(type("Args", (), {"session": str(session_path)})())
+            self.assertFalse(key.exists())
+            self.assertTrue(session_path.exists())
+
+    def test_concurrent_secure_cache_creation_is_race_safe(self):
+        with tempfile.TemporaryDirectory() as raw:
+            cache = Path(raw).resolve() / "shared" / "nested" / "cache"
+            failures = []
+            threads = [
+                threading.Thread(target=lambda: failures.append(harness.secure_directory(cache)))
+                for _ in range(12)
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+            self.assertEqual(failures, [cache] * 12)
+            self.assertFalse(any(path.is_symlink() for path in (cache, cache.parent, cache.parent.parent)))
 
     def test_cache_lock_serializes_racing_installers(self):
         with tempfile.TemporaryDirectory() as raw:

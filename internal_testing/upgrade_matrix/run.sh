@@ -4,8 +4,8 @@
 set -eu
 umask 077
 
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
-REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd -P)
+REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd -P)
 MODE=${1:-assembly}
 CLI=${MATRIX_CLI:-terraform}
 REPORT=${MATRIX_REPORT:-$REPO_ROOT/internal_testing/upgrade-matrix-results.json}
@@ -22,6 +22,8 @@ IMPORT_ADDRESS=
 IMPORT_RESOURCE_TYPE=
 IMPORT_ID_FILE=
 PROXY_PID=
+SESSION=
+MATRIX_LEDGER_KEY_FILE=
 COMMAND_TIMEOUT=${MATRIX_COMMAND_TIMEOUT:-300}
 case $COMMAND_TIMEOUT in ''|*[!0-9]*) printf '%s\n' 'Matrix failed: invalid command timeout' >&2; exit 1 ;; esac
 [ "$COMMAND_TIMEOUT" -ge 1 ] && [ "$COMMAND_TIMEOUT" -le 900 ] || { printf '%s\n' 'Matrix failed: command timeout is out of bounds' >&2; exit 1; }
@@ -125,10 +127,19 @@ cleanup() {
       [ "$smoke_status" -eq 0 ] || cleanup_status=1
     done
   fi
+  # The signing key is never recovery material. Remove it through the harness'
+  # no-follow directory-FD path whether cleanup succeeded or recovery state
+  # must be retained. A removal failure itself fails closed.
+  if [ -n "$SESSION" ] && [ -f "$SESSION" ] && [ -n "$MATRIX_LEDGER_KEY_FILE" ]; then
+    python3 "$SCRIPT_DIR/harness.py" remove-session-key --session "$SESSION" >/dev/null 2>&1 || cleanup_status=1
+    MATRIX_LEDGER_KEY_FILE=
+  fi
   if [ "$cleanup_status" -ne 0 ]; then
-    printf '%s\n' 'Matrix failed: cleanup did not complete; private recovery state was retained' >&2
+    printf '%s\n' 'Matrix failed: cleanup did not complete; only private recovery state was retained' >&2
     exit 1
   fi
+  # A successful report removes every raw artifact. Failed execution retains
+  # bounded diagnostics/recovery state, but never the session signing key.
   if [ "$status" -eq 0 ]; then
     [ -z "$SCRATCH" ] || rm -rf "$SCRATCH"
   fi
@@ -149,8 +160,8 @@ python3 "$SCRIPT_DIR/harness.py" preflight "$MODE"
 [ -x "$PROVIDER_BINARY" ] || fail 'current provider binary is required'
 SOURCE_PROVIDER_BINARY=$PROVIDER_BINARY
 
-TMP_BASE=$(python3 -c 'from pathlib import Path; import os; print(Path(os.environ.get("TMPDIR", "/tmp")).resolve())')
-SCRATCH=$(mktemp -d "$TMP_BASE/litellm-issue210.XXXXXX")
+SCRATCH=$(python3 "$SCRIPT_DIR/harness.py" make-private-temp --base "${TMPDIR:-/tmp}") || fail 'temporary root contains an untrusted alias'
+CACHE=$(python3 "$SCRIPT_DIR/harness.py" canonical-path --path "$CACHE") || fail 'cache root contains an untrusted alias'
 chmod 700 "$SCRATCH"
 provider_dir=$(python3 "$SCRIPT_DIR/harness.py" prepare-provider \
   --provider-binary "$SOURCE_PROVIDER_BINARY" --directory "$SCRATCH/provider-cache") || fail 'provider private bundle verification failed'
@@ -314,7 +325,7 @@ assemble_workspace() {
     index=$((index + 1))
   done
   IFS=$old_ifs
-  run_cli fmt -check "$WORKSPACE" >>"$LOG" 2>&1 || return 1
+  (cd "$WORKSPACE" && run_cli fmt -check .) >>"$LOG" 2>&1 || return 1
 }
 
 compare_upgrade_states() {
@@ -613,7 +624,7 @@ for path in root.glob("fixture_*.tf"):
     text=text.replace('"smoke-', f'"smoke-{namespace}-')
     path.write_text(text, encoding="utf-8")
 PYNS
-  run_cli fmt -check "$importer" >>"$LOG" 2>&1 || fail 'importer fixture assembly failed'
+  (cd "$importer" && run_cli fmt -check .) >>"$LOG" 2>&1 || fail 'importer fixture assembly failed'
   # The producer remains authoritative owner. A private state snapshot gives
   # the importer dependency context without detaching anything from producer.
   cp "$producer/terraform.tfstate" "$importer/terraform.tfstate"
@@ -727,7 +738,7 @@ assemble_matrix_fixture() {
   mkdir -m 700 "$WORKSPACE"
   write_provider_config "$WORKSPACE"
   cp "$SCRIPT_DIR/$fixture" "$WORKSPACE/scenario.tf"
-  run_cli fmt -check "$WORKSPACE" >>"$LOG" 2>&1 || return 1
+  (cd "$WORKSPACE" && run_cli fmt -check .) >>"$LOG" 2>&1 || return 1
   current_rc=$SCRATCH/current.tfrc
   write_current_config "$current_rc"
   export TF_CLI_CONFIG_FILE=$current_rc
@@ -949,13 +960,14 @@ import json,sys
 for name in json.load(open(sys.argv[1],encoding="utf-8"))["documentation_scenarios"]: print(name)
 PY
 while IFS= read -r documentation_scenario; do
-  [ "$documentation_scenario" = mcp-immediate-import-no-drift-provenance ] || \
-    record "documentation:$documentation_scenario" documentation passed ''
+  record "documentation:$documentation_scenario" documentation passed ''
 done <"$SCRATCH/documentation.tsv"
 # Existing lifecycle matrix covers all OSS resources and data sources. Route
 # its historical `terraform` command name to the selected Terraform/OpenTofu
 # binary so the protocol matrix cannot silently fall back to PATH Terraform.
 selected_cli=$(command -v "$CLI") || fail 'selected CLI is not executable'
+MATRIX_EXECUTED_CLI=$selected_cli
+export MATRIX_EXECUTED_CLI
 mkdir -m 700 "$SCRATCH/cli-bin"
 cat >"$SCRATCH/cli-bin/terraform" <<EOF
 #!/bin/sh

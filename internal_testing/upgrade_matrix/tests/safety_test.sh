@@ -1,8 +1,8 @@
 #!/bin/sh
 set -eu
 
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
-REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd -P)
+REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd -P)
 
 if env -u TF_ACC -u LITELLM_ACCEPTANCE_CONFIRM python3 "$SCRIPT_DIR/harness.py" preflight local >/dev/null 2>&1; then
   echo 'local preflight unexpectedly succeeded' >&2
@@ -75,3 +75,20 @@ if (cd "$worktree" && python3 "$SCRIPT_DIR/verify_runtime_parity.py" \
 fi
 cleanup_worktree
 trap - EXIT INT TERM HUP
+
+# A logical PWD beneath an attacker-controlled symlinked ancestor must resolve
+# to physical repository/workspace roots before any Terraform CLI argument is
+# assembled. Report publication remains strict no-follow and uses a physical
+# private destination rather than weakening its ancestor policy.
+symlink_test=$(mktemp -d "${TMPDIR:-/tmp}/issue210-symlink-cwd.XXXXXX")
+physical_test=$(python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).resolve())' "$symlink_test")
+ln -s "$REPO_ROOT" "$physical_test/repository-alias"
+mkdir -m 700 "$physical_test/report"
+(
+  cd "$physical_test/repository-alias"
+  MATRIX_PROVIDER_BINARY="$physical_test/missing-provider" \
+  MATRIX_REPORT="$physical_test/report/assembly.json" \
+    sh internal_testing/upgrade_matrix/run.sh assembly >/dev/null
+)
+[ -s "$physical_test/report/assembly.json" ]
+rm -rf "$physical_test"

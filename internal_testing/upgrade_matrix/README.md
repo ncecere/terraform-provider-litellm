@@ -12,9 +12,9 @@ The harness compares the checked-in inventory to provider registration:
 - 24 import scenarios;
 - 3 replacement scenarios; and
 - 2 controlled-fault recovery scenarios; and
-- 1 current-provider-only MCP immediate-import/no-drift/private-provenance scenario (never added to signed-v2 expectations).
+- 1 current-provider-only MCP immediate-import/no-drift/private-provenance assertion folded into the existing `import:litellm_mcp_server` scenario (never added as a fourth documentation scenario).
 
-Assembly validates inventory, HCL formatting, and provider schemas. Its execution-category pass counts are always zero. Enterprise, unavailable API, pre-1.11 features, and resources absent from signed v2.0.1 are explicit skips with controlled reasons; they are never counted as passes. Local execution fails if any resource, data source, or required category lacks one result.
+The execution matrix is exactly 166 scenarios. The Terraform 1.11.4 local lane is contractually 156 passes and 10 exact, reason-bound skips. Assembly validates inventory, HCL formatting, and provider schemas. Its execution-category pass counts are always zero. Enterprise, unavailable API, pre-1.11 features, and resources absent from signed v2.0.1 are explicit skips with controlled reasons; they are never counted as passes. Local execution fails if any resource, data source, or required category lacks one result.
 
 ## Provenance
 
@@ -31,13 +31,14 @@ The installer:
 7. extracts into a fresh private directory while rejecting links and unsafe paths; and
 8. verifies the exact executable name and digest before constructing the mirror.
 
-Every current-provider dev override receives a dedicated private directory containing exactly one verified executable. The redacted report and safe evidence ledger contain only controlled enums, bounded integers, HMAC-authenticated receipts, commit/digest provenance, and exact canonical schema fingerprints. The ephemeral ledger signing key and raw command output, plans, state, IDs, endpoints, and API assertions stay in bounded mode-0700 scratch storage; the key is deleted after successful publication.
+Every current-provider dev override receives a dedicated private directory containing exactly one verified executable. The redacted report and safe evidence ledger contain only controlled enums, bounded integers, HMAC-authenticated receipts, commit/digest provenance, and exact canonical schema fingerprints. The ephemeral ledger signing key and raw command output, plans, state, IDs, endpoints, and API assertions stay in bounded mode-0700 scratch storage. The key is securely unlinked after every cleanup attempt. Successful reports remove all raw scratch material; failed execution retains bounded diagnostics or recovery state without the session key.
 
 ## Assembly
 
 ```sh
-mkdir -m 700 /tmp/issue210-report
-MATRIX_REPORT=/tmp/issue210-report/assembly.json \
+report_root=$(python3 -c 'from pathlib import Path; print(Path("/tmp/issue210-report").resolve())')
+mkdir -m 700 "$report_root"
+MATRIX_REPORT="$report_root/assembly.json" \
   sh internal_testing/upgrade_matrix/run.sh assembly
 python3 -m unittest discover -s internal_testing/upgrade_matrix/tests -p 'test_*.py'
 sh internal_testing/upgrade_matrix/tests/safety_test.sh
@@ -45,7 +46,7 @@ sh internal_testing/upgrade_matrix/tests/safety_test.sh
 
 Reports are strict schema-version 3 JSON. They reject arbitrary fields and diagnostics, protected field names, secrets, credentials, UUIDs, URLs, response bodies, and filesystem paths. Diagnostic titles are scenario-specifically mapped to controlled codes. Publication opens or creates every path component relative to retained directory FDs with `O_NOFOLLOW`, then uses an exclusive temporary file, file/directory `fsync`, and atomic create-only linking. Existing destinations, symlink ancestors, and mid-operation ancestor swaps fail or remain confined to the already opened directory.
 
-A local execution writes both `result.json` and `result.evidence.jsonl`. The latter is the redacted, digest-only audit ledger; it is safe to preserve with the report. A fabricated TSV or matrix-only set of claimed records cannot invoke a report-publishing command.
+A local execution writes both `result.json` and `result.evidence.jsonl`. The latter is the redacted, digest-only audit ledger; it is safe to preserve with the report. Data-source completion is derived from an immediately captured successful refresh-only command, the exact Terraform configuration catalog, complete refreshed state, and a final detailed-exitcode zero-drift plan. Eager reads absent from initial plan changes therefore remain execution-backed. Phase-only records, fabricated TSV, or matrix-only claims cannot publish a report.
 
 ## Local execution
 
@@ -53,11 +54,12 @@ The backend is the disposable loopback-only LiteLLM v1.98.0 Compose stack. Each 
 
 ```sh
 internal_testing/compose.sh up -d
-mkdir -m 700 /tmp/issue210-report
+report_root=$(python3 -c 'from pathlib import Path; print(Path("/tmp/issue210-report").resolve())')
+mkdir -m 700 "$report_root"
 TF_ACC=1 \
 LITELLM_ACCEPTANCE_CONFIRM=local-v1.98.0 \
 MATRIX_CLI="$HOME/.cache/terraform-provider-litellm/tools/terraform/1.11.4/$(go env GOOS)_$(go env GOARCH)/terraform" \
-MATRIX_REPORT=/tmp/issue210-report/result.json \
+MATRIX_REPORT="$report_root/result.json" \
 sh internal_testing/upgrade_matrix/run.sh local
 internal_testing/compose.sh down -v
 ```

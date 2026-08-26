@@ -6,7 +6,7 @@ set -eu
 
 REPO_ROOT=${1:?usage: smoke.sh <repo_root> resources <file...> datasources <file...>}
 shift
-REPO_ROOT=$(cd "$REPO_ROOT" && pwd)
+REPO_ROOT=$(cd "$REPO_ROOT" && pwd -P)
 INTERNAL_TESTING="$REPO_ROOT/internal_testing"
 RESOURCES="$INTERNAL_TESTING/resources"
 DATASOURCES="$INTERNAL_TESTING/datasources"
@@ -263,6 +263,15 @@ PY
   echo '=== MCP IMPORT CONFIG OWNERSHIP CONVERGENCE APPLY ==='
   # shellcheck disable=SC2086 # STEADY_ARGS is one complete optional argument.
   terraform apply -auto-approve $STEADY_ARGS
+  if [ -n "${SMOKE_MCP_EVIDENCE:-}" ]; then
+    python3 - "$SMOKE_MCP_EVIDENCE" <<'PY'
+import json,sys
+with open(sys.argv[1], "x", encoding="utf-8") as output:
+    json.dump({"immediate_import":True,"refresh_only_zero_drift_count":2,"private_provenance_preserved":True}, output, sort_keys=True)
+    output.write("\n")
+PY
+    chmod 600 "$SMOKE_MCP_EVIDENCE"
+  fi
   rm -f "$IMPORT_BACKUP"
   IMPORT_BACKUP=
   echo '=== MCP IMPORT CLEANUP ==='
@@ -377,6 +386,17 @@ echo '=== REFRESH CANONICAL STATE ==='
 # second plan to be exactly stable.
 # shellcheck disable=SC2086 # STEADY_ARGS intentionally expands to an optional complete argument.
 terraform apply -refresh-only -auto-approve $STEADY_ARGS
+# Preserve the complete post-command state before any later plan or destroy.
+# The supervisor is invoked immediately, so its phase receipt binds to this
+# successful refresh-only command rather than a later show/state-list command.
+cp terraform.tfstate matrix-refresh-state.tfstate
+if [ -n "${MATRIX_EVIDENCE_SESSION:-}" ] && [ -n "${MATRIX_HARNESS:-}" ]; then
+  set -- capture-refresh-phase --session "$MATRIX_EVIDENCE_SESSION" \
+    --plan matrix-initial-plan.json --refresh-state matrix-refresh-state.tfstate \
+    --cli "$MATRIX_EXECUTED_CLI"
+  [ -z "$STEADY_ARGS" ] || set -- "$@" "--refresh-argument=$STEADY_ARGS"
+  python3 "$MATRIX_HARNESS" "$@"
+fi
 terraform show -json >matrix-refreshed-state.json
 
 echo '=== NO-DRIFT PLAN ==='
@@ -406,8 +426,9 @@ fi
 [ "$(wc -c <"$SMOKE_LOG")" -le 10485760 ] || { echo 'Smoke log exceeded its private bound.' >&3; exit 1; }
 if [ -n "${MATRIX_EVIDENCE_SESSION:-}" ] && [ -n "${MATRIX_HARNESS:-}" ]; then
   python3 "$MATRIX_HARNESS" observe-smoke --session "$MATRIX_EVIDENCE_SESSION" \
-    --plan matrix-initial-plan.json --state matrix-refreshed-state.json \
-    --steady-plan matrix-steady-plan.json --final-state matrix-final-state.list
+    --plan matrix-initial-plan.json --refresh-state matrix-refresh-state.tfstate \
+    --state matrix-refreshed-state.json --steady-plan matrix-steady-plan.json \
+    --final-state matrix-final-state.list
 fi
 
 SUCCESS=1

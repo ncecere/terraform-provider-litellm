@@ -77,6 +77,25 @@ DIAGNOSTIC_TITLE_CODES = {
     "key_wo_endpoint_unavailable": ("Write-Only Key Creation Error", "key-write-only-endpoint-unavailable"),
 }
 DIAGNOSTIC_CODES = {value[1] for value in DIAGNOSTIC_TITLE_CODES.values()}
+ASSERTION_CODES = {
+    "terraform-plan-state-api", "upgrade-state-migration", "import-authoritative-absence",
+    "import-immediate-no-drift-provenance", "replacement-plan-state",
+    "fault-endpoint-diagnostic-state", "bounded-feature-attempt",
+    "validated-documentation", "allowlisted-unavailability",
+    "refresh-only-config-state-zero-drift",
+}
+TF_1114_EXPECTED_SKIPS = {
+    ("resource_coverage", "litellm_project", "enterprise-license-required"),
+    ("upgrade", "litellm_jwt_key_mapping", "previous-release-resource-unavailable"),
+    ("upgrade", "litellm_project", "enterprise-license-required"),
+    ("lifecycle", "litellm_project", "enterprise-license-required"),
+    ("import", "litellm_agent", "role-redacted-state-requires-admin"),
+    ("import", "litellm_project", "enterprise-license-required"),
+    ("drift", "litellm_project", "enterprise-license-required"),
+    ("data_source", "litellm_project", "enterprise-license-required"),
+    ("data_source", "litellm_projects", "enterprise-license-required"),
+    ("optional_feature", "key_wo", "api-endpoint-unavailable"),
+}
 URL_RE = re.compile(r"(?i)(?:\b(?:https?|postgres(?:ql)?|file)://\S+|\b[a-z0-9.-]+:\d{2,5}(?:/\S*)?)")
 UUID_RE = re.compile(r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b")
 ABS_PATH_RE = re.compile(r"(?:^|[\s\"'])/(?:Users|home|tmp|var|private|workspace|github)/[^\s\"']+")
@@ -288,10 +307,16 @@ def check_inventory(matrix: dict) -> None:
     expected_counts = {
         "resource_coverage": 24, "upgrade": 24, "lifecycle": 24, "import": 24,
         "drift": 24, "replacement": 3, "failure_recovery": 2,
-        "data_source": 35, "documentation": 4,
+        "data_source": 35, "documentation": 3,
     }
     if matrix.get("scenario_counts") != expected_counts:
         raise HarnessError("scenario count contract changed without explicit accounting")
+    if sum(expected_counts.values()) + len(matrix.get("optional_features", [])) != 166:
+        raise HarnessError("execution matrix must contain exactly 166 independently reviewed scenarios")
+    expected_skips = matrix.get("terraform_1_11_4_expected_skips", [])
+    skip_identities = {(item.get("category"), item.get("subject"), item.get("reason")) for item in expected_skips}
+    if len(expected_skips) != 10 or skip_identities != TF_1114_EXPECTED_SKIPS:
+        raise HarnessError("Terraform 1.11.4 must have the exact ten independently reviewed skips")
     for scenario in matrix.get("replacement_scenarios", []):
         if scenario.get("name") == "jwt_claim_pair_identity" and scenario.get("minimum_cli") != "1.11.0":
             raise HarnessError("JWT replacement does not have an exact CLI feature gate")
@@ -308,7 +333,8 @@ def check_inventory(matrix: dict) -> None:
     current_only = matrix.get("current_provider_only_scenarios", [])
     if current_only != [{
         "name": "mcp-immediate-import-no-drift-provenance", "fixture": "mcp_server_import.tf",
-        "resource_type": "litellm_mcp_server", "prior_release_expected": False,
+        "resource_type": "litellm_mcp_server", "scenario": "import:litellm_mcp_server",
+        "prior_release_expected": False,
         "assertions": ["immediate-import", "two-refresh-only-no-drift", "provenance-preserved"],
     }] or not (ROOT / "internal_testing" / "resources" / current_only[0]["fixture"]).is_file():
         raise HarnessError("current-only MCP import provenance inventory is incomplete")
@@ -541,8 +567,6 @@ def credential_scan(paths: Iterable[Path]) -> None:
     for path in paths:
         require_regular_file(path)
         text = path.read_text(encoding="utf-8", errors="replace")
-        if any(pattern.search(text) for pattern in (URL_RE, UUID_RE, ABS_PATH_RE, SECRET_RE, ID_RE)):
-            raise HarnessError("result artifact failed secret/identity/location scan")
         try:
             value = json.loads(text)
         except json.JSONDecodeError as error:
@@ -559,6 +583,13 @@ def credential_scan(paths: Iterable[Path]) -> None:
             elif isinstance(item, str) and item.startswith("hmac-") and not re.fullmatch(r"hmac-sha256:[0-9a-f]{64}", item):
                 raise HarnessError("result artifact contains a non-safe HMAC value")
         walk(value)
+        # Receipt HMACs are strict, value-free digests. Their required
+        # `hmac-sha256:<hex>` spelling can resemble a host:port to the broad URL
+        # detector when the digest starts with decimal digits. Remove only the
+        # already shape-validated exact token before scanning all other bytes.
+        scanned = re.sub(r"hmac-sha256:[0-9a-f]{64}", "[SAFE_HMAC]", text)
+        if any(pattern.search(scanned) for pattern in (URL_RE, UUID_RE, ABS_PATH_RE, SECRET_RE, ID_RE)):
+            raise HarnessError("result artifact failed secret/identity/location scan")
 
 
 def summarize_results(results: list[dict]) -> dict:
@@ -687,7 +718,7 @@ def atomic_exclusive_write(path: Path, encoded: bytes) -> None:
             os.unlink(temporary_name, dir_fd=directory_fd)
 
 
-def write_report(path: Path, report: dict) -> None:
+def scanned_report_bytes(report: dict) -> bytes:
     validate_report(report)
     encoded = (json.dumps(report, indent=2, sort_keys=True) + "\n").encode()
     # Scan the exact bytes before publication; no path reopen is needed and a
@@ -696,7 +727,24 @@ def write_report(path: Path, report: dict) -> None:
         scan = Path(raw) / "value.json"
         scan.write_bytes(encoded)
         credential_scan([scan])
-    atomic_exclusive_write(path, encoded)
+    return encoded
+
+
+def write_report(path: Path, report: dict) -> None:
+    atomic_exclusive_write(path, scanned_report_bytes(report))
+
+
+def publish_execution_artifacts(report_path: Path, evidence_path: Path, report: dict, ledger_encoded: bytes) -> None:
+    report_encoded = scanned_report_bytes(report)
+    with tempfile.TemporaryDirectory(prefix="litellm-ledger-scan-") as raw:
+        scan = Path(raw) / "ledger.json"
+        scan.write_bytes(b"[" + b",".join(ledger_encoded.splitlines()) + b"]")
+        credential_scan([scan])
+    # The report is the commit marker. An evidence-only artifact is incomplete
+    # and cannot pass release validation; a report is never visible without its
+    # already-published, digest-bound evidence ledger.
+    atomic_exclusive_write(evidence_path, ledger_encoded)
+    atomic_exclusive_write(report_path, report_encoded)
 
 
 def assembly(args: argparse.Namespace) -> int:
@@ -746,20 +794,103 @@ def platform_key() -> str:
     return f"{system}_{machine}"
 
 
+def canonicalize_trusted_os_alias(path: Path) -> Path:
+    """Canonicalize only immutable root-owned top-level OS aliases.
+
+    macOS exposes trusted paths such as /tmp and /var as root-owned aliases into
+    /private.  Resolving an arbitrary path would also trust attacker-created
+    ancestor symlinks, so only the first component may be rewritten and only
+    when both it and the filesystem root are owned by uid 0.
+    """
+    value = path.expanduser().absolute()
+    if len(value.parts) < 2:
+        return value
+    first = Path(value.anchor) / value.parts[1]
+    try:
+        first_info = first.lstat()
+        root_info = Path(value.anchor).stat()
+    except FileNotFoundError:
+        return value
+    if stat.S_ISLNK(first_info.st_mode):
+        if first_info.st_uid != 0 or root_info.st_uid != 0:
+            raise HarnessError("path contains an untrusted ancestor symlink")
+        resolved = first.resolve(strict=True)
+        resolved_info = resolved.stat()
+        if not stat.S_ISDIR(resolved_info.st_mode) or resolved_info.st_uid != 0:
+            raise HarnessError("trusted OS alias does not resolve to a root-owned directory")
+        value = resolved.joinpath(*value.parts[2:])
+    return value
+
+
+@contextlib.contextmanager
+def secure_directory_fd(path: Path, *, create: bool):
+    """Retain a no-follow descriptor while walking/creating a directory."""
+    value = canonicalize_trusted_os_alias(path)
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(value.anchor, flags)
+    try:
+        for component in value.parts[1:]:
+            try:
+                child = os.open(component, flags, dir_fd=descriptor)
+            except FileNotFoundError:
+                if not create:
+                    raise HarnessError("required directory is missing")
+                try:
+                    os.mkdir(component, 0o700, dir_fd=descriptor)
+                except FileExistsError:
+                    # A concurrent trusted installer may have won the mkdir;
+                    # the no-follow open below still rejects a symlink swap.
+                    pass
+                child = os.open(component, flags, dir_fd=descriptor)
+            info = os.fstat(child)
+            if not stat.S_ISDIR(info.st_mode):
+                os.close(child)
+                raise HarnessError("path contains a non-directory component")
+            os.close(descriptor)
+            descriptor = child
+        yield value, descriptor
+    except OSError as error:
+        if error.errno in {errno.ELOOP, errno.ENOTDIR}:
+            raise HarnessError("path contains an untrusted ancestor symlink") from error
+        raise
+    finally:
+        os.close(descriptor)
+
+
 def secure_directory(path: Path) -> Path:
-    path = path.expanduser().absolute()
+    with secure_directory_fd(path, create=True) as (value, descriptor):
+        os.fchmod(descriptor, 0o700)
+        info = os.fstat(descriptor)
+        if stat.S_IMODE(info.st_mode) & 0o077:
+            raise HarnessError("private directory permissions are too broad")
+    return value
+
+
+def make_private_temp(args: argparse.Namespace) -> int:
+    with secure_directory_fd(Path(args.base), create=False) as (base, descriptor):
+        for _ in range(32):
+            name = "litellm-issue210." + secrets.token_hex(8)
+            try:
+                os.mkdir(name, 0o700, dir_fd=descriptor)
+                os.fsync(descriptor)
+                print(str(base / name))
+                return 0
+            except FileExistsError:
+                continue
+    raise HarnessError("could not allocate a unique private scratch directory")
+
+
+def canonical_path(args: argparse.Namespace) -> int:
+    path = canonicalize_trusted_os_alias(Path(args.path))
     current = Path(path.anchor)
     for part in path.parts[1:]:
         current = current / part
         if current.exists() or current.is_symlink():
             info = current.lstat()
             if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-                raise HarnessError("cache path contains a symlink or non-directory")
-        else:
-            current.mkdir(mode=0o700)
-    path.chmod(0o700)
-    require_private_directory(path)
-    return path
+                raise HarnessError("path contains an untrusted ancestor symlink")
+    print(str(path))
+    return 0
 
 
 @contextlib.contextmanager
@@ -1196,6 +1327,11 @@ def _expected_subjects(matrix: dict) -> dict[str, set[str]]:
     }
 
 
+def _command_digest(command: list[str]) -> str:
+    encoded = json.dumps(command, separators=(",", ":"), ensure_ascii=False).encode()
+    return hashlib.sha256(b"issue210-command-v1\0" + encoded).hexdigest()
+
+
 def _assertion_digest(paths: list[Path], assertion: str) -> str:
     if not paths:
         raise HarnessError("scenario record requires observed assertion evidence")
@@ -1211,18 +1347,14 @@ def _assertion_digest(paths: list[Path], assertion: str) -> str:
 
 def _append_scenario(session: dict, *, name: str, category: str, status: str,
                      reason: str, diagnostic_code: str, assertion: str,
-                     evidence_paths: list[Path]) -> None:
+                     evidence_paths: list[Path], command_record: dict | None = None) -> None:
     matrix = load_json(MATRIX_PATH)
     if category not in _expected_subjects(matrix) or ":" not in name:
         raise HarnessError("scenario observation category/name is invalid")
     subject = name.split(":", 1)[1]
     if name != f"{category}:{subject}" or subject not in _expected_subjects(matrix)[category]:
         raise HarnessError("scenario observation is not in the checked matrix")
-    if status not in STATUSES or assertion not in {
-        "terraform-plan-state-api", "upgrade-state-migration", "import-authoritative-absence",
-        "replacement-plan-state", "fault-endpoint-diagnostic-state", "bounded-feature-attempt",
-        "validated-documentation", "allowlisted-unavailability",
-    }:
+    if status not in STATUSES or assertion not in ASSERTION_CODES:
         raise HarnessError("scenario observation enum is invalid")
     if status == "skipped":
         if reason not in set(matrix["allowed_skip_reasons"]) | {"api-endpoint-unavailable"}:
@@ -1236,14 +1368,15 @@ def _append_scenario(session: dict, *, name: str, category: str, status: str,
     if not commands:
         raise HarnessError("scenario observation has no executed bounded command")
     failed_commands = [item for item in commands if item.get("exit_code") != 0]
-    command = failed_commands[-1] if status == "skipped" and diagnostic_code and failed_commands else commands[-1]
+    command = command_record or (failed_commands[-1] if status == "skipped" and diagnostic_code and failed_commands else commands[-1])
     bindings = {key: session[key] for key in (
         "run_nonce", "cli_lane", "candidate_commit", "provider_sha256",
         "provider_schema_sha256", "harness_sha256", "matrix_sha256",
     )}
     if any(command.get(key) != value for key, value in bindings.items()):
         raise HarnessError("scenario command receipt is from another session")
-    if not isinstance(command.get("exit_code"), int) or not re.fullmatch(r"[0-9a-f]{64}", str(command.get("command_sha256", ""))) or not re.fullmatch(r"[0-9a-f]{64}", str(command.get("result_sha256", ""))):
+    command_exit_code = command.get("exit_code", command.get("command_exit_code"))
+    if not isinstance(command_exit_code, int) or not re.fullmatch(r"[0-9a-f]{64}", str(command.get("command_sha256", ""))) or not re.fullmatch(r"[0-9a-f]{64}", str(command.get("result_sha256", ""))):
         raise HarnessError("scenario command receipt schema is invalid")
     existing = {(item.get("category"), item.get("subject")) for item in values if item.get("record_type") == "scenario"}
     if (category, subject) in existing:
@@ -1252,7 +1385,7 @@ def _append_scenario(session: dict, *, name: str, category: str, status: str,
         "record_type": "scenario", **bindings, "name": name, "subject": subject,
         "category": category, "status": status, "assertion": assertion,
         "command_sha256": command["command_sha256"], "result_sha256": command["result_sha256"],
-        "command_exit_code": command["exit_code"],
+        "command_exit_code": command_exit_code,
         "assertion_sha256": _assertion_digest(evidence_paths, assertion),
     }
     if reason:
@@ -1279,13 +1412,92 @@ def _walk_resources(module: dict) -> Iterable[dict]:
         yield from _walk_resources(child)
 
 
-def observe_smoke(args: argparse.Namespace) -> int:
+def _configured_data_catalog(plan: dict) -> set[tuple[str, str]]:
+    root = plan.get("configuration", {}).get("root_module", {})
+    rows: set[tuple[str, str]] = set()
+    resources = root.get("resources", [])
+    if not isinstance(resources, list):
+        raise HarnessError("smoke configuration catalog is invalid")
+    for item in resources:
+        if item.get("mode") != "data":
+            continue
+        address, resource_type = item.get("address"), item.get("type")
+        if not isinstance(address, str) or not isinstance(resource_type, str):
+            raise HarnessError("configured data-source address/type is invalid")
+        if not re.fullmatch(r"data\.litellm_[a-z_]+\.[A-Za-z0-9_-]+", address):
+            raise HarnessError("configured data-source address is outside the root catalog")
+        if (address, resource_type) in rows:
+            raise HarnessError("configured data-source catalog contains a duplicate")
+        rows.add((address, resource_type))
+    return rows
+
+
+def _raw_state_data_catalog(state: dict) -> set[tuple[str, str]]:
+    rows: set[tuple[str, str]] = set()
+    for item in state.get("resources", []):
+        if item.get("mode") != "data":
+            continue
+        resource_type, name = item.get("type"), item.get("name")
+        module = item.get("module", "")
+        if not isinstance(resource_type, str) or not isinstance(name, str) or not isinstance(module, str):
+            raise HarnessError("refreshed data-source state address/type is invalid")
+        address = ".".join(part for part in (module, "data", resource_type, name) if part)
+        if not re.fullmatch(r"data\.litellm_[a-z_]+\.[A-Za-z0-9_-]+", address):
+            raise HarnessError("refreshed data-source state is outside the root catalog")
+        if (address, resource_type) in rows:
+            raise HarnessError("refreshed data-source state contains a duplicate")
+        rows.add((address, resource_type))
+    return rows
+
+
+def capture_refresh_phase(args: argparse.Namespace) -> int:
     session = _read_session(Path(args.session))
-    paths = [Path(args.plan), Path(args.state), Path(args.steady_plan), Path(args.final_state)]
+    paths = [Path(args.plan), Path(args.refresh_state)]
     for path in paths:
         require_regular_file(path)
-    plan, state, steady = (load_json(paths[index]) for index in range(3))
-    if paths[3].read_text(encoding="utf-8").strip():
+    configured = _configured_data_catalog(load_json(paths[0]))
+    refreshed = _raw_state_data_catalog(load_json(paths[1]))
+    if configured != refreshed:
+        raise HarnessError("refresh-only state does not exactly match the configured data-source catalog")
+    if not configured:
+        return 0
+    expected = _expected_subjects(load_json(MATRIX_PATH))["data_source"]
+    subjects = sorted({resource_type for _, resource_type in configured})
+    # Multiple configured addresses may intentionally exercise distinct lookup
+    # forms of one registered type. Their address/type rows must be exact, while
+    # the final per-type scenario subject remains unique.
+    if set(subjects) - expected:
+        raise HarnessError("refresh-only data-source catalog contains an extra subject")
+    values = _ledger_values(session)
+    commands = [item for item in values if item.get("record_type") == "command"]
+    if not commands or commands[-1].get("exit_code") != 0:
+        raise HarnessError("refresh-only phase lacks its immediately preceding successful command")
+    command = commands[-1]
+    expected_command = [args.cli, "apply", "-refresh-only", "-auto-approve", *args.refresh_argument]
+    if command.get("command_sha256") != _command_digest(expected_command):
+        raise HarnessError("refresh-only phase command does not match the exact supervised argv")
+    bindings = {key: session[key] for key in (
+        "run_nonce", "cli_lane", "candidate_commit", "provider_sha256",
+        "provider_schema_sha256", "harness_sha256", "matrix_sha256",
+    )}
+    item = {
+        "record_type": "phase", **bindings, "phase": "refresh-only-data-sources",
+        "subjects": subjects, "command_sha256": command["command_sha256"],
+        "result_sha256": command["result_sha256"], "command_exit_code": command["exit_code"],
+        "assertion_sha256": _assertion_digest(paths, "refresh-only-config-state-zero-drift"),
+    }
+    item["receipt_hmac"] = _sign_record(item, _session_key(session))
+    _append_ledger(Path(session["ledger"]), item)
+    return 0
+
+
+def observe_smoke(args: argparse.Namespace) -> int:
+    session = _read_session(Path(args.session))
+    paths = [Path(args.plan), Path(args.refresh_state), Path(args.state), Path(args.steady_plan), Path(args.final_state)]
+    for path in paths:
+        require_regular_file(path)
+    plan, raw_refresh, state, steady = (load_json(paths[index]) for index in range(4))
+    if paths[4].read_text(encoding="utf-8").strip():
         raise HarnessError("smoke cleanup did not produce empty Terraform state")
     steady_changes = steady.get("resource_changes", [])
     if any(change.get("change", {}).get("actions") not in ([], ["no-op"], ["read"]) for change in steady_changes):
@@ -1295,12 +1507,15 @@ def observe_smoke(args: argparse.Namespace) -> int:
         item.get("type") for item in state_resources
         if item.get("mode") == "managed" and str(item.get("type", "")).startswith("litellm_")
     }
-    plan_changes = plan.get("resource_changes", [])
-    data_sources = {
-        item.get("type") for item in plan_changes
-        if item.get("mode") == "data" and str(item.get("type", "")).startswith("litellm_")
-        and item.get("change", {}).get("actions") in (["read"], ["no-op"])
+    configured = _configured_data_catalog(plan)
+    refreshed = _raw_state_data_catalog(raw_refresh)
+    state_data = {
+        (item.get("address"), item.get("type")) for item in state_resources
+        if item.get("mode") == "data"
     }
+    if configured != refreshed or configured != state_data:
+        raise HarnessError("complete refreshed state differs from its exact configured data-source catalog")
+    data_sources = {resource_type for _, resource_type in configured}
     matrix = load_json(MATRIX_PATH)
     expected = _expected_subjects(matrix)
     if not managed or not managed.issubset(expected["lifecycle"]) or not data_sources.issubset(expected["data_source"]):
@@ -1308,8 +1523,17 @@ def observe_smoke(args: argparse.Namespace) -> int:
     for subject in sorted(managed):
         for category in ("resource_coverage", "lifecycle", "drift"):
             _append_scenario(session, name=f"{category}:{subject}", category=category, status="passed", reason="", diagnostic_code="", assertion="terraform-plan-state-api", evidence_paths=paths)
-    for subject in sorted(data_sources):
-        _append_scenario(session, name=f"data_source:{subject}", category="data_source", status="passed", reason="", diagnostic_code="", assertion="terraform-plan-state-api", evidence_paths=paths)
+    if data_sources:
+        phase_digest = _assertion_digest(paths[:2], "refresh-only-config-state-zero-drift")
+        phases = [item for item in _ledger_values(session) if item.get("record_type") == "phase" and item.get("assertion_sha256") == phase_digest]
+        if len(phases) != 1 or set(phases[0].get("subjects", [])) != data_sources:
+            raise HarnessError("data-source completion lacks one exact refresh-only phase")
+        for subject in sorted(data_sources):
+            _append_scenario(
+                session, name=f"data_source:{subject}", category="data_source", status="passed",
+                reason="", diagnostic_code="", assertion="refresh-only-config-state-zero-drift",
+                evidence_paths=paths, command_record=phases[0],
+            )
     return 0
 
 
@@ -1327,21 +1551,21 @@ def finalize_evidence(args: argparse.Namespace) -> int:
         "category", "status", "assertion", "command_sha256", "result_sha256",
         "command_exit_code", "assertion_sha256", "reason", "diagnostic_code", "receipt_hmac",
     }
+    allowed_phase = {
+        "record_type", "run_nonce", "cli_lane", "candidate_commit", "provider_sha256",
+        "provider_schema_sha256", "harness_sha256", "matrix_sha256", "phase", "subjects",
+        "command_sha256", "result_sha256", "command_exit_code", "assertion_sha256", "receipt_hmac",
+    }
     bindings = {key: session[key] for key in (
         "run_nonce", "cli_lane", "candidate_commit", "provider_sha256",
         "provider_schema_sha256", "harness_sha256", "matrix_sha256",
     )}
     command_pairs = set()
     scenarios = []
-    assertion_codes = {
-        "terraform-plan-state-api", "upgrade-state-migration", "import-authoritative-absence",
-        "replacement-plan-state", "fault-endpoint-diagnostic-state", "bounded-feature-attempt",
-        "validated-documentation", "allowlisted-unavailability",
-    }
     for item in values[1:]:
         kind = item.get("record_type")
-        allowed = allowed_command if kind == "command" else allowed_scenario if kind == "scenario" else set()
-        required = allowed_command if kind == "command" else allowed_scenario - {"reason", "diagnostic_code"} if kind == "scenario" else set()
+        allowed = allowed_command if kind == "command" else allowed_scenario if kind == "scenario" else allowed_phase if kind == "phase" else set()
+        required = allowed_command if kind == "command" else allowed_scenario - {"reason", "diagnostic_code"} if kind == "scenario" else allowed_phase if kind == "phase" else set()
         if not allowed or set(item) - allowed or not required.issubset(item):
             raise HarnessError("evidence ledger record schema is invalid")
         if any(item.get(key) != value for key, value in bindings.items()):
@@ -1353,8 +1577,18 @@ def finalize_evidence(args: argparse.Namespace) -> int:
             if not isinstance(item["exit_code"], int) or not -255 <= item["exit_code"] <= 126 or not isinstance(item["output_bytes"], int) or not 0 <= item["output_bytes"] <= 10 * 1024 * 1024 + 65536:
                 raise HarnessError("command receipt result bound is invalid")
             command_pairs.add((item["command_sha256"], item["result_sha256"], item["exit_code"]))
+        elif kind == "phase":
+            if (
+                item.get("phase") != "refresh-only-data-sources"
+                or item.get("command_exit_code") != 0
+                or (item["command_sha256"], item["result_sha256"], item["command_exit_code"]) not in command_pairs
+                or not isinstance(item.get("subjects"), list)
+                or item["subjects"] != sorted(set(item["subjects"]))
+                or not set(item["subjects"]).issubset(_expected_subjects(load_json(MATRIX_PATH))["data_source"])
+            ):
+                raise HarnessError("refresh-only phase evidence is invalid")
         else:
-            if item.get("status") not in STATUSES or item.get("category") not in CATEGORIES or item.get("assertion") not in assertion_codes:
+            if item.get("status") not in STATUSES or item.get("category") not in CATEGORIES or item.get("assertion") not in ASSERTION_CODES:
                 raise HarnessError("scenario evidence enum is invalid")
             if (item["command_sha256"], item["result_sha256"], item["command_exit_code"]) not in command_pairs:
                 raise HarnessError("scenario evidence does not reference an executed command")
@@ -1366,10 +1600,22 @@ def finalize_evidence(args: argparse.Namespace) -> int:
                 raise HarnessError("scenario evidence diagnostic enum is invalid")
             scenarios.append(item)
     matrix = load_json(MATRIX_PATH)
+    identities = [(item["category"], item["subject"]) for item in scenarios]
+    if len(identities) != len(set(identities)):
+        raise HarnessError("trusted evidence ledger contains duplicate scenario subjects")
     for category, subjects in _expected_subjects(matrix).items():
         actual = {item["subject"] for item in scenarios if item["category"] == category}
         if actual != subjects:
             raise HarnessError("trusted evidence ledger lacks an exact scenario set")
+    if len(scenarios) != 166:
+        raise HarnessError("trusted evidence ledger does not contain the exact 166-scenario matrix")
+    if session["cli_lane"] == "terraform-1.11.4":
+        actual_skips = {
+            (item["category"], item["subject"], item.get("reason", ""))
+            for item in scenarios if item["status"] == "skipped"
+        }
+        if actual_skips != TF_1114_EXPECTED_SKIPS or sum(item["status"] == "passed" for item in scenarios) != 156:
+            raise HarnessError("Terraform 1.11.4 evidence is not the reviewed 156-pass/10-skip result")
     report_scenarios = []
     evidence_codes = {
         "resource_coverage": "apply-refresh-plan-destroy", "lifecycle": "apply-refresh-plan-destroy",
@@ -1414,16 +1660,30 @@ def finalize_evidence(args: argparse.Namespace) -> int:
         "previous_signing_fingerprint": previous["signing_key"]["fingerprint"],
     }
     report = {"schema_version": REPORT_SCHEMA_VERSION, "mode": "destructive-local", "summary": summarize_results(report_scenarios), "scenarios": report_scenarios, "provenance": provenance}
-    write_report(Path(args.report), report)
     # The ledger contains only controlled labels, bounded integers, and digests;
     # raw Terraform/API output remains in the private scratch log.
     ledger_encoded = Path(session["ledger"]).read_bytes()
-    with tempfile.TemporaryDirectory(prefix="litellm-ledger-scan-") as raw:
-        scan = Path(raw) / "ledger.json"
-        scan.write_bytes(b"[" + b",".join(ledger_encoded.splitlines()) + b"]")
-        credential_scan([scan])
-    atomic_exclusive_write(Path(args.evidence_report), ledger_encoded)
+    publish_execution_artifacts(Path(args.report), Path(args.evidence_report), report, ledger_encoded)
     print(f"Execution report passed trusted evidence validation: emitted={len(report_scenarios)} commands={sum(item.get('record_type') == 'command' for item in values)}")
+    return 0
+
+
+def remove_session_key(args: argparse.Namespace) -> int:
+    session_path = Path(args.session).absolute()
+    session = _read_session(session_path)
+    key_path = Path(session["key_file"]).absolute()
+    if key_path.parent != session_path.parent or not key_path.name.startswith(".ledger-key-"):
+        raise HarnessError("evidence signing key is outside its private session directory")
+    with secure_parent_fd(key_path) as (directory_fd, name):
+        descriptor = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=directory_fd)
+        try:
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size != 32:
+                raise HarnessError("evidence signing key changed before removal")
+        finally:
+            os.close(descriptor)
+        os.unlink(name, dir_fd=directory_fd)
+        os.fsync(directory_fd)
     return 0
 
 
@@ -1459,6 +1719,12 @@ def parser() -> argparse.ArgumentParser:
     previous.add_argument("--cache", default="~/.cache/terraform-provider-litellm/providers")
     previous.add_argument("--offline", action="store_true")
     previous.set_defaults(function=install_previous)
+    canonical = commands.add_parser("canonical-path")
+    canonical.add_argument("--path", required=True)
+    canonical.set_defaults(function=canonical_path)
+    private_temp = commands.add_parser("make-private-temp")
+    private_temp.add_argument("--base", required=True)
+    private_temp.set_defaults(function=make_private_temp)
     bundle = commands.add_parser("prepare-provider")
     bundle.add_argument("--provider-binary", required=True)
     bundle.add_argument("--directory", required=True)
@@ -1479,9 +1745,17 @@ def parser() -> argparse.ArgumentParser:
     observation.add_argument("--assertion", required=True)
     observation.add_argument("--evidence", action="append", required=True)
     observation.set_defaults(function=record_observation)
+    refresh = commands.add_parser("capture-refresh-phase")
+    refresh.add_argument("--session", required=True)
+    refresh.add_argument("--plan", required=True)
+    refresh.add_argument("--refresh-state", required=True)
+    refresh.add_argument("--cli", required=True)
+    refresh.add_argument("--refresh-argument", action="append", default=[])
+    refresh.set_defaults(function=capture_refresh_phase)
     smoke = commands.add_parser("observe-smoke")
     smoke.add_argument("--session", required=True)
     smoke.add_argument("--plan", required=True)
+    smoke.add_argument("--refresh-state", required=True)
     smoke.add_argument("--state", required=True)
     smoke.add_argument("--steady-plan", required=True)
     smoke.add_argument("--final-state", required=True)
@@ -1493,6 +1767,9 @@ def parser() -> argparse.ArgumentParser:
     finalize.add_argument("--cli", required=True)
     finalize.add_argument("--previous-provider-binary", required=True)
     finalize.set_defaults(function=finalize_evidence)
+    remove_key = commands.add_parser("remove-session-key")
+    remove_key.add_argument("--session", required=True)
+    remove_key.set_defaults(function=remove_session_key)
     safety = commands.add_parser("preflight")
     safety.add_argument("target", choices=("local", "remote"))
     safety.set_defaults(function=preflight)
