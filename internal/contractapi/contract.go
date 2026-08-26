@@ -1261,14 +1261,14 @@ var reviewedPaginationFunctions = map[string]bool{
 // raw-identity helpers and promptEnvironment. Any implementation or dependency
 // change must be independently reviewed before its new proof is admitted here.
 var reviewedRawIdentityProofs = map[string]string{
-	"keyDataSourceLookup":          "fa471119c216c1a74769e672f0164cccac33275db6a4992ca36cfc12a6f4c140",
-	"keyLookupIdentifier":          "b0b45d85313b58fc770f57cb630bd35b67f4f0c3d3168f7cb61278ca828f54de",
-	"keyBlockStateIdentity":        "70d7c4d1a18afa160c1fffb657f9b5e0b882d6ab19e8027388e6162e44efd44b",
-	"batchTeamID":                  "2d99599f474fe83622b96fdf702019b8619bdfdd4bea80a01c98d14e90ea3e13",
-	"teamMemberConfiguredIdentity": "05447d21685b48532648265cb45296f8bb2b7a18f876e595e2a8dbb26b10c591",
+	"keyDataSourceLookup":          "cbe0fc0b8088f11d87fa5bc0478904f489cf18e21c2355831991505b05de71cd",
+	"keyLookupIdentifier":          "14edbc851e60a14d5b71b32fbf45fd13db7851deaf5fe2efae511b7041d65265",
+	"keyBlockStateIdentity":        "0191ee6f5e184846f49ff73454b211e758c6e235c6097af43c8d7d9040fb5968",
+	"batchTeamID":                  "c568cb284d64ec148f22093cc28d161db0f7f00d88a7728f53b44d9d12fd3c04",
+	"teamMemberConfiguredIdentity": "f7f74ec5327d73d2f6a935213553eaab298068b93fe1b081734d619a51adfc3d",
 }
 
-var reviewedPromptEnvironmentProof = "da48b344a886388522cc494d772d2bf0eba7005a235981537ff5643a06d35db2"
+var reviewedPromptEnvironmentProof = "9796a2c10e9c247caa736ddc593d0fff808ff9b1f846541349008174604f2920"
 
 func canonicalPackageObject(object types.Object) string {
 	if object == nil {
@@ -1310,10 +1310,13 @@ func (encoder *canonicalTypeEncoder) encode(t types.Type) string {
 		if tuple == nil {
 			return "()"
 		}
+		// Parameter and result names are not part of a Go function type's
+		// identity. In particular, export data reflects standard-library source
+		// spelling, and fmt.Errorf's result changed from unnamed in Go 1.24 to
+		// named in Go 1.26 without changing its type or semantics.
 		parts := make([]string, tuple.Len())
 		for index := 0; index < tuple.Len(); index++ {
-			variable := tuple.At(index)
-			parts[index] = variable.Name() + ":" + encoder.encode(variable.Type())
+			parts[index] = encoder.encode(tuple.At(index).Type())
 		}
 		return "(" + strings.Join(parts, ",") + ")"
 	}
@@ -2040,10 +2043,20 @@ func (x *extractor) rawStringProvenance(expr ast.Expr, fn *ast.FuncDecl, seen ma
 			return false
 		}
 		root, ok := item.X.(*ast.Ident)
-		if !ok {
+		selection := x.typesInfo.Selections[item]
+		field, fieldOK := func() (*types.Var, bool) {
+			if selection == nil || selection.Kind() != types.FieldVal {
+				return nil, false
+			}
+			variable, exact := selection.Obj().(*types.Var)
+			return variable, exact && variable.IsField()
+		}()
+		if !ok || !fieldOK || seen[field] {
 			return false
 		}
-		for _, source := range x.variableSources(fn, x.typesInfo.ObjectOf(root)) {
+		seen[field] = true
+		rootObject := x.typesInfo.ObjectOf(root)
+		for _, source := range x.variableSources(fn, rootObject) {
 			call, ok := source.(*ast.CallExpr)
 			if !ok {
 				return false
@@ -2053,7 +2066,41 @@ func (x *extractor) rawStringProvenance(expr ast.Expr, fn *ast.FuncDecl, seen ma
 				return false
 			}
 		}
-		return len(x.variableSources(fn, x.typesInfo.ObjectOf(root))) > 0
+		hasRawSource := len(x.variableSources(fn, rootObject)) > 0
+		valid := true
+		ast.Inspect(fn.Body, func(node ast.Node) bool {
+			if !valid {
+				return false
+			}
+			switch candidate := node.(type) {
+			case *ast.UnaryExpr:
+				identifier, direct := candidate.X.(*ast.Ident)
+				if candidate.Op == token.AND && direct && x.typesInfo.ObjectOf(identifier) == rootObject {
+					// Once an address escapes, writes can no longer be attributed to
+					// an exact lexical selector object.
+					valid = false
+				}
+			case *ast.AssignStmt:
+				for index, left := range candidate.Lhs {
+					selector, direct := left.(*ast.SelectorExpr)
+					if !direct {
+						continue
+					}
+					identifier, direct := selector.X.(*ast.Ident)
+					leftSelection := x.typesInfo.Selections[selector]
+					if !direct || x.typesInfo.ObjectOf(identifier) != rootObject || leftSelection == nil || leftSelection.Obj() != field {
+						continue
+					}
+					if candidate.Tok != token.ASSIGN || len(candidate.Lhs) != len(candidate.Rhs) || !x.rawStringProvenance(candidate.Rhs[index], fn, seen) {
+						valid = false
+						return false
+					}
+					hasRawSource = true
+				}
+			}
+			return valid
+		})
+		return valid && hasRawSource
 	case *ast.Ident:
 		object := x.typesInfo.ObjectOf(item)
 		if object == nil {

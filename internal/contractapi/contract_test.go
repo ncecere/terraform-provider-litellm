@@ -582,6 +582,149 @@ func bad(values url.Values, value string) string {
 	}
 }
 
+func TestProductionRawIdentityFlowsKeepLexicalIdentity(t *testing.T) {
+	root := repositoryRoot(t)
+	source := filepath.Join(root, "internal", "provider")
+	type mutation struct {
+		file        string
+		needle      string
+		replacement string
+	}
+	copyProvider := func(t *testing.T, mutations []mutation) string {
+		t.Helper()
+		dir := t.TempDir()
+		byFile := map[string][]mutation{}
+		for _, change := range mutations {
+			byFile[change.file] = append(byFile[change.file], change)
+		}
+		entries, err := os.ReadDir(source)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+				continue
+			}
+			contents, err := os.ReadFile(filepath.Join(source, entry.Name()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			text := string(contents)
+			for _, change := range byFile[entry.Name()] {
+				if strings.Count(text, change.needle) != 1 {
+					t.Fatalf("%s production provenance fixture occurrence count for %q is not one", entry.Name(), change.needle)
+				}
+				text = strings.Replace(text, change.needle, change.replacement, 1)
+			}
+			if err := os.WriteFile(filepath.Join(dir, entry.Name()), []byte(text), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return dir
+	}
+
+	patterns := []struct {
+		name      string
+		file      string
+		needle    string
+		shadow    string
+		overwrite string
+	}{
+		{
+			name:   "data-source-multi-result",
+			file:   "datasource_key.go",
+			needle: "lookupValue, managementID, err := keyDataSourceLookup(&data)",
+			shadow: `lookupValue, managementID, err := keyDataSourceLookup(&data)
+	{
+		lookupValue := data.Key.ValueString()
+		_ = lookupValue
+	}`,
+			overwrite: `lookupValue, managementID, err := keyDataSourceLookup(&data)
+	lookupValue = strings.TrimPrefix(lookupValue, invalidReviewedEndpoint)
+	{
+		lookupValue := data.Key.ValueString()
+		_ = lookupValue
+	}`,
+		},
+		{
+			name:   "resource-multi-result",
+			file:   "resource_key.go",
+			needle: `query := url.Values{"key": []string{keyIdentifier}}`,
+			shadow: `{
+		keyIdentifier := data.Key.ValueString()
+		_ = keyIdentifier
+	}
+	query := url.Values{"key": []string{keyIdentifier}}`,
+			overwrite: `keyIdentifier = strings.TrimPrefix(keyIdentifier, invalidReviewedEndpoint)
+	{
+		keyIdentifier := data.Key.ValueString()
+		_ = keyIdentifier
+	}
+	query := url.Values{"key": []string{keyIdentifier}}`,
+		},
+		{
+			name:   "returned-struct-field",
+			file:   "resource_key_block.go",
+			needle: "endpoint := keyBlockInfoEndpoint(identity.apiValue)",
+			shadow: `{
+		identity, _ := keyBlockStateIdentity(&data)
+		_ = identity
+	}
+	endpoint := keyBlockInfoEndpoint(identity.apiValue)`,
+			overwrite: `identity.apiValue = strings.TrimPrefix(identity.apiValue, invalidReviewedEndpoint)
+	{
+		identity, _ := keyBlockStateIdentity(&data)
+		_ = identity
+	}
+	endpoint := keyBlockInfoEndpoint(identity.apiValue)`,
+		},
+		{
+			name:   "typed-method-argument",
+			file:   "resource_team_member.go",
+			needle: "observedEmail, exists, err := r.lookupCanonicalUserByID(ctx, userID)",
+			shadow: `{
+		userID := data.UserID.ValueString()
+		_ = userID
+	}
+	observedEmail, exists, err := r.lookupCanonicalUserByID(ctx, userID)`,
+			overwrite: `userID = strings.TrimPrefix(userID, invalidReviewedEndpoint)
+	{
+		userID := data.UserID.ValueString()
+		_ = userID
+	}
+	observedEmail, exists, err := r.lookupCanonicalUserByID(ctx, userID)`,
+		},
+	}
+
+	var shadows []mutation
+	for _, pattern := range patterns {
+		shadows = append(shadows, mutation{file: pattern.file, needle: pattern.needle, replacement: pattern.shadow})
+	}
+	shadowed := copyProvider(t, shadows)
+	extracted, err := ExtractProvider(shadowed)
+	if err != nil {
+		t.Fatalf("lexically isolated production shadows were rejected: %v", err)
+	}
+	contracts, _, _, err := LoadContracts(filepath.Join(root, "openapi.json"), filepath.Join(root, "internal", "contract", "supplemental-routes.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	operations, err := ResolveOperations(extracted, contracts)
+	if err != nil || len(operations) != 108 {
+		t.Fatalf("shadowed production operation inventory = %d, want 108: %v", len(operations), err)
+	}
+
+	for _, pattern := range patterns {
+		pattern := pattern
+		t.Run(pattern.name+"-overwrite-before-shadow", func(t *testing.T) {
+			dir := copyProvider(t, []mutation{{file: pattern.file, needle: pattern.needle, replacement: pattern.overwrite}})
+			if _, err := ExtractProvider(dir); err == nil || !strings.Contains(err.Error(), "raw-input provenance") {
+				t.Fatalf("transformed outer production identity was restored by a lexical shadow: %v", err)
+			}
+		})
+	}
+}
+
 func TestExtractorRejectsKilledEndpointProvenance(t *testing.T) {
 	fixtures := map[string]string{
 		"sentinel-trim-prefix": `package provider
@@ -1459,6 +1602,25 @@ func fixtureRawDependencyProof(t *testing.T, source string) (string, bool) {
 		t.Fatal("fixture omitted proof function")
 	}
 	return x.canonicalRawIdentityProof(reviewed, map[*types.Func]bool{})
+}
+
+func TestCanonicalFunctionTypeIgnoresTupleVariableSpelling(t *testing.T) {
+	unnamed := types.NewSignatureType(nil, nil, nil,
+		types.NewTuple(types.NewVar(token.NoPos, nil, "value", types.Typ[types.String])),
+		types.NewTuple(types.NewVar(token.NoPos, nil, "", types.Universe.Lookup("error").Type())), false)
+	named := types.NewSignatureType(nil, nil, nil,
+		types.NewTuple(types.NewVar(token.NoPos, nil, "input", types.Typ[types.String])),
+		types.NewTuple(types.NewVar(token.NoPos, nil, "err", types.Universe.Lookup("error").Type())), false)
+	changed := types.NewSignatureType(nil, nil, nil,
+		types.NewTuple(types.NewVar(token.NoPos, nil, "input", types.Typ[types.Int])),
+		types.NewTuple(types.NewVar(token.NoPos, nil, "err", types.Universe.Lookup("error").Type())), false)
+
+	if canonicalTypeString(unnamed) != canonicalTypeString(named) {
+		t.Fatal("non-semantic parameter or result spelling changed canonical function type identity")
+	}
+	if canonicalTypeString(named) == canonicalTypeString(changed) {
+		t.Fatal("semantic tuple element type change was absent from canonical function type identity")
+	}
 }
 
 func TestRawHelperProofClosesEverySemanticDependencyClass(t *testing.T) {
