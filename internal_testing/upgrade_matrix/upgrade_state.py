@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import math
+import re
 import secrets
 import sys
 from dataclasses import dataclass
@@ -28,6 +29,122 @@ class TypedAbsence:
     """A null/omitted value tagged with its current-schema shape."""
 
     shape: str
+
+
+_MIGRATION_PATH_PART = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)(\[\*\])?")
+_MIGRATION_TERMINAL = object()
+_MASKED_MIGRATION_LEAF = TypedAbsence("reviewed-computed-migration-leaf")
+
+
+def _parse_migration_path(path: str) -> Tuple[Tuple[str, bool], ...]:
+    if not path:
+        raise UpgradeStateError("computed migration contains an empty path")
+    parts = path.split(".")
+    result = []
+    for part in parts:
+        match = _MIGRATION_PATH_PART.fullmatch(part)
+        if match is None:
+            raise UpgradeStateError("computed migration contains a malformed path")
+        result.append((match.group(1), match.group(2) is not None))
+    return tuple(result)
+
+
+def _validate_path_collection(wildcard: bool, mode: str, context: str) -> None:
+    collection = mode in _COLLECTION_MODES
+    if wildcard != collection:
+        if wildcard:
+            raise UpgradeStateError(context + " uses a wildcard on a non-collection")
+        raise UpgradeStateError(context + " must use [*] for collection traversal")
+
+
+def _validate_migration_path(
+    parts: Tuple[Tuple[str, bool], ...], block_schema: Any, context: str,
+    root: bool = True,
+) -> None:
+    block = _validate_block_schema(block_schema, context)
+    attributes = _schema_map(block.get("attributes", {}), context + " schema attributes")
+    block_types = _schema_map(block.get("block_types", {}), context + " schema block_types")
+    name, wildcard = parts[0]
+    terminal = len(parts) == 1
+    if name in block_types:
+        nested = _mapping(block_types[name], context + "." + name + " schema")
+        mode = nested.get("nesting_mode")
+        _validate_path_collection(wildcard, mode, context + "." + name)
+        if terminal:
+            raise UpgradeStateError("computed migration path cannot select a whole structure")
+        _validate_migration_path(
+            parts[1:], nested.get("block"), context + "." + name + "[]", False
+        )
+        return
+    if name not in attributes:
+        raise UpgradeStateError("computed migration path is absent from the current schema")
+    meta = _validate_attribute_schema(attributes[name], context + "." + name)
+    if meta.get("sensitive", False):
+        raise UpgradeStateError("computed migration path traverses sensitive schema")
+    if terminal:
+        if wildcard or "nested_type" in meta:
+            raise UpgradeStateError("computed migration path cannot select a whole structure")
+        computed = meta.get("computed", False)
+        if not isinstance(computed, bool):
+            raise UpgradeStateError("computed migration leaf has malformed computed metadata")
+        if not computed:
+            raise UpgradeStateError("computed migration leaf is not computed")
+        if root and name == "id":
+            raise UpgradeStateError("resource identity requires an identity migration")
+        return
+    if "nested_type" not in meta:
+        raise UpgradeStateError("computed migration path traverses a non-nested attribute")
+    nested = _mapping(meta["nested_type"], context + "." + name + " nested schema")
+    mode = nested.get("nesting_mode")
+    _validate_path_collection(wildcard, mode, context + "." + name)
+    child = {"attributes": nested.get("attributes"), "block_types": {}}
+    _validate_migration_path(parts[1:], child, context + "." + name + "[]", False)
+
+
+def _compile_migration_paths(provider_schema: Any, value: Any) -> Dict[str, Dict[Any, Any]]:
+    selected_schema = _mapping(provider_schema, "provider schema")
+    resource_schemas = _schema_map(selected_schema.get("resource_schemas"), "provider resource_schemas")
+    configured = _mapping(value, "computed migrations")
+    output: Dict[str, Dict[Any, Any]] = {}
+    for resource_type, raw_paths in configured.items():
+        if resource_type not in resource_schemas:
+            raise UpgradeStateError("computed migration resource is absent from the current schema")
+        paths = _sequence(raw_paths, "computed migrations." + resource_type)
+        parsed = []
+        seen = set()
+        for raw_path in paths:
+            if not isinstance(raw_path, str):
+                raise UpgradeStateError("computed migrations contain a malformed path")
+            parts = _parse_migration_path(raw_path)
+            if parts in seen:
+                raise UpgradeStateError("computed migrations contain a duplicate path")
+            seen.add(parts)
+            parsed.append(parts)
+        for index, parts in enumerate(parsed):
+            for other in parsed[index + 1:]:
+                common = min(len(parts), len(other))
+                if parts[:common] == other[:common] and len(parts) != len(other):
+                    raise UpgradeStateError("computed migrations contain overlapping paths")
+        schema_entry = _mapping(resource_schemas[resource_type], resource_type + " schema")
+        block = schema_entry.get("block")
+        root: Dict[Any, Any] = {}
+        for parts in parsed:
+            _validate_migration_path(parts, block, resource_type)
+            node = root
+            for part in parts:
+                node = node.setdefault(part, {})
+            node[_MIGRATION_TERMINAL] = True
+        output[resource_type] = root
+    return output
+
+
+def _migration_child(mask: Optional[Mapping[Any, Any]], name: str) -> Optional[Mapping[Any, Any]]:
+    if not mask:
+        return None
+    matches = [mask[key] for key in ((name, False), (name, True)) if key in mask]
+    if len(matches) > 1:
+        raise UpgradeStateError("computed migration path mask is ambiguous")
+    return matches[0] if matches else None
 
 
 def _mapping(value: Any, context: str) -> Mapping[str, Any]:
@@ -203,7 +320,10 @@ def _canonical_type(value: Any, type_schema: Any, context: str) -> Any:
     raise UpgradeStateError(context + " has an unsupported collection type")
 
 
-def _canonical_nested(value: Any, nested_schema: Any, context: str) -> Any:
+def _canonical_nested(
+    value: Any, nested_schema: Any, context: str,
+    mask: Optional[Mapping[Any, Any]] = None,
+) -> Any:
     nested = _mapping(nested_schema, context + " schema")
     mode = nested.get("nesting_mode")
     if mode not in _NESTING_MODES:
@@ -218,7 +338,10 @@ def _canonical_nested(value: Any, nested_schema: Any, context: str) -> Any:
         result: Dict[str, Any] = {}
         for name in sorted(attributes):
             meta = _mapping(attributes[name], item_context + "." + name + " schema")
-            canonical = _canonical_attribute(obj.get(name, _MISSING), meta, item_context + "." + name)
+            canonical = _canonical_attribute(
+                obj.get(name, _MISSING), meta, item_context + "." + name,
+                _migration_child(mask, name),
+            )
             sensitive = meta.get("sensitive", False)
             if not isinstance(sensitive, bool):
                 raise UpgradeStateError(item_context + "." + name + " has malformed sensitivity metadata")
@@ -238,14 +361,23 @@ def _canonical_nested(value: Any, nested_schema: Any, context: str) -> Any:
     return {key: one(obj[key], context + ".*") for key in sorted(obj)}
 
 
-def _canonical_attribute(value: Any, meta: Mapping[str, Any], context: str) -> Any:
+def _canonical_attribute(
+    value: Any, meta: Mapping[str, Any], context: str,
+    mask: Optional[Mapping[Any, Any]] = None,
+) -> Any:
     selected = _validate_attribute_schema(meta, context)
     if "nested_type" in selected:
-        return _canonical_nested(value, selected["nested_type"], context)
-    return _canonical_type(value, selected["type"], context)
+        return _canonical_nested(value, selected["nested_type"], context, mask)
+    canonical = _canonical_type(value, selected["type"], context)
+    if mask and _MIGRATION_TERMINAL in mask:
+        return _MASKED_MIGRATION_LEAF
+    return canonical
 
 
-def _canonical_block(value: Any, block_schema: Any, context: str) -> Dict[str, Any]:
+def _canonical_block(
+    value: Any, block_schema: Any, context: str,
+    mask: Optional[Mapping[Any, Any]] = None,
+) -> Dict[str, Any]:
     block = _validate_block_schema(block_schema, context)
     obj = _mapping(value, context)
     attributes = _schema_map(block.get("attributes", {}), context + " schema attributes")
@@ -253,7 +385,10 @@ def _canonical_block(value: Any, block_schema: Any, context: str) -> Dict[str, A
     result: Dict[str, Any] = {}
     for name in sorted(attributes):
         meta = _mapping(attributes[name], context + "." + name + " schema")
-        canonical = _canonical_attribute(obj.get(name, _MISSING), meta, context + "." + name)
+        canonical = _canonical_attribute(
+            obj.get(name, _MISSING), meta, context + "." + name,
+            _migration_child(mask, name),
+        )
         sensitive = meta.get("sensitive", False)
         if not isinstance(sensitive, bool):
             raise UpgradeStateError(context + "." + name + " has malformed sensitivity metadata")
@@ -275,8 +410,10 @@ def _canonical_block(value: Any, block_schema: Any, context: str) -> Dict[str, A
             result[name] = _absence(shape)
             continue
 
+        child_mask = _migration_child(mask, name)
+
         def one_block(item: Any, item_context: str) -> Dict[str, Any]:
-            return _canonical_block(item, child_block, item_context)
+            return _canonical_block(item, child_block, item_context, child_mask)
 
         if mode == "single":
             result[name] = one_block(raw, context + "." + name)
@@ -298,7 +435,10 @@ def _canonical_block(value: Any, block_schema: Any, context: str) -> Dict[str, A
     return result
 
 
-def canonicalize_resources(state: Any, provider_schema: Any) -> Dict[str, Dict[str, Any]]:
+def canonicalize_resources(
+    state: Any, provider_schema: Any,
+    migration_masks: Optional[Mapping[str, Mapping[Any, Any]]] = None,
+) -> Dict[str, Dict[str, Any]]:
     """Return current-schema, non-sensitive canonical managed-resource rows."""
     document = _mapping(state, "state")
     selected_schema = _mapping(provider_schema, "provider schema")
@@ -331,7 +471,8 @@ def canonicalize_resources(state: Any, provider_schema: Any) -> Dict[str, Dict[s
             if "block" not in schema_entry:
                 raise UpgradeStateError(resource_type + " schema has no root block")
             canonical = _canonical_block(
-                resource.get("values"), schema_entry["block"], "state " + address
+                resource.get("values"), schema_entry["block"], "state " + address,
+                (migration_masks or {}).get(resource_type),
             )
             output[address] = {
                 "type": resource_type,
@@ -346,24 +487,17 @@ def canonicalize_resources(state: Any, provider_schema: Any) -> Dict[str, Dict[s
     return output
 
 
-def _string_list_map(value: Any, context: str) -> Dict[str, Sequence[str]]:
-    obj = _mapping(value, context)
-    result: Dict[str, Sequence[str]] = {}
-    for key, raw_items in obj.items():
-        items = _sequence(raw_items, context + "." + key)
-        if any(not isinstance(item, str) or not item for item in items):
-            raise UpgradeStateError(context + " contains a malformed field name")
-        result[key] = items
-    return result
-
-
 def compare_state_values(before: Any, after: Any, provider_schema: Any, matrix: Any) -> bool:
     """Compare public state, returning whether a reviewed migration occurred."""
     matrix_obj = _mapping(matrix, "matrix")
-    allowed = _string_list_map(matrix_obj.get("upgrade_expected_computed_migrations", {}), "computed migrations")
+    migration_masks = _compile_migration_paths(
+        provider_schema, matrix_obj.get("upgrade_expected_computed_migrations", {})
+    )
     schema_migrations = _mapping(matrix_obj.get("upgrade_expected_schema_migrations", {}), "schema migrations")
     identity_migrations = _mapping(matrix_obj.get("upgrade_expected_identity_migrations", {}), "identity migrations")
     left, right = canonicalize_resources(before, provider_schema), canonicalize_resources(after, provider_schema)
+    masked_left = canonicalize_resources(before, provider_schema, migration_masks)
+    masked_right = canonicalize_resources(after, provider_schema, migration_masks)
     if set(left) != set(right):
         raise UpgradeStateError("address set changed")
     migrated = False
@@ -380,15 +514,12 @@ def compare_state_values(before: Any, after: Any, provider_schema: Any, matrix: 
             migrated = True
         old_values = dict(left[address]["values"])
         new_values = dict(right[address]["values"])
-        for field in allowed.get(resource_type, []):
-            if field not in old_values or field not in new_values:
-                raise UpgradeStateError("reviewed migration field is absent from the current schema")
-            if old_values[field] != new_values[field]:
-                migrated = True
-            old_values.pop(field)
-            new_values.pop(field)
+        old_masked_values = dict(masked_left[address]["values"])
+        new_masked_values = dict(masked_right[address]["values"])
         old_id = old_values.pop("id", _absence(["attribute", "string"]))
         new_id = new_values.pop("id", _absence(["attribute", "string"]))
+        old_masked_values.pop("id", None)
+        new_masked_values.pop("id", None)
         identity_rule = identity_migrations.get(resource_type)
         if identity_rule == "sha256-of-prior-id":
             expected = "sha256:" + hashlib.sha256(str(old_id).encode()).hexdigest()
@@ -402,12 +533,14 @@ def compare_state_values(before: Any, after: Any, provider_schema: Any, matrix: 
             hmac.new(key, str(new_id).encode(), hashlib.sha256).digest(),
         ):
             raise UpgradeStateError("resource identity changed")
-        if old_values != new_values:
+        if old_masked_values != new_masked_values:
             changed = sorted(
-                field for field in set(old_values) | set(new_values)
-                if old_values.get(field, _MISSING) != new_values.get(field, _MISSING)
+                field for field in set(old_masked_values) | set(new_masked_values)
+                if old_masked_values.get(field, _MISSING) != new_masked_values.get(field, _MISSING)
             )
             raise UpgradeStateError("nonsecret semantic state changed: " + resource_type + ":" + ",".join(changed))
+        if old_values != new_values:
+            migrated = True
     return migrated
 
 

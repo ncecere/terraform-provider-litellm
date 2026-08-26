@@ -370,10 +370,19 @@ run_upgrade() {
   set -e
   [ "$plan_status" -eq 0 ] || [ "$plan_status" -eq 2 ] || fail 'current provider upgrade plan failed'
   (cd "$WORKSPACE" && run_cli show -json current-upgrade.tfplan) >"$SCRATCH/current-upgrade-plan.json" 2>>"$LOG" || fail 'current provider upgrade plan inspection failed'
-  python3 - "$SCRATCH/current-upgrade-plan.json" "$SCRIPT_DIR/matrix.json" <<'PY' || fail 'upgrade proposed non-reviewed drift or replacement'
-import json,sys
+  python3 - "$SCRATCH/current-upgrade-plan.json" "$SCRIPT_DIR/matrix.json" \
+    "$SCRATCH/current-schema.json" "$SCRIPT_DIR" <<'PY' || fail 'upgrade proposed non-reviewed drift or replacement'
+import importlib.util,json,sys
 plan=json.load(open(sys.argv[1],encoding="utf-8")); matrix=json.load(open(sys.argv[2],encoding="utf-8"))
-allowed=matrix.get("upgrade_expected_computed_migrations",{})
+schema_document=json.load(open(sys.argv[3],encoding="utf-8"))
+spec=importlib.util.spec_from_file_location("upgrade_state",sys.argv[4]+"/upgrade_state.py")
+module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+provider_schema=schema_document["provider_schemas"][module.PROVIDER_SOURCE]
+def state(resource,values):
+  return {"values":{"root_module":{"resources":[{
+    "address":resource["address"],"mode":"managed","type":resource["type"],
+    "name":resource.get("name",resource["address"]),"schema_version":0,"values":values
+  }]}}}
 for resource in plan.get("resource_changes",[]):
   change=resource.get("change",{}); actions=change.get("actions",[])
   before=change.get("before") or {}; after=change.get("after") or {}
@@ -381,17 +390,19 @@ for resource in plan.get("resource_changes",[]):
   changed={key for key in set(before)|set(after) if before.get(key)!=after.get(key)}
   sensitive_changed={key for key in changed if sensitive.get(key,False)}
   if sensitive_changed: raise SystemExit("sensitive upgrade migration is never auto-applied: "+resource.get("type",""))
-  fields=changed
-  reviewed=set(allowed.get(resource.get("type"),[]))
-  if actions not in ([],["no-op"]):
-    # A framework migration can appear as a configuration update when a prior
-    # release persisted a synthetic empty value for an omitted optional field.
-    # Applying is permitted only after every changed field is proven to be an
-    # exact per-type reviewed migration; replacement remains forbidden.
-    if actions != ["update"] or not fields or not fields.issubset(reviewed):
-      raise SystemExit("unreviewed upgrade plan: "+resource.get("type","")+":"+",".join(sorted(fields)))
-  elif not fields.issubset(reviewed):
-    raise SystemExit("unreviewed upgrade plan: "+resource.get("type","")+":"+",".join(sorted(fields)))
+  if actions not in ([],["no-op"],["update"]):
+    raise SystemExit("unreviewed upgrade plan action: "+resource.get("type",""))
+  if actions == ["update"] and not changed:
+    raise SystemExit("empty upgrade update: "+resource.get("type",""))
+  if changed:
+    try:
+      migrated=module.compare_state_values(
+        state(resource,before),state(resource,after),provider_schema,matrix
+      )
+    except module.UpgradeStateError:
+      raise SystemExit("unreviewed upgrade plan: "+resource.get("type","")+":"+",".join(sorted(changed)))
+    if not migrated:
+      raise SystemExit("upgrade plan changed without reviewed migration: "+resource.get("type",""))
 PY
   if [ "$plan_status" -eq 2 ]; then
     # The JSON review above limits this convergence apply to exact per-type

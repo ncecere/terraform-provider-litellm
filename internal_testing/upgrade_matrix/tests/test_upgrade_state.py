@@ -11,10 +11,12 @@ upgrade_state = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(upgrade_state)
 
 
-def attribute(type_shape, *, sensitive=False):
+def attribute(type_shape, *, sensitive=False, computed=False):
     result = {"type": type_shape}
     if sensitive:
         result["sensitive"] = True
+    if computed:
+        result["computed"] = True
     return result
 
 
@@ -40,7 +42,7 @@ def provider_schema():
                 "block": {
                     "attributes": {
                         "id": attribute("string"),
-                        "agent_name": attribute("string"),
+                        "agent_name": attribute("string", computed=True),
                         "profile": nested_attribute("single", {
                             "public_label": attribute("string"),
                             "secret": attribute("string", sensitive=True),
@@ -61,7 +63,7 @@ def provider_schema():
                                 "private_hint": attribute("string", sensitive=True),
                             }, {
                                 "aliases": nested_block("set", {"value": attribute("string")}),
-                                "routes": nested_block("map", {"target": attribute("string")}),
+                                "routes": nested_block("map", {"target": attribute("string", computed=True)}),
                             }),
                         }),
                     },
@@ -76,7 +78,7 @@ def provider_schema():
                     },
                     "block_types": {
                         "member": nested_block("set", {
-                            "user_id": attribute("string"),
+                            "user_id": attribute("string", computed=True),
                             "user_email": attribute("string"),
                             "role": attribute("string"),
                         }),
@@ -138,8 +140,18 @@ def members_values():
 
 
 class UpgradeStateTests(unittest.TestCase):
-    def compare(self, before, after):
-        return upgrade_state.compare_state_values(before, after, provider_schema(), {})
+    def compare(self, before, after, matrix=None, schema=None):
+        return upgrade_state.compare_state_values(
+            before, after, schema or provider_schema(), matrix or {}
+        )
+
+    @staticmethod
+    def member_migration_matrix(*paths):
+        return {
+            "upgrade_expected_computed_migrations": {
+                "litellm_team_member_add": list(paths or ("member[*].user_id",))
+            }
+        }
 
     def test_agent_card_nested_leaf_mutation_is_detected_for_every_block_mode(self):
         def mutate(values, mode):
@@ -173,6 +185,140 @@ class UpgradeStateTests(unittest.TestCase):
                 state(resource("litellm_team_member_add.test", "litellm_team_member_add", before_values)),
                 state(resource("litellm_team_member_add.test", "litellm_team_member_add", after_values)),
             )
+
+    def test_reviewed_nested_computed_migration_accepts_one_set_element(self):
+        before_values = members_values()
+        before_values["member"] = [{
+            "user_email": "one@example.invalid", "role": "user"
+        }]
+        after_values = members_values()
+        after_values["member"] = [{
+            "user_id": "generated-one", "user_email": "one@example.invalid", "role": "user"
+        }]
+        self.assertTrue(self.compare(
+            state(resource("litellm_team_member_add.test", "litellm_team_member_add", before_values)),
+            state(resource("litellm_team_member_add.test", "litellm_team_member_add", after_values)),
+            self.member_migration_matrix(),
+        ))
+
+    def test_reviewed_nested_computed_migration_masks_before_set_sorting(self):
+        before_values = members_values()
+        for member in before_values["member"]:
+            member.pop("user_id")
+        after_values = members_values()
+        after_values["member"][0]["user_id"] = "generated-z"
+        after_values["member"][1]["user_id"] = "generated-a"
+        after_values["member"].reverse()
+        self.assertTrue(self.compare(
+            state(resource("litellm_team_member_add.test", "litellm_team_member_add", before_values)),
+            state(resource("litellm_team_member_add.test", "litellm_team_member_add", after_values)),
+            self.member_migration_matrix(),
+        ))
+
+    def test_reviewed_nested_migration_does_not_hide_sibling_mutations(self):
+        for sibling, replacement in (("role", "owner"), ("user_email", "changed@example.invalid")):
+            before_values = members_values()
+            for member in before_values["member"]:
+                member.pop("user_id")
+            after_values = members_values()
+            after_values["member"].reverse()
+            after_values["member"][0][sibling] = replacement
+            with self.subTest(sibling=sibling), self.assertRaisesRegex(
+                upgrade_state.UpgradeStateError, "member"
+            ):
+                self.compare(
+                    state(resource("litellm_team_member_add.test", "litellm_team_member_add", before_values)),
+                    state(resource("litellm_team_member_add.test", "litellm_team_member_add", after_values)),
+                    self.member_migration_matrix(),
+                )
+
+    def test_reviewed_nested_migration_does_not_hide_set_cardinality(self):
+        before_values = members_values()
+        for member in before_values["member"]:
+            member.pop("user_id")
+        after_values = members_values()
+        after_values["member"].pop()
+        with self.assertRaisesRegex(upgrade_state.UpgradeStateError, "member"):
+            self.compare(
+                state(resource("litellm_team_member_add.test", "litellm_team_member_add", before_values)),
+                state(resource("litellm_team_member_add.test", "litellm_team_member_add", after_values)),
+                self.member_migration_matrix(),
+            )
+
+    def test_unchanged_reviewed_nested_leaf_is_harmless(self):
+        values = members_values()
+        self.assertFalse(self.compare(
+            state(resource("litellm_team_member_add.test", "litellm_team_member_add", values)),
+            state(resource("litellm_team_member_add.test", "litellm_team_member_add", members_values())),
+            self.member_migration_matrix(),
+        ))
+
+    def test_migration_paths_preserve_map_keys(self):
+        before_values = agent_values()
+        after_values = agent_values()
+        after_values["agent_card"]["skills"][0]["routes"]["primary"]["target"] = "backend-b"
+        matrix = {"upgrade_expected_computed_migrations": {
+            "litellm_agent": ["agent_card.skills[*].routes[*].target"]
+        }}
+        self.assertTrue(self.compare(
+            state(resource("litellm_agent.test", "litellm_agent", before_values)),
+            state(resource("litellm_agent.test", "litellm_agent", after_values)),
+            matrix,
+        ))
+        renamed = agent_values()
+        renamed["agent_card"]["skills"][0]["routes"]["secondary"] = \
+            renamed["agent_card"]["skills"][0]["routes"].pop("primary")
+        with self.assertRaisesRegex(upgrade_state.UpgradeStateError, "agent_card"):
+            self.compare(
+                state(resource("litellm_agent.test", "litellm_agent", before_values)),
+                state(resource("litellm_agent.test", "litellm_agent", renamed)),
+                matrix,
+            )
+
+    def test_migration_path_grammar_and_schema_validation_fail_closed(self):
+        cases = {
+            "member..user_id": "malformed",
+            "member[0].user_id": "malformed",
+            "member[*].missing": "absent",
+            "member.user_id": "must use",
+            "member[*].role": "not computed",
+            "member[*]": "whole structure",
+        }
+        before = state(resource(
+            "litellm_team_member_add.test", "litellm_team_member_add", members_values()
+        ))
+        for path, message in cases.items():
+            with self.subTest(path=path), self.assertRaisesRegex(
+                upgrade_state.UpgradeStateError, message
+            ):
+                self.compare(before, before, self.member_migration_matrix(path))
+
+        with self.assertRaisesRegex(upgrade_state.UpgradeStateError, "non-collection"):
+            self.compare(
+                state(resource("litellm_agent.test", "litellm_agent", agent_values())),
+                state(resource("litellm_agent.test", "litellm_agent", agent_values())),
+                {"upgrade_expected_computed_migrations": {
+                    "litellm_agent": ["agent_card[*].name"]
+                }},
+            )
+
+    def test_migration_paths_reject_sensitive_duplicate_and_overlapping_paths(self):
+        schema = provider_schema()
+        member_attributes = schema["resource_schemas"]["litellm_team_member_add"]["block"]["block_types"]["member"]["block"]["attributes"]
+        member_attributes["secret"] = attribute("string", sensitive=True, computed=True)
+        before = state(resource(
+            "litellm_team_member_add.test", "litellm_team_member_add", members_values()
+        ))
+        with self.assertRaisesRegex(upgrade_state.UpgradeStateError, "sensitive"):
+            self.compare(before, before, self.member_migration_matrix("member[*].secret"), schema)
+        with self.assertRaisesRegex(upgrade_state.UpgradeStateError, "duplicate"):
+            self.compare(before, before, self.member_migration_matrix(
+                "member[*].user_id", "member[*].user_id"
+            ), schema)
+        with self.assertRaisesRegex(upgrade_state.UpgradeStateError, "overlapping"):
+            self.compare(before, before, self.member_migration_matrix(
+                "member[*]", "member[*].user_id"
+            ), schema)
 
     def test_set_reordering_is_semantic_but_list_reordering_is_not(self):
         before_values = members_values()
