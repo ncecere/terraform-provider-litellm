@@ -888,12 +888,27 @@ func (x *extractor) exactURLValuesMethod(object types.Object, names ...string) b
 	return false
 }
 
+func exactURLEscapeFunction(object types.Object) (*types.Func, bool) {
+	function, ok := object.(*types.Func)
+	if !ok || function.Pkg() == nil || function.Pkg().Path() != "net/url" || (function.Name() != "PathEscape" && function.Name() != "QueryEscape") {
+		return nil, false
+	}
+	signature := function.Type().(*types.Signature)
+	if signature.Recv() != nil || signature.Params().Len() != 1 || signature.Results().Len() != 1 ||
+		!types.Identical(signature.Params().At(0).Type(), types.Typ[types.String]) ||
+		!types.Identical(signature.Results().At(0).Type(), types.Typ[types.String]) {
+		return nil, false
+	}
+	return function, true
+}
+
 const providerPackagePath = "github.com/nicholas-cecere/terraform-provider-litellm/internal/provider"
 
 var reviewedEndpointBuilders = map[string]bool{
-	"endpointWithPathSegment": true,
-	"endpointWithPathCapture": true,
-	"endpointWithQuery":       true,
+	"endpointWithPathSegment":         true,
+	"endpointWithPathCapture":         true,
+	"endpointWithFallbackPathSegment": true,
+	"endpointWithQuery":               true,
 }
 
 func exactProviderFreeFunction(object types.Object, names map[string]bool) (*types.Func, bool) {
@@ -923,6 +938,45 @@ func (x *extractor) exactEndpointBuilder(object types.Object) bool {
 		types.Identical(signature.Params().At(0).Type(), types.Typ[types.String]) &&
 		types.Identical(signature.Params().At(1).Type(), types.Typ[types.String]) &&
 		types.Identical(signature.Params().At(2).Type(), types.Typ[types.String])
+}
+
+func (x *extractor) endpointBuilderParameter(fn *ast.FuncDecl, index int) types.Object {
+	if fn.Type.Params == nil {
+		return nil
+	}
+	seen := 0
+	for _, field := range fn.Type.Params.List {
+		for _, name := range field.Names {
+			if seen == index {
+				return x.typesInfo.Defs[name]
+			}
+			seen++
+		}
+	}
+	return nil
+}
+
+func (x *extractor) reviewedEscapeCallAllowed(object types.Object, call *ast.CallExpr, fn *ast.FuncDecl) bool {
+	declared := x.typesInfo.Defs[fn.Name]
+	if !x.exactEndpointBuilder(declared) || call == nil || call.Fun == nil {
+		return false
+	}
+	if escape, ok := exactURLEscapeFunction(object); ok {
+		if escape.Name() != "PathEscape" || fn.Name.Name == "endpointWithQuery" || len(call.Args) != 1 {
+			return false
+		}
+		argument, ok := call.Args[0].(*ast.Ident)
+		return ok && x.typesInfo.Uses[argument] == x.endpointBuilderParameter(fn, 1)
+	}
+	if !x.exactURLValuesMethod(object, "Encode") || fn.Name.Name != "endpointWithQuery" || len(call.Args) != 0 {
+		return false
+	}
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	receiver, ok := selector.X.(*ast.Ident)
+	return ok && x.typesInfo.Uses[receiver] == x.endpointBuilderParameter(fn, 1)
 }
 
 func (x *extractor) exactQueryHelper(object types.Object) bool {
@@ -1095,6 +1149,19 @@ func (x *extractor) validateStrictSourcePolicy() error {
 				if reviewedEndpointBuilders[item.Name.Name] && !x.exactEndpointBuilder(object) {
 					add(path, item, "reviewed endpoint builder names may only be declared with the exact provider signature")
 				}
+				if x.exactEndpointBuilder(object) && item.Body != nil {
+					reviewedEscapes := 0
+					ast.Inspect(item.Body, func(child ast.Node) bool {
+						call, ok := child.(*ast.CallExpr)
+						if ok && x.reviewedEscapeCallAllowed(calledFunctionObject(x.typesInfo, call.Fun), call, item) {
+							reviewedEscapes++
+						}
+						return true
+					})
+					if reviewedEscapes != 1 {
+						add(path, item, "reviewed endpoint builder implementation must contain exactly one direct reviewed escape call on its dynamic parameter")
+					}
+				}
 				if clientTransportName(item.Name.Name) && !x.exactClientMethodObject(object) {
 					add(path, item, "reviewed Client transport names may only be declared as exact Client methods")
 				}
@@ -1144,13 +1211,20 @@ func (x *extractor) validateStrictSourcePolicy() error {
 					ast.Inspect(source, func(child ast.Node) bool {
 						switch expression := child.(type) {
 						case *ast.Ident:
-							if x.exactEndpointBuilder(x.typesInfo.Uses[expression]) {
+							object := x.typesInfo.Uses[expression]
+							if x.exactEndpointBuilder(object) {
 								add(path, expression, "reviewed endpoint builder may not be stored or invoked in a package-level declaration")
+							}
+							if _, escape := exactURLEscapeFunction(object); escape || x.exactURLValuesMethod(object, "Encode") {
+								add(path, expression, "URL escape functions and url.Values.Encode are forbidden in package-level declarations")
 							}
 						case *ast.SelectorExpr:
 							object := x.typesInfo.Uses[expression.Sel]
 							if selection := x.typesInfo.Selections[expression]; object == nil && selection != nil {
 								object = selection.Obj()
+							}
+							if _, escape := exactURLEscapeFunction(object); escape || x.exactURLValuesMethod(object, "Encode") {
+								add(path, expression, "URL escape functions and url.Values.Encode are forbidden in package-level declarations")
 							}
 							if reviewedTransportName(expression.Sel.Name) || expression.Sel.Name == "Do" || expression.Sel.Name == "RoundTrip" || x.isNetHTTPTransportObject(object) || x.reflectDynamicDispatch(object) {
 								add(path, expression, "transport and reflective method values are forbidden in package-level declarations")
@@ -1358,6 +1432,12 @@ func (x *extractor) validateStrictSourcePolicy() error {
 						object = selection.Obj()
 					}
 					direct := x.isDirectCall(item, parents)
+					if _, escape := exactURLEscapeFunction(object); escape || x.exactURLValuesMethod(object, "Encode") {
+						call, calledDirectly := parents[item].(*ast.CallExpr)
+						if !calledDirectly || call.Fun != item || !x.reviewedEscapeCallAllowed(object, call, fn) {
+							add(path, item, "URL escape functions and url.Values.Encode are restricted to one direct call in the exact reviewed endpoint builder internals")
+						}
+					}
 					if reviewedTransportName(item.Sel.Name) {
 						exactClient := selection != nil && selection.Kind() == types.MethodVal && x.isClientType(selection.Recv()) && x.exactClientMethodObject(selection.Obj())
 						if !exactClient {
@@ -1393,6 +1473,15 @@ func (x *extractor) validateStrictSourcePolicy() error {
 					if object == nil {
 						break
 					}
+					parentSelector, selectorIdentifier := parents[item].(*ast.SelectorExpr)
+					if !selectorIdentifier || parentSelector.Sel != item {
+						if _, escape := exactURLEscapeFunction(object); escape || x.exactURLValuesMethod(object, "Encode") {
+							call, calledDirectly := parents[item].(*ast.CallExpr)
+							if !calledDirectly || call.Fun != item || !x.reviewedEscapeCallAllowed(object, call, fn) {
+								add(path, item, "URL escape functions and url.Values.Encode are restricted to one direct call in the exact reviewed endpoint builder internals")
+							}
+						}
+					}
 					if _, helper := helperRequestWrappers[item.Name]; helper && exactProviderFunction(object, helperRequestWrappers) {
 						call, direct := parents[item].(*ast.CallExpr)
 						if !direct || call.Fun != item {
@@ -1411,7 +1500,6 @@ func (x *extractor) validateStrictSourcePolicy() error {
 							add(path, item, "reviewed endpoint builder may only be called directly")
 						}
 					}
-					parentSelector, selectorIdentifier := parents[item].(*ast.SelectorExpr)
 					if (x.isNetHTTPTransportObject(object) || x.reflectDynamicDispatch(object)) && (!selectorIdentifier || parentSelector.Sel != item) {
 						add(path, item, "raw net/http transport or reflective dispatch function may not be used as a value")
 					}
@@ -1469,7 +1557,7 @@ func (x *extractor) validateStrictSourcePolicy() error {
 							add(path, item, "reviewed endpoint builders may not be called from generic functions")
 						}
 						switch called.Name() {
-						case "endpointWithPathSegment", "endpointWithPathCapture":
+						case "endpointWithPathSegment", "endpointWithPathCapture", "endpointWithFallbackPathSegment":
 							if len(item.Args) != 3 {
 								add(path, item, "reviewed path builder requires three arguments")
 								break
@@ -1478,6 +1566,9 @@ func (x *extractor) validateStrictSourcePolicy() error {
 							suffix, suffixLiteral := stringLiteral(item.Args[2])
 							if !prefixLiteral || !suffixLiteral || !strings.HasPrefix(prefix, "/") || strings.ContainsAny(prefix+suffix, "?#{}") {
 								add(path, item, "reviewed path builder requires literal unqueried prefix and suffix boundaries")
+							}
+							if called.Name() == "endpointWithFallbackPathSegment" && (prefix != "/fallback/" || suffix != "") {
+								add(path, item, "fallback slash exception is restricted to the exact /fallback/{model} path")
 							}
 						case "endpointWithQuery":
 							if len(item.Args) != 2 {
@@ -2346,7 +2437,7 @@ func (x *extractor) eval(expr ast.Expr, env map[string]value, stack map[string]b
 			return dynamicValue()
 		case "ValueString", "String", "Itoa", "FormatInt":
 			return dynamicValue()
-		case "endpointWithPathSegment", "endpointWithPathCapture":
+		case "endpointWithPathSegment", "endpointWithPathCapture", "endpointWithFallbackPathSegment":
 			if len(node.Args) != 3 {
 				return value{}
 			}

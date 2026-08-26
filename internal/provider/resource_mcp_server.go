@@ -1223,7 +1223,7 @@ func (r *MCPServerResource) getMCPServer(ctx context.Context, serverID string) (
 	// Preserve #209's reviewed logical evidence coordinates for both GET paths.
 //line internal/provider/resource_mcp_server.go:1041
 	individualErr := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result)
-	if individualErr == nil || IsAPIErrorStatus(individualErr, 404) {
+	if failure := ClassifyHTTPFailure(individualErr); individualErr == nil || IsAPIErrorStatus(individualErr, 404) || (failure.Kind == HTTPFailureContractOrLocal && !failure.RequestDispatched) {
 		return result, individualErr
 	}
 

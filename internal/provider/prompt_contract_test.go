@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -91,13 +92,16 @@ func TestPromptScopedExistenceRequiresAuthoritativeVersionResult(t *testing.T) {
 
 func TestPromptEndpointsAlwaysScopeEnvironment(t *testing.T) {
 	t.Parallel()
-	endpoint := promptEndpoint("prompt/with spaces", "prod/east", nil)
+	endpoint := promptEndpoint("prompt with spaces", "prod/east", nil)
 	parsed, err := url.Parse(endpoint)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parsed.Query().Get("environment") != "prod/east" || parsed.EscapedPath() != "/prompts/prompt%2Fwith%20spaces" {
+	if parsed.Query().Get("environment") != "prod/east" || parsed.EscapedPath() != "/prompts/prompt%20with%20spaces" {
 		t.Fatalf("scoped endpoint = %s", endpoint)
+	}
+	if slashEndpoint := promptEndpoint("private/prompt", "production", nil); !strings.HasPrefix(slashEndpoint, invalidReviewedEndpoint+"?") {
+		t.Fatalf("ordinary slash endpoint did not fail closed: %q", slashEndpoint)
 	}
 	version := int64(7)
 	versionEndpoint := promptEndpoint("prompt", "production", &version)

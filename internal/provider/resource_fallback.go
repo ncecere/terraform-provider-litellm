@@ -238,7 +238,7 @@ func isSupportedFallbackType(value string) bool {
 
 func fallbackEndpoint(model, fallbackType string) string {
 	query := url.Values{"fallback_type": []string{fallbackType}}
-	return endpointWithQuery(endpointWithPathSegment("/fallback/", model, ""), query)
+	return endpointWithQuery(endpointWithFallbackPathSegment("/fallback/", model, ""), query)
 }
 
 func fallbackOperationDiagnostic(operation string, err error) string {

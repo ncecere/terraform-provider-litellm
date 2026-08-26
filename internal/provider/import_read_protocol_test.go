@@ -365,8 +365,8 @@ func TestMCPServerImportSupportsV198TransportAlternativesAndSpecialPaths(t *test
 		},
 		{
 			name:       "spec path and escaped identity",
-			serverID:   "tenant:spec/server",
-			response:   `{"server_id":"tenant:spec/server","server_name":"spec","transport":"http","spec_path":"/srv/specs/tenant:a/service/openapi.json"}`,
+			serverID:   "tenant:spec?revision=1",
+			response:   `{"server_id":"tenant:spec?revision=1","server_name":"spec","transport":"http","spec_path":"/srv/specs/tenant:a/service/openapi.json"}`,
 			stateField: "spec_path",
 			want:       "/srv/specs/tenant:a/service/openapi.json",
 		},

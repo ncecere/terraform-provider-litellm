@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -826,27 +827,19 @@ func TestValidateMCPServerResponseRejectsMalformedRequiredShapes(t *testing.T) {
 	}
 }
 
-func TestMCPServerSpecialIDUsesSingleEscapedPathSegment(t *testing.T) {
+func TestMCPServerSlashIDFailsBeforeDispatch(t *testing.T) {
 	t.Parallel()
-	serverID := "tenant:admin/server?revision=1"
-	var requestURI string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requestURI = r.RequestURI
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"server_id": serverID, "server_name": "special", "transport": "http", "url": "https://example.invalid/mcp",
-		})
-	}))
+	serverID := "tenant:admin/private?revision=1"
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests++ }))
 	defer server.Close()
 
 	resource := &MCPServerResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
-	if _, err := resource.getMCPServer(context.Background(), serverID); err != nil {
-		t.Fatal(err)
+	_, err := resource.getMCPServer(context.Background(), serverID)
+	if err == nil || requests != 0 {
+		t.Fatalf("slash ID result: err=%v requests=%d", err, requests)
 	}
-	if requestURI != mcpServerEndpoint(serverID) {
-		t.Fatalf("request URI = %q, want %q", requestURI, mcpServerEndpoint(serverID))
-	}
-	if !strings.Contains(requestURI, "%2F") || !strings.Contains(requestURI, "%3F") || !strings.Contains(requestURI, "tenant:admin") {
-		t.Fatalf("special ID was not safely represented as one path segment: %q", requestURI)
+	if strings.Contains(err.Error(), serverID) || strings.Contains(err.Error(), url.PathEscape(serverID)) {
+		t.Fatalf("slash ID diagnostic exposed identity: %q", err)
 	}
 }

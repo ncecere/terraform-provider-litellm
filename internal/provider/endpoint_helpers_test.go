@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
 	"net/url"
 	"strings"
 	"testing"
@@ -33,11 +34,14 @@ func expectedEscapedSegment(value string) string {
 	return hardenDotSegment(escaped)
 }
 
-func TestEndpointPathBuildersPreserveGoURLSemanticsOnceOnly(t *testing.T) {
-	values := []string{"/", ":", "%", "?", "#", "雪", "", ".", "..", "%2F"}
+func TestEndpointPathBuildersPreserveRepresentableGoURLSemanticsOnceOnly(t *testing.T) {
+	valuesByMode := map[endpointPathMode][]string{
+		ordinaryPathMode: {":", "%", "?", "#", "雪", "", ".", "..", "%2F"},
+		capturePathMode:  {"slash/name", ":", "%", "?", "#", "雪", "", "%2F"},
+	}
 	for _, mode := range []endpointPathMode{ordinaryPathMode, capturePathMode} {
 		for _, apiPrefix := range []string{"", "/api", "/nested/base"} {
-			for _, value := range values {
+			for _, value := range valuesByMode[mode] {
 				name := fmt.Sprintf("%s/prefix=%q/value=%q", mode, apiPrefix, value)
 				t.Run(name, func(t *testing.T) {
 					endpoint := buildTestPath(mode, "/things/", value, "/info")
@@ -75,6 +79,29 @@ func TestEndpointPathBuildersPreserveGoURLSemanticsOnceOnly(t *testing.T) {
 	}
 }
 
+func TestOrdinaryPathSlashFailsLocallyWithoutIdentityDiagnostics(t *testing.T) {
+	identity := "private/ordinary?token=%2F"
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests++ }))
+	defer server.Close()
+
+	endpoint := endpointWithQuery(endpointWithPathSegment("/things/", identity, ""), url.Values{"scope": []string{"safe"}})
+	client := &Client{APIBase: server.URL, APIKey: "admin", HTTPClient: server.Client()}
+	err := client.DoRequestWithResponse(context.Background(), http.MethodGet, endpoint, nil, nil)
+	if err == nil || requests != 0 {
+		t.Fatalf("ordinary slash result: err=%v requests=%d", err, requests)
+	}
+	message := err.Error()
+	for _, forbidden := range []string{identity, url.PathEscape(identity), url.QueryEscape(identity)} {
+		if strings.Contains(message, forbidden) {
+			t.Fatalf("local diagnostic exposed identity content %q: %q", forbidden, message)
+		}
+	}
+	if !strings.Contains(message, "cannot be represented safely") {
+		t.Fatalf("local diagnostic is not actionable: %q", message)
+	}
+}
+
 func TestEndpointWithQueryCanonicalRawRoundTrip(t *testing.T) {
 	values := []string{"/", ":", "%", "?", "#", "雪", "", ".", "..", "%2F"}
 	for _, value := range values {
@@ -83,7 +110,7 @@ func TestEndpointWithQueryCanonicalRawRoundTrip(t *testing.T) {
 				"identity": []string{value},
 				"repeat":   []string{"z", value},
 			}
-			endpoint := endpointWithQuery(endpointWithPathSegment("/things/", value, ""), query)
+			endpoint := endpointWithQuery(endpointWithPathSegment("/things/", "representable", ""), query)
 			request, err := http.NewRequest(http.MethodGet, "https://example.invalid/api"+endpoint, nil)
 			if err != nil {
 				t.Fatal(err)
@@ -91,7 +118,7 @@ func TestEndpointWithQueryCanonicalRawRoundTrip(t *testing.T) {
 			if request.URL.RequestURI() != "/api"+endpoint {
 				t.Errorf("RequestURI = %q, want %q", request.URL.RequestURI(), "/api"+endpoint)
 			}
-			if request.URL.EscapedPath() != "/api/things/"+expectedEscapedSegment(value) {
+			if request.URL.EscapedPath() != "/api/things/representable" {
 				t.Errorf("EscapedPath = %q", request.URL.EscapedPath())
 			}
 			if request.URL.Query().Get("identity") != value {
@@ -127,7 +154,7 @@ func TestEndpointWithQueryRejectsExistingQueryAndFragmentWithoutContent(t *testi
 }
 
 func TestEndpointBuilderSafeReadRetriesUseIdenticalURI(t *testing.T) {
-	identity := "raw/%?#雪%2F"
+	identity := "raw-%?#雪%2F"
 	endpoint := endpointWithQuery(
 		endpointWithPathSegment("/guardrails/", identity, "/info"),
 		url.Values{"scope": []string{identity}},
@@ -163,7 +190,7 @@ func TestEndpointBuilderSafeReadRetriesUseIdenticalURI(t *testing.T) {
 }
 
 func TestEndpointBuilderDiagnosticsExcludeRawAndEncodedValues(t *testing.T) {
-	identity := "private/%?#雪%2F"
+	identity := "private-%?#雪%2F"
 	endpoint := endpointWithQuery(
 		endpointWithPathSegment("/guardrails/", identity, "/info"),
 		url.Values{"scope": []string{identity}},
@@ -188,8 +215,48 @@ func TestEndpointBuilderDiagnosticsExcludeRawAndEncodedValues(t *testing.T) {
 	}
 }
 
-func TestEndpointBuilderCaptureProxyRequestURI(t *testing.T) {
-	values := []string{"slash/name", "%", "?", "#", "雪", ".", "..", "%2F"}
+func TestCapturePathProxyRequestURIAndDotComponentFailClosed(t *testing.T) {
+	var backendURI string
+	backendRequests := 0
+	backend := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		backendRequests++
+		backendURI = request.RequestURI
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{}`))
+	}))
+	defer backend.Close()
+	backendURL, err := url.Parse(backend.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := httptest.NewServer(httputil.NewSingleHostReverseProxy(backendURL))
+	defer proxy.Close()
+	client := &Client{APIBase: proxy.URL, APIKey: "admin", HTTPClient: proxy.Client()}
+
+	safeIdentity := "a/team/name"
+	safeEndpoint := endpointWithPathCapture("/credentials/by_name/", safeIdentity, "")
+	if err := client.DoRequestWithResponse(context.Background(), http.MethodGet, safeEndpoint, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if backendURI != "/credentials/by_name/a%2Fteam%2Fname" {
+		t.Fatalf("proxy backend RequestURI = %q", backendURI)
+	}
+
+	for _, identity := range []string{".", "..", "a/./b", "a/../b", "./a", "a/.."} {
+		before := backendRequests
+		endpoint := endpointWithPathCapture("/credentials/by_name/", identity, "")
+		err := client.DoRequestWithResponse(context.Background(), http.MethodGet, endpoint, nil, nil)
+		if err == nil || backendRequests != before {
+			t.Fatalf("dot identity %q was dispatched: err=%v requests=%d", identity, err, backendRequests)
+		}
+		if strings.Contains(err.Error(), identity) || strings.Contains(err.Error(), url.PathEscape(identity)) {
+			t.Fatalf("dot identity diagnostic exposed content: %q", err)
+		}
+	}
+}
+
+func TestEndpointBuilderCaptureRequestURI(t *testing.T) {
+	values := []string{"slash/name", "%", "?", "#", "雪", "%2F"}
 	for _, value := range values {
 		t.Run(value, func(t *testing.T) {
 			var capturedURI string

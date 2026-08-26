@@ -209,6 +209,31 @@ func TestFallbackEndpointEscapesSpecialModelExactlyOnce(t *testing.T) {
 	}
 }
 
+func TestFallbackSlashExceptionRetainsV198RouteLevel404(t *testing.T) {
+	t.Parallel()
+
+	model := "tenant/private-model"
+	endpoint := fallbackEndpoint(model, "general")
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		requests++
+		if request.RequestURI != endpoint {
+			t.Errorf("RequestURI = %q, want %q", request.RequestURI, endpoint)
+		}
+		http.NotFound(writer, request)
+	}))
+	defer server.Close()
+
+	client := &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}
+	err := client.DoRequestWithResponse(context.Background(), http.MethodGet, endpoint, nil, nil)
+	if !IsAPIErrorStatus(err, http.StatusNotFound) || requests != 1 {
+		t.Fatalf("fallback slash result: err=%v requests=%d", err, requests)
+	}
+	if !strings.Contains(endpoint, "tenant%2Fprivate-model") {
+		t.Fatalf("fallback identity was not escaped exactly once: %q", endpoint)
+	}
+}
+
 func TestFallbackResourceAndDataSourceBuildEscapedSlashIdentityRequests(t *testing.T) {
 	t.Parallel()
 

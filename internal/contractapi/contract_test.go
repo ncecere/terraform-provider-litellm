@@ -337,6 +337,9 @@ func bad(prefix, value string) string { return endpointWithPathSegment(prefix, v
 		"dynamic-suffix": `package provider
 func bad(value, suffix string) string { return endpointWithPathCapture("/things/", value, suffix) }
 `,
+		"fallback-exception-wrong-route": `package provider
+func bad(value string) string { return endpointWithFallbackPathSegment("/things/", value, "") }
+`,
 		"existing-query": `package provider
 import "net/url"
 func bad(value string) string { return endpointWithQuery("/things?fixed=true", url.Values{"scope": []string{value}}) }
@@ -351,8 +354,72 @@ func bad(value string) string { return endpointWithQuery("/things#fragment", url
 			dir := t.TempDir()
 			writeHTTPFixtureSupport(t, dir)
 			writeFixture(t, dir, "bad.go", fixture)
-			if _, err := ExtractProvider(dir); err == nil || (!strings.Contains(err.Error(), "endpoint builder") && !strings.Contains(err.Error(), "query builder") && !strings.Contains(err.Error(), "path builder")) {
+			if _, err := ExtractProvider(dir); err == nil || (!strings.Contains(err.Error(), "endpoint builder") && !strings.Contains(err.Error(), "query builder") && !strings.Contains(err.Error(), "path builder") && !strings.Contains(err.Error(), "fallback slash exception")) {
 				t.Fatalf("endpoint-builder bypass was accepted: %v", err)
+			}
+		})
+	}
+}
+
+func TestExtractorRejectsPreescapedEndpointInputsAndEscapeAliases(t *testing.T) {
+	fixtures := map[string]string{
+		"path-preescaped": `package provider
+import "net/url"
+func bad(value string) string { return endpointWithPathSegment("/things/", url.PathEscape(value), "") }
+`,
+		"query-leaf-preescaped": `package provider
+import "net/url"
+func bad(value string) string {
+ query := url.Values{"scope": []string{url.QueryEscape(value)}}
+ return endpointWithQuery("/things", query)
+}
+`,
+		"path-alias": `package provider
+import "net/url"
+func bad(value string) string {
+ escape := url.PathEscape
+ return endpointWithPathSegment("/things/", escape(value), "")
+}
+`,
+		"query-alias": `package provider
+import "net/url"
+func bad(value string) string {
+ escape := url.QueryEscape
+ query := url.Values{"scope": []string{escape(value)}}
+ return endpointWithQuery("/things", query)
+}
+`,
+		"path-higher-order": `package provider
+import "net/url"
+func take(func(string) string) {}
+func bad() { take(url.PathEscape) }
+`,
+		"query-higher-order": `package provider
+import "net/url"
+func take(func(string) string) {}
+func bad() { take(url.QueryEscape) }
+`,
+		"encode-alias": `package provider
+import "net/url"
+func bad(values url.Values) { encode := values.Encode; _ = encode() }
+`,
+		"encode-higher-order": `package provider
+import "net/url"
+func take(func() string) {}
+func bad(values url.Values) { take(values.Encode) }
+`,
+		"package-alias": `package provider
+import "net/url"
+var bad = url.PathEscape
+`,
+	}
+	for name, fixture := range fixtures {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeHTTPFixtureSupport(t, dir)
+			writeFixture(t, dir, "bad.go", fixture)
+			if _, err := ExtractProvider(dir); err == nil || !strings.Contains(err.Error(), "URL escape") {
+				t.Fatalf("preescaped endpoint input or escape alias was accepted: %v", err)
 			}
 		})
 	}
@@ -1745,8 +1812,9 @@ import (
 )
 type Client struct{}
 func (*Client) DoRequestWithResponse(context.Context, string, string, any, any) error { return nil }
-func endpointWithPathSegment(prefix, value, suffix string) string { return prefix + value + suffix }
-func endpointWithPathCapture(prefix, value, suffix string) string { return prefix + value + suffix }
+func endpointWithPathSegment(prefix, value, suffix string) string { return prefix + url.PathEscape(value) + suffix }
+func endpointWithPathCapture(prefix, value, suffix string) string { return prefix + url.PathEscape(value) + suffix }
+func endpointWithFallbackPathSegment(prefix, value, suffix string) string { return prefix + url.PathEscape(value) + suffix }
 func endpointWithQuery(path string, values url.Values) string { return path + "?" + values.Encode() }
 `)
 }
