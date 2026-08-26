@@ -39,7 +39,7 @@ var httpMethods = map[string]string{
 }
 
 var clientRequestMethods = map[string]int{
-	"DoRequest": 2, "DoRequestWithResponse": 2, "doRequestWithResponse": 2,
+	"DoRequest": 2, "DoRequestWithResponse": 2, "DoReadWithResponse": 2, "doRequestWithResponse": 2,
 	"doRequestWithResponseOptions": 2, "doFreshRequestWithResponse": 2,
 }
 
@@ -50,6 +50,7 @@ var helperRequestWrappers = map[string]int{
 
 var approvedClientTransportInternals = map[string]bool{
 	"prepareRequest": true, "executeRequest": true, "executeRequestWithOptions": true,
+	"doReadWithResponsePolicy": true,
 }
 
 type Evidence struct {
@@ -821,6 +822,28 @@ func (x *extractor) exactClientMethodObject(object types.Object) bool {
 	return signature.Recv() != nil && x.isClientType(signature.Recv().Type()) && clientTransportName(function.Name())
 }
 
+func exactURLValuesType(t types.Type) bool {
+	if t == nil {
+		return false
+	}
+	named, ok := types.Unalias(t).(*types.Named)
+	return ok && named.Obj() != nil && named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == "net/url" && named.Obj().Name() == "Values"
+}
+
+func exactURLValuesCarrierType(t types.Type) bool {
+	if t == nil {
+		return false
+	}
+	t = types.Unalias(t)
+	for {
+		pointer, ok := t.(*types.Pointer)
+		if !ok {
+			return exactURLValuesType(t)
+		}
+		t = types.Unalias(pointer.Elem())
+	}
+}
+
 func (x *extractor) exactURLValuesMethod(object types.Object, names ...string) bool {
 	function, ok := object.(*types.Func)
 	if !ok || function.Pkg() == nil || function.Pkg().Path() != "net/url" {
@@ -1166,6 +1189,15 @@ func (x *extractor) validateStrictSourcePolicy() error {
 					}
 				case *ast.CallExpr:
 					called := calledFunctionObject(x.typesInfo, item.Fun)
+					urlValuesConversion := len(item.Args) == 1 && x.typesInfo.Types[item.Fun].IsType() && exactURLValuesCarrierType(x.typesInfo.TypeOf(item))
+					exactURLValuesIdentity := urlValuesConversion && types.Identical(types.Unalias(x.typesInfo.TypeOf(item)), types.Unalias(x.typesInfo.TypeOf(item.Args[0])))
+					if urlValuesConversion && !exactURLValuesIdentity {
+						// A conversion from a map, defined type, pointer, or type parameter can
+						// hide dynamic-key mutation before the value regains url.Values methods.
+						// Only an identity conversion from the exact analyzed url.Values type
+						// (including a true alias) preserves the query provenance we inspected.
+						add(path, item, "non-identity conversion to exact url.Values is forbidden")
+					}
 					if reviewedTransportName(callName(item.Fun)) {
 						selector, selected := item.Fun.(*ast.SelectorExpr)
 						exactClient := selected && x.typesInfo.Selections[selector] != nil && x.typesInfo.Selections[selector].Kind() == types.MethodVal &&
@@ -1173,6 +1205,8 @@ func (x *extractor) validateStrictSourcePolicy() error {
 						exactHelper := !selected && exactProviderFunction(called, helperRequestWrappers)
 						if !exactClient && !exactHelper {
 							add(path, item, "reviewed transport call does not resolve to an exact Client method or reviewed wrapper")
+						} else if approvedClientTransportInternals[callName(item.Fun)] && receiverTypeName(fn) != "Client" {
+							add(path, item, "internal Client transport method called outside Client implementation")
 						}
 					}
 					if callName(item.Fun) == "Do" || callName(item.Fun) == "RoundTrip" {
@@ -1219,6 +1253,9 @@ func (x *extractor) validateStrictSourcePolicy() error {
 							continue
 						}
 						if _, builtin := called.(*types.Builtin); builtin {
+							continue
+						}
+						if exactURLValuesIdentity {
 							continue
 						}
 						if !x.exactQueryHelper(called) {

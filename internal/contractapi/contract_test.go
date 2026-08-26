@@ -534,6 +534,78 @@ func bad(value reflect.Value) { value.Call(nil) }
 	}
 }
 
+func TestReviewedDoReadWithResponseTransportPolicy(t *testing.T) {
+	t.Run("direct-dynamic-path", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFixture(t, dir, "bad.go", `package provider
+import "context"
+type Client struct{}
+func (*Client) DoReadWithResponse(context.Context, string, string, any, any) error { return nil }
+func bad(ctx context.Context, client *Client, path string) error {
+ return client.DoReadWithResponse(ctx, "GET", path, nil, nil)
+}
+`)
+		_, err := ExtractProvider(dir)
+		if err == nil || (!strings.Contains(err.Error(), "unresolved HTTP method or path") && !strings.Contains(err.Error(), "unresolved dynamic HTTP path or query name")) {
+			t.Fatalf("direct DoReadWithResponse call escaped path extraction: %v", err)
+		}
+	})
+
+	t.Run("internal-policy-outside-client", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFixture(t, dir, "bad.go", `package provider
+import "context"
+type Client struct{}
+type safeReadRetryPolicy struct{}
+type safeReadRetryHooks struct{}
+func (*Client) doReadWithResponsePolicy(context.Context, string, string, any, any, safeReadRetryPolicy, safeReadRetryHooks) error { return nil }
+func bad(ctx context.Context, client *Client) error {
+ return client.doReadWithResponsePolicy(ctx, "GET", "/hidden", nil, nil, safeReadRetryPolicy{}, safeReadRetryHooks{})
+}
+`)
+		_, err := ExtractProvider(dir)
+		if err == nil || !strings.Contains(err.Error(), "internal Client transport method called outside Client implementation") {
+			t.Fatalf("internal read policy escaped its exact Client-only allowlist: %v", err)
+		}
+	})
+
+	fixtures := map[string]string{
+		"method-value": `package provider
+import "context"
+type Client struct{}
+func (*Client) DoReadWithResponse(context.Context, string, string, any, any) error { return nil }
+func bad(client *Client) { operation := client.DoReadWithResponse; _ = operation }
+`,
+		"interface": `package provider
+import "context"
+type requester interface { DoReadWithResponse(context.Context, string, string, any, any) error }
+`,
+		"generic": `package provider
+import "context"
+type requester interface { DoReadWithResponse(context.Context, string, string, any, any) error }
+func bad[T requester](client T) { _ = client }
+`,
+		"reflection": `package provider
+import "reflect"
+type Client struct{}
+func bad(client *Client) {
+ method := reflect.ValueOf(client).MethodByName("DoReadWithResponse")
+ method.Call(nil)
+}
+`,
+	}
+	for name, fixture := range fixtures {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFixture(t, dir, "bad.go", fixture)
+			_, err := ExtractProvider(dir)
+			if err == nil {
+				t.Fatal("DoReadWithResponse transport bypass was accepted")
+			}
+		})
+	}
+}
+
 func TestStrictQueryPolicyRejectsPointerMethodValuesAndHigherOrderEscape(t *testing.T) {
 	fixtures := map[string]map[string]string{
 		"pointer-dynamic": {"bad.go": `package provider
@@ -587,6 +659,147 @@ func bad(query url.Values, key string) { mutate(&query, key) }
 				t.Fatalf("query method-object or pointer escape was accepted: %v", err)
 			}
 		})
+	}
+}
+
+func TestStrictQueryPolicyRejectsDefinedTypeConversionBypasses(t *testing.T) {
+	fixtures := map[string]map[string]string{
+		"review-complete": {"bad.go": `package provider
+import "net/url"
+type hiddenValues map[string][]string
+func bad(query url.Values, key string) {
+ hidden := hiddenValues(query)
+ hidden[key] = []string{"dynamic"}
+ restored := url.Values(hidden)
+ restored.Set("literal", "value")
+}
+`},
+		"map-alias": {"bad.go": `package provider
+import "net/url"
+type hiddenValues = map[string][]string
+func bad(query url.Values, key string) {
+ hidden := hiddenValues(query)
+ hidden[key] = []string{"dynamic"}
+ restored := url.Values(hidden)
+ restored.Set("literal", "value")
+}
+`},
+		"defined-url-values": {"bad.go": `package provider
+import "net/url"
+type hiddenValues url.Values
+func bad(query url.Values, key string) {
+ hidden := hiddenValues(query)
+ hidden[key] = []string{"dynamic"}
+ restored := url.Values(hidden)
+ restored.Set("literal", "value")
+}
+`},
+		"pointer-defined-type": {"bad.go": `package provider
+import "net/url"
+type hiddenValues url.Values
+func bad(query url.Values, key string) {
+ hidden := (*hiddenValues)(&query)
+ (*hidden)[key] = []string{"dynamic"}
+ restored := url.Values(*hidden)
+ restored.Set("literal", "value")
+}
+`},
+		"pointer-conversion": {"bad.go": `package provider
+import "net/url"
+type hiddenValues url.Values
+func bad(query url.Values, key string) {
+ hidden := hiddenValues(query)
+ hidden[key] = []string{"dynamic"}
+ restored := (*url.Values)(&hidden)
+ restored.Set("literal", "value")
+}
+`},
+		"plain-map": {"bad.go": `package provider
+import "net/url"
+func bad(query url.Values, key string) {
+ hidden := map[string][]string(query)
+ hidden[key] = []string{"dynamic"}
+ restored := url.Values(hidden)
+ restored.Set("literal", "value")
+}
+`},
+		"generic-conversion": {"bad.go": `package provider
+import "net/url"
+func restore[T ~map[string][]string](hidden T) url.Values { return url.Values(hidden) }
+func bad(query url.Values, key string) {
+ hidden := map[string][]string(query)
+ hidden[key] = []string{"dynamic"}
+ restored := restore(hidden)
+ restored.Set("literal", "value")
+}
+`},
+		"generic-defined-round-trip": {"bad.go": `package provider
+import "net/url"
+type hiddenValues map[string][]string
+func hide[T ~map[string][]string](value T, key string) T { value[key] = []string{"dynamic"}; return value }
+func bad(query url.Values, key string) {
+ hidden := hide(hiddenValues(query), key)
+ restored := url.Values(hidden)
+ restored.Set("literal", "value")
+}
+`},
+		"conversion-round-trip": {"bad.go": `package provider
+import "net/url"
+type first map[string][]string
+type second map[string][]string
+func bad(query url.Values, key string) {
+ hidden := second(first(query))
+ hidden[key] = []string{"dynamic"}
+ restored := url.Values(map[string][]string(hidden))
+ restored.Set("literal", "value")
+}
+`},
+		"cross-file": {
+			"hide.go": `package provider
+import "net/url"
+type hiddenValues map[string][]string
+func hide(query url.Values, key string) hiddenValues {
+ hidden := hiddenValues(query)
+ hidden[key] = []string{"dynamic"}
+ return hidden
+}
+`,
+			"restore.go": `package provider
+import "net/url"
+func bad(query url.Values, key string) {
+ restored := url.Values(hide(query, key))
+ restored.Set("literal", "value")
+}
+`,
+		},
+	}
+	for name, files := range fixtures {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			for filename, fixture := range files {
+				writeFixture(t, dir, filename, fixture)
+			}
+			_, err := ExtractProvider(dir)
+			if err == nil || !strings.Contains(err.Error(), "non-identity conversion to exact url.Values is forbidden") {
+				t.Fatalf("defined-type url.Values conversion bypass was accepted: %v", err)
+			}
+		})
+	}
+}
+
+func TestStrictQueryPolicyAllowsExactURLValuesIdentityConversion(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir, "safe.go", `package provider
+import "net/url"
+type queryAlias = url.Values
+func safe(query queryAlias) {
+ restored := url.Values(query)
+ restored.Set("literal", "value")
+}
+`)
+	operations, err := ExtractProvider(dir)
+	if err != nil || len(operations) != 0 {
+		t.Fatalf("exact url.Values identity conversion was rejected: operations=%v error=%v", operations, err)
 	}
 }
 
