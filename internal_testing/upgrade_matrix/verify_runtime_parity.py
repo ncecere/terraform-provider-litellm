@@ -19,7 +19,7 @@ REVIEWED_ISSUE210_PATHS = (
     "internal/provider/resource_agent_lifecycle.go",
 )
 REVIEWED_ISSUE210_RUNTIME_DIFF_SHA256 = (
-    "8b4f38e7ea6bf35c624aa7a61ca6b03d58dc7478b7a845c84f7cbcfaee4993b8"
+    "cf64a6e999b5a5ca5286cc09cad30d46b001ce231f1779442c150657254cc999"
 )
 
 

@@ -64,6 +64,12 @@
     "litellm_team_member_add": ["member[*].user_id"],
     "litellm_vector_store": ["litellm_credential_name_configured", "litellm_params_configured", "vector_store_description_configured", "vector_store_metadata", "vector_store_metadata_configured"]
   },
+  "upgrade_expected_representation_migrations": {
+    "litellm_agent": {
+      "agent_card.signatures": "missing-to-empty-list-block",
+      "agent_card.supports_authenticated_extended_card": "missing-to-null-bool"
+    }
+  },
   "upgrade_expected_schema_migrations": {
     "litellm_key_block": [0, 1]
   },

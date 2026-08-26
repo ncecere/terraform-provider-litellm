@@ -21,6 +21,7 @@ type agentOwnershipProtocolAPI struct {
 	mu                 sync.Mutex
 	tpm                int64
 	getTPMShape        string
+	generatedProvider  bool
 	patchStatus        int
 	confirmationOldTPM bool
 	requests           atomic.Int64
@@ -48,7 +49,11 @@ func (a *agentOwnershipProtocolAPI) handler(w http.ResponseWriter, r *http.Reque
 		} else if a.getTPMShape == "null" {
 			tpm = `,"tpm_limit":null`
 		}
-		_, _ = fmt.Fprintf(w, `{"agent_id":"ownership","agent_name":"agent"%s,"agent_card_params":{"name":"Agent","url":"https://agent.invalid"}}`, tpm)
+		provider := ""
+		if a.generatedProvider {
+			provider = `,"provider":{"organization":"generated","url":"https://generated.invalid"}`
+		}
+		_, _ = fmt.Fprintf(w, `{"agent_id":"ownership","agent_name":"agent"%s,"agent_card_params":{"name":"Agent","url":"https://agent.invalid"%s}}`, tpm, provider)
 	case http.MethodPatch:
 		a.patches.Add(1)
 		if a.patchStatus != 0 && a.patchStatus != http.StatusOK {
@@ -148,6 +153,13 @@ func assertAgentProtocolStateUnchanged(t *testing.T, schema *tfprotov6.Schema, w
 	}
 }
 
+func assertAgentProtocolRawStateUnchanged(t *testing.T, want, got *tfprotov6.DynamicValue) {
+	t.Helper()
+	if want == nil || got == nil || !bytes.Equal(want.MsgPack, got.MsgPack) || !bytes.Equal(want.JSON, got.JSON) {
+		t.Fatal("public raw state changed")
+	}
+}
+
 func TestAgentProtocolCreateFinalizesOwnershipOnlyAfterExplicitConfirmation(t *testing.T) {
 	ctx := context.Background()
 	var confirmationReads atomic.Int64
@@ -231,6 +243,73 @@ func TestAgentProtocolLegacyEqualValueTransferVerifiesWithoutPatchAndKeepsPublic
 	}
 	assertAgentProtocolStateUnchanged(t, schema, applied.NewState, refreshed.NewState)
 	assertAgentProtocolPrivateUnchanged(t, applied.Private, refreshed.Private)
+}
+
+func TestAgentProtocolLegacyGeneratedCardDefaultsStayPrivateAcrossMigrationAndReads(t *testing.T) {
+	api := &agentOwnershipProtocolAPI{tpm: 10, generatedProvider: true}
+	ctx := context.Background()
+	httpServer := httptest.NewServer(http.HandlerFunc(api.handler))
+	defer httpServer.Close()
+	protocolServer, schemas := configuredImportProtocolServer(t, ctx, httpServer.URL)
+	schema := schemas.ResourceSchemas["litellm_agent"]
+	values := map[string]interface{}{
+		"id": "ownership", "agent_name": "agent", "tpm_limit": int64(10),
+		"agent_card": map[string]interface{}{"name": "Agent", "url": "https://agent.invalid"},
+	}
+	prior := agentProtocolDynamicValue(t, schema, values)
+	config := agentProtocolDynamicValue(t, schema, map[string]interface{}{
+		"agent_name": "agent", "tpm_limit": int64(10),
+		"agent_card": map[string]interface{}{"name": "Agent", "url": "https://agent.invalid"},
+	})
+	planned, err := protocolServer.PlanResourceChange(ctx, &tfprotov6.PlanResourceChangeRequest{
+		TypeName: "litellm_agent", Config: config, PriorState: prior, ProposedNewState: prior,
+	})
+	if err != nil || accessGroupProtocolDiagnosticsHaveError(planned.Diagnostics) || organizationProjectProtocolPlannedAction(t, schema, prior, planned) != organizationProjectProtocolActionUpdate {
+		t.Fatalf("migration plan: err=%v diagnostics=%s action=%s", err, agentProtocolDiagnosticsText(planned.Diagnostics), organizationProjectProtocolPlannedAction(t, schema, prior, planned))
+	}
+	before, beforeErr := decodeAgentFieldSet(protocolPrivateValue(t, planned.PlannedPrivate, agentImportedFieldsPrivateKey))
+	pending, pendingErr := decodeAgentFieldSet(protocolPrivateValue(t, planned.PlannedPrivate, agentOwnershipPendingPrivateKey))
+	if beforeErr != nil || pendingErr != nil || !before[agentScopeCardProvider] || !before[agentScopeCardSignatures] || !pending[agentScopeCardProvider] || !pending[agentScopeCardSignatures] {
+		t.Fatalf("migration scopes: before=%#v pending=%#v errors=%v/%v", before, pending, beforeErr, pendingErr)
+	}
+	applied, err := protocolServer.ApplyResourceChange(ctx, &tfprotov6.ApplyResourceChangeRequest{
+		TypeName: "litellm_agent", Config: config, PriorState: prior,
+		PlannedState: planned.PlannedState, PlannedPrivate: planned.PlannedPrivate,
+	})
+	if err != nil || accessGroupProtocolDiagnosticsHaveError(applied.Diagnostics) || api.patches.Load() != 0 || api.requests.Load() != 2 {
+		t.Fatalf("migration apply: err=%v diagnostics=%s requests=%d patches=%d", err, agentProtocolDiagnosticsText(applied.Diagnostics), api.requests.Load(), api.patches.Load())
+	}
+	attributes := protocolAttributeMap(t, schema, applied.NewState)
+	var card map[string]tftypes.Value
+	if err := attributes[agentFieldCard].As(&card); err != nil || !card["provider"].IsNull() || !card["supports_authenticated_extended_card"].IsNull() {
+		t.Fatalf("migration projection changed absent provider/auth structure: err=%v", err)
+	}
+	var signatures []tftypes.Value
+	if err := card["signatures"].As(&signatures); err != nil || len(signatures) != 0 {
+		t.Fatalf("migration signatures are not the framework-required empty block list: count=%d err=%v", len(signatures), err)
+	}
+	committed, committedErr := decodeAgentFieldSet(protocolPrivateValue(t, applied.Private, agentImportedFieldsPrivateKey))
+	if committedErr != nil || !committed[agentScopeCardProvider] || !committed[agentScopeCardSignatures] || protocolPrivateHasKey(t, applied.Private, agentOwnershipPendingPrivateKey) || protocolPrivateHasKey(t, applied.Private, agentOwnershipMigrationPrivateKey) {
+		t.Fatalf("committed scopes: committed=%#v err=%v", committed, committedErr)
+	}
+
+	state, private := applied.NewState, applied.Private
+	for readIndex := 0; readIndex < 2; readIndex++ {
+		refreshed, readErr := protocolServer.ReadResource(ctx, &tfprotov6.ReadResourceRequest{TypeName: "litellm_agent", CurrentState: state, Private: private})
+		if readErr != nil || accessGroupProtocolDiagnosticsHaveError(refreshed.Diagnostics) {
+			t.Fatalf("read %d: err=%v diagnostics=%s", readIndex+1, readErr, agentProtocolDiagnosticsText(refreshed.Diagnostics))
+		}
+		assertAgentProtocolStateUnchanged(t, schema, state, refreshed.NewState)
+		assertAgentProtocolRawStateUnchanged(t, state, refreshed.NewState)
+		assertAgentProtocolPrivateUnchanged(t, private, refreshed.Private)
+		state, private = refreshed.NewState, refreshed.Private
+	}
+	noop, planErr := protocolServer.PlanResourceChange(ctx, &tfprotov6.PlanResourceChangeRequest{
+		TypeName: "litellm_agent", Config: config, PriorState: state, ProposedNewState: state, PriorPrivate: private,
+	})
+	if planErr != nil || accessGroupProtocolDiagnosticsHaveError(noop.Diagnostics) || organizationProjectProtocolPlannedAction(t, schema, state, noop) != organizationProjectProtocolActionNoOp || api.patches.Load() != 0 {
+		t.Fatalf("next plan: err=%v diagnostics=%s action=%s patches=%d", planErr, agentProtocolDiagnosticsText(noop.Diagnostics), organizationProjectProtocolPlannedAction(t, schema, state, noop), api.patches.Load())
+	}
 }
 
 func TestAgentProtocolLegacyEqualValueTransferFailureKeepsPriorStateAndPrivate(t *testing.T) {

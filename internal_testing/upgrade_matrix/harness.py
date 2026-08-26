@@ -359,6 +359,13 @@ def check_inventory(matrix: dict) -> None:
     )
     if nested_masks != [("litellm_team_member_add", "member[*].user_id")]:
         raise HarnessError("the reviewed nested computed migration inventory changed")
+    if matrix.get("upgrade_expected_representation_migrations") != {
+        "litellm_agent": {
+            "agent_card.signatures": "missing-to-empty-list-block",
+            "agent_card.supports_authenticated_extended_card": "missing-to-null-bool",
+        }
+    }:
+        raise HarnessError("the reviewed representation migration inventory changed")
     private_migrations = matrix.get("upgrade_expected_private_migrations", [])
     if (
         matrix.get("upgrade_expected_private_plan_triggers")

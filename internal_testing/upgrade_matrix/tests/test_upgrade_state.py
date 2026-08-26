@@ -11,12 +11,14 @@ upgrade_state = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(upgrade_state)
 
 
-def attribute(type_shape, *, sensitive=False, computed=False):
+def attribute(type_shape, *, sensitive=False, computed=False, optional=False):
     result = {"type": type_shape}
     if sensitive:
         result["sensitive"] = True
     if computed:
         result["computed"] = True
+    if optional:
+        result["optional"] = True
     return result
 
 
@@ -56,7 +58,12 @@ def provider_schema():
                         "agent_card": nested_block("single", {
                             "name": attribute("string"),
                             "url": attribute("string"),
+                            "supports_authenticated_extended_card": attribute("bool", optional=True),
                         }, {
+                            "signatures": nested_block("list", {
+                                "protected": attribute("string", sensitive=True),
+                                "signature": attribute("string", sensitive=True),
+                            }),
                             "skills": nested_block("list", {
                                 "id": attribute("string"),
                                 "description": attribute("string"),
@@ -173,9 +180,10 @@ def members_values():
 
 
 class UpgradeStateTests(unittest.TestCase):
-    def compare(self, before, after, matrix=None, schema=None):
+    def compare(self, before, after, matrix=None, schema=None, *, exact_public=False):
         return upgrade_state.compare_state_values(
-            before, after, schema or provider_schema(), matrix or {}
+            before, after, schema or provider_schema(), matrix or {},
+            exact_public=exact_public,
         )
 
     @staticmethod
@@ -586,7 +594,7 @@ class UpgradeStateTests(unittest.TestCase):
                 state(resource("litellm_agent.test", "litellm_agent", public_changed)),
             )
 
-    def test_absent_current_schema_values_use_typed_semantic_absence(self):
+    def test_exact_comparison_distinguishes_absent_null_and_empty_representations(self):
         absent = agent_values()
         absent.pop("profile")
         absent["agent_card"]["skills"][0].pop("aliases")
@@ -599,15 +607,72 @@ class UpgradeStateTests(unittest.TestCase):
             state(resource("litellm_agent.test", "litellm_agent", absent)),
             state(resource("litellm_agent.test", "litellm_agent", explicit)),
         ))
+        with self.assertRaises(upgrade_state.UpgradeStateError):
+            self.compare(
+                state(resource("litellm_agent.test", "litellm_agent", absent)),
+                state(resource("litellm_agent.test", "litellm_agent", explicit)),
+                exact_public=True,
+            )
         canonical = upgrade_state.canonicalize_resources(
             state(resource("litellm_agent.test", "litellm_agent", absent)), provider_schema()
         )["litellm_agent.test"]["values"]
         self.assertIsInstance(canonical["profile"], upgrade_state.TypedAbsence)
-        self.assertIn("nested-attribute", canonical["profile"].shape)
+        self.assertIn("missing", canonical["profile"].shape)
         self.assertIsInstance(
             canonical["agent_card"]["skills"][0]["aliases"], upgrade_state.TypedAbsence
         )
-        self.assertIn("set", canonical["agent_card"]["skills"][0]["aliases"].shape)
+        self.assertIn("missing", canonical["agent_card"]["skills"][0]["aliases"].shape)
+
+    def test_agent_old_state_representation_migrations_are_exact_and_directional(self):
+        before = agent_values()
+        after = agent_values()
+        after["agent_card"]["signatures"] = []
+        after["agent_card"]["supports_authenticated_extended_card"] = None
+        matrix = {"upgrade_expected_representation_migrations": {
+            "litellm_agent": {
+                "agent_card.signatures": "missing-to-empty-list-block",
+                "agent_card.supports_authenticated_extended_card": "missing-to-null-bool",
+            }
+        }}
+        self.assertTrue(self.compare(
+            state(resource("litellm_agent.test", "litellm_agent", before)),
+            state(resource("litellm_agent.test", "litellm_agent", after)),
+            matrix, exact_public=True,
+        ))
+        for mutate in (
+            lambda values: values["agent_card"].update({"signatures": [{"protected": "x", "signature": "y"}]}),
+            lambda values: values["agent_card"].update({"supports_authenticated_extended_card": False}),
+            lambda values: values["agent_card"].update({"name": "changed"}),
+        ):
+            changed = agent_values()
+            mutate(changed)
+            with self.assertRaises(upgrade_state.UpgradeStateError):
+                self.compare(
+                    state(resource("litellm_agent.test", "litellm_agent", before)),
+                    state(resource("litellm_agent.test", "litellm_agent", changed)),
+                    matrix, exact_public=True,
+                )
+        with self.assertRaises(upgrade_state.UpgradeStateError):
+            self.compare(
+                state(resource("litellm_agent.test", "litellm_agent", after)),
+                state(resource("litellm_agent.test", "litellm_agent", before)),
+                matrix, exact_public=True,
+            )
+
+    def test_representation_migration_contract_rejects_wrong_schema_shapes(self):
+        bad_rules = (
+            {"agent_card.name": "missing-to-null-bool"},
+            {"agent_card": "missing-to-empty-list-block"},
+            {"agent_card.signatures[*].protected": "missing-to-null-bool"},
+            {"agent_card.missing": "missing-to-null-bool"},
+            {"agent_card.signatures": "unsupported"},
+        )
+        for rules in bad_rules:
+            with self.subTest(rules=rules), self.assertRaises(upgrade_state.UpgradeStateError):
+                upgrade_state.compile_upgrade_contract(
+                    provider_schema(),
+                    {"upgrade_expected_representation_migrations": {"litellm_agent": rules}},
+                )
 
     def test_reviewed_migration_exceptions_are_retained(self):
         before_values = agent_values()

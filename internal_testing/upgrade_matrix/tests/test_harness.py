@@ -49,6 +49,12 @@ class HarnessTests(unittest.TestCase):
             for path in paths if "." in path or "[*]" in path
         ]
         self.assertEqual(nested, [("litellm_team_member_add", "member[*].user_id")])
+        self.assertEqual(matrix["upgrade_expected_representation_migrations"], {
+            "litellm_agent": {
+                "agent_card.signatures": "missing-to-empty-list-block",
+                "agent_card.supports_authenticated_extended_card": "missing-to-null-bool",
+            }
+        })
         self.assertIn("upgrade-reviewed-private-migration", harness.EVIDENCE_CODES)
         self.assertIn(
             "upgrade-private-plan-trigger-migration", harness.ASSERTION_CODES

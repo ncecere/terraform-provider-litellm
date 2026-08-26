@@ -35,6 +35,11 @@ class TypedAbsence:
 _MIGRATION_PATH_PART = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)(\[\*\])?")
 _MIGRATION_TERMINAL = object()
 _MASKED_MIGRATION_LEAF = TypedAbsence("reviewed-computed-migration-leaf")
+_REPRESENTATION_MIGRATION_LEAF = TypedAbsence("reviewed-representation-migration-leaf")
+_REPRESENTATION_TRANSITIONS = {
+    "missing-to-empty-list-block",
+    "missing-to-null-bool",
+}
 
 
 def _parse_migration_path(path: str) -> Tuple[Tuple[str, bool], ...]:
@@ -139,6 +144,78 @@ def _compile_migration_paths(provider_schema: Any, value: Any) -> Dict[str, Dict
     return output
 
 
+def _validate_representation_path(
+    parts: Tuple[Tuple[str, bool], ...], block_schema: Any, transition: str,
+    context: str,
+) -> Tuple[TypedAbsence, TypedAbsence]:
+    block = _validate_block_schema(block_schema, context)
+    attributes = _schema_map(block.get("attributes", {}), context + " schema attributes")
+    block_types = _schema_map(block.get("block_types", {}), context + " schema block_types")
+    name, wildcard = parts[0]
+    if wildcard:
+        raise UpgradeStateError("representation migration paths cannot use wildcards")
+    terminal = len(parts) == 1
+    if name in block_types:
+        nested = _mapping(block_types[name], context + "." + name + " schema")
+        mode = nested.get("nesting_mode")
+        if terminal:
+            if transition != "missing-to-empty-list-block" or mode != "list":
+                raise UpgradeStateError("representation migration does not match a list block")
+            return (
+                _absence(["block", "list", "missing"]),
+                _absence(["block", "list", "empty"]),
+            )
+        if mode != "single":
+            raise UpgradeStateError("representation migration traverses a collection block")
+        return _validate_representation_path(
+            parts[1:], nested.get("block"), transition, context + "." + name
+        )
+    if name not in attributes or not terminal:
+        raise UpgradeStateError("representation migration path is absent from the current schema")
+    meta = _validate_attribute_schema(attributes[name], context + "." + name)
+    if (
+        transition != "missing-to-null-bool"
+        or meta.get("type") != "bool"
+        or meta.get("optional") is not True
+        or meta.get("computed", False) is not False
+        or meta.get("sensitive", False) is not False
+    ):
+        raise UpgradeStateError("representation migration does not match an optional bool")
+    return (
+        _absence(["attribute", "bool", "missing"]),
+        _absence(["attribute", "bool", "null"]),
+    )
+
+
+def _compile_representation_migrations(
+    provider_schema: Any, value: Any,
+) -> Dict[str, Tuple[Tuple[Tuple[str, ...], TypedAbsence, TypedAbsence], ...]]:
+    selected_schema = _mapping(provider_schema, "provider schema")
+    resource_schemas = _schema_map(
+        selected_schema.get("resource_schemas"), "provider resource_schemas"
+    )
+    configured = _mapping(value, "representation migrations")
+    output: Dict[str, Tuple[Tuple[Tuple[str, ...], TypedAbsence, TypedAbsence], ...]] = {}
+    for resource_type, raw_rules in configured.items():
+        if resource_type not in resource_schemas:
+            raise UpgradeStateError("representation migration resource is absent from the current schema")
+        rules = _mapping(raw_rules, "representation migrations." + resource_type)
+        compiled = []
+        for path, transition in rules.items():
+            if not isinstance(transition, str) or transition not in _REPRESENTATION_TRANSITIONS:
+                raise UpgradeStateError("representation migration transition is unsupported")
+            parts = _parse_migration_path(path)
+            before, after = _validate_representation_path(
+                parts,
+                _mapping(resource_schemas[resource_type], resource_type + " schema").get("block"),
+                transition,
+                resource_type,
+            )
+            compiled.append((tuple(name for name, _ in parts), before, after))
+        output[resource_type] = tuple(compiled)
+    return output
+
+
 def _compile_private_plan_triggers(
     provider_schema: Any, value: Any, reviewed_private_migrations: Any,
 ) -> set[str]:
@@ -207,6 +284,9 @@ def compile_upgrade_contract(
     matrix_obj = _mapping(matrix, "matrix")
     migration_masks = _compile_migration_paths(
         provider_schema, matrix_obj.get("upgrade_expected_computed_migrations", {})
+    )
+    _compile_representation_migrations(
+        provider_schema, matrix_obj.get("upgrade_expected_representation_migrations", {})
     )
     private_triggers = _compile_private_plan_triggers(
         provider_schema,
@@ -349,8 +429,10 @@ def _canonical_dynamic(value: Any, context: str) -> Any:
 
 def _canonical_type(value: Any, type_schema: Any, context: str) -> Any:
     _validate_type_schema(type_schema, context)
-    if value is _MISSING or value is None:
-        return _absence(["attribute", type_schema])
+    if value is _MISSING:
+        return _absence(["attribute", type_schema, "missing"])
+    if value is None:
+        return _absence(["attribute", type_schema, "null"])
     if isinstance(type_schema, str):
         if type_schema == "string":
             if not isinstance(value, str):
@@ -408,8 +490,10 @@ def _canonical_nested(
         raise UpgradeStateError(context + " has an unsupported nesting mode")
     attributes = _schema_map(nested.get("attributes"), context + " schema attributes")
     shape = ["nested-attribute", mode]
-    if value is _MISSING or value is None:
-        return _absence(shape)
+    if value is _MISSING:
+        return _absence(shape + ["missing"])
+    if value is None:
+        return _absence(shape + ["null"])
 
     def one(raw: Any, item_context: str) -> Dict[str, Any]:
         obj = _mapping(raw, item_context)
@@ -484,8 +568,11 @@ def _canonical_block(
             raise UpgradeStateError(context + "." + name + " has an unsupported nesting mode")
         raw = obj.get(name, _MISSING)
         shape = ["block", mode]
-        if raw is _MISSING or raw is None:
-            result[name] = _absence(shape)
+        if raw is _MISSING:
+            result[name] = _absence(shape + ["missing"])
+            continue
+        if raw is None:
+            result[name] = _absence(shape + ["null"])
             continue
 
         child_mask = _migration_child(mask, name)
@@ -498,7 +585,7 @@ def _canonical_block(
         elif mode in ("list", "set"):
             items = _sequence(raw, context + "." + name)
             if not items:
-                result[name] = _absence(shape)
+                result[name] = _absence(shape + ["empty"])
             else:
                 children = [one_block(child, context + "." + name + "[]") for child in items]
                 if mode == "set":
@@ -507,7 +594,7 @@ def _canonical_block(
         else:
             children = _mapping(raw, context + "." + name)
             result[name] = (
-                _absence(shape) if not children else
+                _absence(shape + ["empty"]) if not children else
                 {key: one_block(children[key], context + "." + name + ".*") for key in sorted(children)}
             )
     return result
@@ -565,6 +652,47 @@ def canonicalize_resources(
     return output
 
 
+def _collapse_typed_absence(value: Any) -> Any:
+    if isinstance(value, TypedAbsence):
+        if value in {_MASKED_MIGRATION_LEAF, _REPRESENTATION_MIGRATION_LEAF}:
+            return value
+        try:
+            shape = json.loads(value.shape)
+        except json.JSONDecodeError as error:
+            raise UpgradeStateError("canonical typed absence is malformed") from error
+        if isinstance(shape, list) and shape and shape[-1] in {"missing", "null", "empty"}:
+            return _absence(shape[:-1])
+        return value
+    if isinstance(value, list):
+        return [_collapse_typed_absence(child) for child in value]
+    if isinstance(value, dict):
+        return {name: _collapse_typed_absence(child) for name, child in value.items()}
+    return value
+
+
+def _apply_representation_migrations(
+    before: Dict[str, Any], after: Dict[str, Any],
+    rules: Sequence[Tuple[Tuple[str, ...], TypedAbsence, TypedAbsence]],
+) -> bool:
+    migrated = False
+    for parts, expected_before, expected_after in rules:
+        left: Any = before
+        right: Any = after
+        for name in parts[:-1]:
+            if not isinstance(left, dict) or not isinstance(right, dict):
+                left = right = _MISSING
+                break
+            left, right = left.get(name, _MISSING), right.get(name, _MISSING)
+        if left is _MISSING or right is _MISSING or not isinstance(left, dict) or not isinstance(right, dict):
+            continue
+        leaf = parts[-1]
+        if left.get(leaf, _MISSING) == expected_before and right.get(leaf, _MISSING) == expected_after:
+            left[leaf] = _REPRESENTATION_MIGRATION_LEAF
+            right[leaf] = _REPRESENTATION_MIGRATION_LEAF
+            migrated = True
+    return migrated
+
+
 def compare_state_values(
     before: Any, after: Any, provider_schema: Any, matrix: Any,
     *, exact_public: bool = False,
@@ -576,9 +704,18 @@ def compare_state_values(
         migration_masks = {}
     schema_migrations = _mapping(matrix_obj.get("upgrade_expected_schema_migrations", {}), "schema migrations")
     identity_migrations = _mapping(matrix_obj.get("upgrade_expected_identity_migrations", {}), "identity migrations")
+    representation_migrations = (
+        _compile_representation_migrations(
+            provider_schema, matrix_obj.get("upgrade_expected_representation_migrations", {})
+        ) if exact_public else {}
+    )
     left, right = canonicalize_resources(before, provider_schema), canonicalize_resources(after, provider_schema)
     masked_left = canonicalize_resources(before, provider_schema, migration_masks)
     masked_right = canonicalize_resources(after, provider_schema, migration_masks)
+    if not exact_public:
+        for rows in (left, right, masked_left, masked_right):
+            for row in rows.values():
+                row["values"] = _collapse_typed_absence(row["values"])
     if set(left) != set(right):
         raise UpgradeStateError("address set changed")
     migrated = False
@@ -600,6 +737,16 @@ def compare_state_values(
         new_values = dict(right[address]["values"])
         old_masked_values = dict(masked_left[address]["values"])
         new_masked_values = dict(masked_right[address]["values"])
+        representation_migrated = _apply_representation_migrations(
+            old_values, new_values, representation_migrations.get(resource_type, ())
+        )
+        masked_representation_migrated = _apply_representation_migrations(
+            old_masked_values, new_masked_values,
+            representation_migrations.get(resource_type, ()),
+        )
+        if representation_migrated != masked_representation_migrated:
+            raise UpgradeStateError("representation migration conflicts with a computed migration")
+        migrated = migrated or representation_migrated
         old_id = old_values.pop("id", _absence(["attribute", "string"]))
         new_id = new_values.pop("id", _absence(["attribute", "string"]))
         old_masked_values.pop("id", None)
