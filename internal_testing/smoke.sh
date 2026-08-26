@@ -199,6 +199,52 @@ elif [ "${SMOKE_CREDENTIAL_UPDATE:-}" = "1" ]; then
   terraform apply -auto-approve -var=credential_update_phase=after
   STEADY_ARGS='-var=credential_update_phase=after'
   CLEANUP_ARGS=$STEADY_ARGS
+elif [ "${SMOKE_AGENT_LIFECYCLE:-}" = "1" ]; then
+  echo '=== AGENT SET-TO-CLEAR APPLY ==='
+  terraform apply -auto-approve -var=agent_lifecycle_phase=cleared
+  agent_lifecycle_id=$(terraform output -raw agent_lifecycle_id)
+  echo '=== AGENT DIRECT API CLEAR VERIFICATION ==='
+  curl --fail --silent --show-error -H 'Authorization: Bearer sk-testing-key' "http://localhost:4000/v1/agents/$agent_lifecycle_id" >agent-cleared.json
+  python3 - agent-cleared.json <<'PY'
+import json, sys
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+for field in ("tpm_limit", "rpm_limit", "session_tpm_limit", "session_rpm_limit"):
+    assert value.get(field) is None, (field, value.get(field))
+assert "qualifier" not in value.get("litellm_params", {})
+assert value.get("static_headers") in ({}, None)
+assert value.get("extra_headers") in ([], None)
+permission = value.get("object_permission") or {}
+for field in ("mcp_servers", "mcp_access_groups", "models", "agents"):
+    assert permission.get(field) in ([], None), (field, permission.get(field))
+assert permission.get("mcp_tool_permissions") in ({}, None)
+card = value.get("agent_card_params") or {}
+for field in ("description", "preferredTransport", "iconUrl", "documentationUrl"):
+    assert field not in card or card[field] is None, (field, card.get(field))
+provider = card.get("provider") or {}
+assert provider.get("organization") is None
+skills = {skill["id"]: skill for skill in card.get("skills", [])}
+skill = skills["acceptance"]
+for field in ("tags", "examples", "inputModes", "outputModes"):
+    assert skill.get(field) in ([], None), (field, skill.get(field))
+PY
+  echo '=== AGENT DIRECT API-OWNED SIBLING SEED ==='
+  curl --fail --silent --show-error -X PATCH \
+    -H 'Authorization: Bearer sk-testing-key' -H 'Content-Type: application/json' \
+    --data '{"litellm_params":{"model":"openai/gpt-4o-mini","api_owned":"preserve"},"static_headers":{"X-API-Owned":"preserve"}}' \
+    "http://localhost:4000/v1/agents/$agent_lifecycle_id" >/dev/null
+  echo '=== AGENT CLEARED IMPORT/OWNERSHIP APPLY ==='
+  terraform state rm litellm_agent.lifecycle
+  terraform import -var=agent_lifecycle_phase=cleared litellm_agent.lifecycle "$agent_lifecycle_id"
+  terraform apply -auto-approve -var=agent_lifecycle_phase=cleared
+  curl --fail --silent --show-error -H 'Authorization: Bearer sk-testing-key' "http://localhost:4000/v1/agents/$agent_lifecycle_id" >agent-imported.json
+  python3 - agent-imported.json <<'PY'
+import json, sys
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+assert value.get("litellm_params", {}).get("api_owned") == "preserve"
+assert value.get("static_headers", {}).get("X-API-Owned") == "preserve"
+PY
+  STEADY_ARGS='-var=agent_lifecycle_phase=cleared'
+  CLEANUP_ARGS=$STEADY_ARGS
 fi
 
 echo '=== NO-DRIFT PLAN ==='

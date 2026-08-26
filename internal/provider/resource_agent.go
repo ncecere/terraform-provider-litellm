@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 
 var _ resource.Resource = &AgentResource{}
 var _ resource.ResourceWithImportState = &AgentResource{}
+var _ resource.ResourceWithModifyPlan = &AgentResource{}
 
 func NewAgentResource() resource.Resource {
 	return &AgentResource{}
@@ -341,61 +343,67 @@ func (r *AgentResource) Configure(ctx context.Context, req resource.ConfigureReq
 }
 
 func (r *AgentResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
-	var data AgentResourceModel
-	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
+	var planned AgentResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &planned)...)
+	var config AgentResourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	agentReq, err := r.buildAgentRequest(&data)
+	agentReq, err := r.buildAgentRequest(&planned)
 	if err != nil {
-		resp.Diagnostics.AddError("Invalid MCP Tool Permissions", "The agent MCP tool permissions could not be converted to the LiteLLM request shape. Each map value must be a JSON array containing only strings.")
+		resp.Diagnostics.AddError("Invalid Agent Request", "The agent request could not be converted to the LiteLLM v1.98 wire shape.")
 		return
 	}
 
 	var result map[string]interface{}
-	if err := r.client.DoRequestWithResponse(ctx, "POST", "/v1/agents", agentReq, &result); err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to create agent: %s", err))
+	accepted, createErr := r.client.doRequestWithResponse(ctx, "POST", "/v1/agents", agentReq, &result)
+	if createErr != nil && !accepted {
+		resp.Diagnostics.AddError("Agent Create Failed", "LiteLLM did not accept the agent create. No state was published.")
 		return
 	}
 
-	confirmedAgentID := types.StringNull()
-	if agentID, ok := result["agent_id"].(string); ok {
-		confirmedAgentID = types.StringValue(agentID)
-		data.ID = confirmedAgentID
+	agentID, ok := validReturnedAgentID(result)
+	if createErr != nil || !ok {
+		// A 2xx response proves acceptance but not identity. Recover only through
+		// an exact-name, exact-fingerprint, unique list candidate; never guess.
+		recoveredID, recoveryErr := r.recoverCreatedAgent(ctx, planned, config)
+		if recoveryErr != nil {
+			resp.Diagnostics.AddError("Agent Create Identity Unknown", "LiteLLM accepted the create, but bounded recovery did not find exactly one authoritative matching identity. No state was published.")
+			return
+		}
+		agentID = recoveredID
 	}
-	planned := cloneAgentResourceModel(data)
+	planned.ID = types.StringValue(agentID)
 
-	// Read back for full state.
-	if err := r.readAgent(ctx, &data); err != nil {
-		if isInvalidAgentMCPToolPermissionsResponse(err) {
-			setAgentIdentityOnlyCreateState(ctx, resp, confirmedAgentID)
-			resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned malformed MCP tool permissions. The response was rejected without exposing permission content.")
-			return
-		}
-		if agentMCPToolPermissionsOwned(planned) {
-			setAgentIdentityOnlyCreateState(ctx, resp, confirmedAgentID)
-			resp.Diagnostics.AddError("Agent MCP Tool Permissions Not Confirmed", "LiteLLM accepted the agent create, but read-back did not confirm the requested MCP tool permissions. Only the confirmed agent identity was retained for recovery.")
-			return
-		}
-		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Agent created but failed to read back: %s", err))
-	} else if !agentMCPToolPermissionsConfirmed(planned, data) {
-		setAgentIdentityOnlyCreateState(ctx, resp, confirmedAgentID)
-		resp.Diagnostics.AddError("Agent MCP Tool Permissions Not Confirmed", "LiteLLM accepted the agent create but did not return the requested MCP tool permissions. Only the confirmed agent identity was retained for recovery.")
+	confirmed, err := r.confirmAgentMutation(ctx, planned, AgentResourceModel{}, config, nil, 8)
+	if err != nil {
+		setAgentIdentityOnlyCreateState(ctx, resp, types.StringValue(agentID))
+		resp.Diagnostics.AddError("Agent Create Not Confirmed", "LiteLLM accepted the create, but authoritative read-back did not confirm a complete, current, fully known resource. Only the confirmed agent identity was retained for recovery.")
 		return
 	}
-
-	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	resolveAgentUnknowns(&confirmed)
+	if agentResourceHasUnknowns(confirmed) {
+		setAgentIdentityOnlyCreateState(ctx, resp, types.StringValue(agentID))
+		resp.Diagnostics.AddError("Agent Create Not Confirmed", "LiteLLM accepted the create, but authoritative read-back left unknown values. Only the confirmed agent identity was retained for recovery.")
+		return
+	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, &confirmed)...)
+	if !resp.Diagnostics.HasError() && resp.Private != nil {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentImportedFieldsPrivateKey, nil)...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipInitializedPrivateKey, []byte("true"))...)
+	}
 }
 
 func setAgentIdentityOnlyCreateState(ctx context.Context, resp *resource.CreateResponse, confirmedAgentID types.String) {
-	partial := AgentResourceModel{
-		ID:            confirmedAgentID,
-		LiteLLMParams: types.MapNull(types.StringType),
-		StaticHeaders: types.MapNull(types.StringType),
-		ExtraHeaders:  types.ListNull(types.StringType),
-	}
+	partial := emptyKnownAgentResourceModel()
+	partial.ID = confirmedAgentID
 	resp.Diagnostics.Append(resp.State.Set(ctx, &partial)...)
+	if resp.Private != nil {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentImportedFieldsPrivateKey, nil)...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipInitializedPrivateKey, []byte("true"))...)
+	}
 }
 
 func (r *AgentResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -403,80 +411,124 @@ func (r *AgentResource) Read(ctx context.Context, req resource.ReadRequest, resp
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
 	importedMarker, privateDiags := req.Private.GetKey(ctx, numericImportedPrivateKey)
 	resp.Diagnostics.Append(privateDiags...)
+	apiOwned, ownershipDiags := readAgentImportedFields(ctx, req.Private)
+	resp.Diagnostics.Append(ownershipDiags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 	imported := string(importedMarker) == "true"
 
-	if err := r.readAgentWithNumericOwnership(ctx, &data, imported); err != nil {
-		if IsNotFoundError(err) {
+	if err := r.readAgentWithOwnership(ctx, &data, imported, apiOwned); err != nil {
+		if IsAPIErrorStatus(err, 404) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read agent: %s", err))
+		resp.State = req.State
+		resp.Diagnostics.AddError("Agent Read Failed", "LiteLLM did not return an authoritative agent response. Prior Terraform state was retained.")
 		return
 	}
 
+	resolveAgentUnknowns(&data)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
-	if !resp.Diagnostics.HasError() && imported {
-		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, nil)...)
+	if !resp.Diagnostics.HasError() && resp.Private != nil {
+		if imported {
+			apiOwned = agentImportedFieldsFromState(data)
+		}
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentImportedFieldsPrivateKey, encodeAgentFieldSet(apiOwned))...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipInitializedPrivateKey, []byte("true"))...)
+		if imported {
+			resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, nil)...)
+		}
 	}
 }
 
 func (r *AgentResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var data AgentResourceModel
-	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	var state AgentResourceModel
+	var planned, state, config AgentResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &planned)...)
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+	importedFields, ownershipDiags := readAgentImportedFields(ctx, req.Private)
+	resp.Diagnostics.Append(ownershipDiags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	data.ID = state.ID
-	if err := r.hydrateUnmanagedAgentUpdateFields(ctx, &data); err != nil {
-		resp.Diagnostics.AddError("Agent Update Preflight Error", fmt.Sprintf("Unable to preserve unmanaged agent configuration before update: %s", err))
+	planned.ID = state.ID
+
+	if err := validateAgentModelSkillIdentities(planned, state, config); err != nil {
+		resp.Private = req.Private
+		resp.State = req.State
+		resp.Diagnostics.AddError("Invalid Agent Skill Identity", err.Error())
 		return
 	}
+	if err := validateAgentUpdateClears(planned, state, config, importedFields); err != nil {
+		resp.Private = req.Private
+		resp.State = req.State
+		resp.Diagnostics.AddError("Unsupported Agent Clear", err.Error())
+		return
+	}
+	// Preserve #181's proxy-admin preflight. PATCH omission is independently
+	// safe, but the preflight still recovers masked configured values and proves
+	// secret-bearing remote state is readable before any mutation. Hydration is
+	// wire-only: it must not replace explicit null/empty planned clears in state.
+	wirePlanned := cloneAgentResourceModel(planned)
+	if err := r.hydrateAgentUpdateFieldsWithOwnership(ctx, &wirePlanned, config, importedFields); err != nil {
+		resp.Private = req.Private
+		resp.State = req.State
+		resp.Diagnostics.AddError("Agent Update Preflight Failed", "The provider could not safely preserve masked or unmanaged agent configuration before mutation. The agent was not changed.")
+		return
+	}
+	cardTouched := agentCardUpdateTouched(planned, state, config, importedFields)
+	if cardTouched {
+		// This GET intentionally occurs after secret hydration and immediately
+		// before request construction. The replacement card is based only on this
+		// authoritative response, never stale Terraform state.
+		fresh, err := r.sampleFreshAgentCard(ctx, state, importedFields, 8)
+		if err != nil {
+			resp.Private = req.Private
+			resp.State = req.State
+			resp.Diagnostics.AddError("Agent Update Preflight Failed", "The provider could not authoritatively preserve the complete current agent card through bounded fresh-worker sampling before mutation. The agent was not changed.")
+			return
+		}
+		wirePlanned.AgentCard = overlayAgentCardWire(fresh, planned, state, config, importedFields)
+	}
 
-	agentReq, err := r.buildAgentRequest(&data)
+	agentReq, err := r.buildAgentUpdateRequest(&wirePlanned, &state, &config, importedFields, cardTouched)
 	if err != nil {
-		resp.Diagnostics.AddError("Invalid MCP Tool Permissions", "The agent MCP tool permissions could not be converted to the LiteLLM request shape. Each map value must be a JSON array containing only strings.")
+		resp.Private = req.Private
+		resp.State = req.State
+		resp.Diagnostics.AddError("Invalid Agent Request", "The agent update could not be converted to the LiteLLM v1.98 wire shape. The agent was not changed.")
+		return
+	}
+	endpoint := fmt.Sprintf("/v1/agents/%s", url.PathEscape(planned.ID.ValueString()))
+	if err := r.client.DoRequestWithResponse(ctx, "PATCH", endpoint, agentReq, nil); err != nil {
+		resp.Private = req.Private
+		resp.State = req.State
+		resp.Diagnostics.AddError("Agent Update Failed", "LiteLLM did not confirm the agent update. Prior Terraform state was retained.")
 		return
 	}
 
-	endpoint := fmt.Sprintf("/v1/agents/%s", url.PathEscape(data.ID.ValueString()))
-	if err := r.client.DoRequestWithResponse(ctx, "PUT", endpoint, agentReq, nil); err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to update agent: %s", err))
+	confirmed, err := r.confirmAgentMutation(ctx, planned, state, config, importedFields, 8)
+	if err != nil {
+		resp.Private = req.Private
+		resp.State = req.State
+		resp.Diagnostics.AddError("Agent Update Not Confirmed", "LiteLLM accepted the update, but authoritative read-back did not confirm complete, current, stable planned values. Prior Terraform state was retained for recovery.")
 		return
 	}
-
-	planned := cloneAgentResourceModel(data)
-	changedCapabilities := changedAgentCapabilityFieldsNotConverged(data, state, state)
-	if len(changedCapabilities) > 0 {
-		if err := r.readAgentCapabilitiesAfterUpdate(ctx, &data, data, state, 8); err != nil {
-			resp.Diagnostics.AddError("Agent Capability Update Not Yet Consistent", fmt.Sprintf("LiteLLM accepted the agent update but did not return the planned capability values before the consistency timeout: %s", err))
-			return
-		}
-	} else if err := r.readAgent(ctx, &data); err != nil {
-		if isInvalidAgentMCPToolPermissionsResponse(err) {
-			resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned malformed MCP tool permissions. The response was rejected without exposing permission content.")
-			return
-		}
-		if agentMCPToolPermissionsOwned(planned) {
-			resp.Diagnostics.AddError("Agent MCP Tool Permissions Not Confirmed", "LiteLLM accepted the agent update, but read-back did not confirm the requested MCP tool permissions. Prior Terraform state was retained for recovery.")
-			return
-		}
-		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Agent updated but failed to read back: %s", err))
-	}
-	if !resp.Diagnostics.HasError() && !agentMCPToolPermissionsConfirmed(planned, data) {
-		resp.Diagnostics.AddError("Agent MCP Tool Permissions Not Confirmed", "LiteLLM accepted the agent update but did not return the requested MCP tool permissions. Prior Terraform state was retained for recovery.")
+	resolveAgentUnknowns(&confirmed)
+	if agentResourceHasUnknowns(confirmed) {
+		resp.Private = req.Private
+		resp.State = req.State
+		resp.Diagnostics.AddError("Agent Update Not Confirmed", "LiteLLM accepted the update, but authoritative read-back left unknown values. Prior Terraform state was retained for recovery.")
 		return
 	}
-
-	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &confirmed)...)
+	if !resp.Diagnostics.HasError() && resp.Private != nil {
+		for field := range agentConfiguredFields(config) {
+			delete(importedFields, field)
+		}
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentImportedFieldsPrivateKey, encodeAgentFieldSet(importedFields))...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipPendingPrivateKey, nil)...)
+	}
 }
 
 func (r *AgentResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
@@ -488,7 +540,10 @@ func (r *AgentResource) Delete(ctx context.Context, req resource.DeleteRequest, 
 
 	endpoint := fmt.Sprintf("/v1/agents/%s", url.PathEscape(data.ID.ValueString()))
 	if err := r.client.DoRequestWithResponse(ctx, "DELETE", endpoint, nil, nil); err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to delete agent: %s", err))
+		if IsAPIErrorStatus(err, 404) {
+			return
+		}
+		resp.Diagnostics.AddError("Agent Delete Failed", "LiteLLM did not confirm deletion. Terraform state was retained so the operation can be retried safely.")
 		return
 	}
 }
@@ -497,6 +552,8 @@ func (r *AgentResource) ImportState(ctx context.Context, req resource.ImportStat
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 	if resp.Private != nil {
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, []byte("true"))...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentImportedFieldsPrivateKey, nil)...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipInitializedPrivateKey, []byte("true"))...)
 	}
 }
 
@@ -544,13 +601,45 @@ func hydrateAgentUpdateMap(planned types.Map, remote map[string]interface{}, exc
 	return value, nil
 }
 
-// hydrateUnmanagedAgentUpdateFields protects secret-bearing fields that
-// LiteLLM's PUT endpoint clears when omitted. Update requires PROXY_ADMIN, so
-// this preflight can recover the full values even when an earlier lower-role
-// import/read response redacted them.
+// hydrateUnmanagedAgentUpdateFields preserves the #181 secret preflight.
+// PATCH omission no longer clears unmanaged fields, but configured masked
+// values still require a PROXY_ADMIN read before mutation.
+func mergeAgentAPIMapLeaves(planned types.Map, remote map[string]interface{}, prefix string, imported agentFieldSet) (types.Map, error) {
+	values := map[string]attr.Value{}
+	if !planned.IsNull() && !planned.IsUnknown() {
+		for key, value := range planned.Elements() {
+			values[key] = value
+		}
+	}
+	for key, raw := range remote {
+		if key == "is_public" && prefix == agentFieldParams {
+			continue
+		}
+		if _, configured := values[key]; configured || !imported[agentLeaf(prefix, key)] {
+			continue
+		}
+		if isMaskedAgentAPIValue(key, raw) {
+			return planned, fmt.Errorf("API-owned agent map value is not recoverable")
+		}
+		values[key] = types.StringValue(metadataValueToString(raw))
+	}
+	value, diagnostics := types.MapValue(types.StringType, values)
+	if diagnostics.HasError() {
+		return planned, fmt.Errorf("build preserved agent map")
+	}
+	return value, nil
+}
+
 func (r *AgentResource) hydrateUnmanagedAgentUpdateFields(ctx context.Context, data *AgentResourceModel) error {
-	needsParams := data.LiteLLMParams.IsNull() || data.LiteLLMParams.IsUnknown() || agentMapContainsMaskedValues(data.LiteLLMParams)
-	needsHeaders := data.StaticHeaders.IsNull() || data.StaticHeaders.IsUnknown() || agentMapContainsMaskedValues(data.StaticHeaders)
+	return r.hydrateAgentUpdateFieldsWithOwnership(ctx, data, AgentResourceModel{}, nil)
+}
+
+func (r *AgentResource) hydrateAgentUpdateFieldsWithOwnership(ctx context.Context, data *AgentResourceModel, config AgentResourceModel, imported agentFieldSet) error {
+	if imported == nil {
+		imported = agentFieldSet{}
+	}
+	needsParams := data.LiteLLMParams.IsNull() || data.LiteLLMParams.IsUnknown() || agentMapContainsMaskedValues(data.LiteLLMParams) || (!config.LiteLLMParams.IsNull() && agentFieldSetHasPrefix(imported, agentFieldParams+"["))
+	needsHeaders := data.StaticHeaders.IsNull() || data.StaticHeaders.IsUnknown() || agentMapContainsMaskedValues(data.StaticHeaders) || (!config.StaticHeaders.IsNull() && agentFieldSetHasPrefix(imported, agentFieldStaticHeaders+"["))
 	needsExtraHeaders := data.ExtraHeaders.IsNull() || data.ExtraHeaders.IsUnknown()
 	if !needsParams && !needsHeaders && !needsExtraHeaders {
 		return nil
@@ -558,7 +647,10 @@ func (r *AgentResource) hydrateUnmanagedAgentUpdateFields(ctx context.Context, d
 
 	endpoint := fmt.Sprintf("/v1/agents/%s", url.PathEscape(data.ID.ValueString()))
 	var result map[string]interface{}
-	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
+	if err := r.client.doFreshRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
+		return err
+	}
+	if err := validateImportedObjectIdentity(true, "agent", result, "agent_id", data.ID.ValueString()); err != nil {
 		return err
 	}
 	if needsParams {
@@ -568,6 +660,12 @@ func (r *AgentResource) hydrateUnmanagedAgentUpdateFields(ctx context.Context, d
 			return err
 		}
 		data.LiteLLMParams = value
+		if !config.LiteLLMParams.IsNull() && !config.LiteLLMParams.IsUnknown() {
+			data.LiteLLMParams, err = mergeAgentAPIMapLeaves(data.LiteLLMParams, params, agentFieldParams, imported)
+			if err != nil {
+				return err
+			}
+		}
 	}
 	if needsHeaders {
 		headers, _ := result["static_headers"].(map[string]interface{})
@@ -576,6 +674,12 @@ func (r *AgentResource) hydrateUnmanagedAgentUpdateFields(ctx context.Context, d
 			return err
 		}
 		data.StaticHeaders = value
+		if !config.StaticHeaders.IsNull() && !config.StaticHeaders.IsUnknown() {
+			data.StaticHeaders, err = mergeAgentAPIMapLeaves(data.StaticHeaders, headers, agentFieldStaticHeaders, imported)
+			if err != nil {
+				return err
+			}
+		}
 	}
 	if needsExtraHeaders {
 		if headers, ok := result["extra_headers"].([]interface{}); ok {
@@ -590,6 +694,9 @@ func (r *AgentResource) hydrateUnmanagedAgentUpdateFields(ctx context.Context, d
 // --- Build request ---
 
 func (r *AgentResource) buildAgentRequest(data *AgentResourceModel) (map[string]interface{}, error) {
+	if err := validateAgentModelSkillIdentities(*data); err != nil {
+		return nil, err
+	}
 	req := map[string]interface{}{
 		"agent_name": data.AgentName.ValueString(),
 	}
@@ -659,8 +766,9 @@ func (r *AgentResource) buildAgentRequest(data *AgentResourceModel) (map[string]
 			}
 		}
 
-		// Skills
-		if len(data.AgentCard.Skills) > 0 {
+		// Skills. A non-nil empty list is an explicit complete-list replacement;
+		// omission leaves the remote list untouched.
+		if data.AgentCard.Skills != nil {
 			skills := make([]map[string]interface{}, 0, len(data.AgentCard.Skills))
 			for _, s := range data.AgentCard.Skills {
 				skill := map[string]interface{}{
@@ -838,14 +946,91 @@ func reconcileAgentStringMap(current types.Map, raw map[string]interface{}, excl
 	return value, nil
 }
 
+func reconcileAgentStringMapWithOwnership(current types.Map, raw map[string]interface{}, excludeSyntheticIsPublic bool, prefix string, importAll bool, apiOwned agentFieldSet) (types.Map, error) {
+	configured := map[string]string{}
+	if !current.IsNull() && !current.IsUnknown() {
+		if diagnostics := current.ElementsAs(context.Background(), &configured, false); diagnostics.HasError() {
+			return current, fmt.Errorf("decode agent map")
+		}
+	}
+	observed := make(map[string]attr.Value)
+	for key, rawValue := range raw {
+		if excludeSyntheticIsPublic && key == "is_public" {
+			continue
+		}
+		marker := agentLeaf(prefix, key)
+		prior, priorPresent := configured[key]
+		scope := agentScopeParams
+		if prefix == agentFieldStaticHeaders {
+			scope = agentScopeStaticHeaders
+		}
+		ownedByAPI := importAll || apiOwned[marker]
+		if !priorPresent && !ownedByAPI && apiOwned[scope] {
+			apiOwned[marker] = true
+			ownedByAPI = true
+		}
+		if !priorPresent && isMaskedAgentAPIValue(key, rawValue) && (importAll || apiOwned[scope] || current.IsUnknown()) {
+			return current, fmt.Errorf("masked agent map value is not recoverable; use a PROXY_ADMIN credential")
+		}
+		if !priorPresent && !ownedByAPI {
+			continue
+		}
+		if isMaskedAgentAPIValue(key, rawValue) {
+			if !priorPresent {
+				return current, fmt.Errorf("masked agent map value is not recoverable; use a PROXY_ADMIN credential")
+			}
+			observed[key] = types.StringValue(prior)
+			continue
+		}
+		value := metadataValueToString(rawValue)
+		if priorPresent && !ownedByAPI && (prior == value || jsonSemanticallyEqual(prior, value)) {
+			value = prior
+		}
+		observed[key] = types.StringValue(value)
+	}
+	for key := range configured {
+		if _, present := raw[key]; !present && apiOwned[agentLeaf(prefix, key)] {
+			delete(apiOwned, agentLeaf(prefix, key))
+		}
+	}
+	if len(observed) == 0 && current.IsNull() {
+		return current, nil
+	}
+	if stringMapMatchesAttrValues(current, observed) {
+		return current, nil
+	}
+	value, diagnostics := types.MapValue(types.StringType, observed)
+	if diagnostics.HasError() {
+		return current, fmt.Errorf("build agent map state")
+	}
+	return value, nil
+}
+
 // --- Read agent ---
 
 func (r *AgentResource) readAgent(ctx context.Context, data *AgentResourceModel) error {
-	return r.readAgentWithNumericOwnership(ctx, data, false)
+	return r.readAgentWithOwnership(ctx, data, false, nil)
 }
 
 func (r *AgentResource) readAgentWithNumericOwnership(ctx context.Context, data *AgentResourceModel, imported bool) error {
+	return r.readAgentWithOwnership(ctx, data, imported, nil)
+}
+
+func (r *AgentResource) readAgentWithOwnership(ctx context.Context, data *AgentResourceModel, imported bool, apiOwned agentFieldSet) error {
+	return r.readAgentWithOwnershipTransport(ctx, data, imported, apiOwned, false)
+}
+
+func (r *AgentResource) readAgentFreshWithOwnership(ctx context.Context, data *AgentResourceModel, imported bool, apiOwned agentFieldSet) error {
+	return r.readAgentWithOwnershipTransport(ctx, data, imported, apiOwned, true)
+}
+
+func (r *AgentResource) readAgentWithOwnershipTransport(ctx context.Context, data *AgentResourceModel, imported bool, apiOwned agentFieldSet, freshConnection bool) error {
+	if apiOwned == nil {
+		apiOwned = agentFieldSet{}
+	}
 	agentID := data.ID.ValueString()
+	manageAgentCard := imported || data.AgentCard != nil
+	manageObjectPermission := imported || data.ObjectPermission != nil || apiOwned[agentScopePermission]
 	if agentID == "" {
 		return fmt.Errorf("agent ID is empty, cannot read agent")
 	}
@@ -853,22 +1038,27 @@ func (r *AgentResource) readAgentWithNumericOwnership(ctx context.Context, data 
 	endpoint := fmt.Sprintf("/v1/agents/%s", url.PathEscape(agentID))
 
 	var result map[string]interface{}
-	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
+	var err error
+	if freshConnection {
+		err = r.client.doFreshRequestWithResponse(ctx, "GET", endpoint, nil, &result)
+	} else {
+		err = r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result)
+	}
+	if err != nil {
 		return err
 	}
-	if err := validateImportedObjectIdentity(imported, "agent", result, "agent_id", agentID); err != nil {
+	if err := validateImportedObjectIdentity(true, "agent", result, "agent_id", agentID); err != nil {
 		return err
 	}
-	if err := requireImportedStringField(imported, "agent", result, "agent_name"); err != nil {
+	if err := requireImportedStringField(true, "agent", result, "agent_name"); err != nil {
 		return err
 	}
 
-	// Top-level fields
-	if v, ok := result["agent_id"].(string); ok {
-		data.ID = types.StringValue(v)
-	}
-	if v, ok := result["agent_name"].(string); ok {
-		data.AgentName = types.StringValue(v)
+	// Identity is authoritative on every read, not only import. A successful
+	// response for a different object must never overwrite requested state.
+	data.ID = types.StringValue(result["agent_id"].(string))
+	if name, ok := result["agent_name"].(string); ok && name != "" {
+		data.AgentName = types.StringValue(name)
 	}
 
 	// Computed timestamps
@@ -896,50 +1086,69 @@ func (r *AgentResource) readAgentWithNumericOwnership(ctx context.Context, data 
 		{"session_tpm_limit", &data.SessionTPMLimit},
 		{"session_rpm_limit", &data.SessionRPMLimit},
 	} {
-		owned := imported || (!field.target.IsNull() && !field.target.IsUnknown())
+		owned := imported || apiOwned[field.name] || (!field.target.IsNull() && !field.target.IsUnknown())
 		if err := updateInt64FromAPI(field.target, result, owned, owned, field.name); err != nil {
 			return err
 		}
 	}
 
 	// LiteLLM params
-	if params, ok := result["litellm_params"].(map[string]interface{}); ok && len(params) > 0 {
-		value, err := reconcileAgentStringMap(data.LiteLLMParams, params, true)
+	if rawParams, present := result["litellm_params"]; present && rawParams != nil {
+		params, ok := rawParams.(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("agent read response contains malformed LiteLLM parameters")
+		}
+		value, err := reconcileAgentStringMapWithOwnership(data.LiteLLMParams, params, true, agentFieldParams, imported, apiOwned)
 		if err != nil {
 			return err
 		}
 		data.LiteLLMParams = value
-	} else if data.LiteLLMParams.IsUnknown() {
+	} else if data.LiteLLMParams.IsUnknown() || (!data.LiteLLMParams.IsNull() && len(data.LiteLLMParams.Elements()) > 0) {
 		data.LiteLLMParams = types.MapNull(types.StringType)
 	}
 
 	// Static headers
-	if headers, ok := result["static_headers"].(map[string]interface{}); ok && len(headers) > 0 {
-		value, err := reconcileAgentStringMap(data.StaticHeaders, headers, false)
+	if rawHeaders, present := result["static_headers"]; present && rawHeaders != nil {
+		headers, ok := rawHeaders.(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("agent read response contains malformed static headers")
+		}
+		value, err := reconcileAgentStringMapWithOwnership(data.StaticHeaders, headers, false, agentFieldStaticHeaders, imported, apiOwned)
 		if err != nil {
 			return err
 		}
 		data.StaticHeaders = value
-	} else if data.StaticHeaders.IsUnknown() {
+	} else if data.StaticHeaders.IsUnknown() || (!data.StaticHeaders.IsNull() && len(data.StaticHeaders.Elements()) > 0) {
 		data.StaticHeaders = types.MapNull(types.StringType)
 	}
 
 	// Extra headers
-	if headers, ok := result["extra_headers"].([]interface{}); ok && len(headers) > 0 {
-		vals := make([]attr.Value, 0, len(headers))
-		for _, h := range headers {
-			if s, ok := h.(string); ok {
-				vals = append(vals, types.StringValue(s))
-			}
+	if rawHeaders, present := result["extra_headers"]; present && rawHeaders != nil {
+		headers, ok := rawHeaders.([]interface{})
+		if !ok {
+			return fmt.Errorf("agent read response contains malformed extra headers")
 		}
-		data.ExtraHeaders, _ = types.ListValue(types.StringType, vals)
-	} else if data.ExtraHeaders.IsUnknown() {
+		data.ExtraHeaders = interfaceSliceToStringList(headers)
+	} else if data.ExtraHeaders.IsUnknown() || (!data.ExtraHeaders.IsNull() && len(data.ExtraHeaders.Elements()) > 0) {
 		data.ExtraHeaders = types.ListNull(types.StringType)
 	}
 
 	// Agent card
-	if cardRaw, ok := result["agent_card_params"].(map[string]interface{}); ok {
-		r.readAgentCard(cardRaw, data)
+	if rawCard, present := result["agent_card_params"]; present && rawCard != nil {
+		cardRaw, ok := rawCard.(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("agent read response contains a malformed agent card")
+		}
+		if err := validateAgentCardResponse(cardRaw, imported || data.AgentCard != nil); err != nil {
+			return err
+		}
+		if manageAgentCard && (len(cardRaw) > 0 || data.AgentCard != nil) {
+			if imported {
+				r.readAgentCard(cardRaw, data)
+			} else if err := r.reconcileAgentCardWithOwnership(cardRaw, data, apiOwned); err != nil {
+				return err
+			}
+		}
 	}
 
 	// Object permission. A null or omitted object makes its MCP tool
@@ -947,11 +1156,54 @@ func (r *AgentResource) readAgentWithNumericOwnership(ctx context.Context, data 
 	// nested fields.
 	rawObjectPermission, objectPermissionPresent := result["object_permission"]
 	if permRaw, ok := rawObjectPermission.(map[string]interface{}); ok {
-		if err := r.readObjectPermission(permRaw, data); err != nil {
-			return err
+		if manageObjectPermission {
+			if err := r.readObjectPermissionWithOwnership(permRaw, data, imported, apiOwned); err != nil {
+				return err
+			}
+		} else {
+			// Validate present API data without adopting an unconfigured optional
+			// block into state. This keeps omission/import ownership stable while
+			// still failing closed on malformed permission responses.
+			temporary := emptyKnownAgentResourceModel()
+			if err := r.readObjectPermission(permRaw, &temporary); err != nil {
+				return err
+			}
 		}
-	} else if !objectPermissionPresent || rawObjectPermission == nil {
+	} else if objectPermissionPresent && rawObjectPermission == nil {
+		if data.ObjectPermission != nil && apiOwned[agentScopePermission] {
+			// Explicit parent null is authoritative for imported leaves. Preserve
+			// independently Terraform-owned siblings whose leaf markers transferred.
+			for _, item := range []struct {
+				field  string
+				target *types.List
+			}{
+				{agentFieldPermissionServers, &data.ObjectPermission.MCPServers},
+				{agentFieldPermissionGroups, &data.ObjectPermission.MCPAccessGroups},
+				{agentFieldPermissionModels, &data.ObjectPermission.Models},
+				{agentFieldPermissionAgents, &data.ObjectPermission.Agents},
+			} {
+				if apiOwned[item.field] {
+					*item.target = types.ListNull(types.StringType)
+					delete(apiOwned, item.field)
+				}
+			}
+			if apiOwned[agentFieldPermissionTools] {
+				data.ObjectPermission.MCPToolPermissions = types.MapNull(types.StringType)
+				delete(apiOwned, agentFieldPermissionTools)
+			}
+			if data.ObjectPermission.MCPServers.IsNull() && data.ObjectPermission.MCPAccessGroups.IsNull() &&
+				data.ObjectPermission.MCPToolPermissions.IsNull() && data.ObjectPermission.Models.IsNull() && data.ObjectPermission.Agents.IsNull() {
+				data.ObjectPermission = nil
+			}
+		} else {
+			reconcileAbsentAgentMCPToolPermissions(data)
+			delete(apiOwned, agentFieldPermissionTools)
+		}
+	} else if !objectPermissionPresent {
+		// Whole-object omission can be role sanitization. Preserve independently
+		// scoped sibling lists while retaining #197's authoritative tool absence.
 		reconcileAbsentAgentMCPToolPermissions(data)
+		delete(apiOwned, agentFieldPermissionTools)
 	} else {
 		return invalidAgentMCPToolPermissionsResponseError{}
 	}
@@ -969,27 +1221,26 @@ func (r *AgentResource) readAgentCard(cardRaw map[string]interface{}, data *Agen
 	if v, ok := cardRaw["name"].(string); ok {
 		card.Name = types.StringValue(v)
 	}
-	if v, ok := cardRaw["description"].(string); ok && v != "" {
+	if v, ok := cardRaw["description"].(string); ok {
 		card.Description = types.StringValue(v)
+	} else if populateAll || !card.Description.IsNull() {
+		card.Description = types.StringNull()
 	}
 	if v, ok := cardRaw["url"].(string); ok {
 		card.URL = types.StringValue(v)
 	}
-	if v, ok := cardRaw["version"].(string); ok && v != "" && (populateAll || !card.Version.IsNull()) {
-		card.Version = types.StringValue(v)
+	readOptionalCardString := func(rawName string, target *types.String) {
+		if v, ok := cardRaw[rawName].(string); ok && (populateAll || !target.IsNull()) {
+			*target = types.StringValue(v)
+		} else if populateAll || !target.IsNull() {
+			*target = types.StringNull()
+		}
 	}
-	if v, ok := cardRaw["protocolVersion"].(string); ok && v != "" && (populateAll || !card.ProtocolVersion.IsNull()) {
-		card.ProtocolVersion = types.StringValue(v)
-	}
-	if v, ok := cardRaw["preferredTransport"].(string); ok && v != "" && (populateAll || !card.PreferredTransport.IsNull()) {
-		card.PreferredTransport = types.StringValue(v)
-	}
-	if v, ok := cardRaw["iconUrl"].(string); ok && v != "" && (populateAll || !card.IconURL.IsNull()) {
-		card.IconURL = types.StringValue(v)
-	}
-	if v, ok := cardRaw["documentationUrl"].(string); ok && v != "" && (populateAll || !card.DocumentationURL.IsNull()) {
-		card.DocumentationURL = types.StringValue(v)
-	}
+	readOptionalCardString("version", &card.Version)
+	readOptionalCardString("protocolVersion", &card.ProtocolVersion)
+	readOptionalCardString("preferredTransport", &card.PreferredTransport)
+	readOptionalCardString("iconUrl", &card.IconURL)
+	readOptionalCardString("documentationUrl", &card.DocumentationURL)
 	if populateAll {
 		if value, ok := cardRaw["supportsAuthenticatedExtendedCard"].(bool); ok {
 			card.SupportsAuthenticatedExtendedCard = types.BoolValue(value)
@@ -1000,14 +1251,14 @@ func (r *AgentResource) readAgentCard(cardRaw map[string]interface{}, data *Agen
 	}
 
 	// Default modes
-	if modes, ok := cardRaw["defaultInputModes"].([]interface{}); ok && len(modes) > 0 {
+	if modes, ok := cardRaw["defaultInputModes"].([]interface{}); ok && (populateAll || !card.DefaultInputModes.IsNull()) {
 		card.DefaultInputModes = interfaceSliceToStringList(modes)
-	} else if card.DefaultInputModes.IsUnknown() {
+	} else if populateAll || card.DefaultInputModes.IsUnknown() || !card.DefaultInputModes.IsNull() {
 		card.DefaultInputModes = types.ListNull(types.StringType)
 	}
-	if modes, ok := cardRaw["defaultOutputModes"].([]interface{}); ok && len(modes) > 0 {
+	if modes, ok := cardRaw["defaultOutputModes"].([]interface{}); ok && (populateAll || !card.DefaultOutputModes.IsNull()) {
 		card.DefaultOutputModes = interfaceSliceToStringList(modes)
-	} else if card.DefaultOutputModes.IsUnknown() {
+	} else if populateAll || card.DefaultOutputModes.IsUnknown() || !card.DefaultOutputModes.IsNull() {
 		card.DefaultOutputModes = types.ListNull(types.StringType)
 	}
 
@@ -1015,11 +1266,20 @@ func (r *AgentResource) readAgentCard(cardRaw map[string]interface{}, data *Agen
 	// may accept unsupported flags but omit them from subsequent reads; an
 	// omitted managed key therefore means false, not "preserve planned state".
 	capsRaw, hasCapabilities := cardRaw["capabilities"].(map[string]interface{})
-	if populateAll && hasCapabilities {
+	if populateAll && hasCapabilities && len(capsRaw) > 0 {
 		card.Capabilities = &AgentCapabilitiesModel{
-			Streaming:              types.BoolValue(agentCapabilityValue(capsRaw, "streaming")),
-			PushNotifications:      types.BoolValue(agentCapabilityValue(capsRaw, "pushNotifications")),
-			StateTransitionHistory: types.BoolValue(agentCapabilityValue(capsRaw, "stateTransitionHistory")),
+			Streaming:              types.BoolNull(),
+			PushNotifications:      types.BoolNull(),
+			StateTransitionHistory: types.BoolNull(),
+		}
+		if value, present := capsRaw["streaming"].(bool); present {
+			card.Capabilities.Streaming = types.BoolValue(value)
+		}
+		if value, present := capsRaw["pushNotifications"].(bool); present {
+			card.Capabilities.PushNotifications = types.BoolValue(value)
+		}
+		if value, present := capsRaw["stateTransitionHistory"].(bool); present {
+			card.Capabilities.StateTransitionHistory = types.BoolValue(value)
 		}
 	} else if !populateAll && card.Capabilities != nil {
 		if !card.Capabilities.Streaming.IsNull() {
@@ -1034,20 +1294,26 @@ func (r *AgentResource) readAgentCard(cardRaw map[string]interface{}, data *Agen
 	}
 
 	// Provider
-	if provRaw, ok := cardRaw["provider"].(map[string]interface{}); ok && (populateAll || card.Provider != nil) {
+	if provRaw, ok := cardRaw["provider"].(map[string]interface{}); ok && (!populateAll || len(provRaw) > 0) && (populateAll || card.Provider != nil) {
 		if card.Provider == nil {
 			card.Provider = &AgentProviderModel{}
 		}
 		if v, ok := provRaw["organization"].(string); ok && (populateAll || !card.Provider.Organization.IsNull()) {
 			card.Provider.Organization = types.StringValue(v)
+		} else if populateAll || !card.Provider.Organization.IsNull() {
+			card.Provider.Organization = types.StringNull()
 		}
 		if v, ok := provRaw["url"].(string); ok && (populateAll || !card.Provider.URL.IsNull()) {
 			card.Provider.URL = types.StringValue(v)
+		} else if populateAll || !card.Provider.URL.IsNull() {
+			card.Provider.URL = types.StringNull()
 		}
+	} else if !populateAll && card.Provider != nil {
+		card.Provider = nil
 	}
 
 	// Skills
-	if skillsRaw, ok := cardRaw["skills"].([]interface{}); ok && len(skillsRaw) > 0 && (populateAll || len(card.Skills) > 0) {
+	if skillsRaw, ok := cardRaw["skills"].([]interface{}); ok && (populateAll || card.Skills != nil) {
 		skills := make([]AgentSkillModel, 0, len(skillsRaw))
 		for _, sRaw := range skillsRaw {
 			if s, ok := sRaw.(map[string]interface{}); ok {
@@ -1084,8 +1350,211 @@ func (r *AgentResource) readAgentCard(cardRaw map[string]interface{}, data *Agen
 				skills = append(skills, skill)
 			}
 		}
-		card.Skills = skills
+		if populateAll && len(skills) == 0 {
+			card.Skills = nil
+		} else {
+			card.Skills = skills
+		}
+	} else if !populateAll && card.Skills != nil {
+		card.Skills = []AgentSkillModel{}
 	}
+}
+
+func (r *AgentResource) reconcileAgentCardWithOwnership(cardRaw map[string]interface{}, data *AgentResourceModel, apiOwned agentFieldSet) error {
+	observedData := emptyKnownAgentResourceModel()
+	r.readAgentCard(cardRaw, &observedData)
+	observed := observedData.AgentCard
+	if observed == nil {
+		return nil
+	}
+	if data.AgentCard == nil {
+		data.AgentCard = observed
+		for field := range agentImportedFieldsFromState(observedData) {
+			apiOwned[field] = true
+		}
+		return nil
+	}
+	prior := data.AgentCard
+	out := cloneAgentResourceModel(*data).AgentCard
+	reconcileString := func(field string, target *types.String, remote types.String) {
+		old := *target
+		if old.IsNull() && !apiOwned[field] {
+			return
+		}
+		if !apiOwned[field] && !old.IsNull() && !old.IsUnknown() && !remote.IsNull() && !remote.IsUnknown() && old.ValueString() == remote.ValueString() {
+			return
+		}
+		*target = remote
+		if apiOwned[field] && remote.IsNull() {
+			delete(apiOwned, field)
+		}
+	}
+	reconcileBool := func(field string, target *types.Bool, remote types.Bool) {
+		old := *target
+		if old.IsNull() && !apiOwned[field] {
+			return
+		}
+		if !apiOwned[field] && old.Equal(remote) {
+			return
+		}
+		*target = remote
+		if apiOwned[field] && remote.IsNull() {
+			delete(apiOwned, field)
+		}
+	}
+	reconcileList := func(field string, target *types.List, remote types.List, setLike bool) {
+		old := *target
+		if old.IsNull() && !apiOwned[field] {
+			return
+		}
+		equal := old.Equal(remote)
+		if setLike {
+			equal = agentStringListSetEqual(old, remote)
+		}
+		if !apiOwned[field] && equal {
+			return
+		}
+		*target = remote
+		if apiOwned[field] && remote.IsNull() {
+			delete(apiOwned, field)
+		}
+	}
+	reconcileString(agentFieldCardName, &out.Name, observed.Name)
+	reconcileString(agentFieldCardURL, &out.URL, observed.URL)
+	reconcileString(agentFieldCardDescription, &out.Description, observed.Description)
+	reconcileString(agentFieldCardVersion, &out.Version, observed.Version)
+	reconcileString(agentFieldCardProtocol, &out.ProtocolVersion, observed.ProtocolVersion)
+	reconcileList(agentFieldCardInputModes, &out.DefaultInputModes, observed.DefaultInputModes, false)
+	reconcileList(agentFieldCardOutputModes, &out.DefaultOutputModes, observed.DefaultOutputModes, false)
+	reconcileString(agentFieldCardTransport, &out.PreferredTransport, observed.PreferredTransport)
+	reconcileString(agentFieldCardIcon, &out.IconURL, observed.IconURL)
+	reconcileString(agentFieldCardDocumentation, &out.DocumentationURL, observed.DocumentationURL)
+	reconcileBool(agentFieldCardAuthenticated, &out.SupportsAuthenticatedExtendedCard, observed.SupportsAuthenticatedExtendedCard)
+
+	capsRaw, _ := cardRaw["capabilities"].(map[string]interface{})
+	if prior.Capabilities == nil && observed.Capabilities != nil && apiOwned[agentScopeCardCapabilities] {
+		out.Capabilities = observed.Capabilities
+		for field, wire := range map[string]string{agentFieldCardCapStreaming: "streaming", agentFieldCardCapPush: "pushNotifications", agentFieldCardCapHistory: "stateTransitionHistory"} {
+			if _, present := capsRaw[wire]; present {
+				apiOwned[field] = true
+			}
+		}
+	} else if prior.Capabilities != nil {
+		capabilitiesTerraformOwned := (!prior.Capabilities.Streaming.IsNull() && !apiOwned[agentFieldCardCapStreaming]) ||
+			(!prior.Capabilities.PushNotifications.IsNull() && !apiOwned[agentFieldCardCapPush]) ||
+			(!prior.Capabilities.StateTransitionHistory.IsNull() && !apiOwned[agentFieldCardCapHistory])
+		if out.Capabilities == nil {
+			out.Capabilities = &AgentCapabilitiesModel{}
+		}
+		remote := &AgentCapabilitiesModel{Streaming: types.BoolNull(), PushNotifications: types.BoolNull(), StateTransitionHistory: types.BoolNull()}
+		if observed.Capabilities != nil {
+			remote = observed.Capabilities
+		}
+		reconcileCapability := func(field, wire string, target *types.Bool, value types.Bool) {
+			_, explicitlyPresent := capsRaw[wire]
+			if !target.IsNull() && !target.IsUnknown() && !apiOwned[field] && !explicitlyPresent {
+				value = types.BoolValue(false)
+			}
+			if target.IsNull() && !apiOwned[field] && apiOwned[agentScopeCardCapabilities] && explicitlyPresent {
+				apiOwned[field] = true
+			}
+			if target.IsNull() && !apiOwned[field] {
+				return
+			}
+			reconcileBool(field, target, value)
+		}
+		reconcileCapability(agentFieldCardCapStreaming, "streaming", &out.Capabilities.Streaming, remote.Streaming)
+		reconcileCapability(agentFieldCardCapPush, "pushNotifications", &out.Capabilities.PushNotifications, remote.PushNotifications)
+		reconcileCapability(agentFieldCardCapHistory, "stateTransitionHistory", &out.Capabilities.StateTransitionHistory, remote.StateTransitionHistory)
+		if capsRaw == nil && apiOwned[agentScopeCardCapabilities] && !capabilitiesTerraformOwned {
+			out.Capabilities = nil
+		}
+	}
+	provRaw, _ := cardRaw["provider"].(map[string]interface{})
+	if prior.Provider == nil && observed.Provider != nil && apiOwned[agentScopeCardProvider] {
+		provider := *observed.Provider
+		out.Provider = &provider
+		if _, present := provRaw["organization"]; present && !provider.Organization.IsNull() {
+			apiOwned[agentFieldCardProviderOrg] = true
+		}
+		if _, present := provRaw["url"]; present && !provider.URL.IsNull() {
+			apiOwned[agentFieldCardProviderURL] = true
+		}
+	} else if prior.Provider != nil {
+		providerTerraformOwned := (!prior.Provider.Organization.IsNull() && !apiOwned[agentFieldCardProviderOrg]) ||
+			(!prior.Provider.URL.IsNull() && !apiOwned[agentFieldCardProviderURL])
+		if out.Provider == nil {
+			out.Provider = &AgentProviderModel{}
+		}
+		remote := &AgentProviderModel{Organization: types.StringNull(), URL: types.StringNull()}
+		if observed.Provider != nil {
+			remote = observed.Provider
+		}
+		if out.Provider.Organization.IsNull() && !apiOwned[agentFieldCardProviderOrg] && apiOwned[agentScopeCardProvider] {
+			if _, present := provRaw["organization"]; present {
+				apiOwned[agentFieldCardProviderOrg] = true
+			}
+		}
+		if out.Provider.URL.IsNull() && !apiOwned[agentFieldCardProviderURL] && apiOwned[agentScopeCardProvider] {
+			if _, present := provRaw["url"]; present {
+				apiOwned[agentFieldCardProviderURL] = true
+			}
+		}
+		reconcileString(agentFieldCardProviderOrg, &out.Provider.Organization, remote.Organization)
+		reconcileString(agentFieldCardProviderURL, &out.Provider.URL, remote.URL)
+		if provRaw == nil && apiOwned[agentScopeCardProvider] && !providerTerraformOwned {
+			out.Provider = nil
+		}
+	}
+
+	remoteByID := map[string]AgentSkillModel{}
+	for _, skill := range observed.Skills {
+		remoteByID[skill.ID.ValueString()] = skill
+	}
+	skills := make([]AgentSkillModel, 0, len(observed.Skills))
+	seen := map[string]bool{}
+	for _, old := range prior.Skills {
+		id := old.ID.ValueString()
+		remote, present := remoteByID[id]
+		if !present {
+			for _, leaf := range []string{"id", "name", "description", "tags", "examples", "input_modes", "output_modes"} {
+				delete(apiOwned, agentSkillLeaf(id, leaf))
+			}
+			continue
+		}
+		current := old
+		reconcileString(agentSkillLeaf(id, "name"), &current.Name, remote.Name)
+		reconcileString(agentSkillLeaf(id, "description"), &current.Description, remote.Description)
+		reconcileList(agentSkillLeaf(id, "tags"), &current.Tags, remote.Tags, true)
+		reconcileList(agentSkillLeaf(id, "examples"), &current.Examples, remote.Examples, false)
+		reconcileList(agentSkillLeaf(id, "input_modes"), &current.InputModes, remote.InputModes, false)
+		reconcileList(agentSkillLeaf(id, "output_modes"), &current.OutputModes, remote.OutputModes, false)
+		skills = append(skills, current)
+		seen[id] = true
+	}
+	newIDs := make([]string, 0)
+	for id := range remoteByID {
+		if !seen[id] {
+			newIDs = append(newIDs, id)
+		}
+	}
+	slices.Sort(newIDs)
+	for _, id := range newIDs {
+		if !apiOwned[agentScopeCardSkills] {
+			continue
+		}
+		skills = append(skills, remoteByID[id])
+		for _, leaf := range []string{"id", "name", "description", "tags", "examples", "input_modes", "output_modes"} {
+			apiOwned[agentSkillLeaf(id, leaf)] = true
+		}
+	}
+	if prior.Skills == nil && len(skills) == 0 {
+		out.Skills = nil
+	} else {
+		out.Skills = skills
+	}
+	data.AgentCard = out
+	return nil
 }
 
 func agentCapabilityValue(capabilities map[string]interface{}, key string) bool {
@@ -1195,7 +1664,7 @@ func (r *AgentResource) readAgentCapabilitiesAfterUpdate(ctx context.Context, da
 			} else {
 				consecutiveMatches = 0
 			}
-		} else if !IsNotFoundError(lastErr) {
+		} else if !IsAPIErrorStatus(lastErr, 404) {
 			return lastErr
 		} else {
 			consecutiveMatches = 0
@@ -1244,6 +1713,85 @@ func cloneAgentResourceModel(source AgentResourceModel) AgentResourceModel {
 	return cloned
 }
 
+func (r *AgentResource) readObjectPermissionWithOwnership(permRaw map[string]interface{}, data *AgentResourceModel, imported bool, apiOwned agentFieldSet) error {
+	if imported {
+		return r.readObjectPermission(permRaw, data)
+	}
+	if data.ObjectPermission == nil {
+		if !apiOwned[agentScopePermission] {
+			return nil
+		}
+		if err := r.readObjectPermission(permRaw, data); err != nil {
+			return err
+		}
+		for field, wire := range map[string]string{
+			agentFieldPermissionServers: "mcp_servers", agentFieldPermissionGroups: "mcp_access_groups",
+			agentFieldPermissionTools: "mcp_tool_permissions", agentFieldPermissionModels: "models", agentFieldPermissionAgents: "agents",
+		} {
+			if value, present := permRaw[wire]; present && value != nil {
+				apiOwned[field] = true
+			}
+		}
+		return nil
+	}
+	remote := emptyKnownAgentResourceModel()
+	if err := r.readObjectPermission(permRaw, &remote); err != nil {
+		return err
+	}
+	if remote.ObjectPermission == nil {
+		return nil
+	}
+	current := data.ObjectPermission
+	copyList := func(field, wire string, target *types.List, observed types.List) {
+		raw, present := permRaw[wire]
+		if !present {
+			// Omission may be role sanitization and cannot prove removal.
+			return
+		}
+		if raw != nil {
+			if target.IsNull() && !apiOwned[field] && apiOwned[agentScopePermission] {
+				apiOwned[field] = true
+			}
+			if apiOwned[field] || !target.IsNull() {
+				*target = observed
+			}
+			return
+		}
+		// Explicit null is authoritative absence for an imported/API-owned sibling
+		// and real drift for a configured sibling. An unconfigured normal resource
+		// remains unmanaged because it has neither marker nor state value.
+		if apiOwned[field] || apiOwned[agentScopePermission] || !target.IsNull() {
+			*target = types.ListNull(types.StringType)
+			delete(apiOwned, field)
+		}
+	}
+	copyList(agentFieldPermissionServers, "mcp_servers", &current.MCPServers, remote.ObjectPermission.MCPServers)
+	copyList(agentFieldPermissionGroups, "mcp_access_groups", &current.MCPAccessGroups, remote.ObjectPermission.MCPAccessGroups)
+	copyList(agentFieldPermissionModels, "models", &current.Models, remote.ObjectPermission.Models)
+	copyList(agentFieldPermissionAgents, "agents", &current.Agents, remote.ObjectPermission.Agents)
+	if current.MCPToolPermissions.IsNull() && !apiOwned[agentFieldPermissionTools] && apiOwned[agentScopePermission] {
+		if value, present := permRaw["mcp_tool_permissions"]; present && value != nil {
+			apiOwned[agentFieldPermissionTools] = true
+		}
+	}
+	if apiOwned[agentFieldPermissionTools] || !current.MCPToolPermissions.IsNull() {
+		if remote.ObjectPermission.MCPToolPermissions.IsNull() {
+			reconcileAbsentAgentMCPToolPermissions(data)
+			delete(apiOwned, agentFieldPermissionTools)
+		} else {
+			observed, err := decodeConfiguredAgentMCPToolPermissions(remote.ObjectPermission.MCPToolPermissions)
+			if err != nil {
+				return err
+			}
+			current.MCPToolPermissions, err = reconcileAgentMCPToolPermissions(current.MCPToolPermissions, observed)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func (r *AgentResource) readObjectPermission(permRaw map[string]interface{}, data *AgentResourceModel) error {
 	populateAll := data.ObjectPermission == nil
 	if data.ObjectPermission == nil {
@@ -1257,17 +1805,32 @@ func (r *AgentResource) readObjectPermission(permRaw map[string]interface{}, dat
 	}
 	perm := data.ObjectPermission
 
-	if v, ok := permRaw["mcp_servers"].([]interface{}); ok {
-		perm.MCPServers = interfaceSliceToStringList(v)
+	readPermissionList := func(name string, target *types.List) error {
+		raw, present := permRaw[name]
+		if present && raw != nil {
+			items, ok := raw.([]interface{})
+			if !ok {
+				return fmt.Errorf("agent read response contains a malformed object permission collection")
+			}
+			*target = interfaceSliceToStringList(items)
+			return nil
+		}
+		// Omission leaves this independently scoped sibling unmanaged. Explicit
+		// mutation confirmation decodes into an empty imported model, so a
+		// requested set/clear still cannot be falsely confirmed.
+		return nil
 	}
-	if v, ok := permRaw["mcp_access_groups"].([]interface{}); ok {
-		perm.MCPAccessGroups = interfaceSliceToStringList(v)
+	if err := readPermissionList("mcp_servers", &perm.MCPServers); err != nil {
+		return err
 	}
-	if v, ok := permRaw["models"].([]interface{}); ok {
-		perm.Models = interfaceSliceToStringList(v)
+	if err := readPermissionList("mcp_access_groups", &perm.MCPAccessGroups); err != nil {
+		return err
 	}
-	if v, ok := permRaw["agents"].([]interface{}); ok {
-		perm.Agents = interfaceSliceToStringList(v)
+	if err := readPermissionList("models", &perm.Models); err != nil {
+		return err
+	}
+	if err := readPermissionList("agents", &perm.Agents); err != nil {
+		return err
 	}
 
 	rawToolPermissions, present := permRaw["mcp_tool_permissions"]

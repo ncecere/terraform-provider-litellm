@@ -197,7 +197,7 @@ func TestAgentMCPToolPermissionsProtocolRequestReadImportAndClear(t *testing.T) 
 			remote = payload["object_permission"].(map[string]interface{})["mcp_tool_permissions"].(map[string]interface{})
 			mutex.Unlock()
 			_, _ = fmt.Fprint(writer, `{"agent_id":"agent-permissions"}`)
-		case request.Method == http.MethodPut && request.URL.Path == "/v1/agents/agent-permissions":
+		case request.Method == http.MethodPatch && request.URL.Path == "/v1/agents/agent-permissions":
 			body, _ := io.ReadAll(request.Body)
 			var payload map[string]interface{}
 			if err := decodeJSONUseNumber(body, &payload); err != nil {
@@ -213,7 +213,9 @@ func TestAgentMCPToolPermissionsProtocolRequestReadImportAndClear(t *testing.T) 
 			permissionCopy := remote
 			mutex.Unlock()
 			_ = json.NewEncoder(writer).Encode(map[string]interface{}{
-				"agent_id": "agent-permissions", "agent_name": "agent", "object_permission": map[string]interface{}{"mcp_tool_permissions": permissionCopy},
+				"agent_id": "agent-permissions", "agent_name": "agent",
+				"agent_card_params": map[string]interface{}{"name": "Agent", "url": "https://agent.invalid"},
+				"object_permission": map[string]interface{}{"mcp_tool_permissions": permissionCopy},
 			})
 		default:
 			http.NotFound(writer, request)
@@ -406,7 +408,11 @@ func TestAgentMCPToolPermissionsProtocolCreateAbsenceConvergence(t *testing.T) {
 					if test.readbackPermission != nil {
 						objectPermission["mcp_tool_permissions"] = test.readbackPermission
 					}
-					_ = json.NewEncoder(writer).Encode(map[string]interface{}{"agent_id": "agent-create-absence", "agent_name": "agent", "object_permission": objectPermission})
+					_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+						"agent_id": "agent-create-absence", "agent_name": "agent",
+						"agent_card_params": map[string]interface{}{"name": "Agent", "url": "https://agent.invalid"},
+						"object_permission": objectPermission,
+					})
 					return
 				}
 				http.NotFound(writer, request)
@@ -477,7 +483,7 @@ func TestAgentMCPToolPermissionsProtocolUpdateMismatchRetainsPriorState(t *testi
 			var updated atomic.Bool
 			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 				writer.Header().Set("Content-Type", "application/json")
-				if request.Method == http.MethodPut {
+				if request.Method == http.MethodPatch {
 					updated.Store(true)
 					_, _ = fmt.Fprint(writer, `{}`)
 					return
@@ -498,7 +504,7 @@ func TestAgentMCPToolPermissionsProtocolUpdateMismatchRetainsPriorState(t *testi
 				}
 				_ = json.NewEncoder(writer).Encode(map[string]interface{}{
 					"agent_id": "agent-update", "agent_name": "agent",
-					"agent_card":        map[string]interface{}{"name": "Agent", "url": "https://agent.invalid", "capabilities": map[string]interface{}{"streaming": streaming}},
+					"agent_card_params": map[string]interface{}{"name": "Agent", "url": "https://agent.invalid", "capabilities": map[string]interface{}{"streaming": streaming}},
 					"object_permission": objectPermission,
 				})
 			}))
