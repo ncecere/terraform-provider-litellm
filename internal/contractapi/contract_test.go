@@ -159,12 +159,13 @@ func transport(ctx context.Context, client *Client, path string) error {
  return client.DoRequestWithResponse(ctx, "GET", path, nil, nil)
 }
 func (c *Client) Sneaky(ctx context.Context, path string) error {
- return transport(ctx, c, path)
+ invoke := transport
+ return invoke(ctx, c, path)
 }
 `)
 		_, err := ExtractProvider(dir)
 		if err == nil || !strings.Contains(err.Error(), "unknown Client HTTP abstraction Sneaky") {
-			t.Fatalf("call-graph Client wrapper was accepted: %v", err)
+			t.Fatalf("aliased call-graph Client wrapper was accepted: %v", err)
 		}
 	})
 }
@@ -202,15 +203,98 @@ func request(ctx context.Context, client *Client, queryName string) error {
 	})
 }
 
+func TestExtractorRejectsClientAliasesAndMethodValues(t *testing.T) {
+	fixtures := map[string]string{
+		"receiver-alias": `package provider
+import "context"
+type Client struct{}
+func bad(ctx context.Context, c *Client, endpoint string) {
+ alias := c
+ alias.DoRequestWithResponse(ctx, "GET", endpoint, nil, nil)
+}
+`,
+		"method-value": `package provider
+import "context"
+type Client struct{}
+func (c *Client) DoRequestWithResponse(context.Context, string, string, interface{}, interface{}) {}
+func bad(ctx context.Context, c *Client, endpoint string) {
+ request := c.DoRequestWithResponse
+ request(ctx, "GET", endpoint, nil, nil)
+}
+`,
+		"method-expression": `package provider
+import "context"
+type Client struct{}
+func (c *Client) DoRequestWithResponse(context.Context, string, string, interface{}, interface{}) {}
+func bad(ctx context.Context, c *Client, endpoint string) {
+ request := (*Client).DoRequestWithResponse
+ request(c, ctx, "GET", endpoint, nil, nil)
+}
+`,
+	}
+	for name, fixture := range fixtures {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFixture(t, dir, "bad.go", fixture)
+			_, err := ExtractProvider(dir)
+			if err == nil || (!strings.Contains(err.Error(), "unresolved HTTP method or path") && !strings.Contains(err.Error(), "unresolved dynamic HTTP path or query name")) {
+				t.Fatalf("aliased Client transport escaped extraction: %v", err)
+			}
+		})
+	}
+}
+
+func TestExtractorRejectsAliasedNetHTTPAndDynamicURLValuesKeys(t *testing.T) {
+	t.Run("aliased-net-http", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFixture(t, dir, "bad.go", `package provider
+import h "net/http"
+func bad(endpoint string) {
+ get := h.Get
+ _, _ = get(endpoint)
+}
+`)
+		_, err := ExtractProvider(dir)
+		if err == nil || !strings.Contains(err.Error(), "raw HTTP request construction") {
+			t.Fatalf("aliased net/http call escaped detection: %v", err)
+		}
+	})
+	for name, mutation := range map[string]string{
+		"map-literal":      `query := url.Values{name: {"value"}}`,
+		"index-assignment": `query := url.Values{}; query[name] = []string{"value"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFixture(t, dir, "bad.go", `package provider
+import ("context"; "net/url")
+type Client struct{}
+func bad(ctx context.Context, c *Client, name string) {
+ `+mutation+`
+ c.DoRequestWithResponse(ctx, "GET", endpointWithQuery("/things", query), nil, nil)
+}
+`)
+			_, err := ExtractProvider(dir)
+			if err == nil || !strings.Contains(err.Error(), "unresolved dynamic HTTP path or query name") {
+				t.Fatalf("dynamic url.Values key escaped detection: %v", err)
+			}
+		})
+	}
+}
+
 func TestExtractorAllowsNonHTTPClientHelper(t *testing.T) {
 	dir := t.TempDir()
 	writeFixture(t, dir, "helper.go", `package provider
+import "net/http"
 type Client struct{}
+type helper struct{}
 func (c *Client) Label() string { return "safe" }
+func (helper) Get(string) {}
+func (helper) NewRequest(string) {}
+func safe(headers http.Header, h helper) { _ = headers.Get("X-Request-ID"); h.Get("value"); h.NewRequest("value") }
 `)
 	operations, err := ExtractProvider(dir)
 	if err != nil || len(operations) != 0 {
-		t.Fatalf("non-HTTP Client helper produced a false positive: operations=%v error=%v", operations, err)
+		t.Fatalf("non-HTTP helper produced a false positive: operations=%v error=%v", operations, err)
 	}
 }
 
@@ -253,16 +337,16 @@ func TestManifestPinnedMetadataCountsAndReviewInventory(t *testing.T) {
 	if manifest.Upstream.Tag != "v1.98.0" || manifest.Upstream.Commit != "d8f71d7bdbd7c9873d98293f83d64c6db72847e6" || manifest.Upstream.Python != "3.12.14" || manifest.Upstream.UV != "0.12.6" {
 		t.Fatalf("upstream provenance is not pinned: %+v", manifest.Upstream)
 	}
-	if manifest.OpenAPI.PathCount != 561 || manifest.OpenAPI.OperationCount != 772 || manifest.Supplemental.RouteCount != 1 {
-		t.Fatalf("artifact review counts changed: %+v %+v", manifest.OpenAPI, manifest.Supplemental)
+	if manifest.OpenAPI.PathCount != 586 || manifest.OpenAPI.OperationCount != 800 || manifest.Supplemental.RouteCount != 1 || len(manifest.RequiredLazyFeatures) != 33 {
+		t.Fatalf("artifact or complete lazy-feature review counts changed: %+v %+v lazy=%d", manifest.OpenAPI, manifest.Supplemental, len(manifest.RequiredLazyFeatures))
 	}
 	var pins ReviewedPins
 	pinsData, err := os.ReadFile(filepath.Join(root, "internal", "contract", "reviewed-pins.json"))
 	if err != nil || json.Unmarshal(pinsData, &pins) != nil {
 		t.Fatalf("load reviewed pins: %v", err)
 	}
-	if pins.Upstream.UV != "0.12.6" || pins.Artifacts.ProviderGolden.OperationCount != 103 || pins.Artifacts.Classification.OperationCount != 670 {
-		t.Fatalf("reviewed pins changed unexpectedly: %+v", pins.Artifacts)
+	if pins.Upstream.UV != "0.12.6" || pins.Artifacts.ProviderGolden.OperationCount != 103 || pins.Artifacts.Classification.OperationCount != 698 || len(pins.LazyFeatures) != 33 {
+		t.Fatalf("reviewed pins changed unexpectedly: artifacts=%+v lazy=%d", pins.Artifacts, len(pins.LazyFeatures))
 	}
 }
 
@@ -392,6 +476,41 @@ func TestLazyExpansionHasExactReviewedClassification(t *testing.T) {
 		if classified[key] != category {
 			t.Errorf("%s category = %q, want %q", key, classified[key], category)
 		}
+	}
+}
+
+func TestReviewedSemanticClassifications(t *testing.T) {
+	root := repositoryRoot(t)
+	var classification ReviewedClassification
+	if err := readJSONFile(filepath.Join(root, "internal", "contract", "reviewed-operation-classification.json"), &classification); err != nil {
+		t.Fatal(err)
+	}
+	actual := map[string]string{}
+	for _, operation := range classification.Operations {
+		actual[operation.Method+" "+operation.Path] = operation.Category
+	}
+	for key, expected := range map[string]string{
+		"POST /guardrails/register":                       "guardrail_management",
+		"GET /customer/daily/activity":                    "spend_analytics",
+		"GET /management/v1/spend_logs/end_users":         "spend_analytics",
+		"GET /callbacks/list":                             "suggestion_discovery",
+		"GET /team/{team_id}/callback":                    "integration_callback_configuration",
+		"POST /utils/token_counter":                       "inference_workload",
+		"POST /models/{model_name}:countTokens":           "inference_workload",
+		"POST /apply_guardrail":                           "inference_workload",
+		"GET /auto_router/shadow_eval":                    "spend_analytics",
+		"POST /auto_router/shadow_eval/start":             "operational_action",
+		"GET /scim/v2/Schemas":                            "public_metadata",
+		"POST /v1/vector_stores/{vector_store_id}/search": "inference_workload",
+		"POST /v1/a2a/discover":                           "suggestion_discovery",
+		"GET /mcp/enabled":                                "health",
+	} {
+		if actual[key] != expected {
+			t.Errorf("%s category = %q, want %q", key, actual[key], expected)
+		}
+	}
+	if _, stale := actual["GET /v1/a2a/discover"]; stale {
+		t.Error("stale lazy snapshot method remained classified")
 	}
 }
 

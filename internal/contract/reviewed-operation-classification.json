@@ -8,7 +8,62 @@
     {
       "category": "authentication_flow",
       "method": "GET",
+      "path": "/.well-known/jwks.json"
+    },
+    {
+      "category": "public_metadata",
+      "method": "GET",
       "path": "/.well-known/litellm-ui-config"
+    },
+    {
+      "category": "authentication_flow",
+      "method": "GET",
+      "path": "/.well-known/oauth-authorization-server"
+    },
+    {
+      "category": "authentication_flow",
+      "method": "GET",
+      "path": "/.well-known/oauth-authorization-server/mcp"
+    },
+    {
+      "category": "authentication_flow",
+      "method": "GET",
+      "path": "/.well-known/oauth-authorization-server/mcp/{mcp_server_name}"
+    },
+    {
+      "category": "authentication_flow",
+      "method": "GET",
+      "path": "/.well-known/oauth-authorization-server/{mcp_server_name}"
+    },
+    {
+      "category": "authentication_flow",
+      "method": "GET",
+      "path": "/.well-known/oauth-authorization-server/{mcp_server_name}/mcp"
+    },
+    {
+      "category": "authentication_flow",
+      "method": "GET",
+      "path": "/.well-known/oauth-protected-resource"
+    },
+    {
+      "category": "authentication_flow",
+      "method": "GET",
+      "path": "/.well-known/oauth-protected-resource/mcp"
+    },
+    {
+      "category": "authentication_flow",
+      "method": "GET",
+      "path": "/.well-known/oauth-protected-resource/mcp/{mcp_server_name}"
+    },
+    {
+      "category": "authentication_flow",
+      "method": "GET",
+      "path": "/.well-known/oauth-protected-resource/{mcp_server_name}/mcp"
+    },
+    {
+      "category": "authentication_flow",
+      "method": "GET",
+      "path": "/.well-known/openid-configuration"
     },
     {
       "category": "inference_workload",
@@ -16,12 +71,12 @@
       "path": "/a2a/{agent_id}"
     },
     {
-      "category": "authentication_flow",
+      "category": "public_metadata",
       "method": "GET",
       "path": "/a2a/{agent_id}/.well-known/agent-card.json"
     },
     {
-      "category": "authentication_flow",
+      "category": "public_metadata",
       "method": "GET",
       "path": "/a2a/{agent_id}/.well-known/agent.json"
     },
@@ -36,7 +91,7 @@
       "path": "/active/callbacks"
     },
     {
-      "category": "model_management",
+      "category": "health",
       "method": "GET",
       "path": "/adaptive_router/state"
     },
@@ -86,12 +141,12 @@
       "path": "/api/plugins"
     },
     {
-      "category": "integration_callback_configuration",
+      "category": "authentication_flow",
       "method": "GET",
       "path": "/api/plugins/auth-token"
     },
     {
-      "category": "guardrail_management",
+      "category": "inference_workload",
       "method": "POST",
       "path": "/apply_guardrail"
     },
@@ -156,32 +211,42 @@
       "path": "/audit/{id}"
     },
     {
-      "category": "model_management",
+      "category": "authentication_flow",
+      "method": "GET",
+      "path": "/authorize"
+    },
+    {
+      "category": "authentication_flow",
+      "method": "POST",
+      "path": "/authorize/complete"
+    },
+    {
+      "category": "spend_analytics",
       "method": "GET",
       "path": "/auto_router/benchmarks"
     },
     {
-      "category": "model_management",
+      "category": "public_metadata",
       "method": "GET",
       "path": "/auto_router/classifier/default_prompt"
     },
     {
-      "category": "model_management",
+      "category": "spend_analytics",
       "method": "GET",
       "path": "/auto_router/shadow_eval"
     },
     {
-      "category": "model_management",
+      "category": "operational_action",
       "method": "POST",
       "path": "/auto_router/shadow_eval/start"
     },
     {
-      "category": "model_management",
+      "category": "spend_analytics",
       "method": "GET",
       "path": "/auto_router/shadow_eval/{job_id}"
     },
     {
-      "category": "model_management",
+      "category": "operational_action",
       "method": "POST",
       "path": "/auto_router/shadow_eval/{job_id}/stop"
     },
@@ -326,12 +391,17 @@
       "path": "/cache/settings/test"
     },
     {
+      "category": "authentication_flow",
+      "method": "GET",
+      "path": "/callback"
+    },
+    {
       "category": "integration_callback_configuration",
       "method": "GET",
       "path": "/callbacks/configs"
     },
     {
-      "category": "authentication_flow",
+      "category": "suggestion_discovery",
       "method": "GET",
       "path": "/callbacks/list"
     },
@@ -641,7 +711,7 @@
       "path": "/customer/block"
     },
     {
-      "category": "customer_end_user_management",
+      "category": "spend_analytics",
       "method": "GET",
       "path": "/customer/daily/activity"
     },
@@ -861,7 +931,7 @@
       "path": "/global/spend/report"
     },
     {
-      "category": "spend_analytics",
+      "category": "operational_action",
       "method": "POST",
       "path": "/global/spend/reset"
     },
@@ -871,7 +941,7 @@
       "path": "/global/spend/tags"
     },
     {
-      "category": "guardrail_management",
+      "category": "inference_workload",
       "method": "POST",
       "path": "/guardrails/apply_guardrail"
     },
@@ -881,7 +951,7 @@
       "path": "/guardrails/list"
     },
     {
-      "category": "authentication_flow",
+      "category": "guardrail_management",
       "method": "POST",
       "path": "/guardrails/register"
     },
@@ -911,22 +981,22 @@
       "path": "/guardrails/test_custom_code"
     },
     {
-      "category": "guardrail_management",
+      "category": "suggestion_discovery",
       "method": "GET",
       "path": "/guardrails/ui/add_guardrail_settings"
     },
     {
-      "category": "guardrail_management",
+      "category": "suggestion_discovery",
       "method": "GET",
       "path": "/guardrails/ui/category_yaml/{category_name}"
     },
     {
-      "category": "guardrail_management",
+      "category": "suggestion_discovery",
       "method": "GET",
       "path": "/guardrails/ui/major_airlines"
     },
     {
-      "category": "guardrail_management",
+      "category": "suggestion_discovery",
       "method": "GET",
       "path": "/guardrails/ui/provider_specific_params"
     },
@@ -1156,7 +1226,7 @@
       "path": "/langfuse/{endpoint}"
     },
     {
-      "category": "authentication_flow",
+      "category": "public_metadata",
       "method": "GET",
       "path": "/litellm/.well-known/litellm-ui-config"
     },
@@ -1166,7 +1236,7 @@
       "path": "/management/v1/budgets"
     },
     {
-      "category": "customer_end_user_management",
+      "category": "spend_analytics",
       "method": "GET",
       "path": "/management/v1/spend_logs/end_users"
     },
@@ -1224,6 +1294,11 @@
       "category": "inference_workload",
       "method": "GET",
       "path": "/mcp-rest/tools/list"
+    },
+    {
+      "category": "health",
+      "method": "GET",
+      "path": "/mcp/enabled"
     },
     {
       "category": "inference_workload",
@@ -1301,27 +1376,27 @@
       "path": "/model_hub/update_useful_links"
     },
     {
-      "category": "model_management",
+      "category": "public_metadata",
       "method": "GET",
       "path": "/models"
     },
     {
-      "category": "model_management",
+      "category": "public_metadata",
       "method": "GET",
       "path": "/models/{model_id}"
     },
     {
-      "category": "model_management",
+      "category": "inference_workload",
       "method": "POST",
       "path": "/models/{model_name}:countTokens"
     },
     {
-      "category": "model_management",
+      "category": "inference_workload",
       "method": "POST",
       "path": "/models/{model_name}:generateContent"
     },
     {
-      "category": "model_management",
+      "category": "inference_workload",
       "method": "POST",
       "path": "/models/{model_name}:streamGenerateContent"
     },
@@ -1374,6 +1449,11 @@
       "category": "inference_workload",
       "method": "POST",
       "path": "/openai/v1/realtime/client_secrets"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/openai/v1/realtime/transcription_sessions"
     },
     {
       "category": "inference_workload",
@@ -1486,7 +1566,7 @@
       "path": "/policies/attachments"
     },
     {
-      "category": "policy_version_attachment_management",
+      "category": "suggestion_discovery",
       "method": "POST",
       "path": "/policies/attachments/estimate-impact"
     },
@@ -1506,7 +1586,7 @@
       "path": "/policies/attachments/{attachment_id}"
     },
     {
-      "category": "policy_version_attachment_management",
+      "category": "suggestion_discovery",
       "method": "GET",
       "path": "/policies/compare"
     },
@@ -1561,7 +1641,7 @@
       "path": "/policies/{policy_id}"
     },
     {
-      "category": "policy_version_attachment_management",
+      "category": "suggestion_discovery",
       "method": "GET",
       "path": "/policies/{policy_id}/resolved-guardrails"
     },
@@ -1581,7 +1661,7 @@
       "path": "/policy/list"
     },
     {
-      "category": "policy_version_attachment_management",
+      "category": "suggestion_discovery",
       "method": "GET",
       "path": "/policy/templates"
     },
@@ -1713,6 +1793,16 @@
     {
       "category": "inference_workload",
       "method": "POST",
+      "path": "/realtime/transcription_sessions"
+    },
+    {
+      "category": "authentication_flow",
+      "method": "POST",
+      "path": "/register"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
       "path": "/rerank"
     },
     {
@@ -1771,7 +1861,7 @@
       "path": "/routes"
     },
     {
-      "category": "scim_directory_management",
+      "category": "public_metadata",
       "method": "GET",
       "path": "/scim/v2"
     },
@@ -1806,27 +1896,27 @@
       "path": "/scim/v2/Groups/{group_id}"
     },
     {
-      "category": "scim_directory_management",
+      "category": "public_metadata",
       "method": "GET",
       "path": "/scim/v2/ResourceTypes"
     },
     {
-      "category": "scim_directory_management",
+      "category": "public_metadata",
       "method": "GET",
       "path": "/scim/v2/ResourceTypes/{resource_type_id}"
     },
     {
-      "category": "scim_directory_management",
+      "category": "public_metadata",
       "method": "GET",
       "path": "/scim/v2/Schemas"
     },
     {
-      "category": "scim_directory_management",
+      "category": "public_metadata",
       "method": "GET",
       "path": "/scim/v2/Schemas/{schema_id}"
     },
     {
-      "category": "scim_directory_management",
+      "category": "public_metadata",
       "method": "GET",
       "path": "/scim/v2/ServiceProviderConfig"
     },
@@ -1971,7 +2061,7 @@
       "path": "/team/key/bulk_update"
     },
     {
-      "category": "team_management",
+      "category": "suggestion_discovery",
       "method": "GET",
       "path": "/team/metadata_schema"
     },
@@ -2001,12 +2091,12 @@
       "path": "/team/{team_id}"
     },
     {
-      "category": "authentication_flow",
+      "category": "integration_callback_configuration",
       "method": "GET",
       "path": "/team/{team_id}/callback"
     },
     {
-      "category": "authentication_flow",
+      "category": "integration_callback_configuration",
       "method": "POST",
       "path": "/team/{team_id}/callback"
     },
@@ -2016,7 +2106,7 @@
       "path": "/team/{team_id}/disable_logging"
     },
     {
-      "category": "team_management",
+      "category": "public_metadata",
       "method": "GET",
       "path": "/team/{team_id}/members/me"
     },
@@ -2049,6 +2139,11 @@
       "category": "inference_workload",
       "method": "POST",
       "path": "/threads/{thread_id}/runs"
+    },
+    {
+      "category": "authentication_flow",
+      "method": "POST",
+      "path": "/token"
     },
     {
       "category": "inference_workload",
@@ -2171,7 +2266,7 @@
       "path": "/utils/test_policies_and_guardrails"
     },
     {
-      "category": "authentication_flow",
+      "category": "inference_workload",
       "method": "POST",
       "path": "/utils/token_counter"
     },
@@ -2182,7 +2277,7 @@
     },
     {
       "category": "suggestion_discovery",
-      "method": "GET",
+      "method": "POST",
       "path": "/v1/a2a/discover"
     },
     {
@@ -2421,6 +2516,11 @@
       "path": "/v1/images/generations"
     },
     {
+      "category": "vector_store_management",
+      "method": "GET",
+      "path": "/v1/indexes"
+    },
+    {
       "category": "inference_workload",
       "method": "POST",
       "path": "/v1/indexes"
@@ -2466,7 +2566,7 @@
       "path": "/v1/mcp/server/oauth/session"
     },
     {
-      "category": "authentication_flow",
+      "category": "mcp_server_management",
       "method": "POST",
       "path": "/v1/mcp/server/register"
     },
@@ -2601,17 +2701,17 @@
       "path": "/v1/messages/count_tokens"
     },
     {
-      "category": "model_management",
+      "category": "public_metadata",
       "method": "GET",
       "path": "/v1/model/info"
     },
     {
-      "category": "model_management",
+      "category": "public_metadata",
       "method": "GET",
       "path": "/v1/models"
     },
     {
-      "category": "model_management",
+      "category": "public_metadata",
       "method": "GET",
       "path": "/v1/models/{model_id}"
     },
@@ -2649,6 +2749,11 @@
       "category": "inference_workload",
       "method": "POST",
       "path": "/v1/realtime/client_secrets"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/v1/realtime/transcription_sessions"
     },
     {
       "category": "inference_workload",
@@ -2881,7 +2986,7 @@
       "path": "/v1/vector_stores/{vector_store_id}/files/{file_id}/content"
     },
     {
-      "category": "vector_store_management",
+      "category": "inference_workload",
       "method": "POST",
       "path": "/v1/vector_stores/{vector_store_id}/search"
     },
@@ -2976,6 +3081,26 @@
       "path": "/v1beta/agents"
     },
     {
+      "category": "agent_prompt_tool_management",
+      "method": "POST",
+      "path": "/v1beta/agents"
+    },
+    {
+      "category": "agent_prompt_tool_management",
+      "method": "DELETE",
+      "path": "/v1beta/agents/{name}"
+    },
+    {
+      "category": "agent_prompt_tool_management",
+      "method": "GET",
+      "path": "/v1beta/agents/{name}"
+    },
+    {
+      "category": "agent_prompt_tool_management",
+      "method": "GET",
+      "path": "/v1beta/agents/{name}/versions"
+    },
+    {
       "category": "inference_workload",
       "method": "POST",
       "path": "/v1beta/interactions"
@@ -3011,7 +3136,7 @@
       "path": "/v1beta/models/{model_name}:streamGenerateContent"
     },
     {
-      "category": "model_management",
+      "category": "public_metadata",
       "method": "GET",
       "path": "/v2/model/info"
     },
@@ -3116,7 +3241,7 @@
       "path": "/vector_stores/{vector_store_id}/files/{file_id}/content"
     },
     {
-      "category": "vector_store_management",
+      "category": "inference_workload",
       "method": "POST",
       "path": "/vector_stores/{vector_store_id}/search"
     },
@@ -3271,6 +3396,11 @@
       "path": "/watsonx/{endpoint}"
     },
     {
+      "category": "authentication_flow",
+      "method": "GET",
+      "path": "/{mcp_server_name}/authorize"
+    },
+    {
       "category": "inference_workload",
       "method": "DELETE",
       "path": "/{mcp_server_name}/mcp"
@@ -3304,6 +3434,16 @@
       "category": "inference_workload",
       "method": "PUT",
       "path": "/{mcp_server_name}/mcp"
+    },
+    {
+      "category": "authentication_flow",
+      "method": "POST",
+      "path": "/{mcp_server_name}/register"
+    },
+    {
+      "category": "authentication_flow",
+      "method": "POST",
+      "path": "/{mcp_server_name}/token"
     },
     {
       "category": "inference_workload",

@@ -66,6 +66,7 @@ def main() -> None:
         sha256=checksum(supplemental_path),
         route_count=len(supplemental["routes"]),
     )
+    manifest["required_lazy_features"] = supplemental["lazy_features"]
     manifest["provider_operations"] = operations
     manifest["provider_golden"] = {
         "path": str(golden_path.relative_to(root)),

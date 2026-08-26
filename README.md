@@ -258,7 +258,7 @@ The Makefile provides several useful commands for development:
 - `make contract-check`: Verifies the checked LiteLLM API contract offline
 - `make contract-update`: Regenerates the contract from the exact pinned upstream source
 - `make contract-diff`: Reproduces and compares the pinned contract without modifying files
-- `make contract-update-atomicity-test`: Injects a pre-replacement failure and proves generated artifacts remain untouched
+- `make contract-update-atomicity-test`: Injects failure and interruption after every replacement and verifies rollback, permissions, and cleanup
 - `make lint`: Runs golangci-lint
 - `make clean`: Removes build artifacts and installed provider
 

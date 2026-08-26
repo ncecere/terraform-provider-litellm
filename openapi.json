@@ -2988,6 +2988,30 @@
         "title": "Body_audio_transcriptions_v1_audio_transcriptions_post",
         "type": "object"
       },
+      "Body_authorize_complete_authorize_complete_post": {
+        "properties": {
+          "delivery": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery"
+          },
+          "flow": {
+            "title": "Flow",
+            "type": "string"
+          }
+        },
+        "required": [
+          "flow"
+        ],
+        "title": "Body_authorize_complete_authorize_complete_post",
+        "type": "object"
+      },
       "Body_convert_prompt_file_to_json_utils_dotprompt_json_converter_post": {
         "properties": {
           "file": {
@@ -3377,6 +3401,154 @@
           }
         },
         "title": "Body_test_model_connection_health_test_connection_post",
+        "type": "object"
+      },
+      "Body_token_endpoint__mcp_server_name__token_post": {
+        "properties": {
+          "client_id": {
+            "title": "Client Id",
+            "type": "string"
+          },
+          "client_secret": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Secret"
+          },
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "code_verifier": {
+            "title": "Code Verifier",
+            "type": "string"
+          },
+          "grant_type": {
+            "title": "Grant Type",
+            "type": "string"
+          },
+          "redirect_uri": {
+            "title": "Redirect Uri",
+            "type": "string"
+          },
+          "refresh_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Refresh Token"
+          },
+          "resource": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resource"
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope"
+          }
+        },
+        "required": [
+          "grant_type",
+          "client_id"
+        ],
+        "title": "Body_token_endpoint__mcp_server_name__token_post",
+        "type": "object"
+      },
+      "Body_token_endpoint_token_post": {
+        "properties": {
+          "client_id": {
+            "title": "Client Id",
+            "type": "string"
+          },
+          "client_secret": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Secret"
+          },
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "code_verifier": {
+            "title": "Code Verifier",
+            "type": "string"
+          },
+          "grant_type": {
+            "title": "Grant Type",
+            "type": "string"
+          },
+          "redirect_uri": {
+            "title": "Redirect Uri",
+            "type": "string"
+          },
+          "refresh_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Refresh Token"
+          },
+          "resource": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resource"
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope"
+          }
+        },
+        "required": [
+          "grant_type",
+          "client_id"
+        ],
+        "title": "Body_token_endpoint_token_post",
         "type": "object"
       },
       "Body_upload_logo_upload_logo_post": {
@@ -5665,6 +5837,13 @@
       },
       "ChatCompletionToolParam": {
         "properties": {
+          "allowed_callers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Allowed Callers",
+            "type": "array"
+          },
           "cache_control": {
             "$ref": "#/components/schemas/ChatCompletionCachedContent"
           },
@@ -7852,6 +8031,66 @@
         "title": "Deployment",
         "type": "object"
       },
+      "DiscoverAgentRequest": {
+        "properties": {
+          "discovery_mode": {
+            "$ref": "#/components/schemas/DiscoveryMode",
+            "default": "well_known_fallback",
+            "description": "How to locate the upstream card. ``well_known_fallback`` for pure A2A agents (try standard paths); ``langgraph_platform`` for LangGraph Platform deployments where the card is shared across assistants and disambiguated by a query parameter."
+          },
+          "params": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Mode-specific parameters. ``langgraph_platform`` requires ``{'assistant_id': <id>}``. ``well_known_fallback`` ignores this.",
+            "title": "Params"
+          },
+          "url": {
+            "description": "Base URL of the upstream agent. Behavior depends on ``discovery_mode``: ``well_known_fallback`` (default) tries /.well-known/agent-card.json, /.well-known/agent.json, /agent.json under this URL in order; ``langgraph_platform`` hits ``/.well-known/agent-card.json?assistant_id=<id>`` instead.",
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "title": "DiscoverAgentRequest",
+        "type": "object"
+      },
+      "DiscoverAgentResponse": {
+        "properties": {
+          "agent_card": {
+            "additionalProperties": true,
+            "title": "Agent Card",
+            "type": "object"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "agent_card"
+        ],
+        "title": "DiscoverAgentResponse",
+        "type": "object"
+      },
+      "DiscoveryMode": {
+        "description": "How to locate the upstream agent card.\n\nString-valued so it serializes cleanly over JSON / Pydantic.",
+        "enum": [
+          "well_known_fallback",
+          "langgraph_platform"
+        ],
+        "title": "DiscoveryMode",
+        "type": "string"
+      },
       "DistinctTagResponse": {
         "description": "Response for distinct user agent tags",
         "properties": {
@@ -9955,6 +10194,13 @@
             ],
             "title": "Model"
           },
+          "stream_holdback_chars": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Stream Holdback Chars",
+            "type": "array"
+          },
           "structured_messages": {
             "items": {
               "anyOf": [
@@ -10741,6 +10987,28 @@
           "litellm_params"
         ],
         "title": "IndexCreateRequest",
+        "type": "object"
+      },
+      "IndexListResponse": {
+        "properties": {
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/LiteLLM_ManagedVectorStoreIndex"
+            },
+            "title": "Data",
+            "type": "array"
+          },
+          "object": {
+            "const": "list",
+            "default": "list",
+            "title": "Object",
+            "type": "string"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "title": "IndexListResponse",
         "type": "object"
       },
       "InputAudio": {
@@ -13782,6 +14050,87 @@
         "title": "LiteLLM_ManagedVectorStore",
         "type": "object"
       },
+      "LiteLLM_ManagedVectorStoreIndex": {
+        "description": "LiteLLM managed vector store index object - this is is the object stored in the database",
+        "properties": {
+          "created_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "created_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "index_info": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Index Info"
+          },
+          "index_name": {
+            "title": "Index Name",
+            "type": "string"
+          },
+          "litellm_params": {
+            "$ref": "#/components/schemas/IndexCreateLiteLLMParams"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          },
+          "updated_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated By"
+          }
+        },
+        "required": [
+          "id",
+          "index_name",
+          "litellm_params"
+        ],
+        "title": "LiteLLM_ManagedVectorStoreIndex",
+        "type": "object"
+      },
       "LiteLLM_ManagedVectorStoreListResponse": {
         "description": "Response format for listing vector stores",
         "properties": {
@@ -13950,16 +14299,7 @@
         },
         "required": [
           "vector_store_id",
-          "custom_llm_provider",
-          "vector_store_name",
-          "vector_store_description",
-          "vector_store_metadata",
-          "created_at",
-          "updated_at",
-          "litellm_credential_name",
-          "litellm_params",
-          "team_id",
-          "user_id"
+          "custom_llm_provider"
         ],
         "title": "LiteLLM_ManagedVectorStoresTable",
         "type": "object"
@@ -29712,6 +30052,26 @@
         "title": "RealtimeClientSecretResponse",
         "type": "object"
       },
+      "RealtimeTranscriptionSessionResponse": {
+        "additionalProperties": true,
+        "description": "Response from POST /v1/realtime/transcription_sessions.\n\n`client_secret.value` contains the encrypted token instead of the raw\nephemeral key. Unknown fields pass through unchanged.",
+        "properties": {
+          "client_secret": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Secret"
+          }
+        },
+        "title": "RealtimeTranscriptionSessionResponse",
+        "type": "object"
+      },
       "RegenerateKeyRequest": {
         "properties": {
           "access_group_ids": {
@@ -31528,6 +31888,77 @@
         "title": "RunDeleteResponse",
         "type": "object"
       },
+      "SCIMEnterpriseUser": {
+        "properties": {
+          "costCenter": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Costcenter"
+          },
+          "department": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Department"
+          },
+          "division": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Division"
+          },
+          "employeeNumber": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Employeenumber"
+          },
+          "manager": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SCIMUserManager"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "organization": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Organization"
+          }
+        },
+        "title": "SCIMEnterpriseUser",
+        "type": "object"
+      },
       "SCIMFeature": {
         "properties": {
           "maxOperations": {
@@ -31649,7 +32080,7 @@
             "anyOf": [
               {
                 "items": {
-                  "$ref": "#/components/schemas/SCIMUser"
+                  "$ref": "#/components/schemas/SCIMUser-Output"
                 },
                 "type": "array"
               },
@@ -31721,6 +32152,17 @@
             ],
             "title": "Display"
           },
+          "type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Type"
+          },
           "value": {
             "title": "Value",
             "type": "string"
@@ -31730,6 +32172,52 @@
           "value"
         ],
         "title": "SCIMMember",
+        "type": "object"
+      },
+      "SCIMMultiValuedAttribute": {
+        "properties": {
+          "display": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display"
+          },
+          "primary": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Primary"
+          },
+          "type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Type"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "title": "SCIMMultiValuedAttribute",
         "type": "object"
       },
       "SCIMPatchOp": {
@@ -31870,7 +32358,7 @@
         "title": "SCIMServiceProviderConfig",
         "type": "object"
       },
-      "SCIMUser": {
+      "SCIMUser-Input": {
         "properties": {
           "active": {
             "default": true,
@@ -31901,6 +32389,20 @@
               }
             ],
             "title": "Emails"
+          },
+          "entitlements": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/SCIMMultiValuedAttribute"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entitlements"
           },
           "externalId": {
             "anyOf": [
@@ -31960,12 +32462,36 @@
               }
             ]
           },
+          "roles": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/SCIMMultiValuedAttribute"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Roles"
+          },
           "schemas": {
             "items": {
               "type": "string"
             },
             "title": "Schemas",
             "type": "array"
+          },
+          "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SCIMEnterpriseUser"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "userName": {
             "anyOf": [
@@ -31983,6 +32509,10 @@
           "schemas"
         ],
         "title": "SCIMUser",
+        "type": "object"
+      },
+      "SCIMUser-Output": {
+        "additionalProperties": true,
         "type": "object"
       },
       "SCIMUserEmail": {
@@ -32055,6 +32585,45 @@
           "value"
         ],
         "title": "SCIMUserGroup",
+        "type": "object"
+      },
+      "SCIMUserManager": {
+        "properties": {
+          "$ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "$Ref"
+          },
+          "displayName": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Displayname"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "title": "SCIMUserManager",
         "type": "object"
       },
       "SCIMUserName": {
@@ -43744,6 +44313,26 @@
         "summary": "Home"
       }
     },
+    "/.well-known/jwks.json": {
+      "get": {
+        "description": "JSON Web Key Set endpoint.\n\nReturns the RSA public key used by MCPJWTSigner to sign outbound MCP tokens.\nMCP servers and gateways use this endpoint to verify liteLLM-issued JWTs.\n\nReturns an empty key set if MCPJWTSigner is not configured.",
+        "operationId": "jwks_json__well_known_jwks_json_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Jwks Json",
+        "tags": [
+          "mcp"
+        ]
+      }
+    },
     "/.well-known/litellm-ui-config": {
       "get": {
         "operationId": "get_ui_config__well_known_litellm_ui_config_get",
@@ -43760,6 +44349,380 @@
           }
         },
         "summary": "Get Ui Config"
+      }
+    },
+    "/.well-known/oauth-authorization-server": {
+      "get": {
+        "description": "OAuth authorization server discovery endpoint.\n\nSupports both legacy pattern (/{server_name}) and root endpoint.",
+        "operationId": "oauth_authorization_server_mcp__well_known_oauth_authorization_server_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "mcp_server_name",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Mcp Server Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Oauth Authorization Server Mcp",
+        "tags": [
+          "mcp"
+        ]
+      }
+    },
+    "/.well-known/oauth-authorization-server/mcp": {
+      "get": {
+        "description": "OAuth authorization server discovery for the aggregate /mcp endpoint, the RFC 8414\npath-inserted form for a client that treats {base}/mcp as its authorization base URL.\n\nThe single-segment /mcp is reserved for the aggregate so the discovery chain stays\nconsistent: the aggregate protected-resource document advertises {base}/mcp as its\nauthorization server, so the document served here must have issuer {base}/mcp. A server\nliterally named ``mcp`` therefore does not take this route; it keeps its standard\ntwo-segment discovery at /.well-known/oauth-authorization-server/mcp/mcp. Letting the\nper-server row win here instead would serve an issuer of {base} against a resource that\nadvertised {base}/mcp, which fails the RFC 8414 issuer check and breaks the front door.",
+        "operationId": "oauth_authorization_server_aggregate__well_known_oauth_authorization_server_mcp_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Oauth Authorization Server Aggregate",
+        "tags": [
+          "mcp"
+        ]
+      }
+    },
+    "/.well-known/oauth-authorization-server/mcp/{mcp_server_name}": {
+      "get": {
+        "description": "OAuth authorization server discovery endpoint using standard MCP URL pattern.\n\nStandard pattern: /mcp/{server_name}\nDiscovery path: /.well-known/oauth-authorization-server/mcp/{server_name}",
+        "operationId": "oauth_authorization_server_mcp_standard__well_known_oauth_authorization_server_mcp__mcp_server_name__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "mcp_server_name",
+            "required": true,
+            "schema": {
+              "title": "Mcp Server Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Oauth Authorization Server Mcp Standard",
+        "tags": [
+          "mcp"
+        ]
+      }
+    },
+    "/.well-known/oauth-authorization-server/{mcp_server_name}": {
+      "get": {
+        "description": "OAuth authorization server discovery endpoint.\n\nSupports both legacy pattern (/{server_name}) and root endpoint.",
+        "operationId": "oauth_authorization_server_mcp__well_known_oauth_authorization_server__mcp_server_name__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "mcp_server_name",
+            "required": true,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Mcp Server Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Oauth Authorization Server Mcp",
+        "tags": [
+          "mcp"
+        ]
+      }
+    },
+    "/.well-known/oauth-authorization-server/{mcp_server_name}/mcp": {
+      "get": {
+        "description": "OAuth authorization server discovery for legacy /{server_name}/mcp pattern.",
+        "operationId": "oauth_authorization_server_legacy__well_known_oauth_authorization_server__mcp_server_name__mcp_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "mcp_server_name",
+            "required": true,
+            "schema": {
+              "title": "Mcp Server Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Oauth Authorization Server Legacy",
+        "tags": [
+          "mcp"
+        ]
+      }
+    },
+    "/.well-known/oauth-protected-resource": {
+      "get": {
+        "description": "OAuth protected resource discovery endpoint using LiteLLM legacy URL pattern.\n\nLegacy pattern: /{server_name}/mcp\nDiscovery path: /.well-known/oauth-protected-resource/{server_name}/mcp\n\nThis endpoint is kept for backward compatibility. New integrations should\nuse the standard MCP pattern (/mcp/{server_name}) instead.",
+        "operationId": "oauth_protected_resource_mcp__well_known_oauth_protected_resource_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "mcp_server_name",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Mcp Server Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Oauth Protected Resource Mcp",
+        "tags": [
+          "mcp"
+        ]
+      }
+    },
+    "/.well-known/oauth-protected-resource/mcp": {
+      "get": {
+        "description": "OAuth protected resource discovery for the aggregate /mcp endpoint.\n\nThe single-segment ``/mcp`` path does not collide with any per-server PRM pattern\n(those are two-segment: ``/mcp/{server}`` or ``/{server}/mcp``), so this unambiguously\ndescribes the aggregate resource.",
+        "operationId": "oauth_protected_resource_aggregate__well_known_oauth_protected_resource_mcp_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Oauth Protected Resource Aggregate",
+        "tags": [
+          "mcp"
+        ]
+      }
+    },
+    "/.well-known/oauth-protected-resource/mcp/{mcp_server_name}": {
+      "get": {
+        "description": "OAuth protected resource discovery endpoint using standard MCP URL pattern.\n\nStandard pattern: /mcp/{server_name}\nDiscovery path: /.well-known/oauth-protected-resource/mcp/{server_name}\n\nThis endpoint is compliant with MCP specification and works with standard\nMCP clients like mcp-inspector and VSCode Copilot.",
+        "operationId": "oauth_protected_resource_mcp_standard__well_known_oauth_protected_resource_mcp__mcp_server_name__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "mcp_server_name",
+            "required": true,
+            "schema": {
+              "title": "Mcp Server Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Oauth Protected Resource Mcp Standard",
+        "tags": [
+          "mcp"
+        ]
+      }
+    },
+    "/.well-known/oauth-protected-resource/{mcp_server_name}/mcp": {
+      "get": {
+        "description": "OAuth protected resource discovery endpoint using LiteLLM legacy URL pattern.\n\nLegacy pattern: /{server_name}/mcp\nDiscovery path: /.well-known/oauth-protected-resource/{server_name}/mcp\n\nThis endpoint is kept for backward compatibility. New integrations should\nuse the standard MCP pattern (/mcp/{server_name}) instead.",
+        "operationId": "oauth_protected_resource_mcp__well_known_oauth_protected_resource__mcp_server_name__mcp_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "mcp_server_name",
+            "required": true,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Mcp Server Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Oauth Protected Resource Mcp",
+        "tags": [
+          "mcp"
+        ]
+      }
+    },
+    "/.well-known/openid-configuration": {
+      "get": {
+        "operationId": "openid_configuration__well_known_openid_configuration_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Openid Configuration",
+        "tags": [
+          "mcp"
+        ]
       }
     },
     "/a2a/{agent_id}": {
@@ -43804,7 +44767,7 @@
         ],
         "summary": "Invoke Agent A2A",
         "tags": [
-          "a2a"
+          "[beta] A2A Agents"
         ]
       }
     },
@@ -43850,7 +44813,7 @@
         ],
         "summary": "Get Agent Card",
         "tags": [
-          "a2a"
+          "[beta] A2A Agents"
         ]
       }
     },
@@ -43896,7 +44859,7 @@
         ],
         "summary": "Get Agent Card",
         "tags": [
-          "a2a"
+          "[beta] A2A Agents"
         ]
       }
     },
@@ -43942,7 +44905,7 @@
         ],
         "summary": "Invoke Agent A2A",
         "tags": [
-          "a2a"
+          "[beta] A2A Agents"
         ]
       }
     },
@@ -44666,7 +45629,7 @@
         },
         "summary": "Event Logging Batch",
         "tags": [
-          "anthropic_passthrough"
+          "[beta] Anthropic Event Logging"
         ]
       }
     },
@@ -45490,6 +46453,208 @@
         "summary": "Get Audit Log By Id",
         "tags": [
           "Audit Logging"
+        ]
+      }
+    },
+    "/authorize": {
+      "get": {
+        "operationId": "authorize_authorize_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "redirect_uri",
+            "required": true,
+            "schema": {
+              "title": "Redirect Uri",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "State",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "mcp_server_name",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Mcp Server Name"
+            }
+          },
+          {
+            "in": "query",
+            "name": "code_challenge",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Code Challenge"
+            }
+          },
+          {
+            "in": "query",
+            "name": "code_challenge_method",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Code Challenge Method"
+            }
+          },
+          {
+            "in": "query",
+            "name": "response_type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Response Type"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Scope"
+            }
+          },
+          {
+            "in": "query",
+            "name": "resource",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Resource"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Authorize",
+        "tags": [
+          "mcp"
+        ]
+      }
+    },
+    "/authorize/complete": {
+      "post": {
+        "description": "Finish an aggregate connect flow: mint the gateway authorization code for the\nsigned-in user and hand it back to the DCR client, by 303 redirect (default) or, for\na loopback client on a different machine, as a copyable callback URL\n(``delivery=manual``). POST plus the per-flow HttpOnly cookie set at /authorize; an\nanonymous or bad-flow request just 400s.",
+        "operationId": "authorize_complete_authorize_complete_post",
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_authorize_complete_authorize_complete_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Authorize Complete",
+        "tags": [
+          "mcp"
         ]
       }
     },
@@ -47365,6 +48530,118 @@
         ]
       }
     },
+    "/callback": {
+      "get": {
+        "description": "OAuth 2.0 authorization response handler for MCP loopback clients.\n\nAccepts either:\n\n- A successful authorization response (``code`` + ``state``), which is\n  forwarded back to the validated client ``redirect_uri`` with the\n  original (un-wrapped) ``state``.\n- An error response (``error``[+``error_description``/``error_uri``]), per\n  RFC 6749 §4.1.2.1. When ``state`` is present and decodes to a trusted\n  ``redirect_uri``, the error params are propagated back to the client so\n  its OAuth library can surface them. Otherwise we render an HTML error\n  page so the user is not left on an opaque 422 / blank screen.",
+        "operationId": "callback_callback_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "code",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Code"
+            }
+          },
+          {
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "State"
+            }
+          },
+          {
+            "in": "query",
+            "name": "error",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Error"
+            }
+          },
+          {
+            "in": "query",
+            "name": "error_description",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Error Description"
+            }
+          },
+          {
+            "in": "query",
+            "name": "error_uri",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Error Uri"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Callback",
+        "tags": [
+          "mcp"
+        ]
+      }
+    },
     "/callbacks/configs": {
       "get": {
         "description": "Get Available Callback Configurations\n\nReturns the configuration details for all available logging callbacks,\nincluding supported parameters, field types, and descriptions.",
@@ -47882,7 +49159,7 @@
         },
         "summary": "Get Marketplace",
         "tags": [
-          "claude_code_marketplace"
+          "Claude Code Marketplace"
         ]
       }
     },
@@ -47931,7 +49208,7 @@
         ],
         "summary": "List Plugins",
         "tags": [
-          "claude_code_marketplace"
+          "Claude Code Marketplace"
         ]
       },
       "post": {
@@ -47976,7 +49253,7 @@
         ],
         "summary": "Register Plugin",
         "tags": [
-          "claude_code_marketplace"
+          "Claude Code Marketplace"
         ]
       }
     },
@@ -48022,7 +49299,7 @@
         ],
         "summary": "Delete Plugin",
         "tags": [
-          "claude_code_marketplace"
+          "Claude Code Marketplace"
         ]
       },
       "get": {
@@ -48066,7 +49343,7 @@
         ],
         "summary": "Get Plugin",
         "tags": [
-          "claude_code_marketplace"
+          "Claude Code Marketplace"
         ]
       },
       "put": {
@@ -48122,7 +49399,7 @@
         ],
         "summary": "Update Plugin",
         "tags": [
-          "claude_code_marketplace"
+          "Claude Code Marketplace"
         ]
       }
     },
@@ -48168,7 +49445,7 @@
         ],
         "summary": "Disable Plugin",
         "tags": [
-          "claude_code_marketplace"
+          "Claude Code Marketplace"
         ]
       }
     },
@@ -48214,7 +49491,7 @@
         ],
         "summary": "Enable Plugin",
         "tags": [
-          "claude_code_marketplace"
+          "Claude Code Marketplace"
         ]
       }
     },
@@ -48241,7 +49518,7 @@
         ],
         "summary": "Delete Cloudzero Settings",
         "tags": [
-          "cloudzero"
+          "CloudZero"
         ]
       }
     },
@@ -48288,7 +49565,7 @@
         ],
         "summary": "Cloudzero Dry Run Export",
         "tags": [
-          "cloudzero"
+          "CloudZero"
         ]
       }
     },
@@ -48335,7 +49612,7 @@
         ],
         "summary": "Cloudzero Export",
         "tags": [
-          "cloudzero"
+          "CloudZero"
         ]
       }
     },
@@ -48382,7 +49659,7 @@
         ],
         "summary": "Init Cloudzero Settings",
         "tags": [
-          "cloudzero"
+          "CloudZero"
         ]
       }
     },
@@ -48409,7 +49686,7 @@
         ],
         "summary": "Get Cloudzero Settings",
         "tags": [
-          "cloudzero"
+          "CloudZero"
         ]
       },
       "put": {
@@ -48454,7 +49731,7 @@
         ],
         "summary": "Update Cloudzero Settings",
         "tags": [
-          "cloudzero"
+          "CloudZero"
         ]
       }
     },
@@ -49262,6 +50539,26 @@
       "delete": {
         "description": "Delete Hashicorp Vault configuration. Idempotent.",
         "operationId": "delete_hashicorp_vault_config_config_overrides_hashicorp_vault_delete",
+        "parameters": [
+          {
+            "description": "The litellm-changed-by header enables tracking of actions performed by authorized users on behalf of other users, providing an audit trail for accountability",
+            "in": "header",
+            "name": "litellm-changed-by",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The litellm-changed-by header enables tracking of actions performed by authorized users on behalf of other users, providing an audit trail for accountability",
+              "title": "Litellm-Changed-By"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -49270,6 +50567,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "security": [
@@ -49279,7 +50586,7 @@
         ],
         "summary": "Delete Hashicorp Vault Config",
         "tags": [
-          "config_overrides"
+          "Config Overrides"
         ]
       },
       "get": {
@@ -49304,12 +50611,32 @@
         ],
         "summary": "Get Hashicorp Vault Config",
         "tags": [
-          "config_overrides"
+          "Config Overrides"
         ]
       },
       "post": {
         "description": "Update Hashicorp Vault secret manager configuration.\nSets environment variables, encrypts sensitive fields, and stores in DB.\nReinitializes the secret manager on this pod.",
         "operationId": "update_hashicorp_vault_config_config_overrides_hashicorp_vault_post",
+        "parameters": [
+          {
+            "description": "The litellm-changed-by header enables tracking of actions performed by authorized users on behalf of other users, providing an audit trail for accountability",
+            "in": "header",
+            "name": "litellm-changed-by",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The litellm-changed-by header enables tracking of actions performed by authorized users on behalf of other users, providing an audit trail for accountability",
+              "title": "Litellm-Changed-By"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -49347,7 +50674,7 @@
         ],
         "summary": "Update Hashicorp Vault Config",
         "tags": [
-          "config_overrides"
+          "Config Overrides"
         ]
       }
     },
@@ -49372,7 +50699,7 @@
         ],
         "summary": "Test Hashicorp Vault Connection",
         "tags": [
-          "config_overrides"
+          "Config Overrides"
         ]
       }
     },
@@ -55891,7 +57218,7 @@
         ],
         "summary": "Delete Jwt Key Mapping",
         "tags": [
-          "jwt_mappings"
+          "JWT Key Mapping"
         ]
       }
     },
@@ -55938,7 +57265,7 @@
         ],
         "summary": "Info Jwt Key Mapping",
         "tags": [
-          "jwt_mappings"
+          "JWT Key Mapping"
         ]
       }
     },
@@ -56001,7 +57328,7 @@
         ],
         "summary": "List Jwt Key Mappings",
         "tags": [
-          "jwt_mappings"
+          "JWT Key Mapping"
         ]
       }
     },
@@ -56047,7 +57374,7 @@
         ],
         "summary": "Create Jwt Key Mapping",
         "tags": [
-          "jwt_mappings"
+          "JWT Key Mapping"
         ]
       }
     },
@@ -56093,7 +57420,7 @@
         ],
         "summary": "Update Jwt Key Mapping",
         "tags": [
-          "jwt_mappings"
+          "JWT Key Mapping"
         ]
       }
     },
@@ -57505,7 +58832,8 @@
         },
         "summary": "Langfuse Proxy Route",
         "tags": [
-          "langfuse_passthrough"
+          "Langfuse Pass-through",
+          "pass-through"
         ]
       },
       "get": {
@@ -57544,7 +58872,8 @@
         },
         "summary": "Langfuse Proxy Route",
         "tags": [
-          "langfuse_passthrough"
+          "Langfuse Pass-through",
+          "pass-through"
         ]
       },
       "patch": {
@@ -57583,7 +58912,8 @@
         },
         "summary": "Langfuse Proxy Route",
         "tags": [
-          "langfuse_passthrough"
+          "Langfuse Pass-through",
+          "pass-through"
         ]
       },
       "post": {
@@ -57622,7 +58952,8 @@
         },
         "summary": "Langfuse Proxy Route",
         "tags": [
-          "langfuse_passthrough"
+          "Langfuse Pass-through",
+          "pass-through"
         ]
       },
       "put": {
@@ -57661,7 +58992,8 @@
         },
         "summary": "Langfuse Proxy Route",
         "tags": [
-          "langfuse_passthrough"
+          "Langfuse Pass-through",
+          "pass-through"
         ]
       }
     },
@@ -57966,7 +59298,7 @@
         ],
         "summary": "Test Connection",
         "tags": [
-          "mcp_rest"
+          "mcp"
         ]
       }
     },
@@ -58011,7 +59343,7 @@
         ],
         "summary": "Test Tools List",
         "tags": [
-          "mcp_rest"
+          "mcp"
         ]
       }
     },
@@ -58036,13 +59368,13 @@
         ],
         "summary": "Call Tool Rest Api",
         "tags": [
-          "mcp_rest"
+          "mcp"
         ]
       }
     },
     "/mcp-rest/tools/list": {
       "get": {
-        "description": "List all available tools with information about the server they belong to.\n\nExample response:\n{\n    \"tools\": [\n        {\n            \"name\": \"create_zap\",\n            \"description\": \"Create a new zap\",\n            \"inputSchema\": \"tool_input_schema\",\n            \"mcp_info\": {\n                \"server_name\": \"zapier\",\n                \"logo_url\": \"https://www.zapier.com/logo.png\",\n            }\n        }\n    ],\n    \"error\": null,\n    \"message\": \"Successfully retrieved tools\"\n}",
+        "description": "List all available tools with information about the server they belong to.\n\nExample response:\n{\n    \"tools\": [\n        {\n            \"name\": \"create_zap\",\n            \"description\": \"Create a new zap\",\n            \"inputSchema\": \"tool_input_schema\",\n            \"mcp_info\": {\n                \"server_name\": \"zapier\",\n                \"logo_url\": \"https://www.zapier.com/logo.png\",\n                \"server_id\": \"a1b2c3d4-...\",\n                \"alias\": \"zapier_prod\",\n            }\n        }\n    ],\n    \"error\": null,\n    \"message\": \"Successfully retrieved tools\"\n}",
         "operationId": "list_tool_rest_api_mcp_rest_tools_list_get",
         "parameters": [
           {
@@ -58061,6 +59393,54 @@
               ],
               "description": "The server id to list tools for",
               "title": "Server Id"
+            }
+          },
+          {
+            "description": "Filter tools to a single MCP server by name or alias",
+            "in": "query",
+            "name": "mcp_server_name",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter tools to a single MCP server by name or alias",
+              "title": "Mcp Server Name"
+            }
+          },
+          {
+            "description": "Filter tools to a single toolset by name",
+            "in": "query",
+            "name": "toolset_name",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter tools to a single toolset by name",
+              "title": "Toolset Name"
+            }
+          },
+          {
+            "description": "Admin only. Return the full server tool catalog without the allowed_tools filter or per-key tool permissions, so the MCP settings UI can configure the allowlist. Ignored for non-admins.",
+            "in": "query",
+            "name": "include_disabled_tools",
+            "required": false,
+            "schema": {
+              "default": false,
+              "description": "Admin only. Return the full server tool catalog without the allowed_tools filter or per-key tool permissions, so the MCP settings UI can configure the allowlist. Ignored for non-admins.",
+              "title": "Include Disabled Tools",
+              "type": "boolean"
             }
           }
         ],
@@ -58095,8 +59475,31 @@
         ],
         "summary": "List Tool Rest Api",
         "tags": [
-          "mcp_rest"
+          "mcp"
         ]
+      }
+    },
+    "/mcp/enabled": {
+      "get": {
+        "description": "Returns if the MCP server is enabled",
+        "operationId": "get_mcp_server_enabled_enabled_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "boolean"
+                  },
+                  "title": "Response Get Mcp Server Enabled Enabled Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Mcp Server Enabled"
       }
     },
     "/milvus/{endpoint}": {
@@ -60541,6 +61944,33 @@
         ]
       }
     },
+    "/openai/v1/realtime/transcription_sessions": {
+      "post": {
+        "description": "Create an ephemeral Realtime transcription session\n(POST /v1/realtime/transcription_sessions) for the WebRTC/WebSocket flow.\n\nMirrors the client_secrets route but targets the transcription_sessions\nendpoint and encrypts the ephemeral key returned under `client_secret.value`.",
+        "operationId": "create_realtime_transcription_session_openai_v1_realtime_transcription_sessions_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RealtimeTranscriptionSessionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Create Realtime Transcription Session",
+        "tags": [
+          "realtime"
+        ]
+      }
+    },
     "/openai/v1/responses": {
       "post": {
         "description": "Follows the OpenAI Responses API spec: https://platform.openai.com/docs/api-reference/responses\n\nSupports background mode with polling_via_cache for partial response retrieval.\nWhen background=true and polling_via_cache is enabled, returns a polling_id immediately\nand streams the response in the background, updating Redis cache.\n\n```bash\n# Normal request\ncurl -X POST http://localhost:4000/v1/responses     -H \"Content-Type: application/json\"     -H \"Authorization: Bearer sk-1234\"     -d '{\n    \"model\": \"gpt-4o\",\n    \"input\": \"Tell me about AI\"\n}'\n\n# Background request with polling\ncurl -X POST http://localhost:4000/v1/responses     -H \"Content-Type: application/json\"     -H \"Authorization: Bearer sk-1234\"     -d '{\n    \"model\": \"gpt-4o\",\n    \"input\": \"Tell me about AI\",\n    \"background\": true\n}'\n```",
@@ -61957,7 +63387,7 @@
         ],
         "summary": "Create Policy",
         "tags": [
-          "policy_engine"
+          "Policies"
         ]
       }
     },
@@ -62004,7 +63434,7 @@
         ],
         "summary": "Create Policy Attachment",
         "tags": [
-          "policy_engine"
+          "Policies"
         ]
       }
     },
@@ -62051,7 +63481,7 @@
         ],
         "summary": "Estimate Attachment Impact",
         "tags": [
-          "policy_engine"
+          "Policies"
         ]
       }
     },
@@ -62078,7 +63508,7 @@
         ],
         "summary": "List Policy Attachments",
         "tags": [
-          "policy_engine"
+          "Policies"
         ]
       }
     },
@@ -62124,7 +63554,7 @@
         ],
         "summary": "Delete Policy Attachment",
         "tags": [
-          "policy_engine"
+          "Policies"
         ]
       },
       "get": {
@@ -62170,7 +63600,7 @@
         ],
         "summary": "Get Policy Attachment",
         "tags": [
-          "policy_engine"
+          "Policies"
         ]
       }
     },
@@ -62227,13 +63657,13 @@
         ],
         "summary": "Compare Policy Versions",
         "tags": [
-          "policy_engine"
+          "Policies"
         ]
       }
     },
     "/policies/list": {
       "get": {
-        "description": "List all policies from the database and config.yaml. Optionally filter by version_status.\n\nConfig-defined policies are returned with definition_location \"config\" and are treated\nas production versions. On a name conflict with a DB policy, only the DB policy is returned.\n\nQuery params:\n- version_status: Optional. One of \"draft\", \"published\", \"production\".\n  If omitted, all versions are returned.\n\nExample Request:\n```bash\ncurl -X GET \"http://localhost:4000/policies/list\" \\\n    -H \"Authorization: Bearer <your_api_key>\"\ncurl -X GET \"http://localhost:4000/policies/list?version_status=production\" \\\n    -H \"Authorization: Bearer <your_api_key>\"\n```\n\nExample Response:\n```json\n{\n    \"policies\": [\n        {\n            \"policy_id\": \"123e4567-e89b-12d3-a456-426614174000\",\n            \"policy_name\": \"global-baseline\",\n            \"version_number\": 1,\n            \"version_status\": \"production\",\n            \"inherit\": null,\n            \"description\": \"Base guardrails for all requests\",\n            \"guardrails_add\": [\"pii_masking\"],\n            \"guardrails_remove\": [],\n            \"condition\": null,\n            \"created_at\": \"2024-01-01T00:00:00Z\",\n            \"updated_at\": \"2024-01-01T00:00:00Z\"\n        }\n    ],\n    \"total_count\": 1\n}\n```",
+        "description": "List all policies from the database and config.yaml. Optionally filter by version_status.\n\nConfig-defined policies are returned with definition_location \"config\" and are treated\nas production versions. On a name conflict with a production DB policy, only the DB policy\nis returned, mirroring runtime resolution where only production DB versions override config.\nA draft or published DB version does not hide the config policy, since the config version\nis still the one being enforced.\n\nQuery params:\n- version_status: Optional. One of \"draft\", \"published\", \"production\".\n  If omitted, all versions are returned.\n\nExample Request:\n```bash\ncurl -X GET \"http://localhost:4000/policies/list\" \\\n    -H \"Authorization: Bearer <your_api_key>\"\ncurl -X GET \"http://localhost:4000/policies/list?version_status=production\" \\\n    -H \"Authorization: Bearer <your_api_key>\"\n```\n\nExample Response:\n```json\n{\n    \"policies\": [\n        {\n            \"policy_id\": \"123e4567-e89b-12d3-a456-426614174000\",\n            \"policy_name\": \"global-baseline\",\n            \"version_number\": 1,\n            \"version_status\": \"production\",\n            \"inherit\": null,\n            \"description\": \"Base guardrails for all requests\",\n            \"guardrails_add\": [\"pii_masking\"],\n            \"guardrails_remove\": [],\n            \"condition\": null,\n            \"created_at\": \"2024-01-01T00:00:00Z\",\n            \"updated_at\": \"2024-01-01T00:00:00Z\"\n        }\n    ],\n    \"total_count\": 1\n}\n```",
         "operationId": "list_policies_policies_list_get",
         "parameters": [
           {
@@ -62282,7 +63712,7 @@
         ],
         "summary": "List Policies",
         "tags": [
-          "policy_engine"
+          "Policies"
         ]
       }
     },
@@ -62328,7 +63758,7 @@
         ],
         "summary": "Delete All Policy Versions",
         "tags": [
-          "policy_engine"
+          "Policies"
         ]
       }
     },
@@ -62376,7 +63806,7 @@
         ],
         "summary": "List Policy Versions",
         "tags": [
-          "policy_engine"
+          "Policies"
         ]
       },
       "post": {
@@ -62432,7 +63862,7 @@
         ],
         "summary": "Create Policy Version",
         "tags": [
-          "policy_engine"
+          "Policies"
         ]
       }
     },
@@ -62493,7 +63923,7 @@
         ],
         "summary": "Resolve Policies For Context",
         "tags": [
-          "policy_engine"
+          "Policies"
         ]
       }
     },
@@ -62538,7 +63968,7 @@
         ],
         "summary": "Test Pipeline",
         "tags": [
-          "policy_engine"
+          "Policies"
         ]
       }
     },
@@ -62659,7 +64089,7 @@
         ],
         "summary": "Delete Policy",
         "tags": [
-          "policy_engine"
+          "Policies"
         ]
       },
       "get": {
@@ -62705,7 +64135,7 @@
         ],
         "summary": "Get Policy",
         "tags": [
-          "policy_engine"
+          "Policies"
         ]
       },
       "put": {
@@ -62761,7 +64191,7 @@
         ],
         "summary": "Update Policy",
         "tags": [
-          "policy_engine"
+          "Policies"
         ]
       }
     },
@@ -62807,7 +64237,7 @@
         ],
         "summary": "Get Resolved Guardrails",
         "tags": [
-          "policy_engine"
+          "Policies"
         ]
       }
     },
@@ -62865,7 +64295,7 @@
         ],
         "summary": "Update Policy Version Status",
         "tags": [
-          "policy_engine"
+          "Policies"
         ]
       }
     },
@@ -62913,7 +64343,7 @@
         ],
         "summary": "Get Policy Info",
         "tags": [
-          "policies"
+          "policy management"
         ]
       }
     },
@@ -62940,7 +64370,7 @@
         ],
         "summary": "List Policies",
         "tags": [
-          "policies"
+          "policy management"
         ]
       }
     },
@@ -62969,7 +64399,7 @@
         ],
         "summary": "Get Policy Templates",
         "tags": [
-          "policies"
+          "policy management"
         ]
       }
     },
@@ -63018,7 +64448,7 @@
         ],
         "summary": "Enrich Policy Template",
         "tags": [
-          "policies"
+          "policy management"
         ]
       }
     },
@@ -63063,7 +64493,7 @@
         ],
         "summary": "Enrich Policy Template Stream",
         "tags": [
-          "policies"
+          "policy management"
         ]
       }
     },
@@ -63112,7 +64542,7 @@
         ],
         "summary": "Suggest Policy Templates",
         "tags": [
-          "policies"
+          "policy management"
         ]
       }
     },
@@ -63159,7 +64589,7 @@
         ],
         "summary": "Test Policy Template",
         "tags": [
-          "policies"
+          "policy management"
         ]
       }
     },
@@ -63206,7 +64636,7 @@
         ],
         "summary": "Test Policy Matching",
         "tags": [
-          "policies"
+          "policy management"
         ]
       }
     },
@@ -63253,7 +64683,7 @@
         ],
         "summary": "Validate Policy",
         "tags": [
-          "policies"
+          "policy management"
         ]
       }
     },
@@ -64404,6 +65834,80 @@
         ]
       }
     },
+    "/realtime/transcription_sessions": {
+      "post": {
+        "description": "Create an ephemeral Realtime transcription session\n(POST /v1/realtime/transcription_sessions) for the WebRTC/WebSocket flow.\n\nMirrors the client_secrets route but targets the transcription_sessions\nendpoint and encrypts the ephemeral key returned under `client_secret.value`.",
+        "operationId": "create_realtime_transcription_session_realtime_transcription_sessions_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RealtimeTranscriptionSessionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Create Realtime Transcription Session",
+        "tags": [
+          "realtime"
+        ]
+      }
+    },
+    "/register": {
+      "post": {
+        "operationId": "register_client_register_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "mcp_server_name",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Mcp Server Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Register Client",
+        "tags": [
+          "mcp"
+        ]
+      }
+    },
     "/rerank": {
       "post": {
         "operationId": "rerank_rerank_post",
@@ -64816,7 +66320,7 @@
         ],
         "summary": "Get Scim Base",
         "tags": [
-          "scim"
+          "✨ SCIM v2 (Enterprise Only)"
         ]
       }
     },
@@ -64910,7 +66414,7 @@
         ],
         "summary": "Get Groups",
         "tags": [
-          "scim"
+          "✨ SCIM v2 (Enterprise Only)"
         ]
       },
       "post": {
@@ -64973,7 +66477,7 @@
         ],
         "summary": "Create Group",
         "tags": [
-          "scim"
+          "✨ SCIM v2 (Enterprise Only)"
         ]
       }
     },
@@ -65030,7 +66534,7 @@
         ],
         "summary": "Delete Group",
         "tags": [
-          "scim"
+          "✨ SCIM v2 (Enterprise Only)"
         ]
       },
       "get": {
@@ -65092,7 +66596,7 @@
         ],
         "summary": "Get Group",
         "tags": [
-          "scim"
+          "✨ SCIM v2 (Enterprise Only)"
         ]
       },
       "patch": {
@@ -65164,7 +66668,7 @@
         ],
         "summary": "Patch Group",
         "tags": [
-          "scim"
+          "✨ SCIM v2 (Enterprise Only)"
         ]
       },
       "put": {
@@ -65236,7 +66740,7 @@
         ],
         "summary": "Update Group",
         "tags": [
-          "scim"
+          "✨ SCIM v2 (Enterprise Only)"
         ]
       }
     },
@@ -65289,7 +66793,7 @@
         ],
         "summary": "Get Resource Types",
         "tags": [
-          "scim"
+          "✨ SCIM v2 (Enterprise Only)"
         ]
       }
     },
@@ -65351,7 +66855,7 @@
         ],
         "summary": "Get Resource Type",
         "tags": [
-          "scim"
+          "✨ SCIM v2 (Enterprise Only)"
         ]
       }
     },
@@ -65404,7 +66908,7 @@
         ],
         "summary": "Get Schemas",
         "tags": [
-          "scim"
+          "✨ SCIM v2 (Enterprise Only)"
         ]
       }
     },
@@ -65466,7 +66970,7 @@
         ],
         "summary": "Get Schema",
         "tags": [
-          "scim"
+          "✨ SCIM v2 (Enterprise Only)"
         ]
       }
     },
@@ -65521,7 +67025,7 @@
         ],
         "summary": "Get Service Provider Config",
         "tags": [
-          "scim"
+          "✨ SCIM v2 (Enterprise Only)"
         ]
       }
     },
@@ -65615,7 +67119,7 @@
         ],
         "summary": "Get Users",
         "tags": [
-          "scim"
+          "✨ SCIM v2 (Enterprise Only)"
         ]
       },
       "post": {
@@ -65643,7 +67147,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/SCIMUser"
+                "$ref": "#/components/schemas/SCIMUser-Input"
               }
             }
           },
@@ -65654,7 +67158,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SCIMUser"
+                  "$ref": "#/components/schemas/SCIMUser-Output"
                 }
               }
             },
@@ -65678,7 +67182,7 @@
         ],
         "summary": "Create User",
         "tags": [
-          "scim"
+          "✨ SCIM v2 (Enterprise Only)"
         ]
       }
     },
@@ -65735,7 +67239,7 @@
         ],
         "summary": "Delete User",
         "tags": [
-          "scim"
+          "✨ SCIM v2 (Enterprise Only)"
         ]
       },
       "get": {
@@ -65773,7 +67277,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SCIMUser"
+                  "$ref": "#/components/schemas/SCIMUser-Output"
                 }
               }
             },
@@ -65797,7 +67301,7 @@
         ],
         "summary": "Get User",
         "tags": [
-          "scim"
+          "✨ SCIM v2 (Enterprise Only)"
         ]
       },
       "patch": {
@@ -65845,7 +67349,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SCIMUser"
+                  "$ref": "#/components/schemas/SCIMUser-Output"
                 }
               }
             },
@@ -65869,7 +67373,7 @@
         ],
         "summary": "Patch User",
         "tags": [
-          "scim"
+          "✨ SCIM v2 (Enterprise Only)"
         ]
       },
       "put": {
@@ -65906,7 +67410,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/SCIMUser"
+                "$ref": "#/components/schemas/SCIMUser-Input"
               }
             }
           },
@@ -65917,7 +67421,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SCIMUser"
+                  "$ref": "#/components/schemas/SCIMUser-Output"
                 }
               }
             },
@@ -65941,7 +67445,7 @@
         ],
         "summary": "Update User",
         "tags": [
-          "scim"
+          "✨ SCIM v2 (Enterprise Only)"
         ]
       }
     },
@@ -69730,6 +71234,64 @@
         ]
       }
     },
+    "/token": {
+      "post": {
+        "description": "Accept the authorization code from client and exchange it for OAuth token.\nSupports PKCE flow by forwarding code_verifier to upstream provider.\n\n1. Call the token endpoint with PKCE parameters\n2. Store the user's token in the db - and generate a LiteLLM virtual key\n3. Return the token\n4. Return a virtual key in this response",
+        "operationId": "token_endpoint_token_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "mcp_server_name",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Mcp Server Name"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_token_endpoint_token_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Token Endpoint",
+        "tags": [
+          "mcp"
+        ]
+      }
+    },
     "/toolset/{toolset_name}/mcp": {
       "delete": {
         "description": "Namespace a toolset as its own MCP endpoint.\n\nConnecting to /toolset/<name>/mcp exposes exactly the tools defined in\nthe toolset. Access is enforced: non-admin API keys must have the toolset\nlisted in their object_permission.mcp_toolsets grant list, or the request\nwill be rejected with a 403.",
@@ -70389,7 +71951,7 @@
         ],
         "summary": "Usage Ai Chat",
         "tags": [
-          "usage_ai"
+          "Budget & Spend Tracking"
         ]
       }
     },
@@ -71473,7 +73035,7 @@
         ],
         "summary": "Test Policies And Guardrails",
         "tags": [
-          "policies"
+          "utils"
         ]
       }
     },
@@ -71583,15 +73145,49 @@
       }
     },
     "/v1/a2a/discover": {
-      "get": {
+      "post": {
+        "description": "Fetch the upstream agent's well-known card so the UI can show the admin\nwhich skills/capabilities the agent exposes.\n\nOnly proxy admins can call this — the UI uses it during agent registration,\nand we don't want arbitrary keys probing internal URLs.\n\nExample:\n```bash\ncurl -X POST \"http://localhost:4000/v1/a2a/discover\" \\\n    -H \"Authorization: Bearer <admin_key>\" \\\n    -H \"Content-Type: application/json\" \\\n    -d '{\"url\": \"https://upstream-agent.example.com\"}'\n```",
+        "operationId": "discover_agent_card_v1_a2a_discover_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DiscoverAgentRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
-            "description": "OK"
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiscoverAgentResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
-        "summary": "a2a_registration",
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Discover Agent Card",
         "tags": [
-          "a2a_registration"
+          "[beta] A2A Agents"
         ]
       }
     },
@@ -71637,7 +73233,7 @@
         ],
         "summary": "Invoke Agent A2A",
         "tags": [
-          "a2a"
+          "[beta] A2A Agents"
         ]
       }
     },
@@ -73903,7 +75499,7 @@
         ],
         "summary": "List Evals",
         "tags": [
-          "evals"
+          "OpenAI Evals API"
         ]
       },
       "post": {
@@ -73957,7 +75553,7 @@
         ],
         "summary": "Create Eval",
         "tags": [
-          "evals"
+          "OpenAI Evals API"
         ]
       }
     },
@@ -74022,7 +75618,7 @@
         ],
         "summary": "Delete Eval",
         "tags": [
-          "evals"
+          "OpenAI Evals API"
         ]
       },
       "get": {
@@ -74085,7 +75681,7 @@
         ],
         "summary": "Get Eval",
         "tags": [
-          "evals"
+          "OpenAI Evals API"
         ]
       },
       "post": {
@@ -74148,7 +75744,7 @@
         ],
         "summary": "Update Eval",
         "tags": [
-          "evals"
+          "OpenAI Evals API"
         ]
       }
     },
@@ -74213,7 +75809,7 @@
         ],
         "summary": "Cancel Eval",
         "tags": [
-          "evals"
+          "OpenAI Evals API"
         ]
       }
     },
@@ -74343,7 +75939,7 @@
         ],
         "summary": "List Runs",
         "tags": [
-          "evals"
+          "OpenAI Evals API - Runs"
         ]
       },
       "post": {
@@ -74406,7 +76002,7 @@
         ],
         "summary": "Create Run",
         "tags": [
-          "evals"
+          "OpenAI Evals API - Runs"
         ]
       }
     },
@@ -74480,7 +76076,7 @@
         ],
         "summary": "Delete Run",
         "tags": [
-          "evals"
+          "OpenAI Evals API - Runs"
         ]
       },
       "get": {
@@ -74552,7 +76148,7 @@
         ],
         "summary": "Get Run",
         "tags": [
-          "evals"
+          "OpenAI Evals API - Runs"
         ]
       },
       "post": {
@@ -74624,7 +76220,7 @@
         ],
         "summary": "Cancel Run",
         "tags": [
-          "evals"
+          "OpenAI Evals API - Runs"
         ]
       }
     },
@@ -75335,8 +76931,30 @@
       }
     },
     "/v1/indexes": {
+      "get": {
+        "description": "List all vector store indexes. Proxy admin only.\n\n```bash\ncurl -L -X GET 'http://0.0.0.0:4000/v1/indexes'         -H 'Authorization: Bearer sk-1234'\n```",
+        "operationId": "index_list_v1_indexes_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IndexListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Index List"
+      },
       "post": {
-        "description": "Create an index. Just writes the index to the database.\n\n```bash\ncurl -L -X POST 'http://0.0.0.0:4000/indexes/create'         -H 'Content-Type: application/json'         -H 'Authorization: Bearer sk-1234'         -H 'LiteLLM-Beta: indexes_beta=v1'         -d '{ \n        \"index_name\": \"dall-e-3\",\n        \"vector_store_index\": \"real-index-name\",\n        \"vector_store_name\": \"azure-ai-search\"\n    }'\n```",
+        "description": "Create an index. Just writes the index to the database.\n\n```bash\ncurl -L -X POST 'http://0.0.0.0:4000/v1/indexes'         -H 'Content-Type: application/json'         -H 'Authorization: Bearer sk-1234'         -d '{\n        \"index_name\": \"dall-e-3\",\n        \"litellm_params\": {\n            \"vector_store_index\": \"real-index-name\",\n            \"vector_store_name\": \"azure-ai-search\"\n        }\n    }'\n```",
         "operationId": "index_create_v1_indexes_post",
         "requestBody": {
           "content": {
@@ -75373,10 +76991,7 @@
             "APIKeyHeader": []
           }
         ],
-        "summary": "Index Create",
-        "tags": [
-          "vector_stores"
-        ]
+        "summary": "Index Create"
       }
     },
     "/v1/mcp/access_groups": {
@@ -77272,7 +78887,7 @@
         ],
         "summary": "Anthropic Response",
         "tags": [
-          "anthropic_passthrough"
+          "[beta] Anthropic `/v1/messages`"
         ]
       }
     },
@@ -77297,7 +78912,7 @@
         ],
         "summary": "Count Tokens",
         "tags": [
-          "anthropic_passthrough"
+          "[beta] Anthropic Messages Token Counting"
         ]
       }
     },
@@ -77796,6 +79411,33 @@
           }
         ],
         "summary": "Create Realtime Client Secret",
+        "tags": [
+          "realtime"
+        ]
+      }
+    },
+    "/v1/realtime/transcription_sessions": {
+      "post": {
+        "description": "Create an ephemeral Realtime transcription session\n(POST /v1/realtime/transcription_sessions) for the WebRTC/WebSocket flow.\n\nMirrors the client_secrets route but targets the transcription_sessions\nendpoint and encrypts the ephemeral key returned under `client_secret.value`.",
+        "operationId": "create_realtime_transcription_session_v1_realtime_transcription_sessions_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RealtimeTranscriptionSessionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Create Realtime Transcription Session",
         "tags": [
           "realtime"
         ]
@@ -78350,7 +79992,7 @@
         ],
         "summary": "List Skills",
         "tags": [
-          "anthropic_skills"
+          "[beta] Anthropic Skills API"
         ]
       },
       "post": {
@@ -78404,7 +80046,7 @@
         ],
         "summary": "Create Skill",
         "tags": [
-          "anthropic_skills"
+          "[beta] Anthropic Skills API"
         ]
       }
     },
@@ -78469,7 +80111,7 @@
         ],
         "summary": "Delete Skill",
         "tags": [
-          "anthropic_skills"
+          "[beta] Anthropic Skills API"
         ]
       },
       "get": {
@@ -78532,7 +80174,7 @@
         ],
         "summary": "Get Skill",
         "tags": [
-          "anthropic_skills"
+          "[beta] Anthropic Skills API"
         ]
       }
     },
@@ -78799,7 +80441,7 @@
         ],
         "summary": "List Tools",
         "tags": [
-          "tools"
+          "tool management"
         ]
       }
     },
@@ -78846,7 +80488,7 @@
         ],
         "summary": "Update Tool Policy",
         "tags": [
-          "tools"
+          "tool management"
         ]
       }
     },
@@ -78873,7 +80515,7 @@
         ],
         "summary": "Get Tool Policy Options",
         "tags": [
-          "tools"
+          "tool management"
         ]
       }
     },
@@ -78948,7 +80590,7 @@
         ],
         "summary": "Get Tool Spend",
         "tags": [
-          "tools"
+          "tool management"
         ]
       }
     },
@@ -78996,7 +80638,7 @@
         ],
         "summary": "Get Tool",
         "tags": [
-          "tools"
+          "tool management"
         ]
       }
     },
@@ -79044,7 +80686,7 @@
         ],
         "summary": "Get Tool Detail",
         "tags": [
-          "tools"
+          "tool management"
         ]
       }
     },
@@ -79151,7 +80793,7 @@
         ],
         "summary": "Get Tool Usage Logs",
         "tags": [
-          "tools"
+          "tool management"
         ]
       }
     },
@@ -79233,7 +80875,7 @@
         ],
         "summary": "Delete Tool Policy Override",
         "tags": [
-          "tools"
+          "tool management"
         ]
       }
     },
@@ -79506,7 +81148,7 @@
         ],
         "summary": "List Vector Stores",
         "tags": [
-          "vector_store_management"
+          "vector store management"
         ]
       }
     },
@@ -79607,10 +81249,7 @@
             "APIKeyHeader": []
           }
         ],
-        "summary": "Vector Store List",
-        "tags": [
-          "vector_stores"
-        ]
+        "summary": "Vector Store List"
       },
       "post": {
         "description": "Create a vector store.\n\nAPI Reference:\nhttps://platform.openai.com/docs/api-reference/vector-stores/create\n\nSupports target_model_names parameter for creating vector stores across multiple models:\n```json\n{\n    \"name\": \"my-vector-store\",\n    \"target_model_names\": \"gpt-4,gemini-2.0\"\n}\n```",
@@ -79630,10 +81269,7 @@
             "APIKeyHeader": []
           }
         ],
-        "summary": "Vector Store Create",
-        "tags": [
-          "vector_stores"
-        ]
+        "summary": "Vector Store Create"
       }
     },
     "/v1/vector_stores/{vector_store_id}": {
@@ -79676,10 +81312,7 @@
             "APIKeyHeader": []
           }
         ],
-        "summary": "Vector Store Delete",
-        "tags": [
-          "vector_stores"
-        ]
+        "summary": "Vector Store Delete"
       },
       "get": {
         "description": "Retrieve a vector store.\n\nAPI Reference:\nhttps://platform.openai.com/docs/api-reference/vector-stores/retrieve",
@@ -79720,10 +81353,7 @@
             "APIKeyHeader": []
           }
         ],
-        "summary": "Vector Store Retrieve",
-        "tags": [
-          "vector_stores"
-        ]
+        "summary": "Vector Store Retrieve"
       },
       "post": {
         "description": "Update a vector store.\n\nAPI Reference:\nhttps://platform.openai.com/docs/api-reference/vector-stores/modify",
@@ -79764,10 +81394,7 @@
             "APIKeyHeader": []
           }
         ],
-        "summary": "Vector Store Update",
-        "tags": [
-          "vector_stores"
-        ]
+        "summary": "Vector Store Update"
       }
     },
     "/v1/vector_stores/{vector_store_id}/files": {
@@ -79811,7 +81438,7 @@
         ],
         "summary": "Vector Store File List",
         "tags": [
-          "vector_stores"
+          "vector_store_files"
         ]
       },
       "post": {
@@ -79854,7 +81481,7 @@
         ],
         "summary": "Vector Store File Create",
         "tags": [
-          "vector_stores"
+          "vector_store_files"
         ]
       }
     },
@@ -79908,7 +81535,7 @@
         ],
         "summary": "Vector Store File Delete",
         "tags": [
-          "vector_stores"
+          "vector_store_files"
         ]
       },
       "get": {
@@ -79960,7 +81587,7 @@
         ],
         "summary": "Vector Store File Retrieve",
         "tags": [
-          "vector_stores"
+          "vector_store_files"
         ]
       },
       "post": {
@@ -80012,7 +81639,7 @@
         ],
         "summary": "Vector Store File Update",
         "tags": [
-          "vector_stores"
+          "vector_store_files"
         ]
       }
     },
@@ -80066,7 +81693,7 @@
         ],
         "summary": "Vector Store File Content",
         "tags": [
-          "vector_stores"
+          "vector_store_files"
         ]
       }
     },
@@ -80110,10 +81737,7 @@
             "APIKeyHeader": []
           }
         ],
-        "summary": "Vector Store Search",
-        "tags": [
-          "vector_stores"
-        ]
+        "summary": "Vector Store Search"
       }
     },
     "/v1/videos": {
@@ -80907,14 +82531,185 @@
     },
     "/v1beta/agents": {
       "get": {
+        "description": "List all custom agents on the Gemini side.\n\nPass per-request Gemini credentials via the JSON-encoded\n``litellm_params_template`` query parameter. Flat query parameters\n(e.g. ``?api_key=AIza...``) are intentionally ignored — see\n``_merge_query_params_into_data`` for the rationale.\n\n```bash\ncurl \"http://localhost:4000/v1beta/agents?litellm_params_template=%7B%22api_key%22%3A%22AIza...%22%7D\" \\\n    -H \"Authorization: Bearer sk-...\"\n```",
+        "operationId": "list_gemini_agents_v1beta_agents_get",
         "responses": {
           "200": {
-            "description": "OK"
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
           }
         },
-        "summary": "gemini_agents",
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "List Gemini Agents",
         "tags": [
-          "gemini_agents"
+          "gemini managed agents"
+        ]
+      },
+      "post": {
+        "description": "Create a named custom agent on the Gemini side.\n\nExample:\n```bash\ncurl -X POST \"http://localhost:4000/v1beta/agents\" \\\n    -H \"Authorization: Bearer sk-...\" \\\n    -H \"Content-Type: application/json\" \\\n    -d '{\n        \"name\": \"my-custom-slides-agent\",\n        \"base_agent\": \"waverunner\",\n        \"instructions\": \"You are a helpful assistant that creates slides.\",\n        \"base_environment\": {\n            \"type\": \"remote\",\n            \"sources\": [\n                {\"type\": \"gcs\", \"source\": \"gs://eap-templates/slides-skill\",\n                 \"target\": \"/.agents/skills/slides-skill\"}\n            ]\n        }\n    }'\n```",
+        "operationId": "create_gemini_agent_v1beta_agents_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Create Gemini Agent",
+        "tags": [
+          "gemini managed agents"
+        ]
+      }
+    },
+    "/v1beta/agents/{name}": {
+      "delete": {
+        "description": "Delete a custom agent by name.\n\nPass per-request Gemini credentials via the JSON-encoded\n``litellm_params_template`` query parameter. Flat query parameters\n(e.g. ``?api_key=AIza...``) are intentionally ignored — see\n``_merge_query_params_into_data`` for the rationale.\n\n```bash\ncurl -X DELETE \"http://localhost:4000/v1beta/agents/my-custom-slides-agent?litellm_params_template=%7B%22api_key%22%3A%22AIza...%22%7D\" \\\n    -H \"Authorization: Bearer sk-...\"\n```",
+        "operationId": "delete_gemini_agent_v1beta_agents__name__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Delete Gemini Agent",
+        "tags": [
+          "gemini managed agents"
+        ]
+      },
+      "get": {
+        "description": "Get a specific custom agent by name.\n\nPass per-request Gemini credentials via the JSON-encoded\n``litellm_params_template`` query parameter. Flat query parameters\n(e.g. ``?api_key=AIza...``) are intentionally ignored — see\n``_merge_query_params_into_data`` for the rationale.\n\n```bash\ncurl \"http://localhost:4000/v1beta/agents/my-custom-slides-agent?litellm_params_template=%7B%22api_key%22%3A%22AIza...%22%7D\" \\\n    -H \"Authorization: Bearer sk-...\"\n```",
+        "operationId": "get_gemini_agent_v1beta_agents__name__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "Get Gemini Agent",
+        "tags": [
+          "gemini managed agents"
+        ]
+      }
+    },
+    "/v1beta/agents/{name}/versions": {
+      "get": {
+        "description": "List versions of a custom agent.\n\nPass per-request Gemini credentials via the JSON-encoded\n``litellm_params_template`` query parameter. Flat query parameters\n(e.g. ``?api_key=AIza...``) are intentionally ignored — see\n``_merge_query_params_into_data`` for the rationale.\n\n```bash\ncurl \"http://localhost:4000/v1beta/agents/my-custom-slides-agent/versions?litellm_params_template=%7B%22api_key%22%3A%22AIza...%22%7D\" \\\n    -H \"Authorization: Bearer sk-...\"\n```",
+        "operationId": "list_gemini_agent_versions_v1beta_agents__name__versions_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "APIKeyHeader": []
+          }
+        ],
+        "summary": "List Gemini Agent Versions",
+        "tags": [
+          "gemini managed agents"
         ]
       }
     },
@@ -81818,7 +83613,7 @@
         ],
         "summary": "Delete Vantage Settings",
         "tags": [
-          "vantage"
+          "Vantage"
         ]
       }
     },
@@ -81865,7 +83660,7 @@
         ],
         "summary": "Vantage Dry Run Export",
         "tags": [
-          "vantage"
+          "Vantage"
         ]
       }
     },
@@ -81912,7 +83707,7 @@
         ],
         "summary": "Vantage Export",
         "tags": [
-          "vantage"
+          "Vantage"
         ]
       }
     },
@@ -81959,7 +83754,7 @@
         ],
         "summary": "Init Vantage Settings",
         "tags": [
-          "vantage"
+          "Vantage"
         ]
       }
     },
@@ -81986,7 +83781,7 @@
         ],
         "summary": "Get Vantage Settings",
         "tags": [
-          "vantage"
+          "Vantage"
         ]
       },
       "put": {
@@ -82031,7 +83826,7 @@
         ],
         "summary": "Update Vantage Settings",
         "tags": [
-          "vantage"
+          "Vantage"
         ]
       }
     },
@@ -82076,7 +83871,7 @@
         ],
         "summary": "Delete Vector Store",
         "tags": [
-          "vector_store_management"
+          "vector store management"
         ]
       }
     },
@@ -82123,7 +83918,7 @@
         ],
         "summary": "Get Vector Store Info",
         "tags": [
-          "vector_store_management"
+          "vector store management"
         ]
       }
     },
@@ -82182,7 +83977,7 @@
         ],
         "summary": "List Vector Stores",
         "tags": [
-          "vector_store_management"
+          "vector store management"
         ]
       }
     },
@@ -82227,7 +84022,7 @@
         ],
         "summary": "New Vector Store",
         "tags": [
-          "vector_store_management"
+          "vector store management"
         ]
       }
     },
@@ -82272,7 +84067,7 @@
         ],
         "summary": "Update Vector Store",
         "tags": [
-          "vector_store_management"
+          "vector store management"
         ]
       }
     },
@@ -82373,10 +84168,7 @@
             "APIKeyHeader": []
           }
         ],
-        "summary": "Vector Store List",
-        "tags": [
-          "vector_stores"
-        ]
+        "summary": "Vector Store List"
       },
       "post": {
         "description": "Create a vector store.\n\nAPI Reference:\nhttps://platform.openai.com/docs/api-reference/vector-stores/create\n\nSupports target_model_names parameter for creating vector stores across multiple models:\n```json\n{\n    \"name\": \"my-vector-store\",\n    \"target_model_names\": \"gpt-4,gemini-2.0\"\n}\n```",
@@ -82396,10 +84188,7 @@
             "APIKeyHeader": []
           }
         ],
-        "summary": "Vector Store Create",
-        "tags": [
-          "vector_stores"
-        ]
+        "summary": "Vector Store Create"
       }
     },
     "/vector_stores/{vector_store_id}": {
@@ -82442,10 +84231,7 @@
             "APIKeyHeader": []
           }
         ],
-        "summary": "Vector Store Delete",
-        "tags": [
-          "vector_stores"
-        ]
+        "summary": "Vector Store Delete"
       },
       "get": {
         "description": "Retrieve a vector store.\n\nAPI Reference:\nhttps://platform.openai.com/docs/api-reference/vector-stores/retrieve",
@@ -82486,10 +84272,7 @@
             "APIKeyHeader": []
           }
         ],
-        "summary": "Vector Store Retrieve",
-        "tags": [
-          "vector_stores"
-        ]
+        "summary": "Vector Store Retrieve"
       },
       "post": {
         "description": "Update a vector store.\n\nAPI Reference:\nhttps://platform.openai.com/docs/api-reference/vector-stores/modify",
@@ -82530,10 +84313,7 @@
             "APIKeyHeader": []
           }
         ],
-        "summary": "Vector Store Update",
-        "tags": [
-          "vector_stores"
-        ]
+        "summary": "Vector Store Update"
       }
     },
     "/vector_stores/{vector_store_id}/files": {
@@ -82577,7 +84357,7 @@
         ],
         "summary": "Vector Store File List",
         "tags": [
-          "vector_stores"
+          "vector_store_files"
         ]
       },
       "post": {
@@ -82620,7 +84400,7 @@
         ],
         "summary": "Vector Store File Create",
         "tags": [
-          "vector_stores"
+          "vector_store_files"
         ]
       }
     },
@@ -82674,7 +84454,7 @@
         ],
         "summary": "Vector Store File Delete",
         "tags": [
-          "vector_stores"
+          "vector_store_files"
         ]
       },
       "get": {
@@ -82726,7 +84506,7 @@
         ],
         "summary": "Vector Store File Retrieve",
         "tags": [
-          "vector_stores"
+          "vector_store_files"
         ]
       },
       "post": {
@@ -82778,7 +84558,7 @@
         ],
         "summary": "Vector Store File Update",
         "tags": [
-          "vector_stores"
+          "vector_store_files"
         ]
       }
     },
@@ -82832,7 +84612,7 @@
         ],
         "summary": "Vector Store File Content",
         "tags": [
-          "vector_stores"
+          "vector_store_files"
         ]
       }
     },
@@ -82876,10 +84656,7 @@
             "APIKeyHeader": []
           }
         ],
-        "summary": "Vector Store Search",
-        "tags": [
-          "vector_stores"
-        ]
+        "summary": "Vector Store Search"
       }
     },
     "/vertex_ai/discovery/{endpoint}": {
@@ -84122,6 +85899,168 @@
         ]
       }
     },
+    "/{mcp_server_name}/authorize": {
+      "get": {
+        "operationId": "authorize__mcp_server_name__authorize_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "mcp_server_name",
+            "required": true,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Mcp Server Name"
+            }
+          },
+          {
+            "in": "query",
+            "name": "redirect_uri",
+            "required": true,
+            "schema": {
+              "title": "Redirect Uri",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Client Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "State",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "code_challenge",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Code Challenge"
+            }
+          },
+          {
+            "in": "query",
+            "name": "code_challenge_method",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Code Challenge Method"
+            }
+          },
+          {
+            "in": "query",
+            "name": "response_type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Response Type"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Scope"
+            }
+          },
+          {
+            "in": "query",
+            "name": "resource",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Resource"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Authorize",
+        "tags": [
+          "mcp"
+        ]
+      }
+    },
     "/{mcp_server_name}/mcp": {
       "delete": {
         "description": "Handle /{name}/mcp for MCP server aliases, toolsets, MCP access group tags, and comma-separated lists.\n\nResolution order:\n1. Registered MCP server alias / name\n2. Comma-separated list (short-circuits before any DB call)\n3. Toolset name (DB lookup, cached)\n4. MCP access group tag (DB lookup, cached)",
@@ -84374,6 +86313,111 @@
           }
         },
         "summary": "Dynamic Mcp Route"
+      }
+    },
+    "/{mcp_server_name}/register": {
+      "post": {
+        "operationId": "register_client__mcp_server_name__register_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "mcp_server_name",
+            "required": true,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Mcp Server Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Register Client",
+        "tags": [
+          "mcp"
+        ]
+      }
+    },
+    "/{mcp_server_name}/token": {
+      "post": {
+        "description": "Accept the authorization code from client and exchange it for OAuth token.\nSupports PKCE flow by forwarding code_verifier to upstream provider.\n\n1. Call the token endpoint with PKCE parameters\n2. Store the user's token in the db - and generate a LiteLLM virtual key\n3. Return the token\n4. Return a virtual key in this response",
+        "operationId": "token_endpoint__mcp_server_name__token_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "mcp_server_name",
+            "required": true,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Mcp Server Name"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_token_endpoint__mcp_server_name__token_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Token Endpoint",
+        "tags": [
+          "mcp"
+        ]
       }
     },
     "/{provider}/v1/batches": {

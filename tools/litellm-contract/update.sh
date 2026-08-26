@@ -11,10 +11,6 @@ stage="$work/stage"
 checkout=
 cleanup() {
   rm -rf "$work"
-  rm -f "$repo_root/openapi.json.contract-new.$$" \
-    "$repo_root/internal/contract/supplemental-routes.json.contract-new.$$" \
-    "$repo_root/internal/contract/manifest.json.contract-new.$$" \
-    "$repo_root/internal/contractapi/testdata/provider-operations.golden.json.contract-new.$$"
   if [ -n "$checkout" ]; then rm -rf "$checkout"; fi
 }
 trap cleanup EXIT HUP INT TERM
@@ -45,6 +41,7 @@ cp "$repo_root/internal/contract/reviewed-operation-classification.json" "$stage
 (
   cd "$source_root"
   "$uv_bin" sync --frozen --python 3.12.14 --extra proxy --no-dev
+  .venv/bin/python "$repo_root/tools/litellm-contract/test_export.py"
   PYTHONHASHSEED=1 .venv/bin/python "$repo_root/tools/litellm-contract/export.py" \
     --source . --openapi-output "$work/openapi.first.json" \
     --supplemental-output "$work/supplemental.first.json"
@@ -73,15 +70,7 @@ case "$mode" in
       echo 'injected failure before artifact replacement' >&2
       exit 97
     fi
-    # Copy every validated artifact onto the destination filesystem before any
-    # rename. Validation or staging failures therefore leave all checked files untouched.
-    destinations='openapi.json internal/contract/supplemental-routes.json internal/contract/manifest.json internal/contractapi/testdata/provider-operations.golden.json'
-    for relative in $destinations; do
-      cp "$stage/$relative" "$repo_root/$relative.contract-new.$$"
-    done
-    for relative in $destinations; do
-      mv "$repo_root/$relative.contract-new.$$" "$repo_root/$relative"
-    done
+    sh "$repo_root/tools/litellm-contract/install-artifacts.sh" "$repo_root" "$stage"
     ;;
   diff)
     diff_status=0

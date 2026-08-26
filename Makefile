@@ -40,7 +40,7 @@ contract-update:
 contract-diff:
 	sh tools/litellm-contract/update.sh diff
 
-# Networked failure-injection test; requires the exact pinned LITELLM_SOURCE checkout.
+# Offline failure/signal injection for every artifact replacement stage.
 contract-update-atomicity-test:
 	sh tools/litellm-contract/test-failure-atomicity.sh
 

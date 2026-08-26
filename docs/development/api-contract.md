@@ -2,8 +2,8 @@
 
 The provider is tested against exactly LiteLLM 1.98.0. Its API review consists of:
 
-- generated `openapi.json`, after fail-closed registration of every lazy router used by the provider;
-- generated `internal/contract/supplemental-routes.json`, containing the explicitly reviewed hidden route;
+- generated `openapi.json`, after fail-closed direct registration of all 33 lazy feature definitions in the pinned source;
+- generated `internal/contract/supplemental-routes.json`, containing the complete feature/module/prefix/suffix/router-or-mount contract, per-feature live/OpenAPI counts, and the explicitly reviewed hidden route;
 - generated `internal/contract/manifest.json` and `internal/contractapi/testdata/provider-operations.golden.json`;
 - reviewed `internal/contract/reviewed-operation-classification.json`, with one exact normalized `METHOD /path` entry for every operation not used by the provider; and
 - reviewed, non-generated `internal/contract/reviewed-pins.json`, which pins exact bytes and counts for all generated artifacts and the classification, plus category rationales and issue ownership.
@@ -57,7 +57,9 @@ make contract-diff
 
 Without `LITELLM_SOURCE`, the update script clones the pinned commit. It exports under two different `PYTHONHASHSEED` values and byte-compares them. `contract-diff` stages and diffs all four generated artifacts, reports their staged hashes, confirms reviewed inputs were not changed, and runs full verification against the reviewed pins. The manual **Reproduce LiteLLM API contract** workflow checks out the exact source and installs exactly uv 0.12.6.
 
-Do not substitute LiteLLM's checked OpenAPI. LiteLLM's runtime lazy loader warns and skips failed optional imports; this exporter fails closed if a required import, registration, route walk, or schema inclusion fails.
+Do not substitute LiteLLM's checked OpenAPI or committed lazy OpenAPI snapshot. The exporter pins all 33 source definitions in order, including module, trigger prefixes/suffixes, router attribute, mounted application prefix, and persistent-stub flag. It rejects added, removed, duplicate, stale, unimportable, unregistrable, unextractable mounted, or zero-live-route features. It directly imports and registers each feature, disables snapshot injection, generates each feature fragment from its live routes, and requires every schema-visible feature operation to survive composition into final OpenAPI. The hidden-only `mcp_byok_oauth` feature has five live operations and an exact reviewed zero-OpenAPI exception because all five upstream routes set `include_in_schema=false`.
+
+The source actually contains 33 `LAZY_FEATURES` definitions at the pin. Complete direct registration exposes a stale committed snapshot: reviewed OpenAPI is therefore 586 paths and 800 operations, not the former 561/772. The mounted MCP FastAPI application is extracted separately and contributes `GET /mcp/enabled`; opaque ASGI handler mounts beneath that application do not expose declarative methods for OpenAPI extraction.
 
 ## Atomic update and review process
 
@@ -67,16 +69,18 @@ Do not substitute LiteLLM's checked OpenAPI. LiteLLM's runtime lazy loader warns
 2. regenerates OpenAPI and supplement twice;
 3. generates the manifest and provider-operation golden in staging;
 4. runs the complete production verifier in staging against the existing reviewed classification and pins;
-5. copies every validated output to destination-side temporary files; and
-6. replaces the four generated files only after every preceding step succeeds.
+5. copies every validated output to destination-side temporary files while retaining each destination's permissions;
+6. creates destination-side backups for all four current files;
+7. replaces the four generated files; and
+8. removes backups and staging only after all replacements succeed.
 
-A validation, generation, injected, or staging failure leaves all four checked generated artifacts untouched. Reproduce that guarantee with:
+On an ordinary command error or caught `HUP`, `INT`, or `TERM`, the installer restores every destination from its backup before exiting and removes backups and staging. Thus, after the installer returns, all four files are either the old validated set or the new validated set, never a mixed final set. The offline failure-injection test fails and interrupts after each of the four replacements, tests success, and verifies contents, permissions, and cleanup:
 
 ```sh
-UV=/path/to/uv-0.12.6 \
-LITELLM_SOURCE=../litellm \
 make contract-update-atomicity-test
 ```
+
+Four independent filesystem names cannot provide a single visibility instant to concurrent readers. During replacement or rollback a reader can observe an intermediate set. An uncatchable `SIGKILL`, power loss, kernel failure, or storage failure can also stop rollback and leave an intermediate set; recovery is to restore the reviewed commit or rerun the validated update. The guarantee above is a caught-failure final-state guarantee, not a multi-file filesystem transaction.
 
 For an intentional LiteLLM/API change:
 
@@ -90,6 +94,6 @@ This deliberate two-party-style step means coordinated edits to OpenAPI, manifes
 
 ## Source and Pydantic limitations
 
-FastAPI OpenAPI reflects imported router objects and Pydantic models, not every executable Python branch. Lazy routers are absent until registered, and `include_in_schema=false` routes are absent by design. Pydantic aliases and dependency-injected query parameters can differ from names suggested by source. The exporter therefore walks registered FastAPI routes, including hidden routes, checks duplicate contracts, and uses bounded AST only for the reviewed hidden organization PATCH. The offline verifier checks URL-level method/path/query contracts; it does not claim request/response semantic validation beyond generated OpenAPI.
+FastAPI OpenAPI reflects imported router objects and Pydantic models, not every executable Python branch. Lazy routers are absent until registered, mounted opaque ASGI handlers do not declare HTTP methods, and `include_in_schema=false` routes are absent by design. Pydantic aliases and dependency-injected query parameters can differ from names suggested by source. The exporter therefore walks registered FastAPI routes, including hidden routes, checks duplicate contracts, and uses bounded AST only for the reviewed hidden organization PATCH. The offline verifier checks URL-level method/path/query contracts; it does not claim request/response semantic validation beyond generated OpenAPI.
 
 Lifecycle decisions, retries/absence, runtime escaping, and upgrade/import/client compatibility remain scoped to #202, #203, #207/#248-252, and #210.

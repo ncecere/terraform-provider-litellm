@@ -8,23 +8,27 @@ import (
 	"fmt"
 	"go/ast"
 	"go/constant"
+	"go/importer"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
 )
 
 const (
-	pinnedRepository   = "https://github.com/BerriAI/litellm"
-	pinnedTag          = "v1.98.0"
-	pinnedCommit       = "d8f71d7bdbd7c9873d98293f83d64c6db72847e6"
-	pinnedPython       = "3.12.14"
-	pinnedUV           = "0.12.6"
-	pinnedUVLockSHA256 = "a7cc57875c67de85bbae0f82b834f31fc9d0c029073ef29e0883787a31a985e8"
+	pinnedRepository        = "https://github.com/BerriAI/litellm"
+	pinnedTag               = "v1.98.0"
+	pinnedCommit            = "d8f71d7bdbd7c9873d98293f83d64c6db72847e6"
+	pinnedPython            = "3.12.14"
+	pinnedUV                = "0.12.6"
+	pinnedUVLockSHA256      = "a7cc57875c67de85bbae0f82b834f31fc9d0c029073ef29e0883787a31a985e8"
+	pinnedLazyFeatureSHA256 = "a937cdd378769502f22840c501cb992a1fab7d4609c1deb402e81095fa9837ff"
 )
 
 var httpMethods = map[string]string{
@@ -62,7 +66,25 @@ type Operation struct {
 type Artifact struct {
 	SchemaVersion  int                     `json:"schema_version"`
 	UpstreamCommit string                  `json:"upstream_commit"`
+	LazyFeatures   []LazyFeatureEvidence   `json:"lazy_features"`
 	Routes         []SupplementalOperation `json:"routes"`
+}
+
+type LazyFeatureContract struct {
+	Name                  string   `json:"name"`
+	Module                string   `json:"module"`
+	PathPrefixes          []string `json:"path_prefixes"`
+	PathSuffixes          []string `json:"path_suffixes"`
+	Registration          string   `json:"registration"`
+	Attribute             string   `json:"attribute"`
+	MountPrefix           string   `json:"mount_prefix"`
+	PersistentSwaggerStub bool     `json:"persistent_swagger_stub"`
+}
+
+type LazyFeatureEvidence struct {
+	LazyFeatureContract
+	LiveOperationCount    int `json:"live_operation_count"`
+	OpenAPIOperationCount int `json:"openapi_operation_count"`
 }
 
 type SupplementalOperation struct {
@@ -96,8 +118,8 @@ type Manifest struct {
 		SHA256     string `json:"sha256"`
 		RouteCount int    `json:"route_count"`
 	} `json:"supplemental"`
-	RequiredLazyFeatures []string    `json:"required_lazy_features"`
-	Operations           []Operation `json:"provider_operations"`
+	RequiredLazyFeatures []LazyFeatureEvidence `json:"required_lazy_features"`
+	Operations           []Operation           `json:"provider_operations"`
 	ProviderGolden       struct {
 		Path           string `json:"path"`
 		SHA256         string `json:"sha256"`
@@ -129,7 +151,8 @@ type ReviewedPins struct {
 		ProviderGolden ArtifactPin `json:"provider_golden"`
 		Classification ArtifactPin `json:"classification"`
 	} `json:"artifacts"`
-	Categories []CategoryDefinition `json:"categories"`
+	LazyFeatures []LazyFeatureContract `json:"lazy_features"`
+	Categories   []CategoryDefinition  `json:"categories"`
 }
 
 type ArtifactPin struct {
@@ -209,10 +232,26 @@ type extractor struct {
 	constants         map[string]string
 	clientMethods     map[string]*ast.FuncDecl
 	clientMethodFiles map[string]string
+	typesInfo         *types.Info
+}
+
+type callTarget struct {
+	name       string
+	pathIndex  int
+	bound      bool
+	clientCall bool
+	helperCall bool
 }
 
 func ExtractProvider(root string) ([]Operation, error) {
-	x := &extractor{root: root, fset: token.NewFileSet(), files: map[string]*ast.File{}, funcs: map[string]*ast.FuncDecl{}, constants: map[string]string{}, clientMethods: map[string]*ast.FuncDecl{}, clientMethodFiles: map[string]string{}}
+	x := &extractor{
+		root: root, fset: token.NewFileSet(), files: map[string]*ast.File{}, funcs: map[string]*ast.FuncDecl{},
+		constants: map[string]string{}, clientMethods: map[string]*ast.FuncDecl{}, clientMethodFiles: map[string]string{},
+		typesInfo: &types.Info{
+			Types: map[ast.Expr]types.TypeAndValue{}, Defs: map[*ast.Ident]types.Object{},
+			Uses: map[*ast.Ident]types.Object{}, Selections: map[*ast.SelectorExpr]*types.Selection{},
+		},
+	}
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return nil, err
@@ -243,6 +282,16 @@ func ExtractProvider(root string) ([]Operation, error) {
 		}
 	}
 
+	parsedFiles := make([]*ast.File, 0, len(x.files))
+	for _, file := range x.files {
+		parsedFiles = append(parsedFiles, file)
+	}
+	sort.Slice(parsedFiles, func(i, j int) bool {
+		return x.fset.Position(parsedFiles[i].Pos()).Filename < x.fset.Position(parsedFiles[j].Pos()).Filename
+	})
+	config := &types.Config{Importer: importer.Default(), Error: func(error) {}}
+	_, _ = config.Check("github.com/nicholas-cecere/terraform-provider-litellm/internal/provider", x.fset, parsedFiles, x.typesInfo)
+
 	if err := x.validateClientTransport(); err != nil {
 		return nil, err
 	}
@@ -260,6 +309,7 @@ func ExtractProvider(root string) ([]Operation, error) {
 				continue
 			}
 			env := x.functionEnv(fn, nil, map[string]bool{})
+			aliases := x.functionCallAliases(fn)
 			ast.Inspect(fn.Body, func(n ast.Node) bool {
 				call, ok := n.(*ast.CallExpr)
 				if !ok {
@@ -287,17 +337,11 @@ func ExtractProvider(root string) ([]Operation, error) {
 					extracted = append(extracted, Operation{Method: "GET", Path: path, QueryParameters: sortedKeys(query), Evidence: []Evidence{{File: "internal/provider/" + base, Line: pos.Line}}})
 					return true
 				}
-				pathIndex, isClientRequest := clientRequestMethods[name]
-				if isClientRequest && !callHasClientReceiver(call, fn) {
-					isClientRequest = false
+				target, isRequest := x.resolveCallTarget(call, fn, aliases)
+				if !isRequest {
+					return true
 				}
-				if !isClientRequest {
-					var isHelperRequest bool
-					pathIndex, isHelperRequest = helperRequestWrappers[name]
-					if !isHelperRequest {
-						return true
-					}
-				}
+				pathIndex, isClientRequest := target.pathIndex, target.clientCall
 				if len(call.Args) <= pathIndex {
 					problems = append(problems, fmt.Sprintf("%s:%d: malformed HTTP wrapper call", base, pos.Line))
 					return true
@@ -371,13 +415,38 @@ func receiverName(fn *ast.FuncDecl) string {
 	return fn.Recv.List[0].Names[0].Name
 }
 
-func callHasClientReceiver(call *ast.CallExpr, fn *ast.FuncDecl) bool {
+func (x *extractor) isClientType(t types.Type) bool {
+	if t == nil {
+		return false
+	}
+	if pointer, ok := t.(*types.Pointer); ok {
+		t = pointer.Elem()
+	}
+	named, ok := t.(*types.Named)
+	return ok && named.Obj() != nil && named.Obj().Name() == "Client" && named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == "github.com/nicholas-cecere/terraform-provider-litellm/internal/provider"
+}
+
+func (x *extractor) selectorHasClientReceiver(selector *ast.SelectorExpr) (bool, bool) {
+	if selection := x.typesInfo.Selections[selector]; selection != nil {
+		if x.isClientType(selection.Recv()) {
+			return true, selection.Kind() == types.MethodVal
+		}
+	}
+	return x.isClientType(x.typesInfo.TypeOf(selector.X)), true
+}
+
+func (x *extractor) callHasClientReceiver(call *ast.CallExpr, fn *ast.FuncDecl) bool {
 	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if ok {
+		if client, _ := x.selectorHasClientReceiver(selector); client {
+			return true
+		}
+	}
+	// Keep a narrow syntax fallback for intentionally incomplete adversarial fixtures.
 	if !ok {
 		return false
 	}
-	switch receiver := selector.X.(type) {
-	case *ast.Ident:
+	if receiver, ok := selector.X.(*ast.Ident); ok {
 		if receiverTypeName(fn) == "Client" && receiver.Name == receiverName(fn) {
 			return true
 		}
@@ -391,32 +460,177 @@ func callHasClientReceiver(call *ast.CallExpr, fn *ast.FuncDecl) bool {
 				if !typedClient || id.Name != "Client" {
 					continue
 				}
-				for _, name := range field.Names {
-					if name.Name == receiver.Name {
+				for _, parameter := range field.Names {
+					if parameter.Name == receiver.Name {
 						return true
 					}
 				}
 			}
 		}
-	case *ast.SelectorExpr:
-		return receiver.Sel.Name == "client" || receiver.Sel.Name == "Client"
 	}
 	return false
 }
 
-func rawHTTPCallName(call *ast.CallExpr) (string, bool) {
-	name := callName(call.Fun)
-	rawHTTP := name == "NewRequest" || name == "NewRequestWithContext" || name == "Do" || name == "RoundTrip"
-	if selector, ok := call.Fun.(*ast.SelectorExpr); ok {
-		root := selectorRootName(selector.X)
-		if root == "http" && (name == "Get" || name == "Post" || name == "PostForm" || name == "Head") {
-			rawHTTP = true
+func (x *extractor) targetFromExpr(expr ast.Expr, fn *ast.FuncDecl) (callTarget, bool) {
+	switch node := expr.(type) {
+	case *ast.SelectorExpr:
+		name := node.Sel.Name
+		if pathIndex, ok := clientRequestMethods[name]; ok {
+			if client, bound := x.selectorHasClientReceiver(node); client {
+				if !bound {
+					pathIndex++
+				}
+				return callTarget{name: name, pathIndex: pathIndex, bound: bound, clientCall: true}, true
+			}
+			fake := &ast.CallExpr{Fun: node}
+			if x.callHasClientReceiver(fake, fn) {
+				return callTarget{name: name, pathIndex: pathIndex, bound: true, clientCall: true}, true
+			}
 		}
-		if strings.Contains(strings.ToLower(root), "httpclient") && (name == "Get" || name == "Post" || name == "Head") {
-			rawHTTP = true
+	case *ast.Ident:
+		if pathIndex, ok := helperRequestWrappers[node.Name]; ok {
+			return callTarget{name: node.Name, pathIndex: pathIndex, helperCall: true}, true
 		}
 	}
-	return name, rawHTTP
+	return callTarget{}, false
+}
+
+func (x *extractor) functionCallAliases(fn *ast.FuncDecl) map[string]callTarget {
+	aliases := map[string]callTarget{}
+	ast.Inspect(fn.Body, func(node ast.Node) bool {
+		var left []ast.Expr
+		var right []ast.Expr
+		switch statement := node.(type) {
+		case *ast.AssignStmt:
+			left, right = statement.Lhs, statement.Rhs
+		case *ast.DeclStmt:
+			declaration, ok := statement.Decl.(*ast.GenDecl)
+			if !ok {
+				return true
+			}
+			for _, item := range declaration.Specs {
+				specification, ok := item.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				for i, name := range specification.Names {
+					if i < len(specification.Values) {
+						if target, found := x.targetFromExpr(specification.Values[i], fn); found {
+							aliases[name.Name] = target
+						}
+					}
+				}
+			}
+			return true
+		default:
+			return true
+		}
+		for i, expression := range left {
+			identifier, ok := expression.(*ast.Ident)
+			if !ok || i >= len(right) {
+				continue
+			}
+			if target, found := x.targetFromExpr(right[i], fn); found {
+				aliases[identifier.Name] = target
+			} else if source, ok := right[i].(*ast.Ident); ok {
+				if target, found := aliases[source.Name]; found {
+					aliases[identifier.Name] = target
+				}
+			}
+		}
+		return true
+	})
+	return aliases
+}
+
+func (x *extractor) resolveCallTarget(call *ast.CallExpr, fn *ast.FuncDecl, aliases map[string]callTarget) (callTarget, bool) {
+	if identifier, ok := call.Fun.(*ast.Ident); ok {
+		if target, found := aliases[identifier.Name]; found {
+			return target, true
+		}
+	}
+	return x.targetFromExpr(call.Fun, fn)
+}
+
+func (x *extractor) rawHTTPCallName(call *ast.CallExpr) (string, bool) {
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return callName(call.Fun), false
+	}
+	name := selector.Sel.Name
+	selection := x.typesInfo.Selections[selector]
+	object := x.typesInfo.Uses[selector.Sel]
+	if object == nil && selection != nil {
+		object = selection.Obj()
+	}
+	if object == nil || object.Pkg() == nil || object.Pkg().Path() != "net/http" {
+		return name, false
+	}
+	if selection == nil {
+		packageFunctions := map[string]bool{
+			"NewRequest": true, "NewRequestWithContext": true, "Get": true,
+			"Post": true, "PostForm": true, "Head": true,
+		}
+		return name, packageFunctions[name]
+	}
+	receiver := selection.Recv()
+	if pointer, ok := receiver.(*types.Pointer); ok {
+		receiver = pointer.Elem()
+	}
+	named, _ := receiver.(*types.Named)
+	clientMethod := named != nil && named.Obj() != nil && named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == "net/http" && named.Obj().Name() == "Client"
+	return name, (clientMethod && map[string]bool{"Get": true, "Post": true, "PostForm": true, "Head": true, "Do": true}[name]) || name == "RoundTrip"
+}
+
+func (x *extractor) functionNameAliases(fn *ast.FuncDecl, candidates map[string]bool) map[string]string {
+	aliases := map[string]string{}
+	ast.Inspect(fn.Body, func(node ast.Node) bool {
+		assignment, ok := node.(*ast.AssignStmt)
+		if !ok {
+			return true
+		}
+		for i, left := range assignment.Lhs {
+			name, ok := left.(*ast.Ident)
+			if !ok || i >= len(assignment.Rhs) {
+				continue
+			}
+			if source, ok := assignment.Rhs[i].(*ast.Ident); ok {
+				if candidates[source.Name] {
+					aliases[name.Name] = source.Name
+				} else if target := aliases[source.Name]; target != "" {
+					aliases[name.Name] = target
+				}
+			}
+		}
+		return true
+	})
+	return aliases
+}
+
+func (x *extractor) rawHTTPAliases(fn *ast.FuncDecl) map[string]string {
+	aliases := map[string]string{}
+	ast.Inspect(fn.Body, func(node ast.Node) bool {
+		assignment, ok := node.(*ast.AssignStmt)
+		if !ok {
+			return true
+		}
+		for i, left := range assignment.Lhs {
+			name, ok := left.(*ast.Ident)
+			if !ok || i >= len(assignment.Rhs) {
+				continue
+			}
+			right := assignment.Rhs[i]
+			if selector, ok := right.(*ast.SelectorExpr); ok {
+				if rawName, raw := x.rawHTTPCallName(&ast.CallExpr{Fun: selector}); raw {
+					aliases[name.Name] = rawName
+				}
+			} else if source, ok := right.(*ast.Ident); ok && aliases[source.Name] != "" {
+				aliases[name.Name] = aliases[source.Name]
+			}
+		}
+		return true
+	})
+	return aliases
 }
 
 func (x *extractor) validateClientTransport() error {
@@ -430,29 +644,40 @@ func (x *extractor) validateClientTransport() error {
 	}
 	freeDirect := map[string]bool{}
 	freeEdges := map[string]map[string]bool{}
+	freeCandidates := map[string]bool{}
+	for candidate := range freeFunctions {
+		freeCandidates[candidate] = true
+	}
 	for name, fn := range freeFunctions {
 		freeEdges[name] = map[string]bool{}
+		aliases := x.functionCallAliases(fn)
+		freeAliases := x.functionNameAliases(fn, freeCandidates)
+		rawAliases := x.rawHTTPAliases(fn)
 		ast.Inspect(fn.Body, func(node ast.Node) bool {
 			call, ok := node.(*ast.CallExpr)
 			if !ok {
 				return true
 			}
-			if _, raw := rawHTTPCallName(call); raw {
+			if _, raw := x.rawHTTPCallName(call); raw {
 				freeDirect[name] = true
 			}
 			called := callName(call.Fun)
-			if callHasClientReceiver(call, fn) {
-				if _, ok := clientRequestMethods[called]; ok {
-					freeDirect[name] = true
-				}
-				if approvedClientTransportInternals[called] {
-					freeDirect[name] = true
-				}
+			if rawAliases[called] != "" {
+				freeDirect[name] = true
+			}
+			if target, found := x.resolveCallTarget(call, fn, aliases); found && target.clientCall {
+				freeDirect[name] = true
+			}
+			if x.callHasClientReceiver(call, fn) && approvedClientTransportInternals[called] {
+				freeDirect[name] = true
 			}
 			if _, ok := helperRequestWrappers[called]; ok {
 				freeDirect[name] = true
 			}
 			if _, ok := call.Fun.(*ast.Ident); ok {
+				if freeAliases[called] != "" {
+					called = freeAliases[called]
+				}
 				if _, exists := freeFunctions[called]; exists {
 					freeEdges[name][called] = true
 				}
@@ -486,28 +711,39 @@ func (x *extractor) validateClientTransport() error {
 	direct := map[string]bool{}
 	edges := map[string]map[string]bool{}
 	for name, fn := range x.clientMethods {
-		receiver := receiverName(fn)
 		edges[name] = map[string]bool{}
+		aliases := x.functionCallAliases(fn)
+		freeAliases := x.functionNameAliases(fn, freeCandidates)
+		rawAliases := x.rawHTTPAliases(fn)
 		ast.Inspect(fn.Body, func(node ast.Node) bool {
 			call, ok := node.(*ast.CallExpr)
 			if !ok {
 				return true
 			}
-			if _, raw := rawHTTPCallName(call); raw {
+			if _, raw := x.rawHTTPCallName(call); raw {
 				direct[name] = true
 			}
-			if id, ok := call.Fun.(*ast.Ident); ok && freeReaches[id.Name] {
+			called := callName(call.Fun)
+			if rawAliases[called] != "" {
 				direct[name] = true
+			}
+			if target, found := x.resolveCallTarget(call, fn, aliases); found && target.clientCall {
+				direct[name] = true
+			}
+			if id, ok := call.Fun.(*ast.Ident); ok {
+				freeName := id.Name
+				if freeAliases[freeName] != "" {
+					freeName = freeAliases[freeName]
+				}
+				if freeReaches[freeName] {
+					direct[name] = true
+				}
 			}
 			selector, ok := call.Fun.(*ast.SelectorExpr)
-			if !ok {
+			if !ok || !x.callHasClientReceiver(call, fn) {
 				return true
 			}
-			id, ok := selector.X.(*ast.Ident)
-			if !ok || id.Name != receiver {
-				return true
-			}
-			called := selector.Sel.Name
+			called = selector.Sel.Name
 			if _, exists := x.clientMethods[called]; exists {
 				edges[name][called] = true
 			}
@@ -555,7 +791,7 @@ func (x *extractor) validateClientTransport() error {
 			}
 			ast.Inspect(fn.Body, func(node ast.Node) bool {
 				call, ok := node.(*ast.CallExpr)
-				if !ok || !callHasClientReceiver(call, fn) {
+				if !ok || !x.callHasClientReceiver(call, fn) {
 					return true
 				}
 				if approvedClientTransportInternals[callName(call.Fun)] {
@@ -593,6 +829,23 @@ func (x *extractor) functionEnv(fn *ast.FuncDecl, bindings map[string]value, sta
 			switch node := n.(type) {
 			case *ast.AssignStmt:
 				for i, lhs := range node.Lhs {
+					if index, ok := lhs.(*ast.IndexExpr); ok {
+						id, identifier := index.X.(*ast.Ident)
+						if !identifier || !x.isURLValuesExpr(index.X) {
+							continue
+						}
+						v := env[id.Name]
+						if v.queries == nil {
+							v = literalValue("")
+						}
+						if query, literal := stringLiteral(index.Index); literal {
+							v.queries[query] = true
+						} else {
+							v.unresolvedQuery = true
+						}
+						env[id.Name] = v
+						continue
+					}
 					id, ok := lhs.(*ast.Ident)
 					if !ok || i >= len(node.Rhs) {
 						continue
@@ -733,12 +986,14 @@ func (x *extractor) eval(expr ast.Expr, env map[string]value, stack map[string]b
 			return out
 		}
 	case *ast.CompositeLit:
-		if isURLValuesType(node.Type) {
+		if x.isURLValuesExpr(node) {
 			v := literalValue("")
 			for _, elt := range node.Elts {
 				if kv, ok := elt.(*ast.KeyValueExpr); ok {
-					if q, ok := stringLiteral(kv.Key); ok {
+					if q, literal := stringLiteral(kv.Key); literal {
 						v.queries[q] = true
+					} else {
+						v.unresolvedQuery = true
 					}
 				}
 			}
@@ -863,12 +1118,17 @@ func (x *extractor) detectRawHTTP() error {
 			if !ok || fn.Body == nil {
 				continue
 			}
+			rawAliases := x.rawHTTPAliases(fn)
 			ast.Inspect(fn.Body, func(n ast.Node) bool {
 				call, ok := n.(*ast.CallExpr)
 				if !ok {
 					return true
 				}
-				name, rawHTTP := rawHTTPCallName(call)
+				name, rawHTTP := x.rawHTTPCallName(call)
+				if !rawHTTP {
+					name = rawAliases[callName(call.Fun)]
+					rawHTTP = name != ""
+				}
 				if !rawHTTP {
 					return true
 				}
@@ -976,9 +1236,10 @@ func stringLiteral(expr ast.Expr) (string, bool) {
 	}
 	return constant.StringVal(v), true
 }
-func isURLValuesType(expr ast.Expr) bool {
-	sel, ok := expr.(*ast.SelectorExpr)
-	return ok && sel.Sel.Name == "Values"
+func (x *extractor) isURLValuesExpr(expr ast.Expr) bool {
+	t := x.typesInfo.TypeOf(expr)
+	named, ok := t.(*types.Named)
+	return ok && named.Obj() != nil && named.Obj().Name() == "Values" && named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == "net/url"
 }
 func sortedKeys(m map[string]bool) []string {
 	out := make([]string, 0, len(m))
@@ -1203,8 +1464,11 @@ func Verify(repoRoot string) error {
 	if err := readJSONFile(suppPath, &supplemental); err != nil {
 		return err
 	}
-	if supplemental.SchemaVersion != 1 || supplemental.UpstreamCommit != pinnedCommit || len(supplemental.Routes) != pins.Artifacts.Supplemental.OperationCount || len(supplemental.Routes) != manifest.Supplemental.RouteCount {
+	if supplemental.SchemaVersion != 2 || supplemental.UpstreamCommit != pinnedCommit || len(supplemental.Routes) != pins.Artifacts.Supplemental.OperationCount || len(supplemental.Routes) != manifest.Supplemental.RouteCount {
 		return errors.New("supplemental artifact metadata differs from reviewed pins")
+	}
+	if err := validateLazyFeatureEvidence(supplemental.LazyFeatures, manifest.RequiredLazyFeatures, pins.LazyFeatures); err != nil {
+		return err
 	}
 
 	extracted, err := ExtractProvider(filepath.Join(repoRoot, "internal/provider"))
@@ -1288,11 +1552,41 @@ func safeManifestPath(path string) bool {
 	return path != "" && !filepath.IsAbs(path) && filepath.Clean(path) == path && path != ".." && !strings.HasPrefix(path, ".."+string(filepath.Separator))
 }
 
-func validateReview(manifest Manifest, pins ReviewedPins, classification ReviewedClassification, contracts map[string][]contractOperation, supported []Operation) error {
-	requiredLazy := []string{"access_groups", "agents", "guardrails", "mcp_management", "prompts", "search_tools"}
-	if strings.Join(manifest.RequiredLazyFeatures, ",") != strings.Join(requiredLazy, ",") {
-		return errors.New("required lazy feature review is stale")
+func validateLazyFeatureEvidence(supplemental, manifest []LazyFeatureEvidence, reviewed []LazyFeatureContract) error {
+	if len(reviewed) != 33 || len(supplemental) != len(reviewed) || !reflect.DeepEqual(supplemental, manifest) {
+		return errors.New("complete lazy feature evidence differs between reviewed and generated artifacts")
 	}
+	encoded, err := json.Marshal(reviewed)
+	if err != nil {
+		return err
+	}
+	digest := sha256.Sum256(encoded)
+	if hex.EncodeToString(digest[:]) != pinnedLazyFeatureSHA256 {
+		return errors.New("reviewed lazy feature mounting contract differs from the compiled pin")
+	}
+	seenNames, seenModules := map[string]bool{}, map[string]bool{}
+	for index, evidence := range supplemental {
+		if !reflect.DeepEqual(evidence.LazyFeatureContract, reviewed[index]) {
+			return fmt.Errorf("generated lazy feature contract differs for index %d", index)
+		}
+		if seenNames[evidence.Name] || seenModules[evidence.Module] {
+			return fmt.Errorf("duplicate lazy feature definition %q", evidence.Name)
+		}
+		seenNames[evidence.Name], seenModules[evidence.Module] = true, true
+		if evidence.LiveOperationCount < 1 {
+			return fmt.Errorf("lazy feature %q has zero live routes", evidence.Name)
+		}
+		if evidence.OpenAPIOperationCount < 1 && evidence.Name != "mcp_byok_oauth" {
+			return fmt.Errorf("lazy feature %q has zero generated OpenAPI routes", evidence.Name)
+		}
+		if evidence.Name == "mcp_byok_oauth" && evidence.OpenAPIOperationCount != 0 {
+			return errors.New("reviewed hidden-only mcp_byok_oauth exception changed")
+		}
+	}
+	return nil
+}
+
+func validateReview(manifest Manifest, pins ReviewedPins, classification ReviewedClassification, contracts map[string][]contractOperation, supported []Operation) error {
 	for _, operation := range manifest.Operations {
 		if len(operation.Evidence) == 0 {
 			return fmt.Errorf("provider operation %s %s lacks code evidence", operation.Method, operation.Path)
