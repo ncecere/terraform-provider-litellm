@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -1250,8 +1251,44 @@ func TestManifestPinnedMetadataCountsAndReviewInventory(t *testing.T) {
 	if err != nil || json.Unmarshal(pinsData, &pins) != nil {
 		t.Fatalf("load reviewed pins: %v", err)
 	}
-	if pins.Upstream.UV != "0.12.6" || pins.Artifacts.ProviderGolden.OperationCount != 103 || pins.Artifacts.Classification.OperationCount != 698 || len(pins.LazyFeatures) != 33 {
+	if pins.Upstream.UV != "0.12.6" || pins.Artifacts.ProviderGolden.OperationCount != 108 || pins.Artifacts.Classification.OperationCount != 693 || len(pins.LazyFeatures) != 33 {
 		t.Fatalf("reviewed pins changed unexpectedly: artifacts=%+v lazy=%d", pins.Artifacts, len(pins.LazyFeatures))
+	}
+}
+
+func TestJWTKeyMappingOperationsAreExactSupportedInventory(t *testing.T) {
+	root := repositoryRoot(t)
+	var golden []Operation
+	if err := readJSONFile(filepath.Join(root, "internal", "contractapi", "testdata", "provider-operations.golden.json"), &golden); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"POST /jwt/key/mapping/delete": "",
+		"GET /jwt/key/mapping/info":    "id",
+		"GET /jwt/key/mapping/list":    "page,size",
+		"POST /jwt/key/mapping/new":    "",
+		"POST /jwt/key/mapping/update": "",
+	}
+	seen := map[string]string{}
+	for _, operation := range golden {
+		key := operation.Method + " " + operation.Path
+		if _, reviewed := want[key]; reviewed {
+			seen[key] = strings.Join(operation.QueryParameters, ",")
+		}
+	}
+	if !reflect.DeepEqual(seen, want) {
+		t.Fatalf("JWT key mapping provider inventory = %#v, want %#v", seen, want)
+	}
+
+	var classification ReviewedClassification
+	if err := readJSONFile(filepath.Join(root, "internal", "contract", "reviewed-operation-classification.json"), &classification); err != nil {
+		t.Fatal(err)
+	}
+	for _, operation := range classification.Operations {
+		key := operation.Method + " " + operation.Path
+		if _, supported := want[key]; supported {
+			t.Fatalf("supported JWT key mapping operation remains classified as unsupported: %s", key)
+		}
 	}
 }
 

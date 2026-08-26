@@ -1141,31 +1141,6 @@
       "path": "/interactions/{interaction_id}/cancel"
     },
     {
-      "category": "jwt_mapping_management",
-      "method": "POST",
-      "path": "/jwt/key/mapping/delete"
-    },
-    {
-      "category": "jwt_mapping_management",
-      "method": "GET",
-      "path": "/jwt/key/mapping/info"
-    },
-    {
-      "category": "jwt_mapping_management",
-      "method": "GET",
-      "path": "/jwt/key/mapping/list"
-    },
-    {
-      "category": "jwt_mapping_management",
-      "method": "POST",
-      "path": "/jwt/key/mapping/new"
-    },
-    {
-      "category": "jwt_mapping_management",
-      "method": "POST",
-      "path": "/jwt/key/mapping/update"
-    },
-    {
       "category": "key_management",
       "method": "GET",
       "path": "/key/aliases"

@@ -2829,7 +2829,7 @@ func validateReview(manifest Manifest, pins ReviewedPins, classification Reviewe
 		categories[category.ID] = category
 	}
 	requiredDurable := map[string]string{
-		"credential_inventory": "#248", "vector_store_management": "#249", "jwt_mapping_management": "#250",
+		"credential_inventory": "#248", "vector_store_management": "#249",
 		"pass_through_configuration": "#251", "policy_version_attachment_management": "#252",
 		"mcp_toolset_management": "#207", "customer_end_user_management": "#207", "scim_directory_management": "#207",
 		"global_proxy_configuration": "#207",

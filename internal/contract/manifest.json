@@ -1,10 +1,10 @@
 {
   "classification": {
     "excluded_non_durable": 504,
-    "operation_count": 698,
+    "operation_count": 693,
     "path": "internal/contract/reviewed-operation-classification.json",
-    "sha256": "fca72e8a35ca5a8f30db1e8f9ba253e87352443856bdd0def9971ef507b53478",
-    "unsupported_durable": 194
+    "sha256": "c1fa3c7f88f6d738cc30dfc94c402f0eddce0a5663f45890692714cadef3c393",
+    "unsupported_durable": 189
   },
   "generation_command": "make contract-update LITELLM_SOURCE=../litellm",
   "openapi": {
@@ -14,9 +14,9 @@
     "sha256": "ab876dc970a8cc835e30cbdf65ece45a7bfd90bad0c7585bd4557d27c4a7615a"
   },
   "provider_golden": {
-    "operation_count": 103,
+    "operation_count": 108,
     "path": "internal/contractapi/testdata/provider-operations.golden.json",
-    "sha256": "cd8f2ec17989bc3b5fcd3525442228df89ec195adb6c6d15bd443cd1b2be271f"
+    "sha256": "aca11a58978fde722ff99abb4256d2be769fd4cea3ce518c8e86950589c99731"
   },
   "provider_operations": [
     {
@@ -401,6 +401,79 @@
       "path_parameters": [
         "guardrail_id"
       ],
+      "query_parameters": []
+    },
+    {
+      "evidence": [
+        {
+          "file": "internal/provider/resource_jwt_key_mapping.go",
+          "line": 537
+        }
+      ],
+      "method": "POST",
+      "path": "/jwt/key/mapping/delete",
+      "path_parameters": [],
+      "query_parameters": []
+    },
+    {
+      "evidence": [
+        {
+          "file": "internal/provider/jwt_key_mapping_api.go",
+          "line": 180
+        },
+        {
+          "file": "internal/provider/jwt_key_mapping_api.go",
+          "line": 182
+        }
+      ],
+      "method": "GET",
+      "path": "/jwt/key/mapping/info",
+      "path_parameters": [],
+      "query_parameters": [
+        "id"
+      ]
+    },
+    {
+      "evidence": [
+        {
+          "file": "internal/provider/jwt_key_mapping_api.go",
+          "line": 261
+        }
+      ],
+      "method": "GET",
+      "path": "/jwt/key/mapping/list",
+      "path_parameters": [],
+      "query_parameters": [
+        "page",
+        "size"
+      ]
+    },
+    {
+      "evidence": [
+        {
+          "file": "internal/provider/resource_jwt_key_mapping.go",
+          "line": 257
+        }
+      ],
+      "method": "POST",
+      "path": "/jwt/key/mapping/new",
+      "path_parameters": [],
+      "query_parameters": []
+    },
+    {
+      "evidence": [
+        {
+          "file": "internal/provider/resource_jwt_key_mapping.go",
+          "line": 286
+        },
+        {
+          "file": "internal/provider/resource_jwt_key_mapping.go",
+          "line": 465
+        }
+      ],
+      "method": "POST",
+      "path": "/jwt/key/mapping/update",
+      "path_parameters": [],
       "query_parameters": []
     },
     {
