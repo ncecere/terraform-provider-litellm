@@ -16,7 +16,7 @@
   "provider_golden": {
     "operation_count": 108,
     "path": "internal/contractapi/testdata/provider-operations.golden.json",
-    "sha256": "da2a2c5dc5bbf20450280c9abcd8dab407a767b405ee6856ab0dd23f2856eade"
+    "sha256": "32f2b0f6f5b8a0b3575ddbd5780d54040c71e25e43d798178ad216ef557dc960"
   },
   "provider_operations": [
     {
@@ -1537,7 +1537,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_agent.go",
-          "line": 408
+          "line": 407
         }
       ],
       "method": "POST",

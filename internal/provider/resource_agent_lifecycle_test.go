@@ -355,7 +355,7 @@ func TestAgentProtocolMinimalCreateReadNoDriftDestroyWithServerDefaults(t *testi
 	}
 }
 
-func TestAgentProtocolImportAdoptsLaterAPISkillSibling(t *testing.T) {
+func TestAgentProtocolImportDoesNotAdoptLaterAPISkillSibling(t *testing.T) {
 	ctx := context.Background()
 	var added atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -388,16 +388,8 @@ func TestAgentProtocolImportAdoptsLaterAPISkillSibling(t *testing.T) {
 		t.Fatal(err)
 	}
 	var skills []tftypes.Value
-	if err := card["skills"].As(&skills); err != nil || len(skills) != 2 {
-		t.Fatalf("imported skills=%d err=%v", len(skills), err)
-	}
-	var second map[string]tftypes.Value
-	if err := skills[1].As(&second); err != nil {
-		t.Fatal(err)
-	}
-	var secondID string
-	if err := second["id"].As(&secondID); err != nil || secondID != "added" {
-		t.Fatalf("added skill id=%q err=%v", secondID, err)
+	if err := card["skills"].As(&skills); err != nil || len(skills) != 1 {
+		t.Fatalf("ordinary Read changed imported public skill cardinality=%d err=%v", len(skills), err)
 	}
 }
 
@@ -610,7 +602,7 @@ func TestConfiguredMinimalAgentDoesNotAdoptServerCardDefaults(t *testing.T) {
 	}
 }
 
-func TestImportedAgentSkillScopeAdoptsAddedSiblingWithoutOwnershipTransfer(t *testing.T) {
+func TestImportedAgentSkillScopeKeepsAddedSiblingPrivate(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -626,8 +618,8 @@ func TestImportedAgentSkillScopeAdoptsAddedSiblingWithoutOwnershipTransfer(t *te
 	if err := r.readAgentWithOwnership(context.Background(), &data, false, owned); err != nil {
 		t.Fatal(err)
 	}
-	if len(data.AgentCard.Skills) != 2 || data.AgentCard.Skills[0].Description.ValueString() != "remote" || !owned[agentSkillLeaf("api-added", "name")] {
-		t.Fatalf("skill reconciliation=%#v ownership=%#v", data.AgentCard.Skills, owned)
+	if len(data.AgentCard.Skills) != 1 || data.AgentCard.Skills[0].Description.ValueString() != "remote" || owned[agentSkillLeaf("api-added", "name")] {
+		t.Fatalf("ordinary Read promoted hidden API skill: reconciliation=%#v ownership=%#v", data.AgentCard.Skills, owned)
 	}
 	if owned[agentSkillLeaf("configured", "description")] {
 		t.Fatal("structural scope transferred configured sibling ownership")

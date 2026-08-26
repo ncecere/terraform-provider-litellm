@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/url"
-	"slices"
 	"strings"
 	"time"
 
@@ -441,6 +440,7 @@ func (r *AgentResource) Create(ctx context.Context, req resource.CreateRequest, 
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentImportedFieldsPrivateKey, encodeAgentFieldSet(agentFieldSet{}))...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipInitializedPrivateKey, []byte("true"))...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipPendingPrivateKey, nil)...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentCollectionsPrivateKey, encodeAgentCollectionProvenance(emptyAgentCollectionProvenance()))...)
 	}
 }
 
@@ -452,6 +452,7 @@ func setAgentIdentityOnlyCreateState(ctx context.Context, resp *resource.CreateR
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentImportedFieldsPrivateKey, encodeAgentFieldSet(agentFieldSet{}))...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipInitializedPrivateKey, []byte("true"))...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipPendingPrivateKey, nil)...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentCollectionsPrivateKey, encodeAgentCollectionProvenance(emptyAgentCollectionProvenance()))...)
 	}
 }
 
@@ -504,6 +505,7 @@ func (r *AgentResource) Read(ctx context.Context, req resource.ReadRequest, resp
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentImportedFieldsPrivateKey, encodeAgentFieldSet(apiOwned))...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipInitializedPrivateKey, []byte("true"))...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipPendingPrivateKey, nil)...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentCollectionsPrivateKey, encodeAgentCollectionProvenance(emptyAgentCollectionProvenance()))...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, nil)...)
 	}
 }
@@ -641,21 +643,37 @@ func (r *AgentResource) Update(ctx context.Context, req resource.UpdateRequest, 
 		if committed == nil {
 			committed = cloneAgentFieldSet(importedFields)
 		}
-		if preservation.cardBase != nil && state.AgentCard != nil {
-			priorIDs := map[string]bool{}
-			for _, skill := range state.AgentCard.Skills {
+		collections := bundle.collections
+		if preservation.confirmedRaw != nil && planned.AgentCard != nil {
+			collections = agentHiddenCollectionsFromRaw(preservation.confirmedRaw, planned)
+			card, _ := preservation.confirmedRaw["agent_card_params"].(map[string]interface{})
+			publicSkillIDs := map[string]bool{}
+			for _, skill := range planned.AgentCard.Skills {
 				if !skill.ID.IsNull() && !skill.ID.IsUnknown() {
-					priorIDs[skill.ID.ValueString()] = true
+					publicSkillIDs[skill.ID.ValueString()] = true
 				}
 			}
-			for id, rawSkill := range agentSkillRawByID(preservation.cardBase) {
-				if !priorIDs[id] && importedFields[agentScopeCardSkills] {
+			for id, rawSkill := range agentSkillRawByID(card) {
+				if !publicSkillIDs[id] && importedFields[agentScopeCardSkills] {
 					markAgentSkillWireLeaves(committed, id, rawSkill)
+				}
+			}
+			if importedFields[agentScopeCardSignatures] {
+				for index, rawSignature := range agentWireObjectList(card["signatures"]) {
+					if index < len(planned.AgentCard.Signatures) {
+						continue
+					}
+					for _, field := range []string{"protected", "signature", "header"} {
+						if _, present := rawSignature[field]; present {
+							committed[agentSignatureLeaf(index, field)] = true
+						}
+					}
 				}
 			}
 		}
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentImportedFieldsPrivateKey, encodeAgentFieldSet(committed))...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipPendingPrivateKey, nil)...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentCollectionsPrivateKey, encodeAgentCollectionProvenance(collections))...)
 	}
 }
 
@@ -688,6 +706,7 @@ func (r *AgentResource) ImportState(ctx context.Context, req resource.ImportStat
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentImportedFieldsPrivateKey, nil)...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipInitializedPrivateKey, nil)...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipPendingPrivateKey, nil)...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentCollectionsPrivateKey, nil)...)
 	}
 }
 
@@ -1731,24 +1750,16 @@ func (r *AgentResource) reconcileAgentCardWithOwnership(cardRaw map[string]inter
 	reconcileString(agentFieldCardIcon, &out.IconURL, observed.IconURL)
 	reconcileString(agentFieldCardDocumentation, &out.DocumentationURL, observed.DocumentationURL)
 	reconcileBool(agentFieldCardAuthenticated, &out.SupportsAuthenticatedExtendedCard, observed.SupportsAuthenticatedExtendedCard)
-	rawSignatures, signaturesWirePresent := cardRaw["signatures"]
-	signatureMarkers := agentFieldSetHasPrefix(apiOwned, agentFieldCardSignatures+"[")
-	if prior.Signatures != nil || (apiOwned[agentScopeCardSignatures] && signaturesWirePresent && !signatureMarkers) {
-		out.Signatures = append([]AgentCardSignatureModel(nil), observed.Signatures...)
-		if apiOwned[agentScopeCardSignatures] && signaturesWirePresent {
-			for index, signature := range agentWireObjectList(rawSignatures) {
-				for _, field := range []string{"protected", "signature", "header"} {
-					_, present := signature[field]
-					adopt := index >= len(prior.Signatures)
-					if field == "header" && index < len(prior.Signatures) {
-						adopt = prior.Signatures[index].Header.IsNull() && prior.Signatures[index].HeaderJSON.IsNull()
-					}
-					if present && adopt {
-						apiOwned[agentSignatureLeaf(index, field)] = true
-					}
-				}
-			}
+	_, signaturesWirePresent := cardRaw["signatures"]
+	if prior.Signatures != nil {
+		// ListNestedBlock cardinality is configuration/state authority. A normal
+		// Read refreshes only the previously public prefix and never resurrects
+		// privately preserved or concurrently API-added signature entries.
+		count := len(prior.Signatures)
+		if count > len(observed.Signatures) {
+			count = len(observed.Signatures)
 		}
+		out.Signatures = append([]AgentCardSignatureModel(nil), observed.Signatures[:count]...)
 		if !apiOwned[agentFieldCardSignatures] && len(prior.Signatures) == len(out.Signatures) {
 			for index := range out.Signatures {
 				oldHeader, newHeader := prior.Signatures[index].Header, out.Signatures[index].Header
@@ -1758,12 +1769,8 @@ func (r *AgentResource) reconcileAgentCardWithOwnership(cardRaw map[string]inter
 				}
 			}
 		}
-		if observed.Signatures == nil {
-			for field := range apiOwned {
-				if strings.HasPrefix(field, agentFieldCardSignatures+"[") {
-					delete(apiOwned, field)
-				}
-			}
+		if !signaturesWirePresent {
+			out.Signatures = make([]AgentCardSignatureModel, 0)
 		}
 	}
 
@@ -1843,7 +1850,6 @@ func (r *AgentResource) reconcileAgentCardWithOwnership(cardRaw map[string]inter
 		}
 	}
 
-	rawSkillsByID := agentSkillRawByID(cardRaw)
 	remoteByID := map[string]AgentSkillModel{}
 	for _, skill := range observed.Skills {
 		remoteByID[skill.ID.ValueString()] = skill
@@ -1861,16 +1867,29 @@ func (r *AgentResource) reconcileAgentCardWithOwnership(cardRaw map[string]inter
 		}
 		current := old
 		reconcileString(agentSkillLeaf(id, "name"), &current.Name, remote.Name)
-		reconcileString(agentSkillLeaf(id, "description"), &current.Description, remote.Description)
-		reconcileList(agentSkillLeaf(id, "tags"), &current.Tags, remote.Tags, true)
-		reconcileList(agentSkillLeaf(id, "examples"), &current.Examples, remote.Examples, false)
-		reconcileList(agentSkillLeaf(id, "input_modes"), &current.InputModes, remote.InputModes, false)
-		reconcileList(agentSkillLeaf(id, "output_modes"), &current.OutputModes, remote.OutputModes, false)
-		securityField := agentSkillLeaf(id, "security")
-		if _, present := rawSkillsByID[id]["security"]; present && apiOwned[agentScopeCardSkills] && current.Security.IsNull() && current.SecurityJSON.IsNull() {
-			apiOwned[securityField] = true
+		// An omitted optional leaf in prior public block state remains omitted.
+		// Its API-owned raw value is provenance for the next overlay, not license
+		// for an ordinary Read to expand the public block after convergence.
+		if !current.Description.IsNull() {
+			reconcileString(agentSkillLeaf(id, "description"), &current.Description, remote.Description)
 		}
-		if apiOwned[securityField] || (!current.Security.IsNull() || !current.SecurityJSON.IsNull()) {
+		for _, leaf := range []struct {
+			name    string
+			target  *types.List
+			value   types.List
+			setLike bool
+		}{
+			{"tags", &current.Tags, remote.Tags, true},
+			{"examples", &current.Examples, remote.Examples, false},
+			{"input_modes", &current.InputModes, remote.InputModes, false},
+			{"output_modes", &current.OutputModes, remote.OutputModes, false},
+		} {
+			if !leaf.target.IsNull() {
+				reconcileList(agentSkillLeaf(id, leaf.name), leaf.target, leaf.value, leaf.setLike)
+			}
+		}
+		securityField := agentSkillLeaf(id, "security")
+		if !current.Security.IsNull() || !current.SecurityJSON.IsNull() {
 			current.Security = remote.Security
 			current.SecurityJSON = remote.SecurityJSON
 			if remote.Security.IsNull() && remote.SecurityJSON.IsNull() {
@@ -1880,22 +1899,9 @@ func (r *AgentResource) reconcileAgentCardWithOwnership(cardRaw map[string]inter
 		skills = append(skills, current)
 		seen[id] = true
 	}
-	newIDs := make([]string, 0)
-	for id := range remoteByID {
-		if !seen[id] {
-			newIDs = append(newIDs, id)
-		}
-	}
-	slices.Sort(newIDs)
-	for _, id := range newIDs {
-		if !apiOwned[agentScopeCardSkills] || agentFieldSetHasPrefix(apiOwned, agentLeaf(agentFieldCardSkills, id)+".") {
-			// Previously adopted API skills may be hidden after a configured-list
-			// apply. Preserve them privately/on wire without perpetual plan drift.
-			continue
-		}
-		skills = append(skills, remoteByID[id])
-		markAgentSkillWireLeaves(apiOwned, id, rawSkillsByID[id])
-	}
+	// Remote identities absent from prior public state remain hidden. Initial
+	// import uses readAgentCard above and is the sole full-resource projection;
+	// ordinary Reads never adopt API additions into ListNestedBlock state.
 	if prior.Skills == nil && len(skills) == 0 {
 		out.Skills = nil
 	} else {

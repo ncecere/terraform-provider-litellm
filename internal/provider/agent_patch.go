@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strings"
@@ -11,10 +12,11 @@ import (
 )
 
 type agentPatchPreservation struct {
-	paramsBase  map[string]interface{}
-	paramsPatch map[string]interface{}
-	cardBase    map[string]interface{}
-	cardPatch   map[string]interface{}
+	paramsBase   map[string]interface{}
+	paramsPatch  map[string]interface{}
+	cardBase     map[string]interface{}
+	cardPatch    map[string]interface{}
+	confirmedRaw map[string]interface{}
 }
 
 func cloneAgentWireObject(source map[string]interface{}) map[string]interface{} {
@@ -362,9 +364,23 @@ func overlayAgentCardRaw(base map[string]interface{}, plan, prior, config AgentR
 		}
 		desiredObject := agentWireObject(desired[wire.wire])
 		for field, childWire := range wire.leaves {
-			if usePlan(field) {
-				setAgentWireField(current, desiredObject, childWire)
+			if !usePlan(field) {
+				continue
 			}
+			// LiteLLM v1.98 stores only truthy streaming in capabilities.
+			// A configured false is therefore a legitimate clear represented by
+			// wire omission, not a false value that the round-trip preflight must
+			// reject as lossy. Other nested objects retain ordinary exact
+			// omission/null/value overlay semantics.
+			if wire.wire == "capabilities" {
+				if value, present := desiredObject[childWire]; present {
+					if enabled, isBool := value.(bool); isBool && !enabled {
+						delete(current, childWire)
+						continue
+					}
+				}
+			}
+			setAgentWireField(current, desiredObject, childWire)
 		}
 		if len(current) == 0 {
 			delete(patch, wire.wire)
@@ -375,14 +391,17 @@ func overlayAgentCardRaw(base map[string]interface{}, plan, prior, config AgentR
 	if config.AgentCard.Signatures != nil {
 		baseSignatures := agentWireObjectList(patch["signatures"])
 		desiredSignatures := agentWireObjectList(desired["signatures"])
-		merged := make([]interface{}, 0, len(baseSignatures)+len(desiredSignatures))
 		priorSignatureCount := 0
 		if prior.AgentCard != nil {
 			priorSignatureCount = len(prior.AgentCard.Signatures)
 		}
+		merged := make([]interface{}, 0, len(baseSignatures)+len(desiredSignatures))
 		for index, desiredSignature := range desiredSignatures {
 			current := map[string]interface{}{}
-			if index < len(baseSignatures) {
+			// Only a previously public slot may be overlaid in place. New
+			// configured slots are inserted before the privately represented tail;
+			// otherwise a hidden signature would be overwritten and lost.
+			if index < priorSignatureCount && index < len(baseSignatures) {
 				current = cloneAgentWireObject(baseSignatures[index])
 			}
 			for _, wire := range []string{"protected", "signature", "header"} {
@@ -393,8 +412,17 @@ func overlayAgentCardRaw(base map[string]interface{}, plan, prior, config AgentR
 			}
 			merged = append(merged, current)
 		}
-		for index := len(desiredSignatures); index < len(baseSignatures); index++ {
-			if agentFieldSetHasPrefix(imported, fmt.Sprintf("%s[%d].", agentFieldCardSignatures, index)) || (imported[agentScopeCardSignatures] && index >= priorSignatureCount) {
+		// Omitted prior public slots survive only while their leaf provenance is
+		// API-owned. This is what makes Terraform-owned removals real removals.
+		for index := len(desiredSignatures); index < priorSignatureCount && index < len(baseSignatures); index++ {
+			if agentFieldSetHasPrefix(imported, fmt.Sprintf("%s[%d].", agentFieldCardSignatures, index)) {
+				merged = append(merged, cloneAgentWireObject(baseSignatures[index]))
+			}
+		}
+		// Every authoritative entry beyond prior public cardinality is hidden or
+		// concurrently API-added. Retain it byte-semantically and in wire order.
+		for index := priorSignatureCount; index < len(baseSignatures); index++ {
+			if imported[agentScopeCardSignatures] || agentFieldSetHasPrefix(imported, fmt.Sprintf("%s[%d].", agentFieldCardSignatures, index)) {
 				merged = append(merged, cloneAgentWireObject(baseSignatures[index]))
 			}
 		}
@@ -461,7 +489,26 @@ func overlayAgentCardRaw(base map[string]interface{}, plan, prior, config AgentR
 	return patch, nil
 }
 
+func agentCanonicalWireEqual(left, right interface{}) bool {
+	leftJSON, leftErr := json.Marshal(left)
+	rightJSON, rightErr := json.Marshal(right)
+	if leftErr != nil || rightErr != nil {
+		return false
+	}
+	var leftValue, rightValue interface{}
+	if decodeJSONUseNumber(leftJSON, &leftValue) != nil || decodeJSONUseNumber(rightJSON, &rightValue) != nil {
+		return false
+	}
+	return exactJSONValuesEqual(leftValue, rightValue)
+}
+
 func agentPreservedValueMatches(base, patch, observed interface{}, path string) bool {
+	if path == "agent_card_params.skills" {
+		return agentPreservedSkillsMatch(base, patch, observed)
+	}
+	if path == "agent_card_params.signatures" {
+		return agentPreservedSignaturesMatch(base, patch, observed)
+	}
 	if exactJSONValuesEqual(base, patch) {
 		return exactJSONValuesEqual(base, observed)
 	}
@@ -498,70 +545,70 @@ func agentPreservedValueMatches(base, patch, observed interface{}, path string) 
 		}
 		return true
 	}
-	if path == "agent_card_params.skills" {
-		return agentPreservedSkillsMatch(base, patch, observed)
-	}
-	if path == "agent_card_params.signatures" {
-		return agentPreservedSignaturesMatch(base, patch, observed)
-	}
 	return true
 }
 
 func agentPreservedSignaturesMatch(base, patch, observed interface{}) bool {
-	baseList, patchList, observedList := agentWireObjectList(base), agentWireObjectList(patch), agentWireObjectList(observed)
-	max := len(baseList)
-	if len(patchList) > max {
-		max = len(patchList)
+	_ = base
+	patchList, observedList := agentWireObjectList(patch), agentWireObjectList(observed)
+	if len(observedList) < len(patchList) {
+		return false
 	}
-	if len(observedList) > max {
-		max = len(observedList)
-	}
-	for index := 0; index < max; index++ {
-		bp, pp, op := index < len(baseList), index < len(patchList), index < len(observedList)
-		if bp == pp && (!bp || exactJSONValuesEqual(baseList[index], patchList[index])) {
-			if bp != op || (bp && !exactJSONValuesEqual(baseList[index], observedList[index])) {
-				return false
-			}
-			continue
-		}
-		if bp && pp && (!op || !agentPreservedValueMatches(baseList[index], patchList[index], observedList[index], fmt.Sprintf("agent_card_params.signatures.%d", index))) {
+	for index := range patchList {
+		if !agentCanonicalWireEqual(patchList[index], observedList[index]) {
 			return false
 		}
 	}
+	// Stable concurrent API additions are allowed only as a tail. They are
+	// retained remotely and recorded privately after confirmation.
 	return true
 }
 
 func agentPreservedSkillsMatch(base, patch, observed interface{}) bool {
+	_ = base
 	asMap := func(value interface{}) map[string]map[string]interface{} {
-		card := map[string]interface{}{"skills": value}
-		return agentSkillRawByID(card)
+		return agentSkillRawByID(map[string]interface{}{"skills": value})
 	}
-	baseByID, patchByID, observedByID := asMap(base), asMap(patch), asMap(observed)
-	ids := map[string]bool{}
-	for id := range baseByID {
-		ids[id] = true
-	}
-	for id := range patchByID {
-		ids[id] = true
-	}
-	for id := range observedByID {
-		ids[id] = true
-	}
-	for id := range ids {
-		baseSkill, bp := baseByID[id]
-		patchSkill, pp := patchByID[id]
-		observedSkill, op := observedByID[id]
-		if bp == pp && (!bp || exactJSONValuesEqual(baseSkill, patchSkill)) {
-			if bp != op || (bp && !exactJSONValuesEqual(baseSkill, observedSkill)) {
-				return false
-			}
-			continue
-		}
-		if bp && pp && (!op || !agentPreservedValueMatches(baseSkill, patchSkill, observedSkill, "agent_card_params.skills."+id)) {
+	patchByID, observedByID := asMap(patch), asMap(observed)
+	for id, expected := range patchByID {
+		actual, present := observedByID[id]
+		if !present || !agentCanonicalWireEqual(expected, actual) {
 			return false
 		}
 	}
+	// Observed-only identities are concurrent API additions. Missing, changed,
+	// or resurrected Terraform-owned identities are still rejected above or by
+	// the collection ownership matcher.
 	return true
+}
+
+func agentHiddenCollectionsFromRaw(raw map[string]interface{}, public AgentResourceModel) agentCollectionProvenance {
+	result := emptyAgentCollectionProvenance()
+	card, _ := raw["agent_card_params"].(map[string]interface{})
+	if card == nil || public.AgentCard == nil {
+		return result
+	}
+	publicSkillIDs := map[string]bool{}
+	for _, skill := range public.AgentCard.Skills {
+		if !skill.ID.IsNull() && !skill.ID.IsUnknown() {
+			publicSkillIDs[skill.ID.ValueString()] = true
+		}
+	}
+	for _, skill := range agentWireObjectList(card["skills"]) {
+		id, _ := skill["id"].(string)
+		if !publicSkillIDs[id] {
+			result.Skills = append(result.Skills, cloneAgentWireObject(skill))
+		}
+	}
+	signatures := agentWireObjectList(card["signatures"])
+	publicCount := len(public.AgentCard.Signatures)
+	if publicCount > len(signatures) {
+		publicCount = len(signatures)
+	}
+	for _, signature := range signatures[publicCount:] {
+		result.Signatures = append(result.Signatures, cloneAgentWireObject(signature))
+	}
+	return result
 }
 
 func (e *agentPatchPreservation) matches(raw map[string]interface{}) bool {

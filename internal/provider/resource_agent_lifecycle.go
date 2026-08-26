@@ -22,7 +22,68 @@ const (
 	agentImportedFieldsPrivateKey       = "agent_imported_fields_v1"
 	agentOwnershipInitializedPrivateKey = "agent_ownership_initialized_v1"
 	agentOwnershipPendingPrivateKey     = "agent_ownership_pending_v1"
+	agentCollectionsPrivateKey          = "agent_hidden_collections_v1"
 )
+
+type agentCollectionProvenance struct {
+	Skills     []interface{} `json:"skills"`
+	Signatures []interface{} `json:"signatures"`
+}
+
+func emptyAgentCollectionProvenance() agentCollectionProvenance {
+	return agentCollectionProvenance{Skills: []interface{}{}, Signatures: []interface{}{}}
+}
+
+func encodeAgentCollectionProvenance(value agentCollectionProvenance) []byte {
+	if value.Skills == nil {
+		value.Skills = []interface{}{}
+	}
+	if value.Signatures == nil {
+		value.Signatures = []interface{}{}
+	}
+	encoded, _ := json.Marshal(value)
+	return encoded
+}
+
+func decodeAgentCollectionProvenance(raw []byte) (agentCollectionProvenance, error) {
+	result := emptyAgentCollectionProvenance()
+	if raw == nil {
+		return result, nil
+	}
+	var decoded interface{}
+	if err := decodeJSONUseNumber(raw, &decoded); err != nil {
+		return result, fmt.Errorf("provider-private agent collection data is malformed")
+	}
+	object, ok := decoded.(map[string]interface{})
+	if !ok || len(object) != 2 {
+		return result, fmt.Errorf("provider-private agent collection data is malformed")
+	}
+	skills, skillsOK := object["skills"].([]interface{})
+	signatures, signaturesOK := object["signatures"].([]interface{})
+	if !skillsOK || !signaturesOK {
+		return result, fmt.Errorf("provider-private agent collection data is malformed")
+	}
+	for _, rawSkill := range skills {
+		skill, ok := rawSkill.(map[string]interface{})
+		if !ok {
+			return result, fmt.Errorf("provider-private agent collection data is malformed")
+		}
+		id, idOK := skill["id"].(string)
+		if !idOK || strings.TrimSpace(id) == "" || id != strings.TrimSpace(id) {
+			return result, fmt.Errorf("provider-private agent collection data is malformed")
+		}
+	}
+	for _, rawSignature := range signatures {
+		if _, ok := rawSignature.(map[string]interface{}); !ok {
+			return result, fmt.Errorf("provider-private agent collection data is malformed")
+		}
+	}
+	result.Skills, result.Signatures = skills, signatures
+	if !bytes.Equal(raw, encodeAgentCollectionProvenance(result)) {
+		return emptyAgentCollectionProvenance(), fmt.Errorf("provider-private agent collection data is not canonical")
+	}
+	return result, nil
+}
 
 type agentPrivateReader interface {
 	GetKey(context.Context, string) ([]byte, diag.Diagnostics)
@@ -112,13 +173,14 @@ func decodeAgentFieldSet(raw []byte) (agentFieldSet, error) {
 }
 
 type agentOwnershipBundle struct {
-	committed agentFieldSet
-	pending   agentFieldSet
-	versioned bool
+	committed   agentFieldSet
+	pending     agentFieldSet
+	collections agentCollectionProvenance
+	versioned   bool
 }
 
 func readAgentOwnershipBundle(ctx context.Context, private agentPrivateReader) (agentOwnershipBundle, diag.Diagnostics) {
-	result := agentOwnershipBundle{committed: agentFieldSet{}}
+	result := agentOwnershipBundle{committed: agentFieldSet{}, collections: emptyAgentCollectionProvenance()}
 	var diagnostics diag.Diagnostics
 	if private == nil {
 		return result, diagnostics
@@ -126,13 +188,15 @@ func readAgentOwnershipBundle(ctx context.Context, private agentPrivateReader) (
 	committedRaw, committedDiags := private.GetKey(ctx, agentImportedFieldsPrivateKey)
 	initializedRaw, initializedDiags := private.GetKey(ctx, agentOwnershipInitializedPrivateKey)
 	pendingRaw, pendingDiags := private.GetKey(ctx, agentOwnershipPendingPrivateKey)
+	collectionsRaw, collectionsDiags := private.GetKey(ctx, agentCollectionsPrivateKey)
 	diagnostics.Append(committedDiags...)
 	diagnostics.Append(initializedDiags...)
 	diagnostics.Append(pendingDiags...)
+	diagnostics.Append(collectionsDiags...)
 	if diagnostics.HasError() {
 		return result, diagnostics
 	}
-	any := committedRaw != nil || initializedRaw != nil || pendingRaw != nil
+	any := committedRaw != nil || initializedRaw != nil || pendingRaw != nil || collectionsRaw != nil
 	if !any {
 		return result, diagnostics
 	}
@@ -147,7 +211,11 @@ func readAgentOwnershipBundle(ctx context.Context, private agentPrivateReader) (
 	if err != nil {
 		return invalid()
 	}
-	result.committed, result.versioned = committed, true
+	collections, err := decodeAgentCollectionProvenance(collectionsRaw)
+	if err != nil {
+		return invalid()
+	}
+	result.committed, result.collections, result.versioned = committed, collections, true
 	if pendingRaw != nil {
 		pending, err := decodeAgentFieldSet(pendingRaw)
 		if err != nil {
@@ -497,6 +565,7 @@ func (r *AgentResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanR
 		if resp.Private != nil {
 			resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentImportedFieldsPrivateKey, encodeAgentFieldSet(imported))...)
 			resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipInitializedPrivateKey, []byte("true"))...)
+			resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentCollectionsPrivateKey, encodeAgentCollectionProvenance(emptyAgentCollectionProvenance()))...)
 		}
 	}
 	mergeAPIMapLeavesIntoPlan := func(target *types.Map, prior types.Map, prefix string) bool {
@@ -1668,6 +1737,9 @@ func (r *AgentResource) confirmAgentMutationWithPreservation(ctx context.Context
 			if validateAgentModelSkillIdentities(observed) == nil && preservation.matches(raw) && len(agentMutationMismatches(planned, prior, config, imported, observed)) == 0 && !agentResourceHasUnknowns(observed) {
 				consecutive++
 				lastConfirmed = reconcileConfirmedAgentState(planned, observed, config, prior, imported)
+				if preservation != nil {
+					preservation.confirmedRaw = cloneAgentWireObject(raw)
+				}
 				if consecutive >= 2 {
 					return lastConfirmed, nil
 				}
@@ -1865,14 +1937,14 @@ func agentSignaturesMutationMatch(planned []AgentCardSignatureModel, priorCard *
 			}
 		}
 	}
-	for index := len(config); index < len(prior); index++ {
-		if agentFieldSetHasPrefix(imported, fmt.Sprintf("%s[%d].", agentFieldCardSignatures, index)) {
-			continue
-		}
-		if index < len(observed) {
-			return false
-		}
+	// With API-owned hidden signatures, cardinality alone cannot identify a
+	// removed public entry. The raw preservation confirmation verifies the exact
+	// complete-list PATCH. Non-imported resources have no hidden tail and retain
+	// strict cardinality confirmation here.
+	if !imported[agentScopeCardSignatures] && len(observed) != len(planned) {
+		return false
 	}
+	_ = prior
 	return true
 }
 
@@ -2062,38 +2134,12 @@ func reconcileConfirmedAgentState(planned, observed, config, prior AgentResource
 	} else {
 		result.StaticHeaders = config.StaticHeaders
 	}
-	// Keep preserved API-owned and concurrently API-added skill siblings in the
-	// confirmed state. Terraform-owned removals were already required absent by
-	// agentSkillsMutationMatch; publishing only the planned list here would forget
-	// the remote siblings that made the full-card mutation safe.
-	if result.AgentCard != nil && observed.AgentCard != nil {
-		plannedIDs, priorIDs := map[string]bool{}, map[string]bool{}
-		for _, skill := range result.AgentCard.Skills {
-			if !skill.ID.IsNull() && !skill.ID.IsUnknown() {
-				plannedIDs[skill.ID.ValueString()] = true
-			}
-		}
-		if prior.AgentCard != nil {
-			for _, skill := range prior.AgentCard.Skills {
-				if !skill.ID.IsNull() && !skill.ID.IsUnknown() {
-					priorIDs[skill.ID.ValueString()] = true
-				}
-			}
-		}
-		for _, skill := range observed.AgentCard.Skills {
-			if skill.ID.IsNull() || skill.ID.IsUnknown() {
-				continue
-			}
-			id := skill.ID.ValueString()
-			if plannedIDs[id] {
-				continue
-			}
-			if agentFieldSetHasPrefix(imported, agentLeaf(agentFieldCardSkills, id)+".") || (imported[agentScopeCardSkills] && !priorIDs[id]) {
-				result.AgentCard.Skills = append(result.AgentCard.Skills, skill)
-				plannedIDs[id] = true
-			}
-		}
-	}
+	// Apply must publish exactly the planned ListNestedBlock cardinality. Remote
+	// API-owned siblings are confirmed against the canonical raw response and
+	// retained only in provider-private provenance for future wire overlays.
+	_ = observed
+	_ = prior
+	_ = imported
 	_ = config
 	resolveAgentUnknowns(&result)
 	return result
