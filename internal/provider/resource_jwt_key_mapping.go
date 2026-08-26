@@ -56,13 +56,13 @@ func (r *JWTKeyMappingResource) ConfigValidators(context.Context) []resource.Con
 
 func (r *JWTKeyMappingResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "Manages a LiteLLM JWT claim-to-virtual-key mapping. The raw virtual key is write-only and requires Terraform 1.11 or compatible OpenTofu support for create. LiteLLM v1.98 does not expose evidence that could verify in-place key rotation.",
+		Description: "Manages a LiteLLM JWT claim-to-virtual-key mapping. The raw virtual key is write-only and requires Terraform 1.11 or compatible OpenTofu support for create and claim-pair replacement. LiteLLM v1.98 does not expose evidence that could verify in-place key rotation.",
 		Attributes: map[string]schema.Attribute{
 			"id":              schema.StringAttribute{Description: "Authoritative LiteLLM mapping UUID and import identifier.", Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
 			"jwt_claim_name":  schema.StringAttribute{Description: "JWT claim name. Immutable after creation; LiteLLM accepts the empty string.", Optional: true, Computed: true, PlanModifiers: []planmodifier.String{jwtKeyMappingImmutableClaimModifier{}}},
 			"jwt_claim_value": schema.StringAttribute{Description: "Sensitive JWT claim value to match. Immutable after creation; LiteLLM accepts the empty string.", Optional: true, Computed: true, Sensitive: true, PlanModifiers: []planmodifier.String{jwtKeyMappingImmutableClaimModifier{}}},
-			"key_wo":          schema.StringAttribute{Description: "Raw existing LiteLLM virtual key. Sent only on create and never stored in plan or state. Post-create rotation is rejected because LiteLLM v1.98 returns no verifiable token identity.", Optional: true, Sensitive: true, WriteOnly: true, Validators: []validator.String{stringvalidator.LengthAtLeast(1)}},
-			"key_wo_version":  schema.StringAttribute{Description: "Persisted create-time version marker for key_wo. Post-create changes are rejected; unchanged historical values remain plannable.", Optional: true, Validators: []validator.String{stringvalidator.LengthAtLeast(1)}},
+			"key_wo":          schema.StringAttribute{Description: "Raw existing LiteLLM virtual key. Sent only on create or immutable claim-pair replacement and never stored in plan or state. In-place rotation is rejected because LiteLLM v1.98 returns no verifiable token identity.", Optional: true, Sensitive: true, WriteOnly: true, Validators: []validator.String{stringvalidator.LengthAtLeast(1)}},
+			"key_wo_version":  schema.StringAttribute{Description: "Persisted create-time version marker for key_wo. Same-identity post-create changes are rejected; a known immutable claim-pair replacement permits a known non-empty marker with a known non-empty key. Unchanged historical values remain plannable.", Optional: true, Validators: []validator.String{stringvalidator.LengthAtLeast(1)}},
 			"description":     schema.StringAttribute{Description: "Optional mapping description. Once configured on a provider-created or previously managed mapping, assigning null clears it. An imported omitted description remains API-owned until a non-null value is configured.", Optional: true, Computed: true, PlanModifiers: []planmodifier.String{jwtKeyMappingOwnedNullableModifier{}}},
 			"is_active":       schema.BoolAttribute{Description: "Whether LiteLLM uses the mapping. Omitted imported values remain API-owned; false is sent explicitly.", Optional: true, Computed: true},
 			"created_at":      schema.StringAttribute{Description: "Creation timestamp returned by LiteLLM.", Computed: true},
@@ -89,7 +89,13 @@ func (jwtKeyMappingImmutableClaimModifier) PlanModifyString(_ context.Context, r
 		resp.PlanValue = req.StateValue
 		return
 	}
-	if !req.PlanValue.IsUnknown() && !req.PlanValue.Equal(req.StateValue) {
+	// Replacement is safe only when both sides of this immutable identity
+	// component are known. Unknown values must remain unknown until Terraform can
+	// re-plan them rather than scheduling a speculative destroy.
+	if req.StateValue.IsNull() || req.StateValue.IsUnknown() || req.PlanValue.IsNull() || req.PlanValue.IsUnknown() {
+		return
+	}
+	if !req.PlanValue.Equal(req.StateValue) {
 		resp.RequiresReplace = true
 	}
 }
@@ -127,24 +133,52 @@ func (r *JWTKeyMappingResource) ModifyPlan(ctx context.Context, req resource.Mod
 	// Omitted API-owned leaves must remain exactly state-backed even when another
 	// leaf causes an update plan. In particular, immutable claim omissions must
 	// never become a spurious replacement during description ownership changes.
+	plannedClaimName, plannedClaimValue := config.ClaimName, config.ClaimValue
 	if config.ClaimName.IsNull() {
+		plannedClaimName = state.ClaimName
 		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("jwt_claim_name"), state.ClaimName)...)
 	}
 	if config.ClaimValue.IsNull() {
+		plannedClaimValue = state.ClaimValue
 		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("jwt_claim_value"), state.ClaimValue)...)
 	}
 	if config.IsActive.IsNull() {
 		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("is_active"), state.IsActive)...)
 	}
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	knownClaimNameChange := !config.ClaimName.IsNull() && !config.ClaimName.IsUnknown() && !state.ClaimName.IsNull() && !state.ClaimName.IsUnknown() && !config.ClaimName.Equal(state.ClaimName)
+	knownClaimValueChange := !config.ClaimValue.IsNull() && !config.ClaimValue.IsUnknown() && !state.ClaimValue.IsNull() && !state.ClaimValue.IsUnknown() && !config.ClaimValue.Equal(state.ClaimValue)
+	claimReplacement := knownClaimNameChange || knownClaimValueChange
+	if claimReplacement {
+		// A known change to either immutable claim already carries RequiresReplace
+		// from its attribute modifier. Do not permit that destructive plan unless
+		// the complete old/new claim pair and replacement create credentials are
+		// available now. Create reads key_wo from configuration after the old row
+		// has been destroyed, so apply-time validation would be too late.
+		if state.ClaimName.IsNull() || state.ClaimName.IsUnknown() || state.ClaimValue.IsNull() || state.ClaimValue.IsUnknown() || plannedClaimName.IsNull() || plannedClaimName.IsUnknown() || plannedClaimValue.IsNull() || plannedClaimValue.IsUnknown() {
+			resp.Diagnostics.AddError("Uncertain JWT Claim Replacement", "The complete prior and planned JWT claim pairs must be known before Terraform can safely replace this mapping. No mutation was sent.")
+			return
+		}
+		if config.KeyWO.IsNull() || config.KeyWO.IsUnknown() || config.KeyWO.ValueString() == "" || config.KeyWOVersion.IsNull() || config.KeyWOVersion.IsUnknown() || config.KeyWOVersion.ValueString() == "" {
+			resp.Diagnostics.AddError("Unsafe JWT Key Mapping Replacement", "Changing jwt_claim_name or jwt_claim_value replaces the mapping. key_wo and key_wo_version must both be known and non-empty so the replacement can be created after the existing mapping is destroyed. No mutation was sent.")
+			return
+		}
+	}
 
 	// key_wo is intentionally unavailable in state. key_wo_version is therefore
-	// the only safe transition signal. Preserve an omitted historical marker,
-	// but reject every addition/change before Update can send a mutation.
+	// the only safe transition signal. Preserve an omitted historical marker and
+	// reject every same-identity addition/change before Update can send a
+	// mutation. A changed marker is permitted only for the fully validated claim
+	// replacement above, where Terraform will call Delete and then Create.
 	switch {
+	case claimReplacement:
 	case config.KeyWOVersion.IsNull() && !state.KeyWOVersion.IsNull():
 		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("key_wo_version"), state.KeyWOVersion)...)
 	case config.KeyWOVersion.IsUnknown() || !config.KeyWOVersion.Equal(state.KeyWOVersion):
-		resp.Diagnostics.AddAttributeError(path.Root("key_wo_version"), "Unsupported JWT Key Rotation", "LiteLLM v1.98 returns no token, hash, or fingerprint that can verify an in-place key change. No mutation was sent. Create a replacement mapping or manage the rotation outside this resource and import the resulting canonical UUID.")
+		resp.Diagnostics.AddAttributeError(path.Root("key_wo_version"), "Unsupported JWT Key Rotation", "LiteLLM v1.98 returns no token, hash, or fingerprint that can verify an in-place key change. No mutation was sent. Change the immutable claim pair with known replacement credentials, or manage the rotation outside this resource and import the resulting canonical UUID.")
 		return
 	}
 

@@ -70,6 +70,143 @@ func TestJWTKeyMappingRotationRejectedDuringPlanWithoutMutationProtocol(t *testi
 	}
 }
 
+func TestJWTKeyMappingClaimReplacementCredentialSafetyProtocol(t *testing.T) {
+	ctx := context.Background()
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		http.Error(w, "unexpected", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	protocolServer, schemas := configuredImportProtocolServer(t, ctx, server.URL)
+	schema := schemas.ResourceSchemas["litellm_jwt_key_mapping"]
+	prior := jwtMappingProtocolValue(t, schema, map[string]interface{}{"id": jwtMappingID1, "jwt_claim_name": "sub", "jwt_claim_value": "claim-secret", "key_wo_version": "1", "description": nil, "is_active": true, "created_at": "2026-08-26T00:00:00Z", "updated_at": "2026-08-26T00:01:00Z"})
+	plan := func(configValues, proposedValues map[string]interface{}, priorState *tfprotov6.DynamicValue) *tfprotov6.PlanResourceChangeResponse {
+		t.Helper()
+		config := jwtMappingProtocolValue(t, schema, configValues)
+		proposed := organizationProjectProtocolReplace(t, schema, priorState, proposedValues)
+		response, err := protocolServer.PlanResourceChange(ctx, &tfprotov6.PlanResourceChangeRequest{TypeName: "litellm_jwt_key_mapping", Config: config, PriorState: priorState, ProposedNewState: proposed})
+		if err != nil {
+			t.Fatalf("plan err=%v", err)
+		}
+		return response
+	}
+
+	for _, test := range []struct {
+		name        string
+		config      map[string]interface{}
+		proposed    map[string]interface{}
+		wantError   bool
+		wantReplace bool
+	}{
+		{
+			name:        "changed version with known key",
+			config:      map[string]interface{}{"jwt_claim_name": "aud", "jwt_claim_value": "claim-secret", "key_wo": "sk-replacement-secret", "key_wo_version": "2", "is_active": true},
+			proposed:    map[string]interface{}{"jwt_claim_name": "aud", "key_wo_version": "2"},
+			wantReplace: true,
+		},
+		{
+			name:        "claim value change with changed version",
+			config:      map[string]interface{}{"jwt_claim_name": "sub", "jwt_claim_value": "replacement-claim-secret", "key_wo": "sk-replacement-secret", "key_wo_version": "2", "is_active": true},
+			proposed:    map[string]interface{}{"jwt_claim_value": "replacement-claim-secret", "key_wo_version": "2"},
+			wantReplace: true,
+		},
+		{
+			name:        "unchanged version with known key",
+			config:      map[string]interface{}{"jwt_claim_name": "aud", "jwt_claim_value": "claim-secret", "key_wo": "sk-replacement-secret", "key_wo_version": "1", "is_active": true},
+			proposed:    map[string]interface{}{"jwt_claim_name": "aud"},
+			wantReplace: true,
+		},
+		{
+			name:      "missing key and version",
+			config:    map[string]interface{}{"jwt_claim_name": "aud", "jwt_claim_value": "claim-secret", "is_active": true},
+			proposed:  map[string]interface{}{"jwt_claim_name": "aud", "key_wo_version": nil},
+			wantError: true,
+		},
+		{
+			name:      "null key",
+			config:    map[string]interface{}{"jwt_claim_name": "aud", "jwt_claim_value": "claim-secret", "key_wo": nil, "key_wo_version": "1", "is_active": true},
+			proposed:  map[string]interface{}{"jwt_claim_name": "aud"},
+			wantError: true,
+		},
+		{
+			name:      "empty key",
+			config:    map[string]interface{}{"jwt_claim_name": "aud", "jwt_claim_value": "claim-secret", "key_wo": "", "key_wo_version": "1", "is_active": true},
+			proposed:  map[string]interface{}{"jwt_claim_name": "aud"},
+			wantError: true,
+		},
+		{
+			name:      "unknown key",
+			config:    map[string]interface{}{"jwt_claim_name": "aud", "jwt_claim_value": "claim-secret", "key_wo": tftypes.UnknownValue, "key_wo_version": "1", "is_active": true},
+			proposed:  map[string]interface{}{"jwt_claim_name": "aud"},
+			wantError: true,
+		},
+		{
+			name:      "empty version",
+			config:    map[string]interface{}{"jwt_claim_name": "aud", "jwt_claim_value": "claim-secret", "key_wo": "sk-replacement-secret", "key_wo_version": "", "is_active": true},
+			proposed:  map[string]interface{}{"jwt_claim_name": "aud", "key_wo_version": ""},
+			wantError: true,
+		},
+		{
+			name:      "unknown version",
+			config:    map[string]interface{}{"jwt_claim_name": "aud", "jwt_claim_value": "claim-secret", "key_wo": "sk-replacement-secret", "key_wo_version": tftypes.UnknownValue, "is_active": true},
+			proposed:  map[string]interface{}{"jwt_claim_name": "aud", "key_wo_version": tftypes.UnknownValue},
+			wantError: true,
+		},
+		{
+			name:      "incomplete unknown claim pair",
+			config:    map[string]interface{}{"jwt_claim_name": "aud", "jwt_claim_value": tftypes.UnknownValue, "key_wo": "sk-replacement-secret", "key_wo_version": "1", "is_active": true},
+			proposed:  map[string]interface{}{"jwt_claim_name": "aud", "jwt_claim_value": tftypes.UnknownValue},
+			wantError: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			planned := plan(test.config, test.proposed, prior)
+			text := agentProtocolDiagnosticsText(planned.Diagnostics)
+			if accessGroupProtocolDiagnosticsHaveError(planned.Diagnostics) != test.wantError {
+				t.Fatalf("diagnostics=%s replace=%v", text, planned.RequiresReplace)
+			}
+			if got := len(planned.RequiresReplace) != 0; got != test.wantReplace && !test.wantError {
+				t.Fatalf("requires replace=%v, want %t", planned.RequiresReplace, test.wantReplace)
+			}
+			if !test.wantError && organizationProjectProtocolPlannedAction(t, schema, prior, planned) != organizationProjectProtocolActionReplace {
+				t.Fatalf("action=%s replace=%v", organizationProjectProtocolPlannedAction(t, schema, prior, planned), planned.RequiresReplace)
+			}
+			if containsAny(text, "claim-secret", "replacement-claim-secret", "sk-replacement-secret") {
+				t.Fatalf("replacement diagnostic leaked content: %s", text)
+			}
+		})
+	}
+
+	importedKeyless := jwtMappingProtocolValue(t, schema, map[string]interface{}{"id": jwtMappingID1, "jwt_claim_name": "sub", "jwt_claim_value": "claim-secret", "key_wo_version": nil, "description": nil, "is_active": true, "created_at": "2026-08-26T00:00:00Z", "updated_at": "2026-08-26T00:01:00Z"})
+	keylessReplacement := plan(
+		map[string]interface{}{"jwt_claim_name": "aud", "jwt_claim_value": "claim-secret", "is_active": true},
+		map[string]interface{}{"jwt_claim_name": "aud"},
+		importedKeyless,
+	)
+	if !accessGroupProtocolDiagnosticsHaveError(keylessReplacement.Diagnostics) {
+		t.Fatalf("imported keyless replacement was accepted: replace=%v", keylessReplacement.RequiresReplace)
+	}
+
+	unknownConfig := map[string]interface{}{"jwt_claim_name": tftypes.UnknownValue, "jwt_claim_value": "claim-secret", "key_wo": "sk-replacement-secret", "key_wo_version": "1", "is_active": true}
+	unknownClaim := plan(unknownConfig, map[string]interface{}{"jwt_claim_name": tftypes.UnknownValue}, prior)
+	if accessGroupProtocolDiagnosticsHaveError(unknownClaim.Diagnostics) || len(unknownClaim.RequiresReplace) != 0 {
+		t.Fatalf("unknown claim scheduled replacement: diagnostics=%s replace=%v", agentProtocolDiagnosticsText(unknownClaim.Diagnostics), unknownClaim.RequiresReplace)
+	}
+	if action := organizationProjectProtocolPlannedAction(t, schema, prior, unknownClaim); action == organizationProjectProtocolActionDelete || action == organizationProjectProtocolActionReplace {
+		t.Fatalf("unknown claim action=%s", action)
+	}
+
+	nullState := accessGroupProtocolDynamicValue(t, schema, tftypes.NewValue(schema.ValueType(), nil))
+	destroyed, err := protocolServer.PlanResourceChange(ctx, &tfprotov6.PlanResourceChangeRequest{TypeName: "litellm_jwt_key_mapping", Config: jwtMappingProtocolValue(t, schema, nil), PriorState: prior, ProposedNewState: nullState})
+	if err != nil || accessGroupProtocolDiagnosticsHaveError(destroyed.Diagnostics) || organizationProjectProtocolPlannedAction(t, schema, prior, destroyed) != organizationProjectProtocolActionDelete {
+		t.Fatalf("destroy plan err=%v diagnostics=%s replace=%v", err, agentProtocolDiagnosticsText(destroyed.Diagnostics), destroyed.RequiresReplace)
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("planning made %d API requests", requests.Load())
+	}
+}
+
 func TestJWTKeyMappingHistoricalVersionCanBeOmittedWithoutDiffProtocol(t *testing.T) {
 	ctx := context.Background()
 	protocolServer, schemas := configuredImportProtocolServer(t, ctx, "http://127.0.0.1:1")
