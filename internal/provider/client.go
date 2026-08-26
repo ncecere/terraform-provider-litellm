@@ -52,6 +52,9 @@ func (c *Client) prepareRequest(ctx context.Context, method, requestPath string,
 	if body != nil {
 		encoded, err := json.Marshal(body)
 		if err != nil {
+			if errors.Is(ctx.Err(), context.Canceled) {
+				return nil, requestSafety{}, safeTransportFailure(context.Canceled)
+			}
 			return nil, requestSafety{}, &safeResponseError{
 				kind:     "failed to encode LiteLLM request",
 				identity: safeErrorIdentity(err),
@@ -61,9 +64,17 @@ func (c *Client) prepareRequest(ctx context.Context, method, requestPath string,
 		}
 		jsonBody = encoded
 	}
+	// Marshaler implementations are caller code and may cancel the request
+	// context whether they return an encoding error or valid JSON.
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return nil, requestSafety{}, safeTransportFailure(context.Canceled)
+	}
 
 	request, err := http.NewRequestWithContext(ctx, method, c.APIBase+requestPath, bytes.NewReader(jsonBody))
 	if err != nil {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return nil, requestSafety{}, safeTransportFailure(context.Canceled)
+		}
 		// Preserve the established sanitized diagnostic while recording that
 		// request construction is terminal local validation, not transport.
 		return nil, requestSafety{}, &safeTransportError{
@@ -72,6 +83,9 @@ func (c *Client) prepareRequest(ctx context.Context, method, requestPath string,
 		}
 	}
 	if (request.URL.Scheme != "http" && request.URL.Scheme != "https") || request.URL.Host == "" {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return nil, requestSafety{}, safeTransportFailure(context.Canceled)
+		}
 		return nil, requestSafety{}, &safeResponseError{
 			kind:     "LiteLLM API URL configuration is invalid",
 			terminal: true,
@@ -86,7 +100,11 @@ func (c *Client) prepareRequest(ctx context.Context, method, requestPath string,
 		request.Header.Set("litellm-changed-by", c.LiteLLMChangedBy)
 	}
 
-	return request, classifyRequestSafety(request, requestPath, jsonBody, c.APIKey), nil
+	safety := classifyRequestSafety(request, requestPath, jsonBody, c.APIKey)
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return nil, requestSafety{}, safeTransportFailure(context.Canceled)
+	}
+	return request, safety, nil
 }
 
 func (c *Client) executeRequest(request *http.Request) (*http.Response, error) {
@@ -132,6 +150,11 @@ func (c *Client) executeRequestWithOptions(request *http.Request, options client
 		}
 		baseTransport, ok := transport.(*http.Transport)
 		if !ok || baseTransport == nil {
+			// Cancellation is re-checked at the validation return because caller
+			// code may cancel between request preparation and fresh dispatch.
+			if errors.Is(request.Context().Err(), context.Canceled) {
+				return nil, safeTransportFailure(context.Canceled)
+			}
 			// Validate the terminal freshness requirement before consulting an
 			// expired deadline. request.Close is only a hint to an arbitrary
 			// RoundTripper, so independent connections cannot otherwise be proved.
@@ -180,6 +203,9 @@ func (c *cleanupReadCloser) Close() error {
 func (c *Client) DoRequest(ctx context.Context, method, requestPath string, body interface{}) (*http.Response, error) {
 	request, _, err := c.prepareRequest(ctx, method, requestPath, body)
 	if err != nil {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return nil, safeTransportFailure(context.Canceled)
+		}
 		return nil, err
 	}
 	return c.executeRequest(request)
@@ -214,13 +240,27 @@ func (c *Client) doRequestWithResponse(ctx context.Context, method, requestPath 
 func (c *Client) doRequestWithResponseOptions(ctx context.Context, method, requestPath string, body interface{}, result interface{}, options clientRequestOptions) (accepted bool, err error) {
 	request, safety, err := c.prepareRequest(ctx, method, requestPath, body)
 	if err != nil {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return false, safeTransportFailure(context.Canceled)
+		}
 		return false, err
 	}
 	response, err := c.executeRequestWithOptions(request, options)
 	if err != nil {
 		return false, err
 	}
-	defer response.Body.Close()
+	bodyClosed := false
+	defer func() {
+		if !bodyClosed {
+			_ = response.Body.Close()
+		}
+	}()
+	closeBody := func() error {
+		// Mark before invoking caller-controlled Close so the deferred fallback
+		// can never double-close a body that reports an error.
+		bodyClosed = true
+		return response.Body.Close()
+	}
 
 	accepted = response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices
 	requestID := safeRequestID(response.Header, safety)
@@ -233,7 +273,43 @@ func (c *Client) doRequestWithResponseOptions(ctx context.Context, method, reque
 	if !accepted {
 		limit = maxErrorResponseBody
 	}
-	if response.ContentLength > limit {
+
+	advertisedOversize := response.ContentLength > limit
+	readLimit := limit
+	if advertisedOversize {
+		// The advertised length already proves the safety contract failed. Still
+		// perform a bounded read before Close so an immediate read failure is
+		// combined with any close failure without consuming the oversized body.
+		readLimit = 0
+	}
+	bodyBytes, truncated, readErr := readBoundedBody(response.Body, readLimit)
+	truncated = truncated || advertisedOversize
+	closeErr := closeBody()
+	bodyErr := errors.Join(readErr, closeErr)
+	if bodyErr != nil {
+		traits := collectRawHTTPFailureTraits(bodyErr)
+		kind := "failed to read or close LiteLLM response"
+		stage := safeResponseFailureAcceptedBodyRead
+		if !accepted {
+			kind = "failed to read or close LiteLLM error response"
+			stage = safeResponseFailureStatusBodyRead
+		}
+		return accepted, withSafeRetrySchedule(&safeResponseError{
+			statusCode:        response.StatusCode,
+			requestID:         requestID,
+			kind:              kind,
+			identity:          safeErrorIdentity(bodyErr),
+			retryable:         safeTemporaryResponseFailure(bodyErr),
+			canceled:          traits.canceled,
+			terminal:          traits.terminal(),
+			deadline:          traits.deadline,
+			safeReadTransient: safeReadTransientFailure(bodyErr),
+			stage:             stage,
+			dispatched:        true,
+			accepted:          accepted,
+		}, retryAfter, hasRetryAfter)
+	}
+	if advertisedOversize {
 		if !accepted {
 			return false, withSafeRetrySchedule(&APIError{
 				StatusCode:    response.StatusCode,
@@ -244,25 +320,8 @@ func (c *Client) doRequestWithResponseOptions(ctx context.Context, method, reque
 		}
 		return true, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "LiteLLM response exceeded the provider safety limit", stage: safeResponseFailureContract, dispatched: true, accepted: true}
 	}
-	bodyBytes, truncated, readErr := readBoundedBody(response.Body, limit)
 
 	if !accepted {
-		if readErr != nil {
-			traits := collectRawHTTPFailureTraits(readErr)
-			return false, withSafeRetrySchedule(&safeResponseError{
-				statusCode:        response.StatusCode,
-				requestID:         requestID,
-				kind:              "failed to read LiteLLM error response",
-				identity:          safeErrorIdentity(readErr),
-				retryable:         safeTemporaryResponseFailure(readErr),
-				canceled:          traits.canceled,
-				terminal:          traits.terminal(),
-				deadline:          traits.deadline,
-				safeReadTransient: safeReadTransientFailure(readErr),
-				stage:             safeResponseFailureStatusBodyRead,
-				dispatched:        true,
-			}, retryAfter, hasRetryAfter)
-		}
 		fallbackNotReady := classifyFallbackNotReadyBody(bodyBytes)
 		detail, detailOmitted := "", true
 		if !truncated && (response.StatusCode < http.StatusMultipleChoices || response.StatusCode >= http.StatusBadRequest) {
@@ -279,23 +338,6 @@ func (c *Client) doRequestWithResponseOptions(ctx context.Context, method, reque
 		}, retryAfter, hasRetryAfter)
 	}
 
-	if readErr != nil {
-		traits := collectRawHTTPFailureTraits(readErr)
-		return true, withSafeRetrySchedule(&safeResponseError{
-			statusCode:        response.StatusCode,
-			requestID:         requestID,
-			kind:              "failed to read LiteLLM response",
-			identity:          safeErrorIdentity(readErr),
-			retryable:         safeTemporaryResponseFailure(readErr),
-			canceled:          traits.canceled,
-			terminal:          traits.terminal(),
-			deadline:          traits.deadline,
-			safeReadTransient: safeReadTransientFailure(readErr),
-			stage:             safeResponseFailureAcceptedBodyRead,
-			dispatched:        true,
-			accepted:          true,
-		}, retryAfter, hasRetryAfter)
-	}
 	if truncated {
 		return true, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "LiteLLM response exceeded the provider safety limit", stage: safeResponseFailureContract, dispatched: true, accepted: true}
 	}
@@ -318,7 +360,7 @@ func (c *Client) doRequestWithResponseOptions(ctx context.Context, method, reque
 func IsAPIErrorStatus(err error, statusCode int) bool {
 	classification := ClassifyHTTPFailure(err)
 	return (classification.Kind == HTTPFailureTransientResponse || classification.Kind == HTTPFailureTerminalResponse) &&
-		classification.StatusCode == statusCode
+		classification.StatusCode == statusCode && hasAuthoritativeAPIStatus(err, statusCode)
 }
 
 // IsNotFoundError reports exact typed HTTP 404 responses only.

@@ -68,15 +68,24 @@ func (c *Client) doReadWithResponsePolicy(ctx context.Context, method, requestPa
 		return safeTransportFailure(context.Canceled)
 	}
 	if method != http.MethodGet && method != http.MethodHead {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return safeTransportFailure(context.Canceled)
+		}
 		return &safeResponseError{kind: "safe read requests require GET or HEAD", terminal: true, stage: safeResponseFailureLocal}
 	}
 	if err := validateSafeReadRetryPolicy(policy, hooks); err != nil {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return safeTransportFailure(context.Canceled)
+		}
 		return err
 	}
 	// Validate every request-local requirement before retrySafeRead consults an
 	// already-expired deadline. This is deliberately non-dispatching; each
 	// attempt still receives its own request and context below.
 	if _, _, err := c.prepareRequest(ctx, method, requestPath, body); err != nil {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return safeTransportFailure(context.Canceled)
+		}
 		return err
 	}
 	return retrySafeRead(ctx, policy, hooks, func(attemptCtx context.Context) error {
@@ -108,6 +117,29 @@ func retrySafeRead(ctx context.Context, policy safeReadRetryPolicy, hooks safeRe
 		}
 
 		err := operation(retryCtx)
+		// The operation may consume the final nanosecond of either the caller's
+		// context or the retry budget. Check both boundaries immediately, before
+		// treating a success, final attempt, or response status as authoritative.
+		boundaryErr := retryCtx.Err()
+		budgetExhausted := hooks.now().Sub(start) >= policy.maxElapsed
+		if boundaryErr == nil {
+			boundaryErr = retryCtx.Err()
+		}
+		if boundaryErr != nil || budgetExhausted {
+			operationClassification := ClassifyHTTPFailure(err)
+			operationDispatched := operationClassification.RequestDispatched
+			operationAccepted := operationClassification.ResponseAccepted
+			if err == nil {
+				// A successful safe HTTP operation necessarily received an accepted
+				// response, even if cancellation won immediately after it returned.
+				operationDispatched = true
+				operationAccepted = true
+			}
+			if boundaryErr == nil {
+				boundaryErr = context.DeadlineExceeded
+			}
+			return safeRetryBoundaryFailure(boundaryErr, operationDispatched, operationAccepted)
+		}
 		if err == nil {
 			return nil
 		}
@@ -153,6 +185,16 @@ func retrySafeRead(ctx context.Context, policy safeReadRetryPolicy, hooks safeRe
 		}
 	}
 	return &safeResponseError{kind: "safe read retry attempts were exhausted"}
+}
+
+func safeRetryBoundaryFailure(boundaryErr error, dispatched, accepted bool) error {
+	err := safeTransportFailure(boundaryErr)
+	var transportErr *safeTransportError
+	if errors.As(err, &transportErr) {
+		transportErr.dispatched = dispatched || accepted
+		transportErr.accepted = accepted
+	}
+	return err
 }
 
 func retryableSafeReadClassification(classification HTTPFailureClassification) bool {

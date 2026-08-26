@@ -54,7 +54,10 @@ type httpStatusCandidate struct {
 }
 
 func (c *httpStatusCandidate) add(statusCode int) {
-	if statusCode == 0 {
+	// Every response participates. An invalid status therefore makes the
+	// aggregate ambiguous instead of disappearing beside a valid sibling.
+	if statusCode < 100 || statusCode > 599 {
+		c.ambiguous = true
 		return
 	}
 	if !c.set {
@@ -99,7 +102,9 @@ func ClassifyHTTPFailure(err error) HTTPFailureClassification {
 	}
 
 	var traits httpFailureTraits
+	visitedNodes := 0
 	walkErrorTreeControlled(err, func(node error) bool {
+		visitedNodes++
 		switch typed := node.(type) {
 		case *safeTransportError:
 			traits.canceled = traits.canceled || typed.canceled
@@ -107,6 +112,13 @@ func ClassifyHTTPFailure(err error) HTTPFailureClassification {
 			traits.deadline = traits.deadline || typed.deadline
 			traits.transientTransport = traits.transientTransport || typed.safeReadTransient || typed.Retryable()
 			traits.dispatched = traits.dispatched || typed.dispatched
+			traits.accepted = traits.accepted || typed.accepted
+			if typed.accepted {
+				// Retry-boundary errors can conservatively retain that an operation
+				// accepted a response without retaining an authoritative status.
+				traits.responseNodes++
+				traits.status.add(0)
+			}
 			return false
 		case *safeResponseError:
 			traits.canceled = traits.canceled || typed.canceled
@@ -114,12 +126,21 @@ func ClassifyHTTPFailure(err error) HTTPFailureClassification {
 			traits.deadline = traits.deadline || typed.deadline
 			traits.dispatched = traits.dispatched || typed.dispatched
 			traits.accepted = traits.accepted || typed.accepted
-			if typed.statusCode != 0 {
+			responseBearing := typed.dispatched || typed.accepted || typed.statusCode != 0 ||
+				typed.stage == safeResponseFailureStatusBodyRead || typed.stage == safeResponseFailureAcceptedBodyRead
+			if responseBearing {
 				traits.responseNodes++
 				traits.status.add(typed.statusCode)
 			}
 
-			if typed.accepted {
+			if typed.stage == safeResponseFailureStatusBodyRead {
+				// Reading or closing the response failed, so its status is retained
+				// only as diagnostic metadata. It cannot establish an exact status,
+				// a terminal response, or absence.
+				if typed.safeReadTransient {
+					traits.transientTransport = true
+				}
+			} else if typed.accepted {
 				if typed.stage == safeResponseFailureAcceptedBodyRead && typed.safeReadTransient {
 					traits.transientAccepted = true
 				}
@@ -129,20 +150,12 @@ func ClassifyHTTPFailure(err error) HTTPFailureClassification {
 				} else {
 					traits.terminalStatus = true
 				}
-				if typed.stage == safeResponseFailureStatusBodyRead && typed.safeReadTransient {
-					// A status line alone does not prove a terminal response when
-					// consuming that response failed with a timeout, reset, or
-					// truncated stream. Safe reads may retry this transport failure.
-					traits.transientTransport = true
-				}
 			}
 			return false
 		case *APIError:
 			traits.dispatched = true
-			if typed.StatusCode != 0 {
-				traits.responseNodes++
-				traits.status.add(typed.StatusCode)
-			}
+			traits.responseNodes++
+			traits.status.add(typed.StatusCode)
 			if isTransientHTTPStatus(typed.StatusCode) {
 				traits.transientStatus = true
 			} else if typed.StatusCode >= http.StatusMultipleChoices && typed.StatusCode <= 599 {
@@ -189,6 +202,10 @@ func ClassifyHTTPFailure(err error) HTTPFailureClassification {
 		return true
 	})
 
+	if visitedNodes == 0 {
+		return HTTPFailureClassification{Kind: HTTPFailureNone}
+	}
+
 	classification := HTTPFailureClassification{
 		Kind:              HTTPFailureContractOrLocal,
 		RequestDispatched: traits.dispatched || traits.accepted,
@@ -223,14 +240,12 @@ func ClassifyHTTPFailure(err error) HTTPFailureClassification {
 		classification.StatusCode = traits.status.value()
 	}
 
-	// Retry-After is actionable only for a retryable final kind. It must also
-	// belong to the sole unambiguous response represented by the error tree;
-	// joined response branches are intentionally not assigned one branch's
-	// schedule, even when their numeric statuses happen to agree.
-	if classification.StatusCode != 0 && traits.responseNodes == 1 &&
-		retryableSafeReadClassification(classification) {
-		retryAfter, ok := safeRetryScheduleForStatus(err, classification.StatusCode)
-		if ok {
+	// Retry-After is actionable only when every response node has the same valid
+	// status and an identical sanitized schedule. A zero/invalid status or an
+	// unscheduled sibling makes the schedule ambiguous.
+	if classification.StatusCode != 0 && retryableSafeReadClassification(classification) {
+		retryAfter, schedules, ok := safeRetryScheduleForStatus(err, classification.StatusCode)
+		if ok && schedules == traits.responseNodes {
 			classification.RetryAfter = retryAfter.delay
 			classification.HasRetryAfter = true
 		}
@@ -252,7 +267,7 @@ func walkErrorTreeControlled(err error, visit func(error) bool) {
 		last := len(stack) - 1
 		node := stack[last]
 		stack = stack[:last]
-		if node == nil {
+		if node == nil || isTypedNilError(node) {
 			continue
 		}
 		if reflect.ValueOf(node).Comparable() {
@@ -274,6 +289,48 @@ func walkErrorTreeControlled(err error, visit func(error) bool) {
 			stack = append(stack, wrapped.Unwrap())
 		}
 	}
+}
+
+func isTypedNilError(err error) bool {
+	value := reflect.ValueOf(err)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Ptr, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
+}
+
+func hasAuthoritativeAPIStatus(err error, statusCode int) bool {
+	responses := 0
+	authoritative := true
+	walkErrorTreeControlled(err, func(node error) bool {
+		switch typed := node.(type) {
+		case *safeTransportError:
+			return false
+		case *safeResponseError:
+			responseBearing := typed.dispatched || typed.accepted || typed.statusCode != 0 ||
+				typed.stage == safeResponseFailureStatusBodyRead || typed.stage == safeResponseFailureAcceptedBodyRead
+			if responseBearing {
+				responses++
+				if typed.stage == safeResponseFailureStatusBodyRead || typed.statusCode != statusCode ||
+					typed.statusCode < 100 || typed.statusCode > 599 {
+					authoritative = false
+				}
+			}
+			return false
+		case *APIError:
+			responses++
+			if typed.StatusCode != statusCode || typed.StatusCode < 100 || typed.StatusCode > 599 {
+				authoritative = false
+			}
+			return false
+		case *safeRetryScheduledError:
+			return true
+		}
+		return true
+	})
+	return responses > 0 && authoritative
 }
 
 func isTransientHTTPStatus(statusCode int) bool {
@@ -328,15 +385,17 @@ func withSafeRetrySchedule(err error, schedule safeRetryAfterSpec, ok bool) erro
 	return &safeRetryScheduledError{err: err, schedule: schedule, statusCode: statusCode}
 }
 
-func safeRetryScheduleForStatus(err error, statusCode int) (safeRetryAfterSpec, bool) {
+func safeRetryScheduleForStatus(err error, statusCode int) (safeRetryAfterSpec, int, bool) {
 	var selected safeRetryAfterSpec
 	found := false
+	count := 0
 	ambiguous := false
 	walkErrorTree(err, func(node error) {
 		scheduled, ok := node.(*safeRetryScheduledError)
 		if !ok {
 			return
 		}
+		count++
 		if scheduled.statusCode != statusCode {
 			ambiguous = true
 			return
@@ -348,7 +407,7 @@ func safeRetryScheduleForStatus(err error, statusCode int) (safeRetryAfterSpec, 
 		selected = scheduled.schedule
 		found = true
 	})
-	return selected, found && !ambiguous
+	return selected, count, found && !ambiguous
 }
 
 func safeRetryScheduleFromError(err error) (safeRetryAfterSpec, bool) {

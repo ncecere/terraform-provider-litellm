@@ -63,6 +63,7 @@ type safeTransportError struct {
 	retryCategory     safeTransportRetryCategory
 	safeReadTransient bool
 	dispatched        bool
+	accepted          bool
 }
 
 func (e *safeTransportError) Error() string   { return e.kind }
