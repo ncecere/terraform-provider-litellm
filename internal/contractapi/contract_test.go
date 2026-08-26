@@ -927,6 +927,116 @@ func bad(ctx context.Context, client *Client, value string) {
 	}
 }
 
+func TestExtractorRejectsEveryRawIdentityProofMutation(t *testing.T) {
+	bodies := map[string]string{
+		"one-token":         `return data.Key.ValueString()[:], nil`,
+		"rune-construction": `return data.Key.ValueString() + string(rune(37)) + "2Fchild", nil`,
+		"byte-construction": `return data.Key.ValueString() + string([]byte{37, 50, 70}) + "child", nil`,
+		"suffix":            `return data.Key.ValueString() + "-child", nil`,
+		"prefix":            `return "child-" + data.Key.ValueString(), nil`,
+		"alternate-hash":    `sum := sha256.Sum256([]byte(data.Key.ValueString())); return fmt.Sprintf("%x", sum), nil`,
+		"alternate-format":  `return fmt.Sprintf("%s", data.Key.ValueString()), nil`,
+		"extra-branch":      `if data.Key.ValueString() == "special" { return "special", nil }; return data.Key.ValueString(), nil`,
+		"wrapper-call":      `return rawIdentityWrapper(data.Key.ValueString()), nil`,
+		"same-name-spoof":   `return strings.ReplaceAll(data.Key.ValueString(), "/", "%2F"), nil`,
+	}
+	for name, body := range bodies {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeHTTPFixtureSupport(t, dir)
+			writeFixture(t, dir, "bad.go", `package provider
+import (
+ "crypto/sha256"
+ "fmt"
+ "strings"
+)
+var _ = sha256.Size
+var _ = fmt.Sprintf
+var _ = strings.ReplaceAll
+type rawString struct { value string }
+func (v rawString) IsNull() bool { return false }
+func (v rawString) IsUnknown() bool { return false }
+func (v rawString) ValueString() string { return v.value }
+type KeyResourceModel struct { ID, Key, KeyWOVersion rawString }
+func rawIdentityWrapper(value string) string { return value }
+func keyLookupIdentifier(data *KeyResourceModel) (string, error) { `+body+` }
+func bad(value string) string {
+ identity, _ := keyLookupIdentifier(&KeyResourceModel{Key: rawString{value: value}})
+ return endpointWithPathSegment("/things/", identity, "")
+}
+`)
+			if _, err := ExtractProvider(dir); err == nil || !strings.Contains(err.Error(), "raw-input provenance") {
+				t.Fatalf("raw identity implementation mutation was accepted: %v", err)
+			}
+		})
+	}
+}
+
+func TestExtractorRejectsCallableIdentityCollisions(t *testing.T) {
+	fixtures := map[string]string{
+		"interface-first-value-receiver": `
+type routeDispatcher interface { route(string) string }
+type endpointRoute struct{}
+func (endpointRoute) route(value string) string { return endpointWithPathSegment("/things/", value, "") }
+type benignRoute struct{}
+func (benignRoute) route(value string) string { return value }
+func bad(dispatch routeDispatcher, value string) string { return dispatch.route(strings.ReplaceAll(value, "/", "%2F")) }
+`,
+		"interface-last-pointer-receiver": `
+type endpointRoute struct{}
+func (*endpointRoute) route(value string) string { return endpointWithPathSegment("/things/", value, "") }
+type benignRoute struct{}
+func (*benignRoute) route(value string) string { return value }
+type routeDispatcher interface { route(string) string }
+func bad(dispatch routeDispatcher, value string) string { return dispatch.route(strings.ReplaceAll(value, "/", "%2F")) }
+`,
+		"embedded-interface": `
+type routeDispatcher interface { route(string) string }
+type embeddedDispatcher interface { routeDispatcher }
+type endpointRoute struct{}
+func (endpointRoute) route(value string) string { return endpointWithPathSegment("/things/", value, "") }
+type benignRoute struct{}
+func (benignRoute) route(value string) string { return value }
+func bad(dispatch embeddedDispatcher, value string) string { return dispatch.route(strings.ReplaceAll(value, "/", "%2F")) }
+`,
+		"method-value": `
+type routeDispatcher interface { route(string) string }
+type endpointRoute struct{}
+func (endpointRoute) route(value string) string { return endpointWithPathSegment("/things/", value, "") }
+type benignRoute struct{}
+func (benignRoute) route(value string) string { return value }
+func bad(dispatch routeDispatcher, value string) string { build := dispatch.route; return build(strings.ReplaceAll(value, "/", "%2F")) }
+`,
+		"method-expression": `
+type routeDispatcher interface { route(string) string }
+type endpointRoute struct{}
+func (endpointRoute) route(value string) string { return endpointWithPathSegment("/things/", value, "") }
+type benignRoute struct{}
+func (benignRoute) route(value string) string { return value }
+func bad(dispatch routeDispatcher, value string) string { return routeDispatcher.route(dispatch, strings.ReplaceAll(value, "/", "%2F")) }
+`,
+		"free-function-same-name": `
+type routeDispatcher interface { route(string) string }
+type endpointRoute struct{}
+func (*endpointRoute) route(value string) string { return endpointWithPathSegment("/things/", value, "") }
+func route(value string) string { return value }
+type benignRoute struct{}
+func (benignRoute) route(value string) string { return route(value) }
+func bad(dispatch routeDispatcher, value string) string { return dispatch.route(strings.ReplaceAll(value, "/", "%2F")) }
+`,
+	}
+	for name, fixture := range fixtures {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeHTTPFixtureSupport(t, dir)
+			writeFixture(t, dir, "bad.go", "package provider\nimport \"strings\"\n"+fixture)
+			if _, err := ExtractProvider(dir); err == nil || (!strings.Contains(err.Error(), "interface dynamic string dispatch") && !strings.Contains(err.Error(), "raw-input provenance")) {
+				t.Fatalf("callable identity collision was accepted: %v", err)
+			}
+		})
+	}
+}
+
 func TestExtractorRejectsSpoofedReviewedPathHelpers(t *testing.T) {
 	fixtures := map[string]struct {
 		contains string

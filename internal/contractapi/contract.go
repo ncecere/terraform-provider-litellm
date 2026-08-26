@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"go/ast"
 	"go/constant"
+	"go/format"
 	"go/importer"
 	"go/parser"
 	"go/token"
@@ -241,14 +242,14 @@ func mergeValues(values ...value) value {
 }
 
 type extractor struct {
-	root              string
-	fset              *token.FileSet
-	files             map[string]*ast.File
-	funcs             map[string]*ast.FuncDecl
-	constants         map[string]string
-	clientMethods     map[string]*ast.FuncDecl
-	clientMethodFiles map[string]string
-	typesInfo         *types.Info
+	root          string
+	fset          *token.FileSet
+	files         map[string]*ast.File
+	funcDecls     map[*types.Func]*ast.FuncDecl
+	funcFiles     map[*types.Func]string
+	constants     map[string]string
+	clientMethods map[*types.Func]*ast.FuncDecl
+	typesInfo     *types.Info
 }
 
 type callTarget struct {
@@ -261,8 +262,9 @@ type callTarget struct {
 
 func ExtractProvider(root string) ([]Operation, error) {
 	x := &extractor{
-		root: root, fset: token.NewFileSet(), files: map[string]*ast.File{}, funcs: map[string]*ast.FuncDecl{},
-		constants: map[string]string{}, clientMethods: map[string]*ast.FuncDecl{}, clientMethodFiles: map[string]string{},
+		root: root, fset: token.NewFileSet(), files: map[string]*ast.File{},
+		funcDecls: map[*types.Func]*ast.FuncDecl{}, funcFiles: map[*types.Func]string{},
+		constants: map[string]string{}, clientMethods: map[*types.Func]*ast.FuncDecl{},
 		typesInfo: &types.Info{
 			Types: map[ast.Expr]types.TypeAndValue{}, Defs: map[*ast.Ident]types.Object{},
 			Uses: map[*ast.Ident]types.Object{}, Selections: map[*ast.SelectorExpr]*types.Selection{},
@@ -285,12 +287,6 @@ func ExtractProvider(root string) ([]Operation, error) {
 		x.files[path] = file
 		for _, decl := range file.Decls {
 			switch node := decl.(type) {
-			case *ast.FuncDecl:
-				x.funcs[node.Name.Name] = node
-				if receiverTypeName(node) == "Client" {
-					x.clientMethods[node.Name.Name] = node
-					x.clientMethodFiles[node.Name.Name] = path
-				}
 			case *ast.GenDecl:
 				if node.Tok == token.CONST {
 					x.collectConstants(node)
@@ -318,6 +314,24 @@ func ExtractProvider(root string) ([]Operation, error) {
 		sort.Strings(typeDiagnostics)
 		return nil, fmt.Errorf("provider source must be a complete type-correct package:\n%s", strings.Join(typeDiagnostics, "\n"))
 	}
+	for path, file := range x.files {
+		for _, declaration := range file.Decls {
+			fn, ok := declaration.(*ast.FuncDecl)
+			if !ok {
+				continue
+			}
+			function, _ := x.typesInfo.Defs[fn.Name].(*types.Func)
+			if function == nil {
+				continue
+			}
+			x.funcDecls[function] = fn
+			x.funcFiles[function] = path
+			signature := function.Type().(*types.Signature)
+			if signature.Recv() != nil && x.isClientType(signature.Recv().Type()) {
+				x.clientMethods[function] = fn
+			}
+		}
+	}
 
 	if err := x.validateStrictSourcePolicy(); err != nil {
 		return nil, err
@@ -331,7 +345,8 @@ func ExtractProvider(root string) ([]Operation, error) {
 			if !ok || fn.Body == nil {
 				continue
 			}
-			if receiverTypeName(fn) == "Client" || fn.Name.Name == "fetchTopLevelListObjects" || fn.Name.Name == "fetchEnvelopeListObjects" || fn.Name.Name == "readModelDataSourceWithRetry" || fn.Name.Name == "readPromptDataSourceWithRetry" || fn.Name.Name == "probeCredentialEndpoint" {
+			function, _ := x.typesInfo.Defs[fn.Name].(*types.Func)
+			if x.clientMethods[function] != nil || exactProviderFunction(function, helperRequestWrappers) {
 				continue
 			}
 			env := x.functionEnv(fn, nil, map[string]bool{})
@@ -448,27 +463,6 @@ func (x *extractor) collectConstants(decl *ast.GenDecl) {
 	}
 }
 
-func receiverTypeName(fn *ast.FuncDecl) string {
-	if fn.Recv == nil || len(fn.Recv.List) != 1 {
-		return ""
-	}
-	typeExpr := fn.Recv.List[0].Type
-	if star, ok := typeExpr.(*ast.StarExpr); ok {
-		typeExpr = star.X
-	}
-	if id, ok := typeExpr.(*ast.Ident); ok {
-		return id.Name
-	}
-	return ""
-}
-
-func receiverName(fn *ast.FuncDecl) string {
-	if fn.Recv == nil || len(fn.Recv.List) != 1 || len(fn.Recv.List[0].Names) != 1 {
-		return ""
-	}
-	return fn.Recv.List[0].Names[0].Name
-}
-
 func (x *extractor) isClientType(t types.Type) bool {
 	if t == nil {
 		return false
@@ -490,40 +484,13 @@ func (x *extractor) selectorHasClientReceiver(selector *ast.SelectorExpr) (bool,
 	return x.isClientType(x.typesInfo.TypeOf(selector.X)), true
 }
 
-func (x *extractor) callHasClientReceiver(call *ast.CallExpr, fn *ast.FuncDecl) bool {
+func (x *extractor) callHasClientReceiver(call *ast.CallExpr, _ *ast.FuncDecl) bool {
 	selector, ok := call.Fun.(*ast.SelectorExpr)
-	if ok {
-		if client, _ := x.selectorHasClientReceiver(selector); client {
-			return true
-		}
-	}
-	// Keep a narrow syntax fallback for intentionally incomplete adversarial fixtures.
 	if !ok {
 		return false
 	}
-	if receiver, ok := selector.X.(*ast.Ident); ok {
-		if receiverTypeName(fn) == "Client" && receiver.Name == receiverName(fn) {
-			return true
-		}
-		if fn.Type.Params != nil {
-			for _, field := range fn.Type.Params.List {
-				fieldType := field.Type
-				if star, ok := fieldType.(*ast.StarExpr); ok {
-					fieldType = star.X
-				}
-				id, typedClient := fieldType.(*ast.Ident)
-				if !typedClient || id.Name != "Client" {
-					continue
-				}
-				for _, parameter := range field.Names {
-					if parameter.Name == receiver.Name {
-						return true
-					}
-				}
-			}
-		}
-	}
-	return false
+	client, _ := x.selectorHasClientReceiver(selector)
+	return client
 }
 
 func (x *extractor) targetFromExpr(expr ast.Expr, fn *ast.FuncDecl) (callTarget, bool) {
@@ -543,7 +510,7 @@ func (x *extractor) targetFromExpr(expr ast.Expr, fn *ast.FuncDecl) (callTarget,
 			}
 		}
 	case *ast.Ident:
-		if pathIndex, ok := helperRequestWrappers[node.Name]; ok {
+		if pathIndex, ok := helperRequestWrappers[node.Name]; ok && exactProviderFunction(x.typesInfo.ObjectOf(node), helperRequestWrappers) {
 			return callTarget{name: node.Name, pathIndex: pathIndex, helperCall: true}, true
 		}
 	}
@@ -635,31 +602,6 @@ func (x *extractor) rawHTTPCallName(call *ast.CallExpr) (string, bool) {
 	named, _ := receiver.(*types.Named)
 	clientMethod := named != nil && named.Obj() != nil && named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == "net/http" && named.Obj().Name() == "Client"
 	return name, (clientMethod && map[string]bool{"Get": true, "Post": true, "PostForm": true, "Head": true, "Do": true}[name]) || name == "RoundTrip"
-}
-
-func (x *extractor) functionNameAliases(fn *ast.FuncDecl, candidates map[string]bool) map[string]string {
-	aliases := map[string]string{}
-	ast.Inspect(fn.Body, func(node ast.Node) bool {
-		assignment, ok := node.(*ast.AssignStmt)
-		if !ok {
-			return true
-		}
-		for i, left := range assignment.Lhs {
-			name, ok := left.(*ast.Ident)
-			if !ok || i >= len(assignment.Rhs) {
-				continue
-			}
-			if source, ok := assignment.Rhs[i].(*ast.Ident); ok {
-				if candidates[source.Name] {
-					aliases[name.Name] = source.Name
-				} else if target := aliases[source.Name]; target != "" {
-					aliases[name.Name] = target
-				}
-			}
-		}
-		return true
-	})
-	return aliases
 }
 
 func (x *extractor) rawHTTPAliases(fn *ast.FuncDecl) map[string]string {
@@ -1019,11 +961,23 @@ func methodSetExposes(t types.Type, names func(string) bool) string {
 	return ""
 }
 
+func (x *extractor) functionHasProviderReceiver(fn *ast.FuncDecl, receiver string) bool {
+	if fn == nil {
+		return false
+	}
+	function, _ := x.typesInfo.Defs[fn.Name].(*types.Func)
+	if function == nil {
+		return false
+	}
+	signature := function.Type().(*types.Signature)
+	return signature.Recv() != nil && exactNamedType(signature.Recv().Type(), providerPackagePath, receiver)
+}
+
 func (x *extractor) isReviewedHTTPImplementation(fn *ast.FuncDecl) bool {
-	if receiverTypeName(fn) == "Client" && approvedClientTransportInternals[fn.Name.Name] {
+	if x.functionHasProviderReceiver(fn, "Client") && approvedClientTransportInternals[fn.Name.Name] {
 		return true
 	}
-	return receiverTypeName(fn) == "LiteLLMProvider" && fn.Name.Name == "Configure"
+	return x.functionHasProviderReceiver(fn, "LiteLLMProvider") && fn.Name.Name == "Configure"
 }
 
 func (x *extractor) isFrameworkProviderDataAssertion(assertion *ast.TypeAssertExpr, fn *ast.FuncDecl) bool {
@@ -1049,7 +1003,7 @@ func (x *extractor) isFrameworkProviderDataAssertion(assertion *ast.TypeAssertEx
 }
 
 func (x *extractor) isReviewedHTTPTransportAssertion(assertion *ast.TypeAssertExpr, fn *ast.FuncDecl) bool {
-	if receiverTypeName(fn) != "Client" || fn.Name.Name != "executeRequestWithOptions" {
+	if !x.functionHasProviderReceiver(fn, "Client") || fn.Name.Name != "executeRequestWithOptions" {
 		return false
 	}
 	star, ok := assertion.Type.(*ast.StarExpr)
@@ -1065,7 +1019,7 @@ func (x *extractor) isReviewedHTTPTransportAssertion(assertion *ast.TypeAssertEx
 }
 
 func (x *extractor) isFrameworkProviderDataPublication(left, right ast.Expr, fn *ast.FuncDecl) bool {
-	if receiverTypeName(fn) != "LiteLLMProvider" || fn.Name.Name != "Configure" {
+	if !x.functionHasProviderReceiver(fn, "LiteLLMProvider") || fn.Name.Name != "Configure" {
 		return false
 	}
 	client, ok := right.(*ast.Ident)
@@ -1085,6 +1039,57 @@ func (x *extractor) reflectDynamicDispatch(object types.Object) bool {
 		return false
 	}
 	return map[string]bool{"Method": true, "MethodByName": true, "Call": true, "CallSlice": true, "MakeFunc": true}[object.Name()]
+}
+
+func sameCallableSignature(left, right *types.Signature) bool {
+	if left == nil || right == nil || left.Variadic() != right.Variadic() {
+		return false
+	}
+	leftTypeParams, rightTypeParams := left.TypeParams(), right.TypeParams()
+	if leftTypeParams != nil && leftTypeParams.Len() != 0 || rightTypeParams != nil && rightTypeParams.Len() != 0 {
+		return false
+	}
+	return types.Identical(left.Params(), right.Params()) && types.Identical(left.Results(), right.Results())
+}
+
+func (x *extractor) interfaceEndpointDispatchCollision(function *types.Func) bool {
+	if function == nil {
+		return false
+	}
+	signature := function.Type().(*types.Signature)
+	if signature.Recv() == nil || !isInterfaceType(signature.Recv().Type()) {
+		return false
+	}
+	for candidate, declaration := range x.funcDecls {
+		candidateSignature := candidate.Type().(*types.Signature)
+		if candidate != function && candidate.Name() == function.Name() && candidateSignature.Recv() != nil && !isInterfaceType(candidateSignature.Recv().Type()) && sameCallableSignature(signature, candidateSignature) && x.functionDirectlyUsesEndpoint(declaration) {
+			return true
+		}
+	}
+	return false
+}
+
+func (x *extractor) reviewedFreeFunctionDeclaration(fn *ast.FuncDecl, names map[string]bool) bool {
+	if fn == nil {
+		return false
+	}
+	_, exact := exactProviderFreeFunction(x.typesInfo.Defs[fn.Name], names)
+	return exact
+}
+
+func (x *extractor) reviewedPaginationDeclaration(fn *ast.FuncDecl) bool {
+	if fn == nil {
+		return false
+	}
+	function, _ := x.typesInfo.Defs[fn.Name].(*types.Func)
+	if function == nil || function.Pkg() == nil || function.Pkg().Path() != providerPackagePath || !reviewedPaginationFunctions[function.Name()] {
+		return false
+	}
+	signature := function.Type().(*types.Signature)
+	if function.Name() == "findExistingUserByExactEmail" {
+		return signature.Recv() != nil && exactNamedType(signature.Recv().Type(), providerPackagePath, "UserResource")
+	}
+	return signature.Recv() == nil
 }
 
 func (x *extractor) functionParameterObject(fn *ast.FuncDecl, object types.Object) bool {
@@ -1168,161 +1173,103 @@ var reviewedPaginationFunctions = map[string]bool{
 	"listUnifiedAccessGroupKeys": true, "findExistingUserByExactEmail": true,
 }
 
-var reviewedRawIdentityHelpers = map[string]bool{
-	"keyDataSourceLookup":          true,
-	"keyLookupIdentifier":          true,
-	"keyBlockStateIdentity":        true,
-	"batchTeamID":                  true,
-	"teamMemberConfiguredIdentity": true,
+// These hashes pin the canonical, typed AST and complete local call graph of
+// the small set of raw-identity helpers. Any implementation change must be
+// independently reviewed before its new proof is admitted here.
+var reviewedRawIdentityProofs = map[string]string{
+	"keyDataSourceLookup":          "a04513082d7710c90708c7cddd259a2356c057c7e6aa87993ec86b5bf81c957d",
+	"keyLookupIdentifier":          "654f6da1fcd0b89615df738fae5396243bcd10bc0d3c8506370db4d9b52e3d99",
+	"keyBlockStateIdentity":        "cb1083da11ef9270cf84055df0b67ff49cff811cfe9667e2f61b1d2abdacc44c",
+	"batchTeamID":                  "0047b04caf06ddcca4f3bead46ec8ae4039826d25491832ba04c3f37c1693333",
+	"teamMemberConfiguredIdentity": "094386574099a66a9a23663419151947a97746e356026617483703a211e638ae",
 }
 
-func typeContainsString(t types.Type, seen map[types.Type]bool) bool {
-	if t == nil || seen[t] {
-		return false
+func canonicalTypeString(t types.Type) string {
+	if t == nil {
+		return "<nil>"
 	}
-	seen[t] = true
-	if types.Identical(t, types.Typ[types.String]) {
-		return true
-	}
-	switch item := types.Unalias(t).Underlying().(type) {
-	case *types.Pointer:
-		return typeContainsString(item.Elem(), seen)
-	case *types.Tuple:
-		for index := 0; index < item.Len(); index++ {
-			if typeContainsString(item.At(index).Type(), seen) {
-				return true
-			}
+	return types.TypeString(t, func(pkg *types.Package) string {
+		if pkg == nil {
+			return ""
 		}
-	case *types.Struct:
-		for index := 0; index < item.NumFields(); index++ {
-			if typeContainsString(item.Field(index).Type(), seen) {
-				return true
-			}
-		}
-	}
-	return false
+		return pkg.Path()
+	})
 }
 
-func (x *extractor) reviewedRawIdentityImplementation(function *types.Func, visiting map[*types.Func]bool) (bool, bool) {
-	if function == nil || visiting[function] {
-		return false, false
+func canonicalObjectString(object types.Object) string {
+	if object == nil || reflect.ValueOf(object).Kind() == reflect.Pointer && reflect.ValueOf(object).IsNil() {
+		return "<nil>"
+	}
+	packagePath := ""
+	if object.Pkg() != nil {
+		packagePath = object.Pkg().Path()
+	}
+	return fmt.Sprintf("%T|%s|%s|%s", object, packagePath, object.Name(), canonicalTypeString(object.Type()))
+}
+
+func (x *extractor) canonicalRawIdentityProof(function *types.Func, visiting map[*types.Func]bool) (string, bool) {
+	if function == nil {
+		return "", false
+	}
+	if visiting[function] {
+		return "CYCLE:" + canonicalObjectString(function), true
 	}
 	declaration := x.funcDeclForObject(function)
 	if declaration == nil || declaration.Body == nil {
-		return false, false
+		return "", false
 	}
 	visiting[function] = true
 	defer delete(visiting, function)
-	valid, hasRaw := true, false
-	if declaration.Type.Params != nil {
-		for _, field := range declaration.Type.Params.List {
-			for _, name := range field.Names {
-				if object := x.typesInfo.Defs[name]; object != nil && types.Identical(object.Type(), types.Typ[types.String]) {
-					hasRaw = true
-				}
-			}
-		}
+
+	var canonical strings.Builder
+	if err := format.Node(&canonical, x.fset, declaration); err != nil {
+		return "", false
 	}
-	ast.Inspect(declaration.Body, func(node ast.Node) bool {
+	fmt.Fprintf(&canonical, "\nDECL:%s\n", canonicalObjectString(function))
+	valid := true
+	ast.Inspect(declaration, func(node ast.Node) bool {
 		if !valid {
 			return false
 		}
-		switch item := node.(type) {
-		case *ast.FuncLit:
-			valid = false
-			return false
-		case *ast.AssignStmt:
-			for _, source := range item.Rhs {
-				if _, callable := types.Unalias(x.typesInfo.TypeOf(source)).Underlying().(*types.Signature); callable {
-					valid = false
-					return false
-				}
-			}
-		case *ast.ValueSpec:
-			for _, source := range item.Values {
-				if _, callable := types.Unalias(x.typesInfo.TypeOf(source)).Underlying().(*types.Signature); callable {
-					valid = false
-					return false
-				}
-			}
-		case *ast.BinaryExpr:
-			if item.Op == token.ADD {
-				ast.Inspect(item, func(child ast.Node) bool {
-					literal, ok := child.(*ast.BasicLit)
-					value, exact := func() (string, bool) {
-						if !ok {
-							return "", false
-						}
-						return stringLiteral(literal)
-					}()
-					if exact && strings.Contains(value, "%") {
-						valid = false
-					}
-					return valid
-				})
-			}
-		case *ast.CallExpr:
-			if x.typesInfo.Types[item.Fun].IsType() {
-				return true
-			}
-			called := calledFunctionObject(x.typesInfo, item.Fun)
-			if builtin, ok := called.(*types.Builtin); ok {
-				_ = builtin
-				return true
-			}
-			callee, ok := called.(*types.Func)
+		if expression, ok := node.(ast.Expr); ok {
+			fmt.Fprintf(&canonical, "EXPR:%T:%s\n", expression, canonicalTypeString(x.typesInfo.TypeOf(expression)))
+		}
+		if identifier, ok := node.(*ast.Ident); ok {
+			fmt.Fprintf(&canonical, "IDENT:%s:%s\n", identifier.Name, canonicalObjectString(x.typesInfo.ObjectOf(identifier)))
+		}
+		call, ok := node.(*ast.CallExpr)
+		if !ok || x.typesInfo.Types[call.Fun].IsType() {
+			return true
+		}
+		callee, _ := calledFunctionObject(x.typesInfo, call.Fun).(*types.Func)
+		fmt.Fprintf(&canonical, "CALL:%s\n", canonicalObjectString(callee))
+		if callee != nil && callee.Pkg() != nil && callee.Pkg().Path() == providerPackagePath && x.funcDeclForObject(callee) != nil {
+			proof, ok := x.canonicalRawIdentityProof(callee, visiting)
 			if !ok {
 				valid = false
 				return false
 			}
-			if exactTerraformValueString(callee) {
-				hasRaw = true
-				return true
-			}
-			if _, escape := exactURLEscapeFunction(callee); escape || x.exactURLValuesMethod(callee, "Encode") || callee.Pkg() != nil && callee.Pkg().Path() == "reflect" {
-				valid = false
-				return false
-			}
-			if callee.Pkg() != nil {
-				if callee.Pkg().Path() == "fmt" && callee.Name() == "Sprintf" {
-					format, literal := func() (string, bool) {
-						if len(item.Args) != 2 {
-							return "", false
-						}
-						return stringLiteral(item.Args[0])
-					}()
-					if !literal || format != "sha256:%x" {
-						valid = false
-						return false
-					}
-				}
-				forbidden := map[string]map[string]bool{
-					"strings": {"Replace": true, "ReplaceAll": true, "Map": true, "NewReplacer": true, "ToValidUTF8": true},
-					"path":    {"Clean": true, "Join": true}, "path/filepath": {"Clean": true, "Join": true},
-					"fmt": {"Sprint": true, "Sprintln": true},
-				}
-				if forbidden[callee.Pkg().Path()][callee.Name()] {
-					valid = false
-					return false
-				}
-			}
-			if callee.Pkg() != nil && callee.Pkg().Path() == providerPackagePath && typeContainsString(callee.Type().(*types.Signature).Results(), map[types.Type]bool{}) {
-				calleeValid, calleeRaw := x.reviewedRawIdentityImplementation(callee, visiting)
-				valid = calleeValid
-				hasRaw = hasRaw || calleeRaw
-			}
+			fmt.Fprintf(&canonical, "CALLEE:%s\n", proof)
 		}
-		return valid
+		return true
 	})
-	return valid, hasRaw
+	if !valid {
+		return "", false
+	}
+	digest := sha256.Sum256([]byte(canonical.String()))
+	return hex.EncodeToString(digest[:]), true
 }
 
 func (x *extractor) reviewedRawIdentityHelperValid(function *types.Func) bool {
-	if _, exact := exactProviderFreeFunction(function, reviewedRawIdentityHelpers); !exact {
+	if function == nil || function.Pkg() == nil || function.Pkg().Path() != providerPackagePath || function.Type().(*types.Signature).Recv() != nil {
 		return false
 	}
-	valid, hasRaw := x.reviewedRawIdentityImplementation(function, map[*types.Func]bool{})
-	return valid && hasRaw
+	expected, reviewed := reviewedRawIdentityProofs[function.Name()]
+	if !reviewed {
+		return false
+	}
+	proof, valid := x.canonicalRawIdentityProof(function, map[*types.Func]bool{})
+	return valid && proof == expected
 }
 
 func (x *extractor) exactLocalAliases(fn *ast.FuncDecl, object types.Object) map[types.Object]bool {
@@ -1762,7 +1709,7 @@ func (x *extractor) rawStringProvenance(expr ast.Expr, fn *ast.FuncDecl, seen ma
 		if exactTerraformValueString(called) && len(item.Args) == 0 {
 			return true
 		}
-		if fn != nil && fn.Name.Name == "addKnownStringFilter" && len(item.Args) == 0 {
+		if x.reviewedFreeFunctionDeclaration(fn, map[string]bool{"addKnownStringFilter": true}) && len(item.Args) == 0 {
 			if selector, ok := item.Fun.(*ast.SelectorExpr); ok && selector.Sel.Name == "ValueString" {
 				if receiver, ok := selector.X.(*ast.Ident); ok && x.functionParameterObject(fn, x.typesInfo.ObjectOf(receiver)) {
 					return true
@@ -1788,7 +1735,7 @@ func (x *extractor) rawStringProvenance(expr ast.Expr, fn *ast.FuncDecl, seen ma
 				}
 				return stringLiteral(item.Args[0])
 			}()
-			if format == "%s.v%d" && literal && len(item.Args) == 3 && fn != nil && fn.Name.Name == "promptPath" {
+			if format == "%s.v%d" && literal && len(item.Args) == 3 && x.reviewedFreeFunctionDeclaration(fn, map[string]bool{"promptPath": true}) {
 				promptID, promptDirect := item.Args[1].(*ast.Ident)
 				versionPointer, versionStar := item.Args[2].(*ast.StarExpr)
 				version, versionDirect := func() (*ast.Ident, bool) {
@@ -1800,12 +1747,12 @@ func (x *extractor) rawStringProvenance(expr ast.Expr, fn *ast.FuncDecl, seen ma
 				}()
 				return promptDirect && x.typesInfo.ObjectOf(promptID) == x.endpointBuilderParameter(fn, 0) && versionDirect && x.typesInfo.ObjectOf(version) == x.endpointBuilderParameter(fn, 1)
 			}
-			if format == "%d" && literal && len(item.Args) == 2 && reviewedPaginationFunctions[fn.Name.Name] {
+			if format == "%d" && literal && len(item.Args) == 2 && x.reviewedPaginationDeclaration(fn) {
 				return true
 			}
 			return false
 		}
-		if function.Pkg() != nil && function.Pkg().Path() == "strconv" && function.Name() == "Itoa" && len(item.Args) == 1 && reviewedPaginationFunctions[fn.Name.Name] {
+		if function.Pkg() != nil && function.Pkg().Path() == "strconv" && function.Name() == "Itoa" && len(item.Args) == 1 && x.reviewedPaginationDeclaration(fn) {
 			return true
 		}
 		if function.Pkg() != nil && function.Pkg().Path() == providerPackagePath && function.Name() == "promptEnvironment" && len(item.Args) == 1 {
@@ -1928,7 +1875,7 @@ func (x *extractor) rawURLValuesProvenance(expr ast.Expr, fn *ast.FuncDecl, seen
 		return valid
 	case *ast.CallExpr:
 		function, _ := calledFunctionObject(x.typesInfo, item.Fun).(*types.Func)
-		if function == nil || function.Pkg() == nil || function.Pkg().Path() != providerPackagePath || !reviewedQueryValueHelpers[function.Name()] {
+		if _, exact := exactProviderFreeFunction(function, reviewedQueryValueHelpers); !exact {
 			return false
 		}
 		if function.Name() == "cloneURLValues" {
@@ -1986,15 +1933,7 @@ func (x *extractor) funcDeclForObject(function *types.Func) *ast.FuncDecl {
 	if function == nil {
 		return nil
 	}
-	for _, file := range x.files {
-		for _, declaration := range file.Decls {
-			candidate, ok := declaration.(*ast.FuncDecl)
-			if ok && x.typesInfo.Defs[candidate.Name] == function {
-				return candidate
-			}
-		}
-	}
-	return nil
+	return x.funcDecls[function]
 }
 
 func (x *extractor) endpointCallableForExpr(expr ast.Expr, fn *ast.FuncDecl, seen map[types.Object]bool) (reviewedEndpointCallable, bool) {
@@ -2504,7 +2443,7 @@ func (x *extractor) reviewedPathGuardReturn(fn *ast.FuncDecl) *ast.ReturnStmt {
 				found = returned
 			}
 		case "endpointWithPathCapture":
-			if function.Pkg() != nil && function.Pkg().Path() == providerPackagePath && function.Name() == "containsDotPathComponent" && len(call.Args) == 1 && x.reviewedContainsDotPathComponentValid(x.funcs[function.Name()]) {
+			if function.Pkg() != nil && function.Pkg().Path() == providerPackagePath && function.Name() == "containsDotPathComponent" && len(call.Args) == 1 && x.reviewedContainsDotPathComponentValid(x.funcDeclForObject(function)) {
 				found = returned
 			}
 		}
@@ -2679,9 +2618,6 @@ func (x *extractor) reviewedBuilderBodyValid(fn *ast.FuncDecl) bool {
 	if fn.Name.Name != "endpointWithFallbackPathSegment" && guardReturn == nil {
 		return false
 	}
-	if fn.Name.Name != "endpointWithPathCapture" && !x.reviewedHardenDotSegmentValid(x.funcs["hardenDotSegment"]) {
-		return false
-	}
 	assignment, ok := parents[escapeCall].(*ast.AssignStmt)
 	if !ok || len(assignment.Lhs) != 1 || len(assignment.Rhs) != 1 || assignment.Rhs[0] != escapeCall {
 		return false
@@ -2720,7 +2656,7 @@ func (x *extractor) reviewedBuilderBodyValid(fn *ast.FuncDecl) bool {
 						valid = false
 					} else {
 						function, _ := calledFunctionObject(x.typesInfo, call.Fun).(*types.Func)
-						if function == nil || function.Pkg() == nil || function.Pkg().Path() != providerPackagePath || function.Name() != "hardenDotSegment" || !x.reviewedHardenDotSegmentValid(x.funcs[function.Name()]) {
+						if function == nil || function.Pkg() == nil || function.Pkg().Path() != providerPackagePath || function.Name() != "hardenDotSegment" || !x.reviewedHardenDotSegmentValid(x.funcDeclForObject(function)) {
 							valid = false
 						}
 					}
@@ -3138,7 +3074,7 @@ func (x *extractor) validateStrictSourcePolicy() error {
 						}
 					}
 					if item.Sel.Name == "Do" || item.Sel.Name == "RoundTrip" || x.isNetHTTPTransportObject(object) {
-						approvedRequest := direct && receiverTypeName(fn) == "Client" && fn.Name.Name == "prepareRequest" && object != nil && object.Name() == "NewRequestWithContext" && selection == nil
+						approvedRequest := direct && x.functionHasProviderReceiver(fn, "Client") && fn.Name.Name == "prepareRequest" && object != nil && object.Name() == "NewRequestWithContext" && selection == nil
 						approvedDo := direct && x.isReviewedHTTPImplementation(fn) && fn.Name.Name == "executeRequestWithOptions" && object != nil && object.Name() == "Do" &&
 							selection != nil && selection.Kind() == types.MethodVal && exactNamedType(selection.Recv(), "net/http", "Client")
 						approved := approvedRequest || approvedDo
@@ -3260,6 +3196,10 @@ func (x *extractor) validateStrictSourcePolicy() error {
 					}
 				case *ast.CallExpr:
 					called := calledFunctionObject(x.typesInfo, item.Fun)
+					resolved, proven := x.functionValue(item.Fun, fn, map[types.Object]bool{})
+					if proven && x.interfaceEndpointDispatchCollision(resolved) {
+						add(path, item, "interface dynamic string dispatch is forbidden unless an exact concrete callable is proven")
+					}
 					if x.exactEndpointBuilder(called) {
 						if fn.Type.TypeParams != nil && len(fn.Type.TypeParams.List) != 0 {
 							add(path, item, "reviewed endpoint builders may not be called from generic functions")
@@ -3303,7 +3243,7 @@ func (x *extractor) validateStrictSourcePolicy() error {
 						}
 					}
 					if function, ok := called.(*types.Func); ok && function.Pkg() != nil && function.Pkg().Path() == providerPackagePath {
-						callee := x.funcs[function.Name()]
+						callee := x.funcDeclForObject(function)
 						if callee != nil && x.functionDirectlyUsesEndpoint(callee) {
 							callable := reviewedEndpointCallable{params: callee.Type.Params, body: callee.Body}
 							if !x.endpointCallableArgumentsValid(callable, item.Args, fn) {
@@ -3354,7 +3294,7 @@ func (x *extractor) validateStrictSourcePolicy() error {
 						exactHelper := !selected && exactProviderFunction(called, helperRequestWrappers)
 						if !exactClient && !exactHelper {
 							add(path, item, "reviewed transport call does not resolve to an exact Client method or reviewed wrapper")
-						} else if approvedClientTransportInternals[callName(item.Fun)] && receiverTypeName(fn) != "Client" {
+						} else if approvedClientTransportInternals[callName(item.Fun)] && !x.functionHasProviderReceiver(fn, "Client") {
 							add(path, item, "internal Client transport method called outside Client implementation")
 						}
 					}
@@ -3494,7 +3434,7 @@ func (x *extractor) validateStrictSourcePolicy() error {
 				return true
 			})
 
-			if receiverTypeName(fn) == "Client" && !clientTransportName(fn.Name.Name) {
+			if x.functionHasProviderReceiver(fn, "Client") && !clientTransportName(fn.Name.Name) {
 				ast.Inspect(fn.Body, func(node ast.Node) bool {
 					call, ok := node.(*ast.CallExpr)
 					if !ok {
@@ -3559,7 +3499,7 @@ func (x *extractor) validateLegacyStrictSourcePolicy() error {
 					}
 					position := x.fset.Position(item.Pos())
 					if x.isNetHTTPTransportObject(object) {
-						approved := x.isDirectCall(item, parents) && receiverTypeName(fn) == "Client" &&
+						approved := x.isDirectCall(item, parents) && x.functionHasProviderReceiver(fn, "Client") &&
 							((fn.Name.Name == "prepareRequest" && object.Name() == "NewRequestWithContext") ||
 								(fn.Name.Name == "executeRequestWithOptions" && object.Name() == "Do"))
 						if !approved {
@@ -3779,74 +3719,79 @@ func calledFunctionObject(info *types.Info, expression ast.Expr) types.Object {
 	}
 }
 
-func (x *extractor) validateClientTransport() error {
-	freeFunctions := map[string]*ast.FuncDecl{}
-	for _, file := range x.files {
-		for _, declaration := range file.Decls {
-			if fn, ok := declaration.(*ast.FuncDecl); ok && fn.Recv == nil {
-				freeFunctions[fn.Name.Name] = fn
+func (x *extractor) functionValue(expr ast.Expr, fn *ast.FuncDecl, seen map[types.Object]bool) (*types.Func, bool) {
+	switch item := expr.(type) {
+	case *ast.ParenExpr:
+		return x.functionValue(item.X, fn, seen)
+	case *ast.Ident, *ast.SelectorExpr:
+		object := calledFunctionObject(x.typesInfo, expr)
+		if function, ok := object.(*types.Func); ok {
+			return function, true
+		}
+		if object == nil || seen[object] {
+			return nil, false
+		}
+		seen[object] = true
+		var resolved *types.Func
+		found := false
+		for _, source := range x.variableSources(fn, object) {
+			candidate, ok := x.functionValue(source, fn, seen)
+			if !ok || found && candidate != resolved {
+				return nil, false
 			}
+			resolved, found = candidate, true
+		}
+		return resolved, found
+	}
+	return nil, false
+}
+
+func (x *extractor) validateClientTransport() error {
+	freeFunctions := map[*types.Func]*ast.FuncDecl{}
+	for function, fn := range x.funcDecls {
+		if function.Type().(*types.Signature).Recv() == nil {
+			freeFunctions[function] = fn
 		}
 	}
-	freeDirect := map[string]bool{}
-	freeEdges := map[string]map[string]bool{}
-	freeCandidates := map[string]bool{}
-	for candidate := range freeFunctions {
-		freeCandidates[candidate] = true
-	}
-	for name, fn := range freeFunctions {
-		freeEdges[name] = map[string]bool{}
+	freeDirect := map[*types.Func]bool{}
+	freeEdges := map[*types.Func]map[*types.Func]bool{}
+	for function, fn := range freeFunctions {
+		freeEdges[function] = map[*types.Func]bool{}
 		aliases := x.functionCallAliases(fn)
-		freeAliases := x.functionNameAliases(fn, freeCandidates)
-		rawAliases := x.rawHTTPAliases(fn)
 		ast.Inspect(fn.Body, func(node ast.Node) bool {
 			call, ok := node.(*ast.CallExpr)
 			if !ok {
 				return true
 			}
-			if _, raw := x.rawHTTPCallName(call); raw {
-				freeDirect[name] = true
-			}
-			called := callName(call.Fun)
-			if rawAliases[called] != "" {
-				freeDirect[name] = true
+			called, proven := x.functionValue(call.Fun, fn, map[types.Object]bool{})
+			if proven && (x.isNetHTTPTransportObject(called) || x.exactClientMethodObject(called) || exactProviderFunction(called, helperRequestWrappers)) {
+				freeDirect[function] = true
 			}
 			if target, found := x.resolveCallTarget(call, fn, aliases); found && target.clientCall {
-				freeDirect[name] = true
+				freeDirect[function] = true
 			}
-			if x.callHasClientReceiver(call, fn) && approvedClientTransportInternals[called] {
-				freeDirect[name] = true
-			}
-			if _, ok := helperRequestWrappers[called]; ok {
-				freeDirect[name] = true
-			}
-			if _, ok := call.Fun.(*ast.Ident); ok {
-				if freeAliases[called] != "" {
-					called = freeAliases[called]
-				}
-				if _, exists := freeFunctions[called]; exists {
-					freeEdges[name][called] = true
-				}
+			if freeFunctions[called] != nil {
+				freeEdges[function][called] = true
 			}
 			return true
 		})
 	}
-	freeReaches := map[string]bool{}
+	freeReaches := map[*types.Func]bool{}
 	changed := true
 	for changed {
 		changed = false
-		for name := range freeFunctions {
-			if freeReaches[name] {
+		for function := range freeFunctions {
+			if freeReaches[function] {
 				continue
 			}
-			if freeDirect[name] {
-				freeReaches[name] = true
+			if freeDirect[function] {
+				freeReaches[function] = true
 				changed = true
 				continue
 			}
-			for called := range freeEdges[name] {
+			for called := range freeEdges[function] {
 				if freeReaches[called] {
-					freeReaches[name] = true
+					freeReaches[function] = true
 					changed = true
 					break
 				}
@@ -3854,52 +3799,30 @@ func (x *extractor) validateClientTransport() error {
 		}
 	}
 
-	direct := map[string]bool{}
-	edges := map[string]map[string]bool{}
-	for name, fn := range x.clientMethods {
-		edges[name] = map[string]bool{}
+	direct := map[*types.Func]bool{}
+	edges := map[*types.Func]map[*types.Func]bool{}
+	for method, fn := range x.clientMethods {
+		edges[method] = map[*types.Func]bool{}
 		aliases := x.functionCallAliases(fn)
-		freeAliases := x.functionNameAliases(fn, freeCandidates)
-		rawAliases := x.rawHTTPAliases(fn)
 		ast.Inspect(fn.Body, func(node ast.Node) bool {
 			call, ok := node.(*ast.CallExpr)
 			if !ok {
 				return true
 			}
-			if _, raw := x.rawHTTPCallName(call); raw {
-				direct[name] = true
-			}
-			called := callName(call.Fun)
-			if rawAliases[called] != "" {
-				direct[name] = true
+			called, proven := x.functionValue(call.Fun, fn, map[types.Object]bool{})
+			if proven && (x.isNetHTTPTransportObject(called) || x.exactClientMethodObject(called) || exactProviderFunction(called, helperRequestWrappers) || freeReaches[called]) {
+				direct[method] = true
 			}
 			if target, found := x.resolveCallTarget(call, fn, aliases); found && target.clientCall {
-				direct[name] = true
+				direct[method] = true
 			}
-			if id, ok := call.Fun.(*ast.Ident); ok {
-				freeName := id.Name
-				if freeAliases[freeName] != "" {
-					freeName = freeAliases[freeName]
-				}
-				if freeReaches[freeName] {
-					direct[name] = true
-				}
-			}
-			selector, ok := call.Fun.(*ast.SelectorExpr)
-			if !ok || !x.callHasClientReceiver(call, fn) {
-				return true
-			}
-			called = selector.Sel.Name
-			if _, exists := x.clientMethods[called]; exists {
-				edges[name][called] = true
-			}
-			if _, transport := clientRequestMethods[called]; transport {
-				direct[name] = true
+			if x.clientMethods[called] != nil {
+				edges[method][called] = true
 			}
 			return true
 		})
 	}
-	reachesTransport := map[string]bool{}
+	reachesTransport := map[*types.Func]bool{}
 	changed = true
 	for changed {
 		changed = false
@@ -3923,24 +3846,30 @@ func (x *extractor) validateClientTransport() error {
 	}
 	var problems []string
 	for method := range reachesTransport {
-		_, requestApproved := clientRequestMethods[method]
-		if !requestApproved && !approvedClientTransportInternals[method] {
+		name := method.Name()
+		_, requestApproved := clientRequestMethods[name]
+		if !requestApproved && !approvedClientTransportInternals[name] {
 			position := x.fset.Position(x.clientMethods[method].Pos())
-			problems = append(problems, fmt.Sprintf("%s:%d: unknown Client HTTP abstraction %s", filepath.Base(x.clientMethodFiles[method]), position.Line, method))
+			problems = append(problems, fmt.Sprintf("%s:%d: unknown Client HTTP abstraction %s", filepath.Base(x.funcFiles[method]), position.Line, name))
 		}
 	}
 	for path, file := range x.files {
 		for _, declaration := range file.Decls {
 			fn, ok := declaration.(*ast.FuncDecl)
-			if !ok || fn.Body == nil || receiverTypeName(fn) == "Client" {
+			if !ok || fn.Body == nil {
+				continue
+			}
+			declared, _ := x.typesInfo.Defs[fn.Name].(*types.Func)
+			if x.clientMethods[declared] != nil {
 				continue
 			}
 			ast.Inspect(fn.Body, func(node ast.Node) bool {
 				call, ok := node.(*ast.CallExpr)
-				if !ok || !x.callHasClientReceiver(call, fn) {
+				if !ok {
 					return true
 				}
-				if approvedClientTransportInternals[callName(call.Fun)] {
+				called, proven := x.functionValue(call.Fun, fn, map[types.Object]bool{})
+				if proven && x.exactClientMethodObject(called) && approvedClientTransportInternals[called.Name()] {
 					position := x.fset.Position(call.Pos())
 					problems = append(problems, fmt.Sprintf("%s:%d: internal Client transport method called outside Client implementation", filepath.Base(path), position.Line))
 				}
@@ -4238,7 +4167,8 @@ func (x *extractor) eval(expr ast.Expr, env map[string]value, stack map[string]b
 			p.canonicalBuilder = true
 			return p
 		}
-		if fn := x.funcs[name]; fn != nil && approvedURLHelper(name) && !stack[name] {
+		function, _ := called.(*types.Func)
+		if fn := x.funcDeclForObject(function); fn != nil && function.Type().(*types.Signature).Recv() == nil && approvedURLHelper(function.Name()) && !stack[function.Name()] {
 			bindings := map[string]value{}
 			idx := 0
 			if fn.Type.Params != nil {
@@ -4252,7 +4182,7 @@ func (x *extractor) eval(expr ast.Expr, env map[string]value, stack map[string]b
 				}
 			}
 			next := copySet(stack)
-			next[name] = true
+			next[function.Name()] = true
 			local := x.functionEnv(fn, bindings, next)
 			var returns []value
 			ast.Inspect(fn.Body, func(n ast.Node) bool {
@@ -4337,7 +4267,7 @@ func (x *extractor) detectRawHTTP() error {
 				if !rawHTTP {
 					return true
 				}
-				approved := receiverTypeName(fn) == "Client" && ((fn.Name.Name == "prepareRequest" && name == "NewRequestWithContext") || (fn.Name.Name == "executeRequestWithOptions" && name == "Do"))
+				approved := x.functionHasProviderReceiver(fn, "Client") && ((fn.Name.Name == "prepareRequest" && name == "NewRequestWithContext") || (fn.Name.Name == "executeRequestWithOptions" && name == "Do"))
 				if !approved {
 					pos := x.fset.Position(call.Pos())
 					bad = append(bad, fmt.Sprintf("%s:%d: raw HTTP request construction is not approved", base, pos.Line))
