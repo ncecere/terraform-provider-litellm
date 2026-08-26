@@ -454,8 +454,8 @@ func TestAgentRemoveOwnedSkillsPreservesAPISiblings(t *testing.T) {
 	for _, skill := range confirmed.AgentCard.Skills {
 		confirmedByID[skill.ID.ValueString()] = true
 	}
-	if confirmedByID["owned"] || !confirmedByID["imported"] || !confirmedByID["fresh"] {
-		t.Fatalf("confirmed state forgot preserved siblings: %#v", confirmedByID)
+	if len(confirmedByID) != 0 {
+		t.Fatalf("confirmed Apply state did not retain planned block cardinality: %#v", confirmedByID)
 	}
 }
 
