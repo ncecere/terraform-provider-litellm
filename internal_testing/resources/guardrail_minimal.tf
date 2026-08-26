@@ -13,13 +13,10 @@ data "litellm_guardrail" "minimal" {
 
 data "litellm_guardrails" "registry" {
   depends_on = [litellm_guardrail.minimal]
+}
 
-  lifecycle {
-    postcondition {
-      condition     = contains([for guardrail in self.guardrails : guardrail.guardrail_id], litellm_guardrail.minimal.id)
-      error_message = "The v2 guardrail registry omitted the Terraform-managed guardrail."
-    }
-  }
+output "guardrail_registry_ids" {
+  value = [for guardrail in data.litellm_guardrails.registry.guardrails : guardrail.guardrail_id]
 }
 
 output "guardrail_minimal_id" {

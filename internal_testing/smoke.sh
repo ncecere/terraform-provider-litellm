@@ -174,10 +174,11 @@ printf '\n========== Isolated smoke test ==========\n'
 
 cd "$SMOKE_DIR"
 if [ "$SMOKE_ASSEMBLY_ONLY" = "1" ]; then
-  echo '=== ASSEMBLY FORMAT CHECK ==='
+  echo '=== ASSEMBLY FORMAT AND VALIDATION CHECK ==='
   terraform fmt -check -diff .
+  terraform validate
   SUCCESS=1
-  printf '\nSmoke assembly passed: fixture names are collision-free and all assembled HCL parses and is formatted.\n' >&3
+  printf '\nSmoke assembly passed: fixture names are collision-free and all assembled HCL validates and is formatted.\n' >&3
   echo "Results written to $SMOKE_LOG" >&3
   exit 0
 fi
@@ -202,6 +203,34 @@ with open(sys.argv[2], encoding="utf-8") as stream:
     listed = json.load(stream, parse_int=int)
 if single != listed:
     raise SystemExit("Single-agent and list-agent structured projections differ.")
+PY
+fi
+
+if [ -f resource_guardrail_minimal.tf ]; then
+  echo '=== GUARDRAIL SINGLE/LIST PRESENCE ==='
+  terraform output -raw guardrail_minimal_id >guardrail-managed-id.txt
+  terraform output -json guardrail_registry_ids >guardrail-registry-ids.json
+  python3 - guardrail-managed-id.txt guardrail-registry-ids.json <<'PY'
+import json, sys
+managed = open(sys.argv[1], encoding="utf-8").read()
+with open(sys.argv[2], encoding="utf-8") as stream:
+    registry = json.load(stream)
+if managed not in registry:
+    raise SystemExit("The v2 guardrail registry omitted the Terraform-managed guardrail.")
+PY
+fi
+
+if [ -f resource_prompt_minimal.tf ]; then
+  echo '=== PROMPT SINGLE/LIST PRESENCE ==='
+  terraform output -raw prompt_minimal_id >prompt-managed-id.txt
+  terraform output -json prompt_development_registry_ids >prompt-registry-ids.json
+  python3 - prompt-managed-id.txt prompt-registry-ids.json <<'PY'
+import json, sys
+managed = open(sys.argv[1], encoding="utf-8").read()
+with open(sys.argv[2], encoding="utf-8") as stream:
+    registry = json.load(stream)
+if managed not in registry:
+    raise SystemExit("The environment-scoped prompt inventory omitted the managed prompt.")
 PY
 fi
 
