@@ -9,6 +9,7 @@ import threading
 import time
 import unittest
 import zipfile
+from unittest import mock
 from pathlib import Path
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "harness.py"
@@ -89,7 +90,7 @@ class HarnessTests(unittest.TestCase):
             "category": "inventory", "status": "passed", "evidence_code": "inventory-validated",
         }
         with tempfile.TemporaryDirectory() as raw:
-            path = Path(raw) / "report.json"
+            path = Path(raw).resolve() / "report.json"
             report = valid_report([scenario])
             harness.write_report(path, report)
             loaded = json.loads(path.read_text())
@@ -117,6 +118,75 @@ class HarnessTests(unittest.TestCase):
             with self.subTest(key=key, value=value), tempfile.TemporaryDirectory() as raw:
                 with self.assertRaises(harness.HarnessError):
                     harness.write_report(Path(raw) / "report.json", report)
+
+    def test_report_rejects_symlink_ancestor_and_survives_mid_swap(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw).resolve()
+            real = root / "real"
+            real.mkdir(mode=0o700)
+            ancestor = root / "ancestor"
+            ancestor.symlink_to(real, target_is_directory=True)
+            with self.assertRaises(harness.HarnessError):
+                harness.write_report(ancestor / "report.json", valid_report())
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw).resolve()
+            parent = root / "parent"
+            parent.mkdir(mode=0o700)
+            moved = root / "moved"
+            victim = root / "victim"
+            victim.mkdir(mode=0o700)
+            original_link = os.link
+            swapped = False
+            def racing_link(src, dst, **kwargs):
+                nonlocal swapped
+                if not swapped:
+                    parent.rename(moved)
+                    parent.symlink_to(victim, target_is_directory=True)
+                    swapped = True
+                return original_link(src, dst, **kwargs)
+            with mock.patch.object(harness.os, "link", side_effect=racing_link):
+                harness.write_report(parent / "report.json", valid_report())
+            self.assertTrue((moved / "report.json").is_file())
+            self.assertFalse((victim / "report.json").exists())
+
+    def test_digest_ledger_tampering_fails_signature_validation(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw).resolve()
+            key = root / "key"
+            key.write_bytes(b"k" * 32)
+            key.chmod(0o600)
+            ledger = root / "ledger.jsonl"
+            session = {
+                "schema_version": harness.EVIDENCE_SCHEMA_VERSION,
+                "run_nonce": "1" * 64, "cli_lane": "terraform-1.11.4",
+                "candidate_commit": "2" * 40, "provider_sha256": "3" * 64,
+                "provider_schema_sha256": "4" * 64, "harness_sha256": "5" * 64,
+                "matrix_sha256": "6" * 64, "ledger": str(ledger), "key_file": str(key),
+            }
+            header = {"record_type": "session", **{name: value for name, value in session.items() if name not in {"ledger", "key_file"}}}
+            header["receipt_hmac"] = harness._sign_record(header, b"k" * 32)
+            ledger.write_text(json.dumps(header, sort_keys=True) + "\n", encoding="utf-8")
+            ledger.chmod(0o600)
+            self.assertEqual(harness._ledger_values(session)[0]["candidate_commit"], "2" * 40)
+            header["candidate_commit"] = "7" * 40
+            ledger.write_text(json.dumps(header, sort_keys=True) + "\n", encoding="utf-8")
+            with self.assertRaises(harness.HarnessError):
+                harness._ledger_values(session)
+
+    def test_removed_manual_tsv_report_command_cannot_publish(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            records = root / "fabricated.tsv"
+            records.write_text("upgrade:litellm_model\tupgrade\tpassed\t\t\n" * 156)
+            report = root / "report.json"
+            proc = subprocess.run(
+                [sys.executable, str(harness.HERE / "harness.py"), "report-records",
+                 "--records", str(records), "--report", str(report)],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=30,
+            )
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertFalse(report.exists())
 
     def test_report_symlink_destination_is_never_followed(self):
         with tempfile.TemporaryDirectory() as raw:

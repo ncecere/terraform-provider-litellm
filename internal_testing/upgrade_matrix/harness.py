@@ -39,7 +39,9 @@ MAX_CAPTURE = 1024 * 1024
 MAX_DOWNLOAD = 200 * 1024 * 1024
 DOWNLOAD_RETRIES = 3
 DOWNLOAD_DEADLINE_SECONDS = 120
-REPORT_SCHEMA_VERSION = 2
+REPORT_SCHEMA_VERSION = 3
+EVIDENCE_SCHEMA_VERSION = 1
+MAX_EVIDENCE_LEDGER = 8 * 1024 * 1024
 CATEGORIES = (
     "inventory", "format", "schema", "resource_coverage", "upgrade",
     "lifecycle", "import", "drift", "replacement", "failure_recovery",
@@ -55,7 +57,8 @@ ALLOWED_SCENARIO_KEYS = {
 }
 ALLOWED_PROVENANCE_KEYS = {
     "cli_product", "cli_version", "cli_executable_sha256",
-    "provider_executable_sha256", "provider_schema_sha256",
+    "provider_executable_sha256", "provider_schema_sha256", "candidate_commit",
+    "harness_sha256", "matrix_sha256", "evidence_ledger_sha256", "run_nonce_sha256",
     "previous_signature_sha256", "previous_archive_sha256",
     "previous_executable_sha256", "previous_provider_schema_sha256",
     "previous_manifest_sha256", "previous_signing_fingerprint",
@@ -68,10 +71,12 @@ EVIDENCE_CODES = {
     "previous-release-unavailable", "documentation-validated", "remote-mutation-disabled",
 }
 DIAGNOSTIC_TITLE_CODES = {
-    "Client Error": "model-create-error",
-    "Team Member Create Error": "team-member-create-error",
+    "model_failed_create_retry": ("Client Error", "model-create-error"),
+    "team_failed_create_retry": ("Client Error", "team-create-error"),
+    "agent_role_redacted_import": ("Unsupported Agent Clear", "agent-role-redacted-read"),
+    "key_wo_endpoint_unavailable": ("Write-Only Key Creation Error", "key-write-only-endpoint-unavailable"),
 }
-DIAGNOSTIC_CODES = set(DIAGNOSTIC_TITLE_CODES.values())
+DIAGNOSTIC_CODES = {value[1] for value in DIAGNOSTIC_TITLE_CODES.values()}
 URL_RE = re.compile(r"(?i)(?:\b(?:https?|postgres(?:ql)?|file)://\S+|\b[a-z0-9.-]+:\d{2,5}(?:/\S*)?)")
 UUID_RE = re.compile(r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b")
 ABS_PATH_RE = re.compile(r"(?:^|[\s\"'])/(?:Users|home|tmp|var|private|workspace|github)/[^\s\"']+")
@@ -283,7 +288,7 @@ def check_inventory(matrix: dict) -> None:
     expected_counts = {
         "resource_coverage": 24, "upgrade": 24, "lifecycle": 24, "import": 24,
         "drift": 24, "replacement": 3, "failure_recovery": 2,
-        "data_source": 35, "documentation": 3,
+        "data_source": 35, "documentation": 4,
     }
     if matrix.get("scenario_counts") != expected_counts:
         raise HarnessError("scenario count contract changed without explicit accounting")
@@ -293,14 +298,27 @@ def check_inventory(matrix: dict) -> None:
         if (
             scenario.get("compare") != "hmac-sha256"
             or scenario.get("expected_actions") != ["create", "delete"]
+            or scenario.get("dependency_check") is not True
             or not scenario.get("dependency_address")
             or not scenario.get("post_replacement_no_drift")
         ):
             raise HarnessError("replacement evidence contract is incomplete")
         if not (HERE / scenario["fixture"]).is_file():
             raise HarnessError("replacement fixture is missing")
+    current_only = matrix.get("current_provider_only_scenarios", [])
+    if current_only != [{
+        "name": "mcp-immediate-import-no-drift-provenance", "fixture": "mcp_server_import.tf",
+        "resource_type": "litellm_mcp_server", "prior_release_expected": False,
+        "assertions": ["immediate-import", "two-refresh-only-no-drift", "provenance-preserved"],
+    }] or not (ROOT / "internal_testing" / "resources" / current_only[0]["fixture"]).is_file():
+        raise HarnessError("current-only MCP import provenance inventory is incomplete")
     for scenario in matrix.get("failure_recovery_scenarios", []):
-        if not scenario.get("cleanup_required") or not scenario.get("expected_diagnostic_title"):
+        expected = DIAGNOSTIC_TITLE_CODES.get(scenario.get("name", ""))
+        if (
+            not scenario.get("cleanup_required") or not scenario.get("expected_diagnostic_title")
+            or not expected
+            or (scenario.get("expected_diagnostic_title"), scenario.get("expected_diagnostic_code")) != expected
+        ):
             raise HarnessError("failure-recovery accounting is incomplete")
         if not (HERE / scenario["fixture"]).is_file():
             raise HarnessError("failure-recovery fixture is missing")
@@ -583,6 +601,9 @@ def validate_report(report: dict) -> None:
         if key in {"cli_product", "cli_version"}:
             if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9.-]{1,32}", value):
                 raise HarnessError("report provenance enum is invalid")
+        elif key == "candidate_commit":
+            if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{40}", value):
+                raise HarnessError("report candidate commit is invalid")
         elif key == "previous_signing_fingerprint":
             if value != "C753834A70062246C92CEF56F0A1AEC231353F8B":
                 raise HarnessError("report signing fingerprint is invalid")
@@ -590,34 +611,92 @@ def validate_report(report: dict) -> None:
             raise HarnessError("report digest is invalid")
 
 
+@contextlib.contextmanager
+def secure_parent_fd(path: Path):
+    """Open/create every ancestor with openat+O_NOFOLLOW and retain the FD.
+
+    Holding the final directory descriptor makes ancestor and mid-operation
+    rename/symlink swaps irrelevant to the eventual exclusive link.
+    """
+    absolute = path.expanduser().absolute()
+    if absolute.name in {"", ".", ".."} or ".." in absolute.parts:
+        raise HarnessError("report path is not a safe file path")
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(absolute.anchor, flags)
+    try:
+        for component in absolute.parent.parts[1:]:
+            if component in {"", ".", ".."}:
+                raise HarnessError("report path contains an unsafe component")
+            try:
+                child = os.open(component, flags, dir_fd=descriptor)
+            except FileNotFoundError:
+                os.mkdir(component, 0o700, dir_fd=descriptor)
+                child = os.open(component, flags, dir_fd=descriptor)
+            info = os.fstat(child)
+            if not stat.S_ISDIR(info.st_mode):
+                os.close(child)
+                raise HarnessError("report ancestor is not a real directory")
+            os.close(descriptor)
+            descriptor = child
+        info = os.fstat(descriptor)
+        if stat.S_IMODE(info.st_mode) & 0o077:
+            raise HarnessError("report directory permissions are too broad")
+        yield descriptor, absolute.name
+    except OSError as error:
+        if error.errno in {errno.ELOOP, errno.ENOTDIR}:
+            raise HarnessError("report path contains a symlink ancestor") from error
+        raise
+    finally:
+        os.close(descriptor)
+
+
+def atomic_exclusive_write(path: Path, encoded: bytes) -> None:
+    with secure_parent_fd(path) as (directory_fd, final_name):
+        temporary_name = ".report-" + secrets.token_hex(16) + ".tmp"
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(temporary_name, flags, 0o600, dir_fd=directory_fd)
+        try:
+            os.write(descriptor, encoded)
+            os.fsync(descriptor)
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise HarnessError("temporary report is not an exclusive regular file")
+        finally:
+            os.close(descriptor)
+        try:
+            os.link(
+                temporary_name, final_name, src_dir_fd=directory_fd,
+                dst_dir_fd=directory_fd, follow_symlinks=False,
+            )
+            final_fd = os.open(final_name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=directory_fd)
+            try:
+                published = bytearray()
+                while len(published) <= len(encoded):
+                    chunk = os.read(final_fd, min(1024 * 1024, len(encoded) + 1 - len(published)))
+                    if not chunk:
+                        break
+                    published.extend(chunk)
+                if bytes(published) != encoded:
+                    raise HarnessError("report changed during atomic publication")
+            finally:
+                os.close(final_fd)
+            os.fsync(directory_fd)
+        except FileExistsError as error:
+            raise HarnessError("report destination already exists") from error
+        finally:
+            os.unlink(temporary_name, dir_fd=directory_fd)
+
+
 def write_report(path: Path, report: dict) -> None:
     validate_report(report)
     encoded = (json.dumps(report, indent=2, sort_keys=True) + "\n").encode()
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    require_private_directory(path.parent)
-    temporary = path.parent / (".report-" + secrets.token_hex(16) + ".tmp")
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(temporary, flags, 0o600)
-    try:
-        os.write(descriptor, encoded)
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-    try:
-        credential_scan([temporary])
-        # link(2) creates the final name atomically and fails if it exists. It
-        # gives O_EXCL semantics without exposing a partially written report.
-        os.link(temporary, path, follow_symlinks=False)
-        directory_fd = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
-    except FileExistsError as error:
-        raise HarnessError("report destination already exists") from error
-    finally:
-        temporary.unlink(missing_ok=True)
-    credential_scan([path])
+    # Scan the exact bytes before publication; no path reopen is needed and a
+    # renamed ancestor cannot redirect the directory-FD operation.
+    with tempfile.TemporaryDirectory(prefix="litellm-report-scan-") as raw:
+        scan = Path(raw) / "value.json"
+        scan.write_bytes(encoded)
+        credential_scan([scan])
+    atomic_exclusive_write(path, encoded)
 
 
 def assembly(args: argparse.Namespace) -> int:
@@ -975,85 +1054,358 @@ def prepare_provider(args: argparse.Namespace) -> int:
     return 0
 
 
-def report_from_records(args: argparse.Namespace) -> int:
-    matrix = load_json(MATRIX_PATH)
-    results: list[dict] = []
-    require_regular_file(Path(args.records))
-    evidence = {
-        "resource_coverage": "apply-refresh-plan-destroy",
-        "lifecycle": "apply-refresh-plan-destroy",
-        "drift": "apply-refresh-plan-destroy",
-        "data_source": "apply-refresh-plan",
-        "upgrade": "upgrade-refresh-plan",
-        "import": "import-refresh-apply-plan-detach",
-        "replacement": "replacement-plan-apply",
-        "failure_recovery": "fault-retry-converged",
-        "optional_feature": "apply-refresh-plan-destroy",
-        "documentation": "documentation-validated",
+def _git_commit() -> str:
+    proc = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=ROOT, stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=30, check=False,
+    )
+    value = proc.stdout.strip()
+    if proc.returncode or not re.fullmatch(r"[0-9a-f]{40}", value):
+        raise HarnessError("candidate commit could not be bound")
+    return value
+
+
+def _read_session(path: Path) -> dict:
+    require_regular_file(path)
+    value = load_json(path)
+    required = {
+        "schema_version", "run_nonce", "cli_lane", "candidate_commit", "provider_sha256",
+        "provider_schema_sha256", "harness_sha256", "matrix_sha256", "ledger", "key_file",
     }
-    for number, line in enumerate(Path(args.records).read_text(encoding="utf-8").splitlines(), 1):
-        fields = line.split("\t")
-        if len(fields) not in (5, 6):
-            raise HarnessError("execution record has an invalid field count")
-        name, category, status, reason, title = fields[:5]
-        evidence_override = fields[5] if len(fields) == 6 else ""
-        if ":" not in name or category not in evidence or status not in STATUSES:
-            raise HarnessError("execution record has an invalid controlled label")
-        subject = name.split(":", 1)[1]
-        if name != f"{category}:{subject}":
-            raise HarnessError("execution record name/category mismatch")
-        if not re.fullmatch(r"[a-z0-9_.-]+", subject):
-            raise HarnessError("execution record subject is not controlled")
-        if evidence_override and evidence_override not in EVIDENCE_CODES:
-            raise HarnessError("execution record evidence code is not controlled")
-        item = {"name": name, "subject": subject, "category": category, "status": status, "evidence_code": evidence_override or evidence[category]}
-        if reason:
-            item["reason"] = reason
-            if reason == "enterprise-license-required":
-                item["evidence_code"] = "enterprise-unavailable"
-            elif reason in {"inventory-endpoint-may-be-unavailable", "api-endpoint-unavailable"}:
-                item["evidence_code"] = "api-unavailable"
-            elif reason == "cli-version-below-1.11":
-                item["evidence_code"] = "cli-feature-unavailable"
-            elif reason == "previous-release-resource-unavailable":
-                item["evidence_code"] = "previous-release-unavailable"
-        if title:
-            code = DIAGNOSTIC_TITLE_CODES.get(title)
-            if not code:
-                raise HarnessError("child diagnostic title is not exactly allowlisted")
-            item["diagnostic_code"] = code
-        results.append(item)
-    account_skips(results, set(matrix["allowed_skip_reasons"]) | {"api-endpoint-unavailable"})
+    if set(value) != required or value["schema_version"] != EVIDENCE_SCHEMA_VERSION:
+        raise HarnessError("evidence session schema is invalid")
+    digest_fields = ("run_nonce", "provider_sha256", "provider_schema_sha256", "harness_sha256", "matrix_sha256")
+    if any(not re.fullmatch(r"[0-9a-f]{64}", str(value[field])) for field in digest_fields):
+        raise HarnessError("evidence session digest is invalid")
+    if not re.fullmatch(r"[0-9a-f]{40}", str(value["candidate_commit"])):
+        raise HarnessError("evidence session candidate is invalid")
+    if not re.fullmatch(r"(?:terraform|opentofu)-\d+\.\d+\.\d+", str(value["cli_lane"])):
+        raise HarnessError("evidence session CLI lane is invalid")
+    key_path = Path(value["key_file"])
+    key_info = require_regular_file(key_path)
+    if stat.S_IMODE(key_info.st_mode) & 0o077 or key_info.st_size != 32:
+        raise HarnessError("evidence session signing key is unsafe")
+    return value
+
+
+def _session_key(session: dict) -> bytes:
+    path = Path(session["key_file"])
+    require_regular_file(path)
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        value = os.read(descriptor, 33)
+    finally:
+        os.close(descriptor)
+    if len(value) != 32:
+        raise HarnessError("evidence signing key has an invalid size")
+    return value
+
+
+def _sign_record(item: dict, key: bytes) -> str:
+    canonical = json.dumps(item, sort_keys=True, separators=(",", ":")).encode()
+    return safe_hmac(canonical, key)
+
+
+def _append_ledger(path: Path, item: dict) -> None:
+    encoded = (json.dumps(item, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size + len(encoded) > MAX_EVIDENCE_LEDGER:
+            raise HarnessError("evidence ledger is unsafe or exceeded its bound")
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        os.write(descriptor, encoded)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def start_session(args: argparse.Namespace) -> int:
+    cli = Path(args.cli)
+    provider = Path(args.provider_binary)
+    provider_digest, schema_digest = provider_schema_fingerprint(str(cli), provider)
+    version = selected_cli_version(str(cli))
+    product = "opentofu" if "tofu" in cli.name else "terraform"
+    nonce_digest = hashlib.sha256(("issue210-run-v1\0" + secrets.token_hex(32)).encode()).hexdigest()
+    key_path = Path(args.session).absolute().parent / (".ledger-key-" + secrets.token_hex(16))
+    atomic_exclusive_write(key_path, secrets.token_bytes(32))
+    session = {
+        "schema_version": EVIDENCE_SCHEMA_VERSION,
+        "run_nonce": nonce_digest,
+        "cli_lane": f"{product}-{version}",
+        "candidate_commit": _git_commit(),
+        "provider_sha256": provider_digest,
+        "provider_schema_sha256": schema_digest,
+        "harness_sha256": hash_file(Path(__file__).resolve()),
+        "matrix_sha256": hash_file(MATRIX_PATH),
+        "ledger": str(Path(args.ledger).absolute()), "key_file": str(key_path),
+    }
+    header = {"record_type": "session", **{key: value for key, value in session.items() if key not in {"ledger", "key_file"}}}
+    header["receipt_hmac"] = _sign_record(header, _session_key(session))
+    atomic_exclusive_write(Path(args.ledger), (json.dumps(header, sort_keys=True, separators=(",", ":")) + "\n").encode())
+    atomic_exclusive_write(Path(args.session), (json.dumps(session, sort_keys=True) + "\n").encode())
+    print(json.dumps(session, sort_keys=True))
+    return 0
+
+
+def _ledger_values(session: dict) -> list[dict]:
+    ledger = Path(session["ledger"])
+    require_regular_file(ledger)
+    if ledger.stat().st_size > MAX_EVIDENCE_LEDGER:
+        raise HarnessError("evidence ledger exceeded its bound")
+    values = []
+    for line in ledger.read_text(encoding="utf-8").splitlines():
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError as error:
+            raise HarnessError("evidence ledger contains invalid JSON") from error
+        if not isinstance(item, dict):
+            raise HarnessError("evidence ledger record is not an object")
+        values.append(item)
+    header_keys = {
+        "record_type", "schema_version", "run_nonce", "cli_lane", "candidate_commit",
+        "provider_sha256", "provider_schema_sha256", "harness_sha256", "matrix_sha256", "receipt_hmac",
+    }
+    if not values or values[0].get("record_type") != "session" or set(values[0]) != header_keys or values[0].get("schema_version") != EVIDENCE_SCHEMA_VERSION:
+        raise HarnessError("evidence ledger lacks its strict session header")
+    bindings = {key: session[key] for key in (
+        "run_nonce", "cli_lane", "candidate_commit", "provider_sha256",
+        "provider_schema_sha256", "harness_sha256", "matrix_sha256",
+    )}
+    if any(values[0].get(key) != value for key, value in bindings.items()):
+        raise HarnessError("evidence ledger session binding changed")
+    signing_key = _session_key(session)
+    for item in values:
+        signature = item.get("receipt_hmac")
+        unsigned = {key: value for key, value in item.items() if key != "receipt_hmac"}
+        if not isinstance(signature, str) or not hmac.compare_digest(signature, _sign_record(unsigned, signing_key)):
+            raise HarnessError("evidence ledger receipt signature is invalid")
+    return values
+
+
+def _expected_subjects(matrix: dict) -> dict[str, set[str]]:
     resources = {entry["type"] for entry in matrix["resources"]}
-    data_sources = set(matrix["data_sources"])
-    expected = {
+    return {
         "resource_coverage": resources, "lifecycle": resources, "drift": resources,
         "upgrade": resources, "import": resources,
-        "data_source": data_sources,
+        "data_source": set(matrix["data_sources"]),
         "replacement": {entry["name"] for entry in matrix["replacement_scenarios"]},
         "failure_recovery": {entry["name"] for entry in matrix["failure_recovery_scenarios"]},
         "optional_feature": set(matrix["optional_features"]),
         "documentation": set(matrix["documentation_scenarios"]),
     }
-    for category, subjects in expected.items():
-        actual = {item["subject"] for item in results if item["category"] == category}
+
+
+def _assertion_digest(paths: list[Path], assertion: str) -> str:
+    if not paths:
+        raise HarnessError("scenario record requires observed assertion evidence")
+    digest = hashlib.sha256(b"issue210-assertion-v1\0" + assertion.encode() + b"\0")
+    total = 0
+    for path in paths:
+        total += require_regular_file(path).st_size
+        if total > 10 * 1024 * 1024:
+            raise HarnessError("scenario assertion evidence exceeded its bound")
+        digest.update(bytes.fromhex(hash_file(path)))
+    return digest.hexdigest()
+
+
+def _append_scenario(session: dict, *, name: str, category: str, status: str,
+                     reason: str, diagnostic_code: str, assertion: str,
+                     evidence_paths: list[Path]) -> None:
+    matrix = load_json(MATRIX_PATH)
+    if category not in _expected_subjects(matrix) or ":" not in name:
+        raise HarnessError("scenario observation category/name is invalid")
+    subject = name.split(":", 1)[1]
+    if name != f"{category}:{subject}" or subject not in _expected_subjects(matrix)[category]:
+        raise HarnessError("scenario observation is not in the checked matrix")
+    if status not in STATUSES or assertion not in {
+        "terraform-plan-state-api", "upgrade-state-migration", "import-authoritative-absence",
+        "replacement-plan-state", "fault-endpoint-diagnostic-state", "bounded-feature-attempt",
+        "validated-documentation", "allowlisted-unavailability",
+    }:
+        raise HarnessError("scenario observation enum is invalid")
+    if status == "skipped":
+        if reason not in set(matrix["allowed_skip_reasons"]) | {"api-endpoint-unavailable"}:
+            raise HarnessError("scenario observation skip is not allowlisted")
+    elif reason:
+        raise HarnessError("non-skipped scenario observation has a reason")
+    if diagnostic_code and diagnostic_code not in DIAGNOSTIC_CODES:
+        raise HarnessError("scenario observation diagnostic is not allowlisted")
+    values = _ledger_values(session)
+    commands = [item for item in values if item.get("record_type") == "command"]
+    if not commands:
+        raise HarnessError("scenario observation has no executed bounded command")
+    failed_commands = [item for item in commands if item.get("exit_code") != 0]
+    command = failed_commands[-1] if status == "skipped" and diagnostic_code and failed_commands else commands[-1]
+    bindings = {key: session[key] for key in (
+        "run_nonce", "cli_lane", "candidate_commit", "provider_sha256",
+        "provider_schema_sha256", "harness_sha256", "matrix_sha256",
+    )}
+    if any(command.get(key) != value for key, value in bindings.items()):
+        raise HarnessError("scenario command receipt is from another session")
+    if not isinstance(command.get("exit_code"), int) or not re.fullmatch(r"[0-9a-f]{64}", str(command.get("command_sha256", ""))) or not re.fullmatch(r"[0-9a-f]{64}", str(command.get("result_sha256", ""))):
+        raise HarnessError("scenario command receipt schema is invalid")
+    existing = {(item.get("category"), item.get("subject")) for item in values if item.get("record_type") == "scenario"}
+    if (category, subject) in existing:
+        return
+    item = {
+        "record_type": "scenario", **bindings, "name": name, "subject": subject,
+        "category": category, "status": status, "assertion": assertion,
+        "command_sha256": command["command_sha256"], "result_sha256": command["result_sha256"],
+        "command_exit_code": command["exit_code"],
+        "assertion_sha256": _assertion_digest(evidence_paths, assertion),
+    }
+    if reason:
+        item["reason"] = reason
+    if diagnostic_code:
+        item["diagnostic_code"] = diagnostic_code
+    item["receipt_hmac"] = _sign_record(item, _session_key(session))
+    _append_ledger(Path(session["ledger"]), item)
+
+
+def record_observation(args: argparse.Namespace) -> int:
+    session = _read_session(Path(args.session))
+    _append_scenario(
+        session, name=args.name, category=args.category, status=args.status,
+        reason=args.reason or "", diagnostic_code=args.diagnostic_code or "",
+        assertion=args.assertion, evidence_paths=[Path(value) for value in args.evidence],
+    )
+    return 0
+
+
+def _walk_resources(module: dict) -> Iterable[dict]:
+    yield from module.get("resources", [])
+    for child in module.get("child_modules", []):
+        yield from _walk_resources(child)
+
+
+def observe_smoke(args: argparse.Namespace) -> int:
+    session = _read_session(Path(args.session))
+    paths = [Path(args.plan), Path(args.state), Path(args.steady_plan), Path(args.final_state)]
+    for path in paths:
+        require_regular_file(path)
+    plan, state, steady = (load_json(paths[index]) for index in range(3))
+    if paths[3].read_text(encoding="utf-8").strip():
+        raise HarnessError("smoke cleanup did not produce empty Terraform state")
+    steady_changes = steady.get("resource_changes", [])
+    if any(change.get("change", {}).get("actions") not in ([], ["no-op"], ["read"]) for change in steady_changes):
+        raise HarnessError("smoke evidence contains post-refresh drift")
+    state_resources = list(_walk_resources(state.get("values", {}).get("root_module", {})))
+    managed = {
+        item.get("type") for item in state_resources
+        if item.get("mode") == "managed" and str(item.get("type", "")).startswith("litellm_")
+    }
+    plan_changes = plan.get("resource_changes", [])
+    data_sources = {
+        item.get("type") for item in plan_changes
+        if item.get("mode") == "data" and str(item.get("type", "")).startswith("litellm_")
+        and item.get("change", {}).get("actions") in (["read"], ["no-op"])
+    }
+    matrix = load_json(MATRIX_PATH)
+    expected = _expected_subjects(matrix)
+    if not managed or not managed.issubset(expected["lifecycle"]) or not data_sources.issubset(expected["data_source"]):
+        raise HarnessError("smoke plan/state addresses are outside the checked matrix")
+    for subject in sorted(managed):
+        for category in ("resource_coverage", "lifecycle", "drift"):
+            _append_scenario(session, name=f"{category}:{subject}", category=category, status="passed", reason="", diagnostic_code="", assertion="terraform-plan-state-api", evidence_paths=paths)
+    for subject in sorted(data_sources):
+        _append_scenario(session, name=f"data_source:{subject}", category="data_source", status="passed", reason="", diagnostic_code="", assertion="terraform-plan-state-api", evidence_paths=paths)
+    return 0
+
+
+def finalize_evidence(args: argparse.Namespace) -> int:
+    session = _read_session(Path(args.session))
+    values = _ledger_values(session)
+    allowed_command = {
+        "record_type", "run_nonce", "cli_lane", "candidate_commit", "provider_sha256",
+        "provider_schema_sha256", "harness_sha256", "matrix_sha256", "command_sha256",
+        "result_sha256", "exit_code", "output_bytes", "receipt_hmac",
+    }
+    allowed_scenario = {
+        "record_type", "run_nonce", "cli_lane", "candidate_commit", "provider_sha256",
+        "provider_schema_sha256", "harness_sha256", "matrix_sha256", "name", "subject",
+        "category", "status", "assertion", "command_sha256", "result_sha256",
+        "command_exit_code", "assertion_sha256", "reason", "diagnostic_code", "receipt_hmac",
+    }
+    bindings = {key: session[key] for key in (
+        "run_nonce", "cli_lane", "candidate_commit", "provider_sha256",
+        "provider_schema_sha256", "harness_sha256", "matrix_sha256",
+    )}
+    command_pairs = set()
+    scenarios = []
+    assertion_codes = {
+        "terraform-plan-state-api", "upgrade-state-migration", "import-authoritative-absence",
+        "replacement-plan-state", "fault-endpoint-diagnostic-state", "bounded-feature-attempt",
+        "validated-documentation", "allowlisted-unavailability",
+    }
+    for item in values[1:]:
+        kind = item.get("record_type")
+        allowed = allowed_command if kind == "command" else allowed_scenario if kind == "scenario" else set()
+        required = allowed_command if kind == "command" else allowed_scenario - {"reason", "diagnostic_code"} if kind == "scenario" else set()
+        if not allowed or set(item) - allowed or not required.issubset(item):
+            raise HarnessError("evidence ledger record schema is invalid")
+        if any(item.get(key) != value for key, value in bindings.items()):
+            raise HarnessError("evidence ledger record binding changed")
+        digest_names = ("command_sha256", "result_sha256") if kind == "command" else ("command_sha256", "result_sha256", "assertion_sha256")
+        if any(not re.fullmatch(r"[0-9a-f]{64}", str(item.get(key, ""))) for key in digest_names):
+            raise HarnessError("evidence ledger record digest is invalid")
+        if kind == "command":
+            if not isinstance(item["exit_code"], int) or not -255 <= item["exit_code"] <= 126 or not isinstance(item["output_bytes"], int) or not 0 <= item["output_bytes"] <= 10 * 1024 * 1024 + 65536:
+                raise HarnessError("command receipt result bound is invalid")
+            command_pairs.add((item["command_sha256"], item["result_sha256"], item["exit_code"]))
+        else:
+            if item.get("status") not in STATUSES or item.get("category") not in CATEGORIES or item.get("assertion") not in assertion_codes:
+                raise HarnessError("scenario evidence enum is invalid")
+            if (item["command_sha256"], item["result_sha256"], item["command_exit_code"]) not in command_pairs:
+                raise HarnessError("scenario evidence does not reference an executed command")
+            if item["status"] == "skipped" and not item.get("reason"):
+                raise HarnessError("scenario evidence skip lacks an exact reason")
+            if item["status"] != "skipped" and item.get("reason"):
+                raise HarnessError("scenario evidence non-skip has a reason")
+            if item.get("diagnostic_code") and item["diagnostic_code"] not in DIAGNOSTIC_CODES:
+                raise HarnessError("scenario evidence diagnostic enum is invalid")
+            scenarios.append(item)
+    matrix = load_json(MATRIX_PATH)
+    for category, subjects in _expected_subjects(matrix).items():
+        actual = {item["subject"] for item in scenarios if item["category"] == category}
         if actual != subjects:
-            raise HarnessError("missing or unexplained per-scenario execution result")
-    product = "opentofu" if "tofu" in Path(args.cli).name else "terraform"
-    cli_version = selected_cli_version(args.cli)
-    provider_digest, schema_digest = provider_schema_fingerprint(args.cli, Path(args.provider_binary))
+            raise HarnessError("trusted evidence ledger lacks an exact scenario set")
+    report_scenarios = []
+    evidence_codes = {
+        "resource_coverage": "apply-refresh-plan-destroy", "lifecycle": "apply-refresh-plan-destroy",
+        "drift": "apply-refresh-plan-destroy", "data_source": "apply-refresh-plan",
+        "upgrade": "upgrade-refresh-plan", "import": "import-refresh-apply-plan-detach",
+        "replacement": "replacement-plan-apply", "failure_recovery": "fault-retry-converged",
+        "optional_feature": "apply-refresh-plan-destroy", "documentation": "documentation-validated",
+    }
+    for item in scenarios:
+        value = {key: item[key] for key in ("name", "subject", "category", "status")}
+        value["evidence_code"] = evidence_codes[item["category"]]
+        if item.get("reason"):
+            value["reason"] = item["reason"]
+            value["evidence_code"] = {
+                "enterprise-license-required": "enterprise-unavailable",
+                "cli-version-below-1.11": "cli-feature-unavailable",
+                "previous-release-resource-unavailable": "previous-release-unavailable",
+            }.get(item["reason"], "api-unavailable")
+        if item.get("diagnostic_code"):
+            value["diagnostic_code"] = item["diagnostic_code"]
+        report_scenarios.append(value)
     previous = load_json(TOOLS_PATH)["previous_provider"]
     previous_archive = previous["archives"][platform_key()]
-    previous_executable_digest, previous_schema_digest = provider_schema_fingerprint(
-        args.cli, Path(args.previous_provider_binary)
-    )
+    previous_executable_digest, previous_schema_digest = provider_schema_fingerprint(args.cli, Path(args.previous_provider_binary))
     if previous_executable_digest != previous_archive["executable_sha256"] or previous_schema_digest != previous["schema_sha256"]:
-        raise HarnessError("executed previous provider digest/schema differs from the exact pin")
+        raise HarnessError("executed previous provider differs from its signed exact pin")
+    ledger_digest = hash_file(Path(session["ledger"]))
     provenance = {
-        "cli_product": product, "cli_version": cli_version,
+        "cli_product": session["cli_lane"].split("-", 1)[0],
+        "cli_version": session["cli_lane"].split("-", 1)[1],
         "cli_executable_sha256": hash_file(Path(args.cli)),
-        "provider_executable_sha256": provider_digest,
-        "provider_schema_sha256": schema_digest,
+        "provider_executable_sha256": session["provider_sha256"],
+        "provider_schema_sha256": session["provider_schema_sha256"],
+        "candidate_commit": session["candidate_commit"], "harness_sha256": session["harness_sha256"],
+        "matrix_sha256": session["matrix_sha256"], "evidence_ledger_sha256": ledger_digest,
+        "run_nonce_sha256": session["run_nonce"],
         "previous_signature_sha256": previous["signature_sha256"],
         "previous_archive_sha256": previous_archive["sha256"],
         "previous_executable_sha256": previous_executable_digest,
@@ -1061,9 +1413,17 @@ def report_from_records(args: argparse.Namespace) -> int:
         "previous_manifest_sha256": previous["manifest_sha256"],
         "previous_signing_fingerprint": previous["signing_key"]["fingerprint"],
     }
-    report = {"schema_version": REPORT_SCHEMA_VERSION, "mode": "destructive-local", "summary": summarize_results(results), "scenarios": results, "provenance": provenance}
+    report = {"schema_version": REPORT_SCHEMA_VERSION, "mode": "destructive-local", "summary": summarize_results(report_scenarios), "scenarios": report_scenarios, "provenance": provenance}
     write_report(Path(args.report), report)
-    print(f"Execution report passed strict validation: emitted={len(results)}")
+    # The ledger contains only controlled labels, bounded integers, and digests;
+    # raw Terraform/API output remains in the private scratch log.
+    ledger_encoded = Path(session["ledger"]).read_bytes()
+    with tempfile.TemporaryDirectory(prefix="litellm-ledger-scan-") as raw:
+        scan = Path(raw) / "ledger.json"
+        scan.write_bytes(b"[" + b",".join(ledger_encoded.splitlines()) + b"]")
+        credential_scan([scan])
+    atomic_exclusive_write(Path(args.evidence_report), ledger_encoded)
+    print(f"Execution report passed trusted evidence validation: emitted={len(report_scenarios)} commands={sum(item.get('record_type') == 'command' for item in values)}")
     return 0
 
 
@@ -1103,13 +1463,36 @@ def parser() -> argparse.ArgumentParser:
     bundle.add_argument("--provider-binary", required=True)
     bundle.add_argument("--directory", required=True)
     bundle.set_defaults(function=prepare_provider)
-    reports = commands.add_parser("report-records")
-    reports.add_argument("--records", required=True)
-    reports.add_argument("--report", required=True)
-    reports.add_argument("--cli", required=True)
-    reports.add_argument("--provider-binary", required=True)
-    reports.add_argument("--previous-provider-binary", required=True)
-    reports.set_defaults(function=report_from_records)
+    session = commands.add_parser("start-session")
+    session.add_argument("--ledger", required=True)
+    session.add_argument("--session", required=True)
+    session.add_argument("--cli", required=True)
+    session.add_argument("--provider-binary", required=True)
+    session.set_defaults(function=start_session)
+    observation = commands.add_parser("record-observation")
+    observation.add_argument("--session", required=True)
+    observation.add_argument("--name", required=True)
+    observation.add_argument("--category", required=True)
+    observation.add_argument("--status", required=True, choices=tuple(sorted(STATUSES)))
+    observation.add_argument("--reason")
+    observation.add_argument("--diagnostic-code")
+    observation.add_argument("--assertion", required=True)
+    observation.add_argument("--evidence", action="append", required=True)
+    observation.set_defaults(function=record_observation)
+    smoke = commands.add_parser("observe-smoke")
+    smoke.add_argument("--session", required=True)
+    smoke.add_argument("--plan", required=True)
+    smoke.add_argument("--state", required=True)
+    smoke.add_argument("--steady-plan", required=True)
+    smoke.add_argument("--final-state", required=True)
+    smoke.set_defaults(function=observe_smoke)
+    finalize = commands.add_parser("finalize-evidence")
+    finalize.add_argument("--session", required=True)
+    finalize.add_argument("--report", required=True)
+    finalize.add_argument("--evidence-report", required=True)
+    finalize.add_argument("--cli", required=True)
+    finalize.add_argument("--previous-provider-binary", required=True)
+    finalize.set_defaults(function=finalize_evidence)
     safety = commands.add_parser("preflight")
     safety.add_argument("target", choices=("local", "remote"))
     safety.set_defaults(function=preflight)

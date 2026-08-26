@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """Execute one command with bounded output, a wall deadline, and group cleanup."""
 import argparse
+import fcntl
+import hashlib
+import hmac
+import json
 import os
 import selectors
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -73,7 +78,64 @@ else:
             process.wait()
 
 if failure:
+    returncode = 124 if "deadline" in failure else 125
+    captured.extend(("\n" + failure).encode())
+else:
+    returncode = process.returncode
+
+# The bounded executor is the command-evidence supervisor. It stores no argv,
+# output, path, URL, identifier, or credential: only domain-separated digests
+# and controlled session bindings. The report builder accepts records only when
+# they reference one of these receipts from the same nonce-bound session.
+ledger = os.environ.get("MATRIX_COMMAND_LEDGER")
+if ledger:
+    required = {
+        "run_nonce": os.environ.get("MATRIX_RUN_NONCE", ""),
+        "cli_lane": os.environ.get("MATRIX_CLI_LANE", ""),
+        "candidate_commit": os.environ.get("MATRIX_CANDIDATE_COMMIT", ""),
+        "provider_sha256": os.environ.get("MATRIX_PROVIDER_SHA256", ""),
+        "provider_schema_sha256": os.environ.get("MATRIX_PROVIDER_SCHEMA_SHA256", ""),
+        "harness_sha256": os.environ.get("MATRIX_HARNESS_SHA256", ""),
+        "matrix_sha256": os.environ.get("MATRIX_MATRIX_SHA256", ""),
+    }
+    if any(not value for value in required.values()):
+        print("command evidence session binding is incomplete", file=sys.stderr)
+        raise SystemExit(126)
+    command_encoded = json.dumps(args.command, separators=(",", ":"), ensure_ascii=False).encode()
+    result_encoded = returncode.to_bytes(4, "big", signed=True) + bytes(captured)
+    receipt = {
+        "record_type": "command",
+        **required,
+        "command_sha256": hashlib.sha256(b"issue210-command-v1\0" + command_encoded).hexdigest(),
+        "result_sha256": hashlib.sha256(b"issue210-result-v1\0" + result_encoded).hexdigest(),
+        "exit_code": returncode,
+        "output_bytes": len(captured),
+    }
+    key_path = os.environ.get("MATRIX_LEDGER_KEY_FILE", "")
+    key_fd = os.open(key_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        key_info = os.fstat(key_fd)
+        key = os.read(key_fd, 33)
+        if not stat.S_ISREG(key_info.st_mode) or key_info.st_nlink != 1 or len(key) != 32:
+            raise OSError("unsafe evidence signing key")
+    finally:
+        os.close(key_fd)
+    canonical = json.dumps(receipt, sort_keys=True, separators=(",", ":")).encode()
+    receipt["receipt_hmac"] = "hmac-sha256:" + hmac.new(key, canonical, hashlib.sha256).hexdigest()
+    flags = os.O_WRONLY | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(ledger, flags)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        info = os.fstat(descriptor)
+        if not os.path.isfile(ledger) or info.st_nlink != 1 or info.st_size > 8 * 1024 * 1024:
+            raise OSError("unsafe command evidence ledger")
+        os.write(descriptor, (json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n").encode())
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+if failure:
     print(failure, file=sys.stderr)
-    raise SystemExit(124 if "deadline" in failure else 125)
+    raise SystemExit(returncode)
 os.write(sys.stdout.fileno(), captured)
-raise SystemExit(process.returncode)
+raise SystemExit(returncode)

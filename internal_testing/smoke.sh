@@ -31,7 +31,9 @@ fi
 mkdir -p "$SMOKE_PRIVATE_ROOT/.smoke-logs"
 chmod 700 "$SMOKE_PRIVATE_ROOT" "$SMOKE_PRIVATE_ROOT/.smoke-logs"
 SMOKE_DIR=$(mktemp -d "$SMOKE_PRIVATE_ROOT/.smoke.XXXXXX")
-SMOKE_LOG="$SMOKE_PRIVATE_ROOT/.smoke-logs/$(date '+%Y%m%d-%H%M%S')-$$.log"
+SMOKE_LOG=${SMOKE_LOG_OVERRIDE:-$SMOKE_PRIVATE_ROOT/.smoke-logs/$(date '+%Y%m%d-%H%M%S')-$$.log}
+case "$SMOKE_LOG" in "$SMOKE_PRIVATE_ROOT"/.smoke-logs/*.log) ;; *) echo 'Unsafe smoke log override.' >&2; exit 1 ;; esac
+[ ! -e "$SMOKE_LOG" ] || { echo 'Smoke log destination already exists.' >&2; exit 1; }
 : >"$SMOKE_LOG"
 chmod 600 "$SMOKE_LOG"
 APPLY_STARTED=0
@@ -42,6 +44,7 @@ IMPORT_BACKUP=
 cleanup() {
   status=$?
   trap - EXIT INT TERM HUP
+  cleanup_status=0
   if [ "$SUCCESS" -eq 1 ]; then
     rm -rf "$SMOKE_DIR"
     [ "$SMOKE_DELETE_LOGS" = 1 ] && rm -f "$SMOKE_LOG"
@@ -50,15 +53,28 @@ cleanup() {
 
   if [ -n "$IMPORT_BACKUP" ] && [ -f "$IMPORT_BACKUP" ]; then
     # A failed import after state rm must not orphan the seeded remote object.
-    cp "$IMPORT_BACKUP" "$SMOKE_DIR/terraform.tfstate"
+    cp "$IMPORT_BACKUP" "$SMOKE_DIR/terraform.tfstate" || cleanup_status=1
   fi
   if [ "$APPLY_STARTED" -eq 1 ] && [ -f "$SMOKE_DIR/terraform.tfstate" ]; then
-    echo "Attempting best-effort cleanup after failure..." >&3
-    # shellcheck disable=SC2086 # CLEANUP_ARGS intentionally expands to an optional complete argument.
-    (cd "$SMOKE_DIR" && terraform destroy -refresh=false -auto-approve $CLEANUP_ARGS) >>"$SMOKE_LOG" 2>&1 || true
+    echo "Attempting bounded cleanup after failure..." >&3
+    cleanup_attempt=1
+    while [ "$cleanup_attempt" -le 2 ]; do
+      # shellcheck disable=SC2086 # CLEANUP_ARGS is one optional complete argument.
+      if (cd "$SMOKE_DIR" && terraform destroy -refresh=false -auto-approve $CLEANUP_ARGS) >>"$SMOKE_LOG" 2>&1; then
+        if [ -z "$(cd "$SMOKE_DIR" && terraform state list 2>>"$SMOKE_LOG")" ]; then
+          cleanup_status=0
+          break
+        fi
+      fi
+      cleanup_status=1
+      cleanup_attempt=$((cleanup_attempt + 1))
+    done
   fi
-  echo "Smoke failed; workspace preserved at $SMOKE_DIR" >&3
-  echo "See $SMOKE_LOG" >&3
+  # Cleanup failure overrides an otherwise successful nested command and the
+  # sole state/log recovery material is retained. Never claim hosted teardown
+  # as authoritative remote absence.
+  if [ "$cleanup_status" -ne 0 ]; then status=1; fi
+  echo "Smoke failed; private workspace and recovery log retained" >&3
   exit "$status"
 }
 trap cleanup EXIT
@@ -168,6 +184,7 @@ fi
 
 echo '=== PLAN ==='
 terraform plan -out=tfplan
+terraform show -json tfplan >matrix-initial-plan.json
 
 echo '=== APPLY ==='
 APPLY_STARTED=1
@@ -212,6 +229,7 @@ elif [ "${SMOKE_MCP_IMPORT:-}" = "1" ]; then
     "$mcp_import_id"
   STEADY_ARGS='-var=mcp_import_phase=imported'
   CLEANUP_ARGS=$STEADY_ARGS
+  terraform state pull >mcp-import-private-before.json
   for refresh_number in 1 2; do
     echo "=== MCP IMPORT REFRESH-ONLY APPLY $refresh_number ==="
     set +e
@@ -228,11 +246,33 @@ elif [ "${SMOKE_MCP_IMPORT:-}" = "1" ]; then
       exit 1
     fi
   done
+  terraform state pull >mcp-import-private-after.json
+  python3 - mcp-import-private-before.json mcp-import-private-after.json <<'PY'
+import hashlib,hmac,json,secrets,sys
+key=secrets.token_bytes(32)
+def private(path):
+    value=json.load(open(path,encoding="utf-8"))
+    rows=[]
+    for resource in value.get("resources",[]):
+        if resource.get("type") != "litellm_mcp_server": continue
+        for instance in resource.get("instances",[]): rows.append(instance.get("private") or "")
+    if len(rows)!=1 or not rows[0]: raise SystemExit(1)
+    return hmac.new(key,rows[0].encode(),hashlib.sha256).digest()
+if not hmac.compare_digest(private(sys.argv[1]),private(sys.argv[2])): raise SystemExit(1)
+PY
   echo '=== MCP IMPORT CONFIG OWNERSHIP CONVERGENCE APPLY ==='
   # shellcheck disable=SC2086 # STEADY_ARGS is one complete optional argument.
   terraform apply -auto-approve $STEADY_ARGS
   rm -f "$IMPORT_BACKUP"
   IMPORT_BACKUP=
+  echo '=== MCP IMPORT CLEANUP ==='
+  terraform destroy -auto-approve $STEADY_ARGS
+  terraform state list >matrix-final-state.list
+  [ ! -s matrix-final-state.list ] || { echo 'MCP import cleanup left state.' >&3; exit 1; }
+  [ "$(wc -c <"$SMOKE_LOG")" -le 10485760 ] || { echo 'MCP smoke log exceeded its private bound.' >&3; exit 1; }
+  SUCCESS=1
+  printf '\nSmoke passed: MCP immediate import, two zero-drift refresh plans, provenance persistence, and cleanup succeeded.\n' >&3
+  exit 0
 elif [ "${SMOKE_CREDENTIAL_UPDATE:-}" = "1" ]; then
   echo '=== CREDENTIAL UPDATE APPLY ==='
   terraform apply -auto-approve -var=credential_update_phase=after
@@ -337,11 +377,12 @@ echo '=== REFRESH CANONICAL STATE ==='
 # second plan to be exactly stable.
 # shellcheck disable=SC2086 # STEADY_ARGS intentionally expands to an optional complete argument.
 terraform apply -refresh-only -auto-approve $STEADY_ARGS
+terraform show -json >matrix-refreshed-state.json
 
 echo '=== NO-DRIFT PLAN ==='
 set +e
 # shellcheck disable=SC2086 # STEADY_ARGS intentionally expands to an optional complete argument.
-terraform plan -detailed-exitcode $STEADY_ARGS >steady-plan.log 2>&1
+terraform plan -detailed-exitcode -out=matrix-steady.tfplan $STEADY_ARGS >steady-plan.log 2>&1
 plan_status=$?
 set -e
 cat steady-plan.log
@@ -351,15 +392,22 @@ if [ "$plan_status" -ne 0 ]; then
   fi
   exit "$plan_status"
 fi
+terraform show -json matrix-steady.tfplan >matrix-steady-plan.json
 
 echo '=== DESTROY ==='
 # shellcheck disable=SC2086 # STEADY_ARGS intentionally expands to an optional complete argument.
 terraform destroy -auto-approve $STEADY_ARGS
 
-state_list=$(terraform state list 2>/dev/null || true)
-if [ -n "$state_list" ]; then
-  echo "Smoke failed: state is not empty after destroy: $state_list" >&3
+terraform state list >matrix-final-state.list
+if [ -s matrix-final-state.list ]; then
+  echo 'Smoke failed: state is not empty after destroy.' >&3
   exit 1
+fi
+[ "$(wc -c <"$SMOKE_LOG")" -le 10485760 ] || { echo 'Smoke log exceeded its private bound.' >&3; exit 1; }
+if [ -n "${MATRIX_EVIDENCE_SESSION:-}" ] && [ -n "${MATRIX_HARNESS:-}" ]; then
+  python3 "$MATRIX_HARNESS" observe-smoke --session "$MATRIX_EVIDENCE_SESSION" \
+    --plan matrix-initial-plan.json --state matrix-refreshed-state.json \
+    --steady-plan matrix-steady-plan.json --final-state matrix-final-state.list
 fi
 
 SUCCESS=1

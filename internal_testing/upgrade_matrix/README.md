@@ -1,6 +1,6 @@
 # Previous-release execution matrix
 
-This directory contains the issue #210 execution harness. `matrix.json` is an inventory and scenario specification, not evidence that a scenario passed. Only records emitted after a scenario command completes can appear in a destructive report. Report summaries are recalculated from those records.
+This directory contains the issue #210 execution harness. `matrix.json` is an inventory and scenario specification, not evidence that a scenario passed. `deadline.py` is the bounded command supervisor: it emits digest-only command receipts bound to the run nonce, exact CLI lane, candidate commit, provider/schema, harness, and matrix. Scenario observations must reference one of those receipts and an observed plan/state/API assertion digest. Report summaries are recalculated from the trusted ledger.
 
 ## Inventory
 
@@ -11,7 +11,8 @@ The harness compares the checked-in inventory to provider registration:
 - 24 upgrade scenarios;
 - 24 import scenarios;
 - 3 replacement scenarios; and
-- 2 controlled-fault recovery scenarios.
+- 2 controlled-fault recovery scenarios; and
+- 1 current-provider-only MCP immediate-import/no-drift/private-provenance scenario (never added to signed-v2 expectations).
 
 Assembly validates inventory, HCL formatting, and provider schemas. Its execution-category pass counts are always zero. Enterprise, unavailable API, pre-1.11 features, and resources absent from signed v2.0.1 are explicit skips with controlled reasons; they are never counted as passes. Local execution fails if any resource, data source, or required category lacks one result.
 
@@ -30,7 +31,7 @@ The installer:
 7. extracts into a fresh private directory while rejecting links and unsafe paths; and
 8. verifies the exact executable name and digest before constructing the mirror.
 
-Every current-provider dev override receives a dedicated private directory containing exactly one verified executable. Execution records include only safe SHA-256 provenance plus exact canonical schema fingerprints for both the executed signed v2.0.1 binary and the current binary.
+Every current-provider dev override receives a dedicated private directory containing exactly one verified executable. The redacted report and safe evidence ledger contain only controlled enums, bounded integers, HMAC-authenticated receipts, commit/digest provenance, and exact canonical schema fingerprints. The ephemeral ledger signing key and raw command output, plans, state, IDs, endpoints, and API assertions stay in bounded mode-0700 scratch storage; the key is deleted after successful publication.
 
 ## Assembly
 
@@ -42,7 +43,9 @@ python3 -m unittest discover -s internal_testing/upgrade_matrix/tests -p 'test_*
 sh internal_testing/upgrade_matrix/tests/safety_test.sh
 ```
 
-Reports are strict schema-version 2 JSON. They reject arbitrary fields and diagnostics, protected field names, secrets, credentials, UUIDs, URLs, response bodies, and filesystem paths. Diagnostic titles are mapped internally to controlled codes. Writes use a private unique temporary file, fsync, and atomic create-only linking; an existing or symlink destination fails.
+Reports are strict schema-version 3 JSON. They reject arbitrary fields and diagnostics, protected field names, secrets, credentials, UUIDs, URLs, response bodies, and filesystem paths. Diagnostic titles are scenario-specifically mapped to controlled codes. Publication opens or creates every path component relative to retained directory FDs with `O_NOFOLLOW`, then uses an exclusive temporary file, file/directory `fsync`, and atomic create-only linking. Existing destinations, symlink ancestors, and mid-operation ancestor swaps fail or remain confined to the already opened directory.
+
+A local execution writes both `result.json` and `result.evidence.jsonl`. The latter is the redacted, digest-only audit ledger; it is safe to preserve with the report. A fabricated TSV or matrix-only set of claimed records cannot invoke a report-publishing command.
 
 ## Local execution
 
@@ -59,7 +62,7 @@ sh internal_testing/upgrade_matrix/run.sh local
 internal_testing/compose.sh down -v
 ```
 
-Repository-owned non-PR workflow jobs execute this lane against a new local backend with all four pinned CLIs. Pull requests and forks run assembly only. There is no workflow-enabled remote mutation lane; adding one requires a separate future gate and reviewed scenario allowlist.
+Repository-owned non-PR workflow jobs execute this lane against a new local backend with all four pinned CLIs. Pull requests and forks run assembly only. Tag releases run all four full lanes against the exact tagged SHA before GPG import, build, or signing; each gate job has read-only contents permission and a wall timeout. There is no workflow-enabled remote mutation lane; adding one requires a separate future gate and reviewed scenario allowlist.
 
 ## Import ownership
 
@@ -69,7 +72,9 @@ Owned-object import tests use two workspaces and a cryptographically random name
 - the importer receives private dependency context, removes only the target address, imports, refreshes, and proves no drift;
 - importer cleanup removes only the imported target address;
 - the producer destroys everything it owns; and
-- a source-free re-import must fail, proving authoritative absence.
+- a source-free re-import must fail with an exact provider/API endpoint absence diagnostic (including LiteLLM v1.98's bounded 400 absence on affected info routes), never a plan/address/configuration error.
+
+The agent import limitation is skippable only when the bounded refresh returns the exact allowlisted role-redaction diagnostic/status. Every other agent or import failure aborts the lane.
 
 A genuine-preexisting mode may only detach imported state and must never call destroy. It is not inferred from the owned producer mode.
 
@@ -81,4 +86,4 @@ Recovery uses `fault_proxy.py`, a loopback-only proxy that faults one allowliste
 
 ## Upgrade comparison
 
-The exact signed v2.0.1 executable applies unchanged HCL first. The exact current executable then performs a no-change plan and refresh-only apply. Canonical comparison covers addresses, types, schema versions, every non-sensitive semantic value, identifier equality through a process-local HMAC, and provider-private presence signals. Reviewed computed migrations must be listed per type in `matrix.json`; the default allowlist is empty. The HMAC key is created inside the comparator and is never exported to Terraform or provider children. State and HCL are not rewritten during upgrade.
+The exact signed v2.0.1 executable applies unchanged HCL first. The exact current executable reviews every changed field, applies only an exact allowlisted migration update when needed, follows it with a refresh-only migration, compares canonical state, and must then produce a final detailed-exitcode zero-drift plan. Canonical comparison covers addresses, types, schema versions, every non-sensitive semantic value, identifier equality through a process-local HMAC, and provider-private presence signals. Reviewed computed migrations must be listed per type in `matrix.json`; the default allowlist is empty. The HMAC key is created inside the comparator and is never exported to Terraform or provider children. State and HCL are not rewritten during upgrade.

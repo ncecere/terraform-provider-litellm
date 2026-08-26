@@ -41,48 +41,16 @@ fi
 
 emit_controlled_record() {
   [ "$ASSEMBLY_ONLY" = "0" ] || return 0
-  [ -n "${MATRIX_EXECUTION_RECORDS:-}" ] || return 0
-  tab=$(printf '\t')
-  line="$1:$2${tab}$1${tab}$3${tab}${4:-}${tab}"
-  grep -Fqx "$line" "$MATRIX_EXECUTION_RECORDS" 2>/dev/null || printf '%s\n' "$line" >>"$MATRIX_EXECUTION_RECORDS"
-}
-
-emit_execution_records() {
-  [ "$ASSEMBLY_ONLY" = "0" ] || return 0
-  tab=$(printf '\t')
-  [ -n "${MATRIX_EXECUTION_RECORDS:-}" ] || return 0
-  kind=
-  split_ifs=$(printf ' \t\n_')
-  split_ifs=${split_ifs%_}
-  for argument in "$@"; do
-    case "$argument" in
-      resources|datasources) kind=$argument ;;
-      *.tf)
-        old_ifs=$IFS; IFS=,
-        for fixture in $argument; do
-          if [ "$kind" = resources ]; then
-            subjects=$(grep -Eho 'resource[[:space:]]+"litellm_[a-z_]+"' "$REPO_ROOT/internal_testing/resources/$fixture" | cut -d'"' -f2 | sort -u)
-            IFS=$split_ifs
-            for subject in $subjects; do
-              for category in resource_coverage lifecycle drift; do
-                line="$category:$subject${tab}$category${tab}passed${tab}${tab}"
-                grep -Fqx "$line" "$MATRIX_EXECUTION_RECORDS" 2>/dev/null || printf '%s\n' "$line" >>"$MATRIX_EXECUTION_RECORDS"
-              done
-            done
-            IFS=,
-          elif [ "$kind" = datasources ]; then
-            subjects=$(grep -Eho 'data[[:space:]]+"litellm_[a-z_]+"' "$REPO_ROOT/internal_testing/datasources/$fixture" | cut -d'"' -f2 | sort -u)
-            IFS=$split_ifs
-            for subject in $subjects; do
-              line="data_source:$subject${tab}data_source${tab}passed${tab}${tab}"
-              grep -Fqx "$line" "$MATRIX_EXECUTION_RECORDS" 2>/dev/null || printf '%s\n' "$line" >>"$MATRIX_EXECUTION_RECORDS"
-            done
-            IFS=,
-          fi
-        done
-        IFS=$old_ifs ;;
-    esac
-  done
+  [ -n "${MATRIX_EVIDENCE_SESSION:-}" ] || return 0
+  category=$1 subject=$2 status=$3 reason=${4:-} diagnostic=${5:-} evidence=${6:-$MATRIX_PRIVATE_LOG}
+  assertion=bounded-feature-attempt
+  [ "$category" != documentation ] || assertion=validated-documentation
+  [ "$status" != skipped ] || assertion=allowlisted-unavailability
+  set -- --session "$MATRIX_EVIDENCE_SESSION" --name "$category:$subject" --category "$category" \
+    --status "$status" --assertion "$assertion" --evidence "$evidence"
+  [ -z "$reason" ] || set -- "$@" --reason "$reason"
+  [ -z "$diagnostic" ] || set -- "$@" --diagnostic-code "$diagnostic"
+  python3 "$MATRIX_HARNESS" record-observation "$@"
 }
 
 run_case() {
@@ -94,25 +62,21 @@ run_case() {
   else
     sh "$REPO_ROOT/internal_testing/smoke.sh" "$REPO_ROOT" "$@"
   fi
-  emit_execution_records "$@"
 }
 
 run_credential_update_case() {
   printf '\n===== ACCEPTANCE: credential_update =====\n'
   SMOKE_ASSEMBLY_ONLY=$ASSEMBLY_ONLY SMOKE_CREDENTIAL_UPDATE=1 sh "$REPO_ROOT/internal_testing/smoke.sh" "$REPO_ROOT" resources credential_update.tf
-  emit_execution_records resources credential_update.tf
 }
 
 run_credential_import_case() {
   printf '\n===== ACCEPTANCE: credential_import =====\n'
   SMOKE_ASSEMBLY_ONLY=$ASSEMBLY_ONLY SMOKE_CREDENTIAL_IMPORT=1 sh "$REPO_ROOT/internal_testing/smoke.sh" "$REPO_ROOT" resources credential_import.tf
-  emit_execution_records resources credential_import.tf
 }
 
 run_fallback_import_case() {
   printf '\n===== ACCEPTANCE: fallback_special_identity_import =====\n'
   SMOKE_ASSEMBLY_ONLY=$ASSEMBLY_ONLY SMOKE_FALLBACK_IMPORT=1 sh "$REPO_ROOT/internal_testing/smoke.sh" "$REPO_ROOT" resources fallback_import.tf
-  emit_execution_records resources fallback_import.tf
 }
 
 run_mcp_import_case() {
@@ -123,7 +87,6 @@ run_mcp_import_case() {
 run_agent_lifecycle_case() {
   printf '\n===== ACCEPTANCE: agent_lifecycle =====\n'
   SMOKE_ASSEMBLY_ONLY=$ASSEMBLY_ONLY SMOKE_AGENT_LIFECYCLE=1 sh "$REPO_ROOT/internal_testing/smoke.sh" "$REPO_ROOT" resources agent_lifecycle_clear.tf
-  emit_execution_records resources agent_lifecycle_clear.tf
 }
 
 # Explicit coverage table. litellm_project is enterprise-only and intentionally
@@ -143,7 +106,28 @@ run_case guardrail_structured_mode resources guardrail_full.tf
 if [ "$CLI_SUPPORTS_111" = "1" ]; then
   run_case key resources key_minimal.tf,key_router_settings.tf,send_invite_email.tf datasources key.tf,keys_list.tf
   emit_controlled_record optional_feature send_invite_email passed
-  emit_controlled_record optional_feature key_wo skipped api-endpoint-unavailable
+  printf '\n===== ACCEPTANCE: key_write_only =====\n'
+  keywo_log="$SMOKE_PRIVATE_ROOT/.smoke-logs/key-write-only-attempt.log"
+  rm -f "$keywo_log"
+  set +e
+  SMOKE_LOG_OVERRIDE=$keywo_log sh "$REPO_ROOT/internal_testing/smoke.sh" "$REPO_ROOT" resources key_write_only.tf
+  keywo_status=$?
+  set -e
+  if [ "$keywo_status" -eq 0 ]; then
+    emit_controlled_record optional_feature key_wo passed
+  else
+    python3 - "$keywo_log" <<'PY'
+from pathlib import Path
+import re,sys
+text=Path(sys.argv[1]).read_text(encoding="utf-8",errors="replace")
+if len(text.encode()) > 2*1024*1024: raise SystemExit(1)
+normalized=re.sub(r"\s+"," ",text)
+if text.count("Error: Write-Only Key Creation Error") != 1: raise SystemExit(1)
+if "LiteLLM returned HTTP 400 while creating the write-only key." not in normalized: raise SystemExit(1)
+if "response body was omitted" not in normalized: raise SystemExit(1)
+PY
+    emit_controlled_record optional_feature key_wo skipped api-endpoint-unavailable key-write-only-endpoint-unavailable "$keywo_log"
+  fi
   run_case jwt_key_mapping resources key_minimal.tf,jwt_key_mapping.tf datasources jwt_key_mapping.tf,jwt_key_mappings_list.tf
   emit_controlled_record optional_feature jwt_key_mapping_key_wo passed
 else
@@ -160,6 +144,7 @@ fi
 run_case key_block resources key_minimal.tf,key_block_minimal.tf,key_block_hash.tf
 run_case mcp_server resources mcp_server_minimal.tf datasources mcp_server.tf,mcp_servers_list.tf
 run_mcp_import_case
+emit_controlled_record documentation mcp-immediate-import-no-drift-provenance passed
 run_case model resources model_minimal.tf datasources model.tf,models_list.tf
 run_case organization resources organization_minimal.tf datasources organization.tf,organizations_list.tf
 run_case organization_member resources organization_minimal.tf,organization_member_minimal.tf

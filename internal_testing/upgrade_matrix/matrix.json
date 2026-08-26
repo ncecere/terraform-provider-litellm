@@ -51,7 +51,7 @@
     "replacement":3,
     "failure_recovery":2,
     "data_source":35,
-    "documentation":3
+    "documentation":4
   },
   "upgrade_expected_computed_migrations": {
     "litellm_agent": ["extra_headers"],
@@ -82,11 +82,14 @@
     {"name":"jwt_claim_pair_identity","fixture":"fixtures/replacement/jwt_claim_pair_identity.tf","address":"litellm_jwt_key_mapping.replacement","dependency_address":"litellm_key.replacement_dependency","compare":"hmac-sha256","dependency_check":true,"expected_actions":["create","delete"],"ordering":"create-before-destroy-safe-distinct-claim-pair","post_replacement_no_drift":true,"minimum_cli":"1.11.0"}
   ],
   "failure_recovery_scenarios": [
-    {"name":"model_failed_create_retry","fixture":"fixtures/failure_recovery/model_failed_create.tf","fault_endpoint":"/model/new","dependency_address":"","target_address":"litellm_model.failed_create","expected_diagnostic_title":"Client Error","cleanup_required":true},
-    {"name":"team_failed_create_retry","fixture":"fixtures/failure_recovery/team_failed_create.tf","fault_endpoint":"/team/new","dependency_address":"","target_address":"litellm_team.failed_create","expected_diagnostic_title":"Client Error","cleanup_required":true}
+    {"name":"model_failed_create_retry","fixture":"fixtures/failure_recovery/model_failed_create.tf","fault_endpoint":"/model/new","dependency_address":"","target_address":"litellm_model.failed_create","expected_diagnostic_title":"Client Error","expected_diagnostic_code":"model-create-error","cleanup_required":true},
+    {"name":"team_failed_create_retry","fixture":"fixtures/failure_recovery/team_failed_create.tf","fault_endpoint":"/team/new","dependency_address":"","target_address":"litellm_team.failed_create","expected_diagnostic_title":"Client Error","expected_diagnostic_code":"team-create-error","cleanup_required":true}
   ],
   "optional_features": ["key_wo", "send_invite_email", "jwt_key_mapping_key_wo"],
-  "documentation_scenarios": ["registry-examples-format-validate","resource-import-doc-contract","release-artifact-manifest-contract"],
+  "documentation_scenarios": ["registry-examples-format-validate","resource-import-doc-contract","release-artifact-manifest-contract","mcp-immediate-import-no-drift-provenance"],
+  "current_provider_only_scenarios": [
+    {"name":"mcp-immediate-import-no-drift-provenance","fixture":"mcp_server_import.tf","resource_type":"litellm_mcp_server","prior_release_expected":false,"assertions":["immediate-import","two-refresh-only-no-drift","provenance-preserved"]}
+  ],
   "allowed_skip_reasons": [
     "enterprise-license-required",
     "inventory-endpoint-may-be-unavailable",

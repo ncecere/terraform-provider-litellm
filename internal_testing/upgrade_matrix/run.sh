@@ -9,18 +9,27 @@ REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)
 MODE=${1:-assembly}
 CLI=${MATRIX_CLI:-terraform}
 REPORT=${MATRIX_REPORT:-$REPO_ROOT/internal_testing/upgrade-matrix-results.json}
+EVIDENCE_REPORT=${MATRIX_EVIDENCE_REPORT:-${REPORT%.json}.evidence.jsonl}
 PROVIDER_BINARY=${MATRIX_PROVIDER_BINARY:-$REPO_ROOT/terraform-provider-litellm}
 CACHE=${MATRIX_CACHE:-${HOME}/.cache/terraform-provider-litellm}
 SCRATCH=
 LOG=
 CLEANUP_MODE=none
 WORKSPACE=
+PRODUCER_WORKSPACE=
+IMPORTER_WORKSPACE=
+IMPORT_ADDRESS=
+IMPORT_RESOURCE_TYPE=
+IMPORT_ID_FILE=
 PROXY_PID=
 COMMAND_TIMEOUT=${MATRIX_COMMAND_TIMEOUT:-300}
 case $COMMAND_TIMEOUT in ''|*[!0-9]*) printf '%s\n' 'Matrix failed: invalid command timeout' >&2; exit 1 ;; esac
 [ "$COMMAND_TIMEOUT" -ge 1 ] && [ "$COMMAND_TIMEOUT" -le 900 ] || { printf '%s\n' 'Matrix failed: command timeout is out of bounds' >&2; exit 1; }
 run_cli() {
   python3 "$SCRIPT_DIR/deadline.py" --seconds "$COMMAND_TIMEOUT" "$CLI" "$@"
+}
+run_bounded() {
+  python3 "$SCRIPT_DIR/deadline.py" --seconds "$COMMAND_TIMEOUT" "$@"
 }
 
 fail() {
@@ -37,7 +46,40 @@ cleanup() {
     wait "$PROXY_PID" 2>/dev/null || true
     PROXY_PID=
   fi
-  if [ -n "$WORKSPACE" ] && [ -d "$WORKSPACE" ]; then
+  if [ -n "$IMPORTER_WORKSPACE" ] && [ -d "$IMPORTER_WORKSPACE" ]; then
+    importer_addresses=$(cd "$IMPORTER_WORKSPACE" && run_cli state list 2>>"$LOG") || cleanup_status=$?
+    if [ "$cleanup_status" -eq 0 ]; then
+      for address in $importer_addresses; do
+        (cd "$IMPORTER_WORKSPACE" && run_cli state rm "$address") >>"$LOG" 2>&1 || cleanup_status=$?
+      done
+    fi
+  fi
+  if [ -n "$PRODUCER_WORKSPACE" ] && [ -d "$PRODUCER_WORKSPACE" ]; then
+    producer_attempt=1
+    producer_status=1
+    while [ "$producer_attempt" -le 2 ]; do
+      if (cd "$PRODUCER_WORKSPACE" && run_cli destroy -refresh=false -auto-approve) >>"$LOG" 2>&1 &&
+         [ -z "$(cd "$PRODUCER_WORKSPACE" && run_cli state list 2>>"$LOG")" ]; then
+        producer_status=0
+        break
+      fi
+      producer_attempt=$((producer_attempt + 1))
+    done
+    [ "$producer_status" -eq 0 ] || cleanup_status=1
+    if [ "$producer_status" -eq 0 ] && [ -n "$IMPORTER_WORKSPACE" ] && [ -d "$IMPORTER_WORKSPACE" ] && [ -s "$IMPORT_ID_FILE" ]; then
+      set +e
+      (cd "$IMPORTER_WORKSPACE" && run_cli import "$IMPORT_ADDRESS" "$(cat "$IMPORT_ID_FILE")") >"$SCRATCH/controller-absence.out" 2>&1
+      controller_absence_status=$?
+      set -e
+      cat "$SCRATCH/controller-absence.out" >>"$LOG"
+      if [ "$controller_absence_status" -eq 0 ]; then
+        cleanup_status=1
+      else
+        assert_authoritative_not_found "$SCRATCH/controller-absence.out" "$IMPORT_RESOURCE_TYPE" || cleanup_status=1
+      fi
+    fi
+  fi
+  if [ -n "$WORKSPACE" ] && [ "$WORKSPACE" != "$PRODUCER_WORKSPACE" ] && [ -d "$WORKSPACE" ]; then
     if [ "$CLEANUP_MODE" = import ]; then
       # Imported/pre-existing objects are detached only. Never substitute destroy.
       addresses=$(cd "$WORKSPACE" && run_cli state list 2>>"$LOG" || cleanup_status=$?)
@@ -47,13 +89,48 @@ cleanup() {
         done
       fi
     elif [ "$CLEANUP_MODE" = owned ]; then
-      (cd "$WORKSPACE" && run_cli destroy -refresh=false -auto-approve) >>"$LOG" 2>&1 || cleanup_status=$?
+      cleanup_attempt=1
+      cleanup_status=1
+      while [ "$cleanup_attempt" -le 2 ]; do
+        if (cd "$WORKSPACE" && run_cli destroy -refresh=false -auto-approve) >>"$LOG" 2>&1 &&
+           [ -z "$(cd "$WORKSPACE" && run_cli state list 2>>"$LOG")" ]; then
+          cleanup_status=0
+          break
+        fi
+        cleanup_attempt=$((cleanup_attempt + 1))
+      done
     fi
   fi
-  [ -z "$SCRATCH" ] || rm -rf "$SCRATCH"
+  # A nested smoke workspace is a real producer/importer state holder. Retry
+  # cleanup and authoritative empty-state checks instead of relying on hosted
+  # stack teardown. Preserve every state/log if any retry remains incomplete.
+  if [ -n "$SCRATCH" ] && [ -d "$SCRATCH/smoke" ]; then
+    for smoke_workspace in "$SCRATCH"/smoke/.smoke.*; do
+      [ -d "$smoke_workspace" ] || continue
+      smoke_status=1
+      smoke_attempt=1
+      while [ "$smoke_attempt" -le 2 ]; do
+        smoke_addresses=$(cd "$smoke_workspace" && terraform state list 2>>"$LOG") && smoke_list_status=0 || smoke_list_status=$?
+        if [ "$smoke_list_status" -eq 0 ] && [ -z "$smoke_addresses" ]; then
+          smoke_status=0
+          break
+        fi
+        if (cd "$smoke_workspace" && terraform destroy -refresh=false -auto-approve) >>"$LOG" 2>&1 &&
+           [ -z "$(cd "$smoke_workspace" && terraform state list 2>>"$LOG")" ]; then
+          smoke_status=0
+          break
+        fi
+        smoke_attempt=$((smoke_attempt + 1))
+      done
+      [ "$smoke_status" -eq 0 ] || cleanup_status=1
+    done
+  fi
   if [ "$cleanup_status" -ne 0 ]; then
-    printf '%s\n' 'Matrix failed: cleanup did not complete' >&2
+    printf '%s\n' 'Matrix failed: cleanup did not complete; private recovery state was retained' >&2
     exit 1
+  fi
+  if [ "$status" -eq 0 ]; then
+    [ -z "$SCRATCH" ] || rm -rf "$SCRATCH"
   fi
   exit "$status"
 }
@@ -85,10 +162,21 @@ chmod 600 "$LOG"
 # deadline.py bounds every selected CLI command's merged output before this
 # private aggregate log receives it. Do not use a process-wide file-size limit:
 # Terraform inherits it and must extract signed provider executables over 10 MiB.
-RESULTS=$SCRATCH/results.tsv
-: >"$RESULTS"
-chmod 600 "$RESULTS"
-export MATRIX_EXECUTION_RECORDS=$RESULTS
+COMMAND_LEDGER=$SCRATCH/evidence.jsonl
+SESSION=$SCRATCH/session.json
+session_value=$(python3 "$SCRIPT_DIR/harness.py" start-session \
+  --ledger "$COMMAND_LEDGER" --session "$SESSION" --cli "$CLI" \
+  --provider-binary "$PROVIDER_BINARY") || fail 'trusted evidence supervisor initialization failed'
+export MATRIX_COMMAND_LEDGER=$COMMAND_LEDGER MATRIX_EVIDENCE_SESSION=$SESSION
+export MATRIX_RUN_NONCE=$(printf '%s' "$session_value" | python3 -c 'import json,sys; print(json.load(sys.stdin)["run_nonce"])')
+export MATRIX_CLI_LANE=$(printf '%s' "$session_value" | python3 -c 'import json,sys; print(json.load(sys.stdin)["cli_lane"])')
+export MATRIX_CANDIDATE_COMMIT=$(printf '%s' "$session_value" | python3 -c 'import json,sys; print(json.load(sys.stdin)["candidate_commit"])')
+export MATRIX_PROVIDER_SHA256=$(printf '%s' "$session_value" | python3 -c 'import json,sys; print(json.load(sys.stdin)["provider_sha256"])')
+export MATRIX_PROVIDER_SCHEMA_SHA256=$(printf '%s' "$session_value" | python3 -c 'import json,sys; print(json.load(sys.stdin)["provider_schema_sha256"])')
+export MATRIX_HARNESS_SHA256=$(printf '%s' "$session_value" | python3 -c 'import json,sys; print(json.load(sys.stdin)["harness_sha256"])')
+export MATRIX_MATRIX_SHA256=$(printf '%s' "$session_value" | python3 -c 'import json,sys; print(json.load(sys.stdin)["matrix_sha256"])')
+export MATRIX_LEDGER_KEY_FILE=$(printf '%s' "$session_value" | python3 -c 'import json,sys; print(json.load(sys.stdin)["key_file"])')
+export MATRIX_HARNESS=$SCRIPT_DIR/harness.py MATRIX_PRIVATE_LOG=$LOG
 
 # Ambient logging/CLI arguments can expose bodies or redirect the backend.
 unset TF_LOG TF_LOG_PATH TF_CLI_ARGS TF_CLI_ARGS_init TF_CLI_ARGS_plan TF_CLI_ARGS_apply TF_CLI_ARGS_destroy
@@ -180,11 +268,35 @@ EOF
 }
 
 record() {
-  # name/category/status/reason are controlled matrix labels, never remote data.
+  # The supervisor accepts only checked-matrix labels and binds every scenario
+  # to the latest bounded command receipt plus an observed private artifact.
+  name=$1 category=$2 status=$3 reason=$4
+  observation_evidence=${SCENARIO_EVIDENCE:-$LOG}
+  SCENARIO_EVIDENCE=
   log_size=$(wc -c <"$LOG")
   [ "$log_size" -le 10485760 ] || fail 'private child log exceeded its bounded size'
-  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "${5:-}" "${6:-}" >>"$RESULTS"
-  printf '%-18s %-38s %s\n' "$2" "$1" "$3"
+  assertion=terraform-plan-state-api
+  case "$category" in
+    upgrade) assertion=upgrade-state-migration ;;
+    import) assertion=import-authoritative-absence ;;
+    replacement) assertion=replacement-plan-state ;;
+    failure_recovery) assertion=fault-endpoint-diagnostic-state ;;
+    optional_feature) assertion=bounded-feature-attempt ;;
+    documentation) assertion=validated-documentation ;;
+  esac
+  [ "$status" != skipped ] || assertion=allowlisted-unavailability
+  diagnostic=
+  case "$name" in
+    failure_recovery:model_failed_create_retry) diagnostic=model-create-error ;;
+    failure_recovery:team_failed_create_retry) diagnostic=team-create-error ;;
+    import:litellm_agent) [ "$status" != skipped ] || diagnostic=agent-role-redacted-read ;;
+    optional_feature:key_wo) [ "$status" != skipped ] || diagnostic=key-write-only-endpoint-unavailable ;;
+  esac
+  set -- --session "$SESSION" --name "$name" --category "$category" --status "$status" --assertion "$assertion" --evidence "$observation_evidence"
+  [ -z "$reason" ] || set -- "$@" --reason "$reason"
+  [ -z "$diagnostic" ] || set -- "$@" --diagnostic-code "$diagnostic"
+  python3 "$SCRIPT_DIR/harness.py" record-observation "$@" || fail 'trusted scenario observation was rejected'
+  printf '%-18s %-38s %s\n' "$category" "$name" "$status"
 }
 
 assemble_workspace() {
@@ -317,33 +429,102 @@ for resource in plan.get("resource_changes",[]):
   change=resource.get("change",{}); actions=change.get("actions",[])
   before=change.get("before") or {}; after=change.get("after") or {}
   sensitive=(change.get("after_sensitive") or {})
-  fields={key for key in set(before)|set(after) if before.get(key)!=after.get(key) and not sensitive.get(key,False)}
+  changed={key for key in set(before)|set(after) if before.get(key)!=after.get(key)}
+  sensitive_changed={key for key in changed if sensitive.get(key,False)}
+  if sensitive_changed: raise SystemExit("sensitive upgrade migration is never auto-applied: "+resource.get("type",""))
+  fields=changed
   reviewed=set(allowed.get(resource.get("type"),[]))
   if actions not in ([],["no-op"]):
     # A framework migration can appear as a configuration update when a prior
     # release persisted a synthetic empty value for an omitted optional field.
-    # Never apply this plan: only a later refresh-only apply is permitted, and
-    # every changed field must be an exact per-type reviewed migration.
+    # Applying is permitted only after every changed field is proven to be an
+    # exact per-type reviewed migration; replacement remains forbidden.
     if actions != ["update"] or not fields or not fields.issubset(reviewed):
       raise SystemExit("unreviewed upgrade plan: "+resource.get("type","")+":"+",".join(sorted(fields)))
   elif not fields.issubset(reviewed):
     raise SystemExit("unreviewed upgrade plan: "+resource.get("type","")+":"+",".join(sorted(fields)))
 PY
+  if [ "$plan_status" -eq 2 ]; then
+    # The JSON review above limits this convergence apply to exact per-type
+    # migration fields and rejects replacement or unrelated actions.
+    (cd "$WORKSPACE" && run_cli apply -auto-approve current-upgrade.tfplan) >>"$LOG" 2>&1 || fail 'reviewed upgrade convergence apply failed'
+  fi
   (cd "$WORKSPACE" && run_cli apply -refresh-only -auto-approve) >>"$LOG" 2>&1 || fail 'current-provider refresh-only apply failed'
   (cd "$WORKSPACE" && run_cli show -json) >"$SCRATCH/state-after.json" 2>>"$LOG" || fail 'upgraded state inspection failed'
   (cd "$WORKSPACE" && run_cli state pull) >"$SCRATCH/raw-after.json" 2>>"$LOG" || fail 'upgraded private-state inspection failed'
   migration_code=$(compare_upgrade_states "$SCRATCH/state-before.json" "$SCRATCH/state-after.json" \
     "$SCRATCH/current-schema.json" "$resource_type" "$SCRATCH/raw-before.json" \
     "$SCRATCH/raw-after.json") || fail 'canonical upgrade state contract failed'
+  set +e
+  (cd "$WORKSPACE" && run_cli plan -detailed-exitcode -refresh=true -out=final-upgrade.tfplan) >>"$LOG" 2>&1
+  final_upgrade_status=$?
+  set -e
+  [ "$final_upgrade_status" -eq 0 ] || fail 'reviewed refresh migration did not reach final zero drift'
   (cd "$WORKSPACE" && run_cli destroy -auto-approve) >>"$LOG" 2>&1 || fail 'owned upgrade fixture cleanup failed'
   CLEANUP_MODE=none
   rm -rf "$WORKSPACE"
   WORKSPACE=
+  SCENARIO_EVIDENCE=$SCRATCH/state-after.json
   record "upgrade:$resource_type" upgrade passed '' '' "$migration_code"
+}
+
+assert_authoritative_not_found() {
+  evidence=$1 resource_type=$2
+  python3 - "$evidence" "$resource_type" <<'PY' || fail 'post-destroy check was not an exact provider/API not-found result'
+from pathlib import Path
+import re,sys
+text=Path(sys.argv[1]).read_text(encoding="utf-8",errors="replace")
+if len(text.encode()) > 2*1024*1024: raise SystemExit(1)
+lower=text.lower()
+# Terraform's exact import wrapper is emitted only after provider Read returns
+# remote absence. Reject argument/configuration/plan failures explicitly.
+forbidden=("invalid address", "configuration is invalid", "variables not allowed", "provider configuration", "failed to load plugin schemas")
+if any(value in lower for value in forbidden): raise SystemExit(1)
+standard=any(value in lower for value in ("cannot import non-existent remote object", "remote object does not exist", "not found", "status code: 404", "status=404"))
+# LiteLLM v1.98 uses an endpoint-specific 400 absence for several info routes.
+# Accept it only through the provider's exact bounded read diagnostic; a plan,
+# parse, address, or configuration failure cannot match this contract.
+bounded=bool(re.search(r"unable to read [a-z0-9 _-]+: api request failed with status (?:400|404); response detail\s+omitted",lower))
+endpoint_exact={
+ "litellm_budget": "unable to read budget: budget import read response did not contain exactly one budget",
+ "litellm_fallback": "error: fallback import read error litellm returned http status 404 while attempting to read during import the fallback.",
+}
+resource=sys.argv[2]
+normalized=" ".join(lower.split())
+exact=endpoint_exact.get(resource) in normalized if resource in endpoint_exact else False
+if not (standard or bounded or exact): raise SystemExit(1)
+if not re.fullmatch(r"litellm_[a-z_]+",resource): raise SystemExit(1)
+PY
+}
+
+assert_agent_role_redaction_skip() {
+  evidence=$1 agent_id_file=$2
+  agent_status=$(curl --silent --show-error --connect-timeout 3 --max-time 15 \
+    -H 'Authorization: Bearer sk-testing-key' -o "$SCRATCH/agent-role-response.json" \
+    -w '%{http_code}' "http://localhost:4000/v1/agents/$(cat "$agent_id_file")") || fail 'agent role-redaction endpoint observation failed'
+  [ "$agent_status" = 200 ] || fail 'agent role-redaction endpoint returned a non-allowlisted status'
+  python3 - "$evidence" "$SCRATCH/agent-role-response.json" "$agent_id_file" <<'PY' || fail 'agent import failure was not the exact bounded role-redaction diagnostic/status'
+from pathlib import Path
+import json,sys
+text=Path(sys.argv[1]).read_text(encoding="utf-8",errors="replace")
+body=Path(sys.argv[2]).read_bytes(); expected=Path(sys.argv[3]).read_text(encoding="utf-8").strip()
+if len(text.encode()) > 2*1024*1024 or len(body) > 1024*1024: raise SystemExit(1)
+normalized=" ".join(text.lower().split())
+if text.count("Error: Unsupported Agent Clear") != 1: raise SystemExit(1)
+if "the complete provider block cannot be removed while it contains api-owned leaves" not in normalized: raise SystemExit(1)
+value=json.loads(body)
+if not isinstance(value,dict) or value.get("agent_id") != expected: raise SystemExit(1)
+PY
+  python3 - "$evidence" "$SCRATCH/agent-role-response.json" <<'PY' >"$SCRATCH/agent-role-observation.json"
+import hashlib,json,sys
+print(json.dumps({"schema_version":1,"endpoint_status":200,"diagnostic_sha256":hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest(),"response_sha256":hashlib.sha256(open(sys.argv[2],"rb").read()).hexdigest()},sort_keys=True))
+PY
 }
 
 run_import() {
   resource_type=$1 producer_fixtures=$2 importer_fixtures=$3 address=$4 expression=$5 lane=$6 expected_skip=${7:-}
+  IMPORT_ADDRESS=$address
+  IMPORT_RESOURCE_TYPE=$resource_type
   if [ "$lane" = enterprise ] && [ "${LITELLM_ENTERPRISE_CONFIRM:-}" != licensed-disposable ]; then
     record "import:$resource_type" import skipped enterprise-license-required
     return
@@ -358,6 +539,7 @@ run_import() {
   }
   assemble_workspace "$resource_type" "$producer_fixtures" || fail 'import producer fixture assembly failed'
   producer=$WORKSPACE
+  PRODUCER_WORKSPACE=$producer
   CLEANUP_MODE=owned
   # This namespace is generated for this producer/importer pair and never
   # emitted. It prevents collision with stale or concurrent scenario objects.
@@ -407,8 +589,10 @@ PYID
     (cd "$producer" && run_cli output -raw matrix_import_id) >"$SCRATCH/import-id" 2>>"$LOG" || fail 'producer identity capture failed'
   fi
   [ -s "$SCRATCH/import-id" ] || fail 'import identity was empty'
+  IMPORT_ID_FILE=$SCRATCH/import-id
 
   importer=$SCRATCH/importer
+  IMPORTER_WORKSPACE=$importer
   mkdir -m 700 "$importer"
   write_provider_config "$importer"
   index=0
@@ -436,11 +620,13 @@ PYNS
   (cd "$importer" && run_cli state rm "$address") >>"$LOG" 2>&1 || fail 'importer target preparation failed'
   (cd "$importer" && run_cli import "$address" "$(cat "$SCRATCH/import-id")") >>"$LOG" 2>&1 || fail 'import failed'
   set +e
-  (cd "$importer" && run_cli refresh) >>"$LOG" 2>&1
+  (cd "$importer" && run_cli refresh) >"$SCRATCH/import-refresh.out" 2>&1
   refresh_status=$?
   set -e
+  cat "$SCRATCH/import-refresh.out" >>"$LOG"
   if [ "$refresh_status" -ne 0 ]; then
-    [ -n "$expected_skip" ] || fail 'post-import refresh failed'
+    [ "$resource_type" = litellm_agent ] && [ "$expected_skip" = role-redacted-state-requires-admin ] || fail 'post-import refresh failed outside the exact agent role-redaction allowance'
+    assert_agent_role_redaction_skip "$SCRATCH/import-refresh.out" "$SCRATCH/import-id"
     # The endpoint-specific limitation was exercised, not inferred. Detach the
     # failed import, destroy only through the authoritative producer, and prove
     # both empty state and remote absence before recording an explicit skip.
@@ -448,13 +634,21 @@ PYNS
     (cd "$producer" && run_cli destroy -auto-approve) >>"$LOG" 2>&1 || fail 'limited import producer cleanup failed'
     [ -z "$(cd "$producer" && run_cli state list 2>>"$LOG")" ] || fail 'limited import producer state was not empty'
     set +e
-    (cd "$importer" && run_cli import "$address" "$(cat "$SCRATCH/import-id")") >>"$LOG" 2>&1
+    (cd "$importer" && run_cli import "$address" "$(cat "$SCRATCH/import-id")") >"$SCRATCH/import-absence.out" 2>&1
     absence_status=$?
     set -e
+    cat "$SCRATCH/import-absence.out" >>"$LOG"
     [ "$absence_status" -ne 0 ] || fail 'limited import target remained authoritative after destroy'
+    assert_authoritative_not_found "$SCRATCH/import-absence.out" "$resource_type"
     CLEANUP_MODE=none
     rm -rf "$producer" "$importer"
     WORKSPACE=
+    PRODUCER_WORKSPACE=
+    IMPORTER_WORKSPACE=
+    IMPORT_ADDRESS=
+    IMPORT_RESOURCE_TYPE=
+    IMPORT_ID_FILE=
+    SCENARIO_EVIDENCE=$SCRATCH/agent-role-observation.json
     record "import:$resource_type" import skipped "$expected_skip"
     return
   fi
@@ -494,13 +688,21 @@ PY
   # An authoritative re-import after producer destroy must fail. This checks
   # absence without issuing a delete or adopting anything.
   set +e
-  (cd "$importer" && run_cli import "$address" "$(cat "$SCRATCH/import-id")") >>"$LOG" 2>&1
+  (cd "$importer" && run_cli import "$address" "$(cat "$SCRATCH/import-id")") >"$SCRATCH/import-absence.out" 2>&1
   absence_status=$?
   set -e
+  cat "$SCRATCH/import-absence.out" >>"$LOG"
   [ "$absence_status" -ne 0 ] || fail 'destroyed import target remained authoritative'
+  assert_authoritative_not_found "$SCRATCH/import-absence.out" "$resource_type"
   CLEANUP_MODE=none
   rm -rf "$producer" "$importer"
   WORKSPACE=
+  PRODUCER_WORKSPACE=
+  IMPORTER_WORKSPACE=
+  IMPORT_ADDRESS=
+  IMPORT_RESOURCE_TYPE=
+  IMPORT_ID_FILE=
+  SCENARIO_EVIDENCE=$SCRATCH/import-absence.out
   record "import:$resource_type" import passed ''
 }
 
@@ -532,7 +734,8 @@ assemble_matrix_fixture() {
 }
 
 run_replacement() {
-  name=$1 fixture=$2 address=$3 dependency=$4 minimum_cli=$5
+  name=$1 fixture=$2 address=$3 dependency=$4 minimum_cli=$5 dependency_check=$6
+  [ "$dependency_check" = true ] || fail 'replacement dependency_check was not consumed'
   if [ "$minimum_cli" = 1.11.0 ] && [ "$CLI_SUPPORTS_111" -ne 1 ]; then
     record "replacement:$name" replacement skipped cli-version-below-1.11
     return
@@ -555,10 +758,10 @@ EOF
   (cd "$WORKSPACE" && run_cli output -raw matrix_replacement_dependency_id) >"$SCRATCH/dependency-before" 2>>"$LOG" || fail 'old dependency identity capture failed'
   (cd "$WORKSPACE" && run_cli plan -var=replacement_phase=after -out=replacement.tfplan) >>"$LOG" 2>&1 || fail 'intentional replacement plan failed'
   (cd "$WORKSPACE" && run_cli show -json replacement.tfplan) >"$SCRATCH/replacement-plan.json" 2>>"$LOG" || fail 'replacement plan inspection failed'
-  python3 - "$SCRATCH/replacement-plan.json" "$address" "$name" "$SCRIPT_DIR/matrix.json" <<'PY' || fail 'ordered target-only replacement contract failed'
+  python3 - "$SCRATCH/replacement-plan.json" "$address" "$dependency" "$name" "$SCRIPT_DIR/matrix.json" <<'PY' || fail 'ordered target-only replacement and dependency relation contract failed'
 import json,sys
-value=json.load(open(sys.argv[1],encoding="utf-8")); address=sys.argv[2]; name=sys.argv[3]
-matrix=json.load(open(sys.argv[4],encoding="utf-8"))
+value=json.load(open(sys.argv[1],encoding="utf-8")); address=sys.argv[2]; dependency=sys.argv[3]; name=sys.argv[4]
+matrix=json.load(open(sys.argv[5],encoding="utf-8"))
 scenario=next(item for item in matrix["replacement_scenarios"] if item["name"]==name)
 changes=[c for c in value.get("resource_changes",[]) if c.get("address")==address]
 if len(changes)!=1 or changes[0].get("change",{}).get("actions",[]) != scenario["expected_actions"]:
@@ -568,6 +771,22 @@ for change in value.get("resource_changes",[]):
   if change.get("address") == address: continue
   if change.get("change",{}).get("actions",[]) not in ([],["no-op"]):
     raise SystemExit("replacement dependency changed: "+change.get("type","")+":"+",".join(change.get("change",{}).get("actions",[])))
+# Consume the checked dependency contract and prove the plan still carries an
+# explicit expression/ordering relation in either direction.
+resources=value.get("configuration",{}).get("root_module",{}).get("resources",[])
+def refs(item):
+  found=[]
+  def walk(v):
+    if isinstance(v,dict):
+      found.extend(v.get("references",[]) if isinstance(v.get("references"),list) else [])
+      for child in v.values(): walk(child)
+    elif isinstance(v,list):
+      for child in v: walk(child)
+  walk(item.get("expressions",{})); found.extend(item.get("depends_on",[]) or []); return found
+selected={item.get("address"):refs(item) for item in resources if item.get("address") in {address,dependency}}
+if set(selected)!={address,dependency}: raise SystemExit("replacement dependency address missing")
+if not any(any(ref==other or ref.startswith(other+".") for ref in selected.get(owner,[])) for owner,other in ((address,dependency),(dependency,address))):
+  raise SystemExit("replacement dependency relation was not preserved")
 PY
   (cd "$WORKSPACE" && run_cli apply -json -auto-approve replacement.tfplan) >"$SCRATCH/replacement-apply.jsonl" 2>>"$LOG" || fail 'intentional replacement apply failed'
   python3 - "$SCRATCH/replacement-apply.jsonl" "$address" <<'PY' || fail 'replacement operation order differed from the reviewed safety order'
@@ -609,18 +828,21 @@ PY
   (cd "$WORKSPACE" && run_cli destroy -auto-approve -var=replacement_phase=after) >>"$LOG" 2>&1 || fail 'replacement cleanup failed'
   [ -z "$(cd "$WORKSPACE" && run_cli state list 2>>"$LOG")" ] || fail 'replacement state was not empty after destroy'
   set +e
-  (cd "$WORKSPACE" && run_cli import "$address" "$(cat "$SCRATCH/replacement-after")") >>"$LOG" 2>&1
+  (cd "$WORKSPACE" && run_cli import "$address" "$(cat "$SCRATCH/replacement-after")") >"$SCRATCH/replacement-absence.out" 2>&1
   absence_status=$?
   set -e
+  cat "$SCRATCH/replacement-absence.out" >>"$LOG"
   [ "$absence_status" -ne 0 ] || fail 'replacement target remained authoritative after destroy'
+  assert_authoritative_not_found "$SCRATCH/replacement-absence.out" "${address%%.*}"
   CLEANUP_MODE=none
   rm -rf "$WORKSPACE"
   WORKSPACE=
+  SCENARIO_EVIDENCE=$SCRATCH/replacement-plan.json
   record "replacement:$name" replacement passed ''
 }
 
 run_failure_recovery() {
-  name=$1 fixture=$2 expected_title=$3 endpoint=$4 dependency=$5 target=$6
+  name=$1 fixture=$2 expected_title=$3 expected_code=$4 endpoint=$5 dependency=$6 target=$7
   assemble_matrix_fixture "$fixture" || fail 'failure-recovery fixture assembly failed'
   namespace_workspace "$WORKSPACE"
   CLEANUP_MODE=owned
@@ -653,11 +875,14 @@ PYPORT
   failed_status=$?
   set -e
   [ "$failed_status" -ne 0 ] || fail 'controlled pre-commit fault unexpectedly succeeded'
-  python3 - "$SCRATCH/failure.jsonl" "$expected_title" <<'PYDIAG' || fail 'failure diagnostic did not map to the exact allowlisted title/code'
+  python3 - "$SCRATCH/failure.jsonl" "$name" "$expected_title" "$expected_code" <<'PYDIAG' || fail 'failure diagnostic did not map to the exact scenario-specific title/code'
 import json,sys
-allowed={"Client Error":"model-create-error","Team Member Create Error":"team-member-create-error"}
-expected=sys.argv[2]
-if expected not in allowed: raise SystemExit(1)
+allowed={
+ "model_failed_create_retry":("Client Error","model-create-error"),
+ "team_failed_create_retry":("Client Error","team-create-error"),
+}
+name,expected,code=sys.argv[2:]
+if allowed.get(name)!=(expected,code): raise SystemExit(1)
 titles=[]
 for line in open(sys.argv[1],encoding="utf-8",errors="replace"):
   try: value=json.loads(line)
@@ -689,13 +914,16 @@ PYSTATS
   (cd "$WORKSPACE" && run_cli destroy -auto-approve -var=recover_create=true) >>"$LOG" 2>&1 || fail 'failure-recovery cleanup failed'
   [ -z "$(cd "$WORKSPACE" && run_cli state list 2>>"$LOG")" ] || fail 'recovery state was not empty after cleanup'
   set +e
-  (cd "$WORKSPACE" && run_cli import "$target" "$(cat "$SCRATCH/recovery-id")") >>"$LOG" 2>&1
+  (cd "$WORKSPACE" && run_cli import "$target" "$(cat "$SCRATCH/recovery-id")") >"$SCRATCH/recovery-absence.out" 2>&1
   absence_status=$?
   set -e
+  cat "$SCRATCH/recovery-absence.out" >>"$LOG"
   [ "$absence_status" -ne 0 ] || fail 'recovery target remained authoritative after cleanup'
+  assert_authoritative_not_found "$SCRATCH/recovery-absence.out" "${target%%.*}"
   CLEANUP_MODE=none
   rm -rf "$WORKSPACE"
   WORKSPACE=
+  SCENARIO_EVIDENCE=$stats_file
   record "failure_recovery:$name" failure_recovery passed '' "$expected_title"
 }
 
@@ -715,13 +943,14 @@ if [ "$PHASE" = all ]; then
 # Re-run the complete non-mutating assembly against the exact selected CLI and
 # current binary. Only after that command succeeds can the three reviewed
 # documentation contracts receive execution records.
-python3 "$SCRIPT_DIR/harness.py" assembly --cli "$CLI" --provider-binary "$PROVIDER_BINARY" >>"$LOG" 2>&1 || fail 'local documentation/assembly contracts failed'
+run_bounded python3 "$SCRIPT_DIR/harness.py" assembly --cli "$CLI" --provider-binary "$PROVIDER_BINARY" >>"$LOG" 2>&1 || fail 'local documentation/assembly contracts failed'
 python3 - "$SCRIPT_DIR/matrix.json" <<'PY' >"$SCRATCH/documentation.tsv"
 import json,sys
 for name in json.load(open(sys.argv[1],encoding="utf-8"))["documentation_scenarios"]: print(name)
 PY
 while IFS= read -r documentation_scenario; do
-  record "documentation:$documentation_scenario" documentation passed ''
+  [ "$documentation_scenario" = mcp-immediate-import-no-drift-provenance ] || \
+    record "documentation:$documentation_scenario" documentation passed ''
 done <"$SCRATCH/documentation.tsv"
 # Existing lifecycle matrix covers all OSS resources and data sources. Route
 # its historical `terraform` command name to the selected Terraform/OpenTofu
@@ -784,27 +1013,26 @@ fi
 python3 - "$SCRIPT_DIR/matrix.json" <<'PY' >"$SCRATCH/replacements.tsv"
 import json,sys
 for r in json.load(open(sys.argv[1], encoding="utf-8"))["replacement_scenarios"]:
- print("\t".join([r["name"],r["fixture"],r["address"],r["dependency_address"],r.get("minimum_cli","-")]))
+ print("\t".join([r["name"],r["fixture"],r["address"],r["dependency_address"],r.get("minimum_cli","-"),str(r.get("dependency_check",False)).lower()]))
 PY
-while IFS="	" read -r scenario_name fixture address dependency minimum_cli; do
-  run_replacement "$scenario_name" "$fixture" "$address" "$dependency" "$minimum_cli"
+while IFS="	" read -r scenario_name fixture address dependency minimum_cli dependency_check; do
+  run_replacement "$scenario_name" "$fixture" "$address" "$dependency" "$minimum_cli" "$dependency_check"
 done <"$SCRATCH/replacements.tsv"
 
 python3 - "$SCRIPT_DIR/matrix.json" <<'PY' >"$SCRATCH/recovery.tsv"
 import json,sys
 for r in json.load(open(sys.argv[1], encoding="utf-8"))["failure_recovery_scenarios"]:
- print("\t".join([r["name"],r["fixture"],r["expected_diagnostic_title"],r["fault_endpoint"],r["dependency_address"] or "-",r["target_address"]]))
+ print("\t".join([r["name"],r["fixture"],r["expected_diagnostic_title"],r["expected_diagnostic_code"],r["fault_endpoint"],r["dependency_address"] or "-",r["target_address"]]))
 PY
-while IFS="	" read -r scenario_name fixture expected_title endpoint dependency target; do
-  run_failure_recovery "$scenario_name" "$fixture" "$expected_title" "$endpoint" "$dependency" "$target"
+while IFS="	" read -r scenario_name fixture expected_title expected_code endpoint dependency target; do
+  run_failure_recovery "$scenario_name" "$fixture" "$expected_title" "$expected_code" "$endpoint" "$dependency" "$target"
 done <"$SCRATCH/recovery.tsv"
 if [ "$PHASE" = scenarios ]; then
   printf '%s\n' 'Replacement/recovery diagnostic phase completed; no report was written'
   exit 0
 fi
 
-python3 "$SCRIPT_DIR/harness.py" report-records \
-  --records "$RESULTS" --report "$REPORT" --cli "$CLI" \
-  --provider-binary "$PROVIDER_BINARY" \
-  --previous-provider-binary "$PREVIOUS_PROVIDER_BINARY"
-printf '%s\n' 'Matrix passed; report derives only from validated execution records'
+python3 "$SCRIPT_DIR/harness.py" finalize-evidence \
+  --session "$SESSION" --report "$REPORT" --evidence-report "$EVIDENCE_REPORT" \
+  --cli "$CLI" --previous-provider-binary "$PREVIOUS_PROVIDER_BINARY"
+printf '%s\n' 'Matrix passed; report and safe ledger derive only from trusted bounded execution evidence'

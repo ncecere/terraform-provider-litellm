@@ -36,3 +36,42 @@ if grep -q 'LITELLM_REMOTE_ACCEPTANCE_CONFIRM' "$REPO_ROOT/.github/workflows/upg
   echo 'workflow unexpectedly enables a remote mutation lane' >&2
   exit 1
 fi
+if grep -q 'report-records' "$SCRIPT_DIR/run.sh"; then
+  echo 'runner still accepts forgeable manual report records' >&2
+  exit 1
+fi
+if grep -q 'e2a7e6d' "$REPO_ROOT/.github/workflows/upgrade-matrix.yml"; then
+  echo 'workflow still uses the stale runtime comparison SHA' >&2
+  exit 1
+fi
+
+# The rebased #209/#254 base must pass, while an actual provider runtime edit
+# relative to that exact base must fail.
+base=$(git -C "$REPO_ROOT" rev-parse origin/issues)
+head=$(git -C "$REPO_ROOT" rev-parse HEAD)
+(cd "$REPO_ROOT" && python3 "$SCRIPT_DIR/verify_runtime_parity.py" \
+  --event pull_request --base "$base" --head "$head") >/dev/null
+(cd "$REPO_ROOT" && python3 "$SCRIPT_DIR/verify_runtime_parity.py" \
+  --event workflow_dispatch --base "$base" --head "$head") >/dev/null
+(cd "$REPO_ROOT" && python3 "$SCRIPT_DIR/verify_runtime_parity.py" \
+  --event release --base "$base" --head "$head") >/dev/null
+if (cd "$REPO_ROOT" && python3 "$SCRIPT_DIR/verify_runtime_parity.py" \
+  --event release --base 0000000000000000000000000000000000000000 --head "$head") >/dev/null 2>&1; then
+  echo 'release runtime parity did not fail closed without a base' >&2
+  exit 1
+fi
+worktree=$(mktemp -d "${TMPDIR:-/tmp}/issue210-parity.XXXXXX")
+rmdir "$worktree"
+cleanup_worktree() { git -C "$REPO_ROOT" worktree remove --force "$worktree" >/dev/null 2>&1 || true; }
+trap cleanup_worktree EXIT INT TERM HUP
+git -C "$REPO_ROOT" worktree add --detach "$worktree" "$head" >/dev/null
+printf '\n// adversarial runtime edit\n' >>"$worktree/main.go"
+git -C "$worktree" add main.go
+git -C "$worktree" -c user.name=issue210 -c user.email=issue210@example.invalid commit -m adversarial-runtime-edit >/dev/null
+if (cd "$worktree" && python3 "$SCRIPT_DIR/verify_runtime_parity.py" \
+  --event pull_request --base "$base" --head HEAD) >/dev/null 2>&1; then
+  echo 'actual provider edit unexpectedly passed runtime parity' >&2
+  exit 1
+fi
+cleanup_worktree
+trap - EXIT INT TERM HUP
