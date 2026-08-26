@@ -330,72 +330,10 @@ assemble_workspace() {
 
 compare_upgrade_states() {
   before=$1 after=$2 schema=$3 resource_type=$4 raw_before=$5 raw_after=$6
-  python3 - "$before" "$after" "$schema" "$resource_type" "$raw_before" "$raw_after" "$SCRIPT_DIR/matrix.json" <<'PYUPGRADE'
-import hashlib,hmac,json,secrets,sys
-before,after,schema_path,wanted,raw_before,raw_after,matrix_path=sys.argv[1:]
-schema=json.load(open(schema_path,encoding="utf-8"))["provider_schemas"]["registry.terraform.io/ncecere/litellm"]
-rs=schema["resource_schemas"]
-matrix=json.load(open(matrix_path,encoding="utf-8"))
-allowed_map=matrix.get("upgrade_expected_computed_migrations",{})
-private_migrations=set(matrix.get("upgrade_expected_private_migrations",[]))
-schema_migrations=matrix.get("upgrade_expected_schema_migrations",{})
-identity_migrations=matrix.get("upgrade_expected_identity_migrations",{})
-key=secrets.token_bytes(32)
-def rows(path):
-  value=json.load(open(path,encoding="utf-8")); out={}
-  def walk(module):
-    for resource in module.get("resources",[]):
-      if resource.get("mode")!="managed": continue
-      address=resource["address"]; typ=resource["type"]; values=resource.get("values",{})
-      attrs=rs[typ]["block"].get("attributes",{})
-      # Canonicalize absent attributes to null under the current schema. This
-      # treats a newly introduced optional-null field as semantic absence while
-      # still comparing every non-sensitive schema field.
-      clean={k:values.get(k) for k,meta in attrs.items() if not meta.get("sensitive",False)}
-      out[address]={"type":typ,"schema_version":resource.get("schema_version",0),"values":clean}
-    for child in module.get("child_modules",[]): walk(child)
-  walk(value.get("values",{}).get("root_module",{})); return out
-left,right=rows(before),rows(after)
-if set(left)!=set(right): raise SystemExit("address set changed")
-migrated=False
-for address in left:
-  if left[address]["type"]!=right[address]["type"]: raise SystemExit("type changed")
-  typ=left[address]["type"]
-  if left[address]["schema_version"]!=right[address]["schema_version"]:
-    if [left[address]["schema_version"],right[address]["schema_version"]] != schema_migrations.get(typ): raise SystemExit("schema version changed without reviewed migration")
-    migrated=True
-  lv,rv=left[address]["values"],right[address]["values"]
-  for field in allowed_map.get(left[address]["type"],[]):
-    if lv.get(field)!=rv.get(field): migrated=True
-    lv.pop(field,None); rv.pop(field,None)
-  left_id,right_id=lv.pop("id",None),rv.pop("id",None)
-  if identity_migrations.get(typ)=="sha256-of-prior-id":
-    expected="sha256:"+hashlib.sha256(str(left_id).encode()).hexdigest()
-    if not hmac.compare_digest(expected,str(right_id)): raise SystemExit("reviewed identity migration mismatch")
-    migrated=True
-  elif not hmac.compare_digest(hmac.new(key,str(left_id).encode(),hashlib.sha256).digest(),hmac.new(key,str(right_id).encode(),hashlib.sha256).digest()):
-    raise SystemExit("resource identity changed")
-  if json.dumps(lv,sort_keys=True,separators=(",",":")) != json.dumps(rv,sort_keys=True,separators=(",",":")):
-    changed=sorted(field for field in set(lv)|set(rv) if lv.get(field)!=rv.get(field))
-    raise SystemExit("nonsecret semantic state changed: "+typ+":"+",".join(changed))
-def private_signals(path):
-  value=json.load(open(path,encoding="utf-8")); signals={}
-  for resource in value.get("resources",[]):
-    for index,instance in enumerate(resource.get("instances",[])):
-      private=instance.get("private","") or ""
-      signals[(resource.get("module",""),resource.get("type"),resource.get("name"),index)]=bool(private)
-  return signals
-private_before,private_after=private_signals(raw_before),private_signals(raw_after)
-if set(private_before)!=set(private_after): raise SystemExit("provider-private address set changed")
-for identity,old_present in private_before.items():
-  new_present=private_after[identity]
-  if old_present==new_present: continue
-  if not old_present and new_present and identity[1] in private_migrations:
-    migrated=True
-    continue
-  raise SystemExit("provider-private presence changed without reviewed migration")
-if migrated: print("upgrade-reviewed-migration")
-PYUPGRADE
+  python3 "$SCRIPT_DIR/upgrade_state.py" compare \
+    --before "$before" --after "$after" --schema "$schema" \
+    --resource-type "$resource_type" --raw-before "$raw_before" \
+    --raw-after "$raw_after" --matrix "$SCRIPT_DIR/matrix.json"
 }
 
 run_upgrade() {
