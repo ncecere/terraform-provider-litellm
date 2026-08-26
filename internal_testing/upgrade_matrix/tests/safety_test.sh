@@ -49,6 +49,11 @@ if grep -q 'e2a7e6d' "$REPO_ROOT/.github/workflows/upgrade-matrix.yml"; then
   echo 'workflow still uses the stale runtime comparison SHA' >&2
   exit 1
 fi
+if find "$REPO_ROOT/internal_testing" -name '*.tf' -type f \
+  -exec grep -H -E 'error_message[[:space:]]*=[[:space:]]*"[a-z]' {} + | grep -q .; then
+  echo 'Terraform fixture validation messages must start with uppercase prose for Terraform 1.1' >&2
+  exit 1
+fi
 
 # The rebased #209/#254 base must pass, while an actual provider runtime edit
 # relative to that exact base must fail.

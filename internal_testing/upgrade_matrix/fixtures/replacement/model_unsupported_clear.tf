@@ -4,7 +4,7 @@ variable "replacement_phase" {
 
   validation {
     condition     = contains(["before", "after"], var.replacement_phase)
-    error_message = "replacement_phase must be before or after."
+    error_message = "Replacement phase must be before or after."
   }
 }
 

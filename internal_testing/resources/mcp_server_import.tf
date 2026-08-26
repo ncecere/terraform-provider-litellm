@@ -5,7 +5,7 @@ variable "mcp_import_phase" {
 
   validation {
     condition     = contains(["seeded", "imported"], var.mcp_import_phase)
-    error_message = "mcp_import_phase must be seeded or imported."
+    error_message = "MCP import phase must be seeded or imported."
   }
 }
 
