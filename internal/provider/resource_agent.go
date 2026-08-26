@@ -3,8 +3,6 @@ package provider
 import (
 	"context"
 	"fmt"
-	"net/url"
-	"slices"
 	"strings"
 	"time"
 
