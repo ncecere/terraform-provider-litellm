@@ -52,6 +52,8 @@ emit_execution_records() {
   tab=$(printf '\t')
   [ -n "${MATRIX_EXECUTION_RECORDS:-}" ] || return 0
   kind=
+  split_ifs=$(printf ' \t\n_')
+  split_ifs=${split_ifs%_}
   for argument in "$@"; do
     case "$argument" in
       resources|datasources) kind=$argument ;;
@@ -60,18 +62,22 @@ emit_execution_records() {
         for fixture in $argument; do
           if [ "$kind" = resources ]; then
             subjects=$(grep -Eho 'resource[[:space:]]+"litellm_[a-z_]+"' "$REPO_ROOT/internal_testing/resources/$fixture" | cut -d'"' -f2 | sort -u)
+            IFS=$split_ifs
             for subject in $subjects; do
               for category in resource_coverage lifecycle drift; do
                 line="$category:$subject${tab}$category${tab}passed${tab}${tab}"
                 grep -Fqx "$line" "$MATRIX_EXECUTION_RECORDS" 2>/dev/null || printf '%s\n' "$line" >>"$MATRIX_EXECUTION_RECORDS"
               done
             done
+            IFS=,
           elif [ "$kind" = datasources ]; then
             subjects=$(grep -Eho 'data[[:space:]]+"litellm_[a-z_]+"' "$REPO_ROOT/internal_testing/datasources/$fixture" | cut -d'"' -f2 | sort -u)
+            IFS=$split_ifs
             for subject in $subjects; do
               line="data_source:$subject${tab}data_source${tab}passed${tab}${tab}"
               grep -Fqx "$line" "$MATRIX_EXECUTION_RECORDS" 2>/dev/null || printf '%s\n' "$line" >>"$MATRIX_EXECUTION_RECORDS"
             done
+            IFS=,
           fi
         done
         IFS=$old_ifs ;;
@@ -139,10 +145,12 @@ if [ "$CLI_SUPPORTS_111" = "1" ]; then
   emit_controlled_record optional_feature send_invite_email passed
   emit_controlled_record optional_feature key_wo skipped api-endpoint-unavailable
   run_case jwt_key_mapping resources key_minimal.tf,jwt_key_mapping.tf datasources jwt_key_mapping.tf,jwt_key_mappings_list.tf
+  emit_controlled_record optional_feature jwt_key_mapping_key_wo passed
 else
   run_case key resources key_minimal.tf,key_router_settings.tf datasources key.tf,keys_list.tf
   emit_controlled_record optional_feature send_invite_email skipped cli-version-below-1.11
   emit_controlled_record optional_feature key_wo skipped cli-version-below-1.11
+  emit_controlled_record optional_feature jwt_key_mapping_key_wo skipped cli-version-below-1.11
   emit_controlled_record resource_coverage litellm_jwt_key_mapping skipped cli-version-below-1.11
   emit_controlled_record lifecycle litellm_jwt_key_mapping skipped cli-version-below-1.11
   emit_controlled_record drift litellm_jwt_key_mapping skipped cli-version-below-1.11

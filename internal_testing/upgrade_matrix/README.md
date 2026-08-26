@@ -6,14 +6,14 @@ This directory contains the issue #210 execution harness. `matrix.json` is an in
 
 The harness compares the checked-in inventory to provider registration:
 
-- 23 resources;
-- 33 data sources;
-- 23 upgrade scenarios;
-- 23 import scenarios;
-- 2 replacement scenarios; and
+- 24 resources;
+- 35 data sources;
+- 24 upgrade scenarios;
+- 24 import scenarios;
+- 3 replacement scenarios; and
 - 2 controlled-fault recovery scenarios.
 
-Assembly validates inventory, HCL formatting, and provider schemas. Its execution-category pass counts are always zero. Enterprise, unavailable API, and pre-1.11 features are explicit skips with controlled reasons; they are never counted as passes. Local execution fails if any resource, data source, or required category lacks one result.
+Assembly validates inventory, HCL formatting, and provider schemas. Its execution-category pass counts are always zero. Enterprise, unavailable API, pre-1.11 features, and resources absent from signed v2.0.1 are explicit skips with controlled reasons; they are never counted as passes. Local execution fails if any resource, data source, or required category lacks one result.
 
 ## Provenance
 
@@ -30,7 +30,7 @@ The installer:
 7. extracts into a fresh private directory while rejecting links and unsafe paths; and
 8. verifies the exact executable name and digest before constructing the mirror.
 
-Every current-provider dev override receives a dedicated private directory containing exactly one verified executable. Execution records include only safe SHA-256 provenance and the current canonical provider-schema fingerprint.
+Every current-provider dev override receives a dedicated private directory containing exactly one verified executable. Execution records include only safe SHA-256 provenance plus exact canonical schema fingerprints for both the executed signed v2.0.1 binary and the current binary.
 
 ## Assembly
 
@@ -75,7 +75,7 @@ A genuine-preexisting mode may only detach imported state and must never call de
 
 ## Replacement and recovery
 
-Replacement plans require exact ordered `["create", "delete"]` actions because both reviewed fixtures use distinct server identities and explicit `create_before_destroy`. Any dependency action is rejected. Apply JSON must show target create before target delete. Process-local HMAC comparisons prove target identity changed while dependency identity stayed stable; state address and dependency relation converge with no drift. Destroy must leave empty state and authoritative re-import must fail.
+Replacement plans require exact ordered `["create", "delete"]` actions because all reviewed fixtures use distinct server identities and explicit `create_before_destroy`. Any dependency action is rejected. Apply JSON must show target create before target delete. Process-local HMAC comparisons prove target identity changed while dependency identity stayed stable; state address and dependency relation converge with no drift. Destroy must leave empty state and authoritative re-import must fail.
 
 Recovery uses `fault_proxy.py`, a loopback-only proxy that faults one allowlisted endpoint before forwarding. Dependencies are created first. Evidence requires a target request attempt, zero target forwards/commits, exact allowlisted diagnostic mapping, no target identity/private state, successful retry, no drift, empty cleanup state, and authoritative absence. A dead base URL is not a recovery scenario.
 

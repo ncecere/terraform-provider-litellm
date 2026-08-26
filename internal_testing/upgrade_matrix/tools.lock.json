@@ -39,6 +39,7 @@
     "checksums_file_sha256":"47e71bf3b3878c3b357c9e9ef0320acae3a07943e8045a950adf480fa7271e63",
     "signature_sha256":"6f85f1f7a2bfe47e6776f41dd8d4b05ebcb0ec9c07924703bcc288f6b15a1316",
     "manifest_sha256":"f809ab383cca0a5f83072981c64208cbd7fa67e986a86ee02dd2c82333221e32",
+    "schema_sha256":"381ea455515fd2ecb7f1e154051b7d64e92a7d8e18c495414a33fe74a017187e",
     "signing_key": {
       "file":"release-key.asc",
       "sha256":"ac65972f56daa9dd741708a6d5d2ee61ce6777bdde76261a67e7a56469f1e94c",

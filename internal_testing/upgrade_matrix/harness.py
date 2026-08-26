@@ -38,6 +38,7 @@ TOOLS_PATH = HERE / "tools.lock.json"
 MAX_CAPTURE = 1024 * 1024
 MAX_DOWNLOAD = 200 * 1024 * 1024
 DOWNLOAD_RETRIES = 3
+DOWNLOAD_DEADLINE_SECONDS = 120
 REPORT_SCHEMA_VERSION = 2
 CATEGORIES = (
     "inventory", "format", "schema", "resource_coverage", "upgrade",
@@ -56,15 +57,15 @@ ALLOWED_PROVENANCE_KEYS = {
     "cli_product", "cli_version", "cli_executable_sha256",
     "provider_executable_sha256", "provider_schema_sha256",
     "previous_signature_sha256", "previous_archive_sha256",
-    "previous_executable_sha256", "previous_manifest_sha256",
-    "previous_signing_fingerprint",
+    "previous_executable_sha256", "previous_provider_schema_sha256",
+    "previous_manifest_sha256", "previous_signing_fingerprint",
 }
 EVIDENCE_CODES = {
     "inventory-validated", "format-validated", "provider-schema-validated",
-    "apply-refresh-plan-destroy", "apply-refresh-plan", "import-refresh-plan-detach",
+    "apply-refresh-plan-destroy", "apply-refresh-plan", "import-refresh-apply-plan-detach",
     "upgrade-refresh-plan", "upgrade-reviewed-migration", "replacement-plan-apply", "fault-retry-converged",
     "api-unavailable", "enterprise-unavailable", "cli-feature-unavailable",
-    "remote-mutation-disabled",
+    "previous-release-unavailable", "documentation-validated", "remote-mutation-disabled",
 }
 DIAGNOSTIC_TITLE_CODES = {
     "Client Error": "model-create-error",
@@ -255,17 +256,20 @@ def check_inventory(matrix: dict) -> None:
     resources = matrix["resources"]
     expected_resources = {item["type"] for item in resources}
     expected_data_sources = set(matrix["data_sources"])
-    if len(resources) != 23 or len(expected_resources) != 23:
-        raise HarnessError("resource inventory must contain exactly 23 unique types")
-    if len(matrix["data_sources"]) != 33 or len(expected_data_sources) != 33:
-        raise HarnessError("data-source inventory must contain exactly 33 unique types")
+    if len(resources) != 24 or len(expected_resources) != 24:
+        raise HarnessError("resource inventory must contain exactly 24 unique types")
+    if len(matrix["data_sources"]) != 35 or len(expected_data_sources) != 35:
+        raise HarnessError("data-source inventory must contain exactly 35 unique types")
     if expected_resources != provider_types("", "resource"):
         raise HarnessError("resource inventory differs from provider registration")
     if expected_data_sources != provider_types("", "data_source"):
         raise HarnessError("data-source inventory differs from provider registration")
     actions = sorted(item["type"] for item in resources if item.get("action"))
+    introduced = {item["type"] for item in resources if item.get("introduced_after_previous")}
     if matrix.get("non_importable_resources") != [] or actions != sorted(matrix.get("action_resources", [])):
         raise HarnessError("importable/action resource accounting is incomplete")
+    if introduced != {"litellm_jwt_key_mapping"}:
+        raise HarnessError("post-v2.0.1 resource accounting is incomplete")
     for item in resources:
         for required in ("fixture", "address", "import_expression", "lane", "action"):
             if required not in item:
@@ -273,17 +277,19 @@ def check_inventory(matrix: dict) -> None:
         doc = ROOT / "docs" / "resources" / f"{item['type'].removeprefix('litellm_')}.md"
         if not doc.is_file() or "## Import" not in doc.read_text(encoding="utf-8"):
             raise HarnessError("an importable resource lacks import documentation")
-        for fixture in item["fixture"]:
+        for fixture in item["fixture"] + item.get("import_fixture", []):
             if not (ROOT / "internal_testing" / "resources" / fixture).is_file():
                 raise HarnessError("resource matrix references a missing fixture")
     expected_counts = {
-        "resource_coverage": 23, "upgrade": 23, "lifecycle": 23, "import": 23,
-        "drift": 23, "replacement": 2, "failure_recovery": 2,
-        "data_source": 33, "documentation": 3,
+        "resource_coverage": 24, "upgrade": 24, "lifecycle": 24, "import": 24,
+        "drift": 24, "replacement": 3, "failure_recovery": 2,
+        "data_source": 35, "documentation": 3,
     }
     if matrix.get("scenario_counts") != expected_counts:
         raise HarnessError("scenario count contract changed without explicit accounting")
     for scenario in matrix.get("replacement_scenarios", []):
+        if scenario.get("name") == "jwt_claim_pair_identity" and scenario.get("minimum_cli") != "1.11.0":
+            raise HarnessError("JWT replacement does not have an exact CLI feature gate")
         if (
             scenario.get("compare") != "hmac-sha256"
             or scenario.get("expected_actions") != ["create", "delete"]
@@ -317,6 +323,7 @@ def check_release_contract(tools: dict) -> None:
     digests = [
         *previous.get("registry_metadata_sha256", {}).values(), previous.get("checksums_file_sha256"),
         previous.get("signature_sha256"), previous.get("manifest_sha256"),
+        previous.get("schema_sha256"),
     ]
     for archive in previous["archives"].values():
         digests.extend((archive.get("sha256"), archive.get("executable_sha256")))
@@ -404,11 +411,19 @@ def provider_schema_fingerprint(cli: str, provider_binary: Path) -> tuple[str, s
 
 def validate_resource_modules(matrix: dict, cli: str, provider_binary: Path) -> list[dict]:
     results: list[dict] = []
+    supports_111 = supports_optional_111(selected_cli_version(cli))
     with tempfile.TemporaryDirectory(prefix="litellm-matrix-") as raw:
         scratch = Path(raw)
         scratch.chmod(0o700)
         cli_config = make_cli_config(scratch, provider_binary)
         for item in matrix["resources"]:
+            if item.get("lane") == "requires-1.11" and not supports_111:
+                results.append({
+                    "name": f"schema:{item['type']}", "subject": item["type"],
+                    "category": "schema", "status": "skipped",
+                    "reason": "cli-version-below-1.11", "evidence_code": "cli-feature-unavailable",
+                })
+                continue
             module = scratch / item["type"]
             module.mkdir(mode=0o700)
             shutil.copy2(ROOT / "internal_testing" / "provider.tf", module / "provider.tf")
@@ -455,12 +470,20 @@ def validate_optional_111(cli: str, provider_binary: Path) -> list[dict]:
 
 def validate_examples(cli: str, provider_binary: Path) -> list[dict]:
     results: list[dict] = []
+    supports_111 = supports_optional_111(selected_cli_version(cli))
     example_dirs = sorted(path.parent for path in (ROOT / "examples").glob("*/main.tf"))
     with tempfile.TemporaryDirectory(prefix="litellm-docs-") as raw:
         scratch = Path(raw)
         scratch.chmod(0o700)
         cli_config = make_cli_config(scratch, provider_binary)
         for source in example_dirs:
+            if source.name == "jwt-key-mapping" and not supports_111:
+                results.append({
+                    "name": f"format:{source.name}", "subject": source.name,
+                    "category": "format", "status": "skipped",
+                    "reason": "cli-version-below-1.11", "evidence_code": "cli-feature-unavailable",
+                })
+                continue
             module = scratch / source.name
             shutil.copytree(source, module)
             env = {
@@ -683,7 +706,10 @@ def download_verified(url: str, destination: Path, checksum: str, offline: bool)
     if offline:
         raise HarnessError("verified cache entry is unavailable in offline mode")
     last_error: Exception | None = None
+    deadline = time.monotonic() + DOWNLOAD_DEADLINE_SECONDS
     for attempt in range(DOWNLOAD_RETRIES):
+        if time.monotonic() >= deadline:
+            raise HarnessError("download exceeded the total wall deadline")
         partial = destination.parent / (".download-" + secrets.token_hex(16) + ".partial")
         descriptor = -1
         try:
@@ -693,12 +719,14 @@ def download_verified(url: str, destination: Path, checksum: str, offline: bool)
                 0o600,
             )
             request = urllib.request.Request(url, headers={"User-Agent": "litellm-upgrade-matrix/2"})
-            with urllib.request.urlopen(request, timeout=30) as response:
+            with urllib.request.urlopen(request, timeout=min(30, max(1, int(deadline - time.monotonic())))) as response:
                 declared = response.headers.get("Content-Length")
                 if declared and int(declared) > MAX_DOWNLOAD:
                     raise HarnessError("download exceeds the size bound")
                 total = 0
                 while True:
+                    if time.monotonic() >= deadline:
+                        raise HarnessError("download exceeded the total wall deadline")
                     chunk = response.read(min(1024 * 1024, MAX_DOWNLOAD + 1 - total))
                     if not chunk:
                         break
@@ -720,7 +748,10 @@ def download_verified(url: str, destination: Path, checksum: str, offline: bool)
             if isinstance(error, HarnessError) and "checksum" in str(error):
                 raise
             if attempt + 1 < DOWNLOAD_RETRIES:
-                time.sleep(2 ** attempt)
+                delay = 2 ** attempt
+                if time.monotonic() + delay >= deadline:
+                    raise HarnessError("download exceeded the total wall deadline") from error
+                time.sleep(delay)
         finally:
             if descriptor >= 0:
                 os.close(descriptor)
@@ -758,9 +789,13 @@ def extract_executable(archive: Path, destination: Path, member: str, expected: 
                 if stat.S_ISLNK(mode):
                     raise HarnessError("archive contains a symlink")
                 if info.filename == member:
+                    if selected is not None:
+                        raise HarnessError("archive contains a duplicate executable member")
                     selected = info
             if selected is None or selected.is_dir():
                 raise HarnessError("archive does not contain the exact executable")
+            if selected.file_size > MAX_DOWNLOAD:
+                raise HarnessError("archive executable exceeds the size bound")
             target = partial / member
             descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o700)
             try:
@@ -950,10 +985,11 @@ def report_from_records(args: argparse.Namespace) -> int:
         "drift": "apply-refresh-plan-destroy",
         "data_source": "apply-refresh-plan",
         "upgrade": "upgrade-refresh-plan",
-        "import": "import-refresh-plan-detach",
+        "import": "import-refresh-apply-plan-detach",
         "replacement": "replacement-plan-apply",
         "failure_recovery": "fault-retry-converged",
         "optional_feature": "apply-refresh-plan-destroy",
+        "documentation": "documentation-validated",
     }
     for number, line in enumerate(Path(args.records).read_text(encoding="utf-8").splitlines(), 1):
         fields = line.split("\t")
@@ -979,6 +1015,8 @@ def report_from_records(args: argparse.Namespace) -> int:
                 item["evidence_code"] = "api-unavailable"
             elif reason == "cli-version-below-1.11":
                 item["evidence_code"] = "cli-feature-unavailable"
+            elif reason == "previous-release-resource-unavailable":
+                item["evidence_code"] = "previous-release-unavailable"
         if title:
             code = DIAGNOSTIC_TITLE_CODES.get(title)
             if not code:
@@ -995,6 +1033,7 @@ def report_from_records(args: argparse.Namespace) -> int:
         "replacement": {entry["name"] for entry in matrix["replacement_scenarios"]},
         "failure_recovery": {entry["name"] for entry in matrix["failure_recovery_scenarios"]},
         "optional_feature": set(matrix["optional_features"]),
+        "documentation": set(matrix["documentation_scenarios"]),
     }
     for category, subjects in expected.items():
         actual = {item["subject"] for item in results if item["category"] == category}
@@ -1005,6 +1044,11 @@ def report_from_records(args: argparse.Namespace) -> int:
     provider_digest, schema_digest = provider_schema_fingerprint(args.cli, Path(args.provider_binary))
     previous = load_json(TOOLS_PATH)["previous_provider"]
     previous_archive = previous["archives"][platform_key()]
+    previous_executable_digest, previous_schema_digest = provider_schema_fingerprint(
+        args.cli, Path(args.previous_provider_binary)
+    )
+    if previous_executable_digest != previous_archive["executable_sha256"] or previous_schema_digest != previous["schema_sha256"]:
+        raise HarnessError("executed previous provider digest/schema differs from the exact pin")
     provenance = {
         "cli_product": product, "cli_version": cli_version,
         "cli_executable_sha256": hash_file(Path(args.cli)),
@@ -1012,7 +1056,8 @@ def report_from_records(args: argparse.Namespace) -> int:
         "provider_schema_sha256": schema_digest,
         "previous_signature_sha256": previous["signature_sha256"],
         "previous_archive_sha256": previous_archive["sha256"],
-        "previous_executable_sha256": previous_archive["executable_sha256"],
+        "previous_executable_sha256": previous_executable_digest,
+        "previous_provider_schema_sha256": previous_schema_digest,
         "previous_manifest_sha256": previous["manifest_sha256"],
         "previous_signing_fingerprint": previous["signing_key"]["fingerprint"],
     }
@@ -1063,6 +1108,7 @@ def parser() -> argparse.ArgumentParser:
     reports.add_argument("--report", required=True)
     reports.add_argument("--cli", required=True)
     reports.add_argument("--provider-binary", required=True)
+    reports.add_argument("--previous-provider-binary", required=True)
     reports.set_defaults(function=report_from_records)
     safety = commands.add_parser("preflight")
     safety.add_argument("target", choices=("local", "remote"))

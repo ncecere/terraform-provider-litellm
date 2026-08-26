@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 MAX_BODY = 4 * 1024 * 1024
-ALLOWED = {("POST", "/model/new"), ("POST", "/team/member_add")}
+ALLOWED = {("POST", "/model/new"), ("POST", "/team/new")}
 
 
 def exclusive_json(path: Path, value: dict) -> None:

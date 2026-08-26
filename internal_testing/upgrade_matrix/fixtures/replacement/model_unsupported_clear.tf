@@ -14,12 +14,13 @@ resource "litellm_model" "replacement" {
   base_model          = "gpt-4o-mini"
   tpm                 = var.replacement_phase == "before" ? 1000 : null
 
+  depends_on = [litellm_team.replacement_dependency]
+
   lifecycle {
     create_before_destroy = true
   }
 }
 
-resource "litellm_access_group" "replacement_dependency" {
-  access_group = "issue210-model-replacement-dependency"
-  model_names  = [litellm_model.replacement.model_name]
+resource "litellm_team" "replacement_dependency" {
+  team_alias = "issue210-model-replacement-dependency"
 }

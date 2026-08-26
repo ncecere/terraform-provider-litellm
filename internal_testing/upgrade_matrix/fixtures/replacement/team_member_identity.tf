@@ -13,9 +13,9 @@ resource "litellm_team" "replacement" {
 }
 
 resource "litellm_team_member" "replacement" {
-  team_id    = litellm_team.replacement.id
-  user_email = var.replacement_phase == "before" ? "issue210-before@example.invalid" : "issue210-after@example.invalid"
-  role       = "user"
+  team_id = litellm_team.replacement.id
+  user_id = var.replacement_phase == "before" ? "issue210-before" : "issue210-after"
+  role    = "user"
 
   lifecycle {
     create_before_destroy = true

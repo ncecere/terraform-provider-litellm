@@ -82,9 +82,9 @@ PROVIDER_BINARY=$provider_dir/terraform-provider-litellm
 LOG=$SCRATCH/matrix.log
 : >"$LOG"
 chmod 600 "$LOG"
-# Bound every redirected child log written by this shell (10 MiB on POSIX
-# implementations whose file-size limit unit is 512-byte blocks).
-ulimit -f 20480 2>/dev/null || fail 'could not establish the private log size limit'
+# deadline.py bounds every selected CLI command's merged output before this
+# private aggregate log receives it. Do not use a process-wide file-size limit:
+# Terraform inherits it and must extract signed provider executables over 10 MiB.
 RESULTS=$SCRATCH/results.tsv
 : >"$RESULTS"
 chmod 600 "$RESULTS"
@@ -109,12 +109,30 @@ else
   export TF_VAR_litellm_api_key=$LITELLM_API_KEY
 fi
 
+selected_cli_version=$(run_cli version | python3 -c 'import re,sys; m=re.search(r"\d+\.\d+\.\d+",sys.stdin.read()); print(m.group(0) if m else "")')
+[ -n "$selected_cli_version" ] || fail 'selected CLI did not report a semantic version'
+CLI_SUPPORTS_111=$(python3 - "$selected_cli_version" <<'PY'
+import sys
+print(1 if tuple(int(value) for value in sys.argv[1].split(".")) >= (1,11,0) else 0)
+PY
+)
+
 if [ "${MATRIX_OFFLINE:-0}" = 1 ]; then
   python3 "$SCRIPT_DIR/harness.py" install-previous --cache "$CACHE/providers" --offline >>"$LOG" 2>&1
 else
   python3 "$SCRIPT_DIR/harness.py" install-previous --cache "$CACHE/providers" >>"$LOG" 2>&1
 fi
 PREVIOUS_MIRROR=$CACHE/providers/mirror
+provider_platform=$(python3 - <<'PY'
+import platform
+system={"Darwin":"darwin","Linux":"linux"}.get(platform.system())
+machine={"x86_64":"amd64","arm64":"arm64","aarch64":"arm64"}.get(platform.machine())
+if not system or not machine: raise SystemExit(1)
+print(system+"_"+machine)
+PY
+) || fail 'previous provider platform is unsupported'
+PREVIOUS_PROVIDER_BINARY=$CACHE/providers/extracted/$provider_platform/v2.0.1/terraform-provider-litellm_v2.0.1
+[ -x "$PREVIOUS_PROVIDER_BINARY" ] || fail 'verified previous provider executable is unavailable'
 
 write_provider_config() {
   destination=$1
@@ -235,7 +253,8 @@ for address in left:
   elif not hmac.compare_digest(hmac.new(key,str(left_id).encode(),hashlib.sha256).digest(),hmac.new(key,str(right_id).encode(),hashlib.sha256).digest()):
     raise SystemExit("resource identity changed")
   if json.dumps(lv,sort_keys=True,separators=(",",":")) != json.dumps(rv,sort_keys=True,separators=(",",":")):
-    raise SystemExit("nonsecret semantic state changed")
+    changed=sorted(field for field in set(lv)|set(rv) if lv.get(field)!=rv.get(field))
+    raise SystemExit("nonsecret semantic state changed: "+typ+":"+",".join(changed))
 def private_signals(path):
   value=json.load(open(path,encoding="utf-8")); signals={}
   for resource in value.get("resources",[]):
@@ -257,13 +276,16 @@ PYUPGRADE
 }
 
 run_upgrade() {
-  resource_type=$1 fixtures=$2 lane=$3
+  resource_type=$1 fixtures=$2 lane=$3 introduced_after_previous=$4
+  if [ "$introduced_after_previous" = true ]; then
+    record "upgrade:$resource_type" upgrade skipped previous-release-resource-unavailable
+    return
+  fi
   if [ "$lane" = enterprise ] && [ "${LITELLM_ENTERPRISE_CONFIRM:-}" != licensed-disposable ]; then
     record "upgrade:$resource_type" upgrade skipped enterprise-license-required
     return
   fi
   assemble_workspace "$resource_type" "$fixtures" || fail 'upgrade fixture assembly failed'
-  CLEANUP_MODE=owned
   old_rc=$SCRATCH/old.tfrc
   current_rc=$SCRATCH/current.tfrc
   write_old_config "$old_rc"
@@ -274,6 +296,7 @@ run_upgrade() {
     (cd "$WORKSPACE" && run_cli init -backend=false) >>"$LOG" 2>&1 || fail 'published-provider initialization failed'
   }
   grep -q 'version *= *"2.0.1"' "$WORKSPACE/.terraform.lock.hcl" || fail 'lock file did not select published 2.0.1'
+  CLEANUP_MODE=owned
   (cd "$WORKSPACE" && run_cli apply -auto-approve) >>"$LOG" 2>&1 || fail 'previous-release baseline apply failed'
   (cd "$WORKSPACE" && run_cli apply -refresh-only -auto-approve) >>"$LOG" 2>&1 || fail 'previous-release canonical refresh failed'
   (cd "$WORKSPACE" && run_cli show -json) >"$SCRATCH/state-before.json" 2>>"$LOG" || fail 'baseline state inspection failed'
@@ -292,11 +315,19 @@ plan=json.load(open(sys.argv[1],encoding="utf-8")); matrix=json.load(open(sys.ar
 allowed=matrix.get("upgrade_expected_computed_migrations",{})
 for resource in plan.get("resource_changes",[]):
   change=resource.get("change",{}); actions=change.get("actions",[])
-  if actions not in ([],["no-op"]): raise SystemExit(1)
   before=change.get("before") or {}; after=change.get("after") or {}
   sensitive=(change.get("after_sensitive") or {})
   fields={key for key in set(before)|set(after) if before.get(key)!=after.get(key) and not sensitive.get(key,False)}
-  if not fields.issubset(set(allowed.get(resource.get("type"),[]))): raise SystemExit(1)
+  reviewed=set(allowed.get(resource.get("type"),[]))
+  if actions not in ([],["no-op"]):
+    # A framework migration can appear as a configuration update when a prior
+    # release persisted a synthetic empty value for an omitted optional field.
+    # Never apply this plan: only a later refresh-only apply is permitted, and
+    # every changed field must be an exact per-type reviewed migration.
+    if actions != ["update"] or not fields or not fields.issubset(reviewed):
+      raise SystemExit("unreviewed upgrade plan: "+resource.get("type","")+":"+",".join(sorted(fields)))
+  elif not fields.issubset(reviewed):
+    raise SystemExit("unreviewed upgrade plan: "+resource.get("type","")+":"+",".join(sorted(fields)))
 PY
   (cd "$WORKSPACE" && run_cli apply -refresh-only -auto-approve) >>"$LOG" 2>&1 || fail 'current-provider refresh-only apply failed'
   (cd "$WORKSPACE" && run_cli show -json) >"$SCRATCH/state-after.json" 2>>"$LOG" || fail 'upgraded state inspection failed'
@@ -312,16 +343,20 @@ PY
 }
 
 run_import() {
-  resource_type=$1 fixtures=$2 address=$3 expression=$4 lane=$5
+  resource_type=$1 producer_fixtures=$2 importer_fixtures=$3 address=$4 expression=$5 lane=$6 expected_skip=${7:-}
   if [ "$lane" = enterprise ] && [ "${LITELLM_ENTERPRISE_CONFIRM:-}" != licensed-disposable ]; then
     record "import:$resource_type" import skipped enterprise-license-required
+    return
+  fi
+  if [ "$lane" = requires-1.11 ] && [ "$CLI_SUPPORTS_111" -ne 1 ]; then
+    record "import:$resource_type" import skipped cli-version-below-1.11
     return
   fi
   [ "$MODE" = local ] || {
     record "import:$resource_type" import skipped inventory-endpoint-may-be-unavailable
     return
   }
-  assemble_workspace "$resource_type" "$fixtures" || fail 'import producer fixture assembly failed'
+  assemble_workspace "$resource_type" "$producer_fixtures" || fail 'import producer fixture assembly failed'
   producer=$WORKSPACE
   CLEANUP_MODE=owned
   # This namespace is generated for this producer/importer pair and never
@@ -375,18 +410,79 @@ PYID
 
   importer=$SCRATCH/importer
   mkdir -m 700 "$importer"
-  cp "$producer"/*.tf "$importer"/
+  write_provider_config "$importer"
+  index=0
+  old_ifs=$IFS
+  IFS=,
+  for fixture in $importer_fixtures; do
+    cp "$REPO_ROOT/internal_testing/resources/$fixture" "$importer/fixture_$index.tf"
+    index=$((index + 1))
+  done
+  IFS=$old_ifs
+  python3 - "$importer" "$namespace" <<'PYNS'
+from pathlib import Path
+import sys
+root=Path(sys.argv[1]); namespace=sys.argv[2]
+for path in root.glob("fixture_*.tf"):
+    text=path.read_text(encoding="utf-8")
+    text=text.replace('"issue210-', f'"issue210-{namespace}-')
+    text=text.replace('"smoke-', f'"smoke-{namespace}-')
+    path.write_text(text, encoding="utf-8")
+PYNS
+  run_cli fmt -check "$importer" >>"$LOG" 2>&1 || fail 'importer fixture assembly failed'
   # The producer remains authoritative owner. A private state snapshot gives
   # the importer dependency context without detaching anything from producer.
   cp "$producer/terraform.tfstate" "$importer/terraform.tfstate"
   (cd "$importer" && run_cli state rm "$address") >>"$LOG" 2>&1 || fail 'importer target preparation failed'
   (cd "$importer" && run_cli import "$address" "$(cat "$SCRATCH/import-id")") >>"$LOG" 2>&1 || fail 'import failed'
-  (cd "$importer" && run_cli refresh) >>"$LOG" 2>&1 || fail 'post-import refresh failed'
   set +e
-  (cd "$importer" && run_cli plan -detailed-exitcode) >>"$LOG" 2>&1
+  (cd "$importer" && run_cli refresh) >>"$LOG" 2>&1
+  refresh_status=$?
+  set -e
+  if [ "$refresh_status" -ne 0 ]; then
+    [ -n "$expected_skip" ] || fail 'post-import refresh failed'
+    # The endpoint-specific limitation was exercised, not inferred. Detach the
+    # failed import, destroy only through the authoritative producer, and prove
+    # both empty state and remote absence before recording an explicit skip.
+    (cd "$importer" && run_cli state rm "$address") >>"$LOG" 2>&1 || fail 'limited import target detach failed'
+    (cd "$producer" && run_cli destroy -auto-approve) >>"$LOG" 2>&1 || fail 'limited import producer cleanup failed'
+    [ -z "$(cd "$producer" && run_cli state list 2>>"$LOG")" ] || fail 'limited import producer state was not empty'
+    set +e
+    (cd "$importer" && run_cli import "$address" "$(cat "$SCRATCH/import-id")") >>"$LOG" 2>&1
+    absence_status=$?
+    set -e
+    [ "$absence_status" -ne 0 ] || fail 'limited import target remained authoritative after destroy'
+    CLEANUP_MODE=none
+    rm -rf "$producer" "$importer"
+    WORKSPACE=
+    record "import:$resource_type" import skipped "$expected_skip"
+    return
+  fi
+  set +e
+  (cd "$importer" && run_cli plan -detailed-exitcode -out=import-converge.tfplan) >>"$LOG" 2>&1
   plan_status=$?
   set -e
-  [ "$plan_status" -eq 0 ] || fail 'post-import plan contains drift'
+  [ "$plan_status" -eq 0 ] || [ "$plan_status" -eq 2 ] || fail 'post-import convergence plan failed'
+  if [ "$plan_status" -eq 2 ]; then
+    (cd "$importer" && run_cli show -json import-converge.tfplan) >"$SCRATCH/import-converge.json" 2>>"$LOG" || fail 'post-import convergence plan inspection failed'
+    python3 - "$SCRATCH/import-converge.json" "$address" <<'PY' || fail 'post-import convergence was not a target-only in-place update'
+import json,sys
+value=json.load(open(sys.argv[1],encoding="utf-8")); target=sys.argv[2]
+for change in value.get("resource_changes",[]):
+  actions=change.get("change",{}).get("actions",[])
+  if change.get("address")==target:
+    if actions != ["update"]: raise SystemExit(1)
+  elif actions not in ([],["no-op"]): raise SystemExit(1)
+PY
+    # Imported state can lack provider-private configured markers. Apply only
+    # the reviewed target-only in-place convergence plan, then prove stability.
+    (cd "$importer" && run_cli apply -auto-approve import-converge.tfplan) >>"$LOG" 2>&1 || fail 'post-import convergence apply failed'
+    set +e
+    (cd "$importer" && run_cli plan -detailed-exitcode) >>"$LOG" 2>&1
+    plan_status=$?
+    set -e
+    [ "$plan_status" -eq 0 ] || fail 'post-import converged state contains drift'
+  fi
   # Detach only the imported address. Producer still holds every object and
   # dependency in its untouched state and performs the eventual cleanup.
   (cd "$importer" && run_cli state rm "$address") >>"$LOG" 2>&1 || fail 'importer target detach failed'
@@ -436,7 +532,11 @@ assemble_matrix_fixture() {
 }
 
 run_replacement() {
-  name=$1 fixture=$2 address=$3 dependency=$4
+  name=$1 fixture=$2 address=$3 dependency=$4 minimum_cli=$5
+  if [ "$minimum_cli" = 1.11.0 ] && [ "$CLI_SUPPORTS_111" -ne 1 ]; then
+    record "replacement:$name" replacement skipped cli-version-below-1.11
+    return
+  fi
   assemble_matrix_fixture "$fixture" || fail 'replacement fixture assembly failed'
   namespace_workspace "$WORKSPACE"
   CLEANUP_MODE=owned
@@ -461,10 +561,13 @@ value=json.load(open(sys.argv[1],encoding="utf-8")); address=sys.argv[2]; name=s
 matrix=json.load(open(sys.argv[4],encoding="utf-8"))
 scenario=next(item for item in matrix["replacement_scenarios"] if item["name"]==name)
 changes=[c for c in value.get("resource_changes",[]) if c.get("address")==address]
-if len(changes)!=1 or changes[0].get("change",{}).get("actions",[]) != scenario["expected_actions"]: raise SystemExit(1)
+if len(changes)!=1 or changes[0].get("change",{}).get("actions",[]) != scenario["expected_actions"]:
+  actual=changes[0].get("change",{}).get("actions",[]) if changes else []
+  raise SystemExit("replacement actions differed: "+name+":"+",".join(actual))
 for change in value.get("resource_changes",[]):
   if change.get("address") == address: continue
-  if change.get("change",{}).get("actions",[]) not in ([],["no-op"]): raise SystemExit(1)
+  if change.get("change",{}).get("actions",[]) not in ([],["no-op"]):
+    raise SystemExit("replacement dependency changed: "+change.get("type","")+":"+",".join(change.get("change",{}).get("actions",[])))
 PY
   (cd "$WORKSPACE" && run_cli apply -json -auto-approve replacement.tfplan) >"$SCRATCH/replacement-apply.jsonl" 2>>"$LOG" || fail 'intentional replacement apply failed'
   python3 - "$SCRATCH/replacement-apply.jsonl" "$address" <<'PY' || fail 'replacement operation order differed from the reviewed safety order'
@@ -489,9 +592,19 @@ if not hmac.compare_digest(fp(sys.argv[3]),fp(sys.argv[4])): raise SystemExit(1)
 PY
   (cd "$WORKSPACE" && run_cli state show "$address") >"$SCRATCH/replacement-state" 2>>"$LOG" || fail 'stable replacement address was lost'
   set +e
-  (cd "$WORKSPACE" && run_cli plan -detailed-exitcode -var=replacement_phase=after) >>"$LOG" 2>&1
+  (cd "$WORKSPACE" && run_cli plan -detailed-exitcode -var=replacement_phase=after -out=post-replacement.tfplan) >>"$LOG" 2>&1
   plan_status=$?
   set -e
+  if [ "$plan_status" -eq 2 ]; then
+    (cd "$WORKSPACE" && run_cli show -json post-replacement.tfplan) >"$SCRATCH/post-replacement.json" 2>>"$LOG" || fail 'post-replacement drift inspection failed'
+    python3 - "$SCRATCH/post-replacement.json" <<'PY'
+import json,sys
+for resource in json.load(open(sys.argv[1],encoding="utf-8")).get("resource_changes",[]):
+  change=resource.get("change",{}); before=change.get("before") or {}; after=change.get("after") or {}
+  fields=sorted(field for field in set(before)|set(after) if before.get(field)!=after.get(field))
+  if fields: print("post-replacement drift: "+resource.get("type","")+":"+",".join(fields),file=sys.stderr)
+PY
+  fi
   [ "$plan_status" -eq 0 ] || fail 'post-replacement plan contains drift'
   (cd "$WORKSPACE" && run_cli destroy -auto-approve -var=replacement_phase=after) >>"$LOG" 2>&1 || fail 'replacement cleanup failed'
   [ -z "$(cd "$WORKSPACE" && run_cli state list 2>>"$LOG")" ] || fail 'replacement state was not empty after destroy'
@@ -536,7 +649,7 @@ print(f"http://127.0.0.1:{port}")
 PYPORT
 ) || fail 'controlled fault proxy port was invalid'
   set +e
-  (cd "$WORKSPACE" && run_cli apply -json -auto-approve -var=recover_create=true -var="litellm_api_base=$proxy_base") >"$SCRATCH/failure.jsonl" 2>>"$LOG"
+  (cd "$WORKSPACE" && run_cli apply -refresh=false -json -auto-approve -var=recover_create=true -var="litellm_api_base=$proxy_base") >"$SCRATCH/failure.jsonl" 2>>"$LOG"
   failed_status=$?
   set -e
   [ "$failed_status" -ne 0 ] || fail 'controlled pre-commit fault unexpectedly succeeded'
@@ -550,8 +663,8 @@ for line in open(sys.argv[1],encoding="utf-8",errors="replace"):
   try: value=json.loads(line)
   except json.JSONDecodeError: continue
   diagnostic=value.get("diagnostic",{})
-  if isinstance(diagnostic,dict) and isinstance(diagnostic.get("summary"),str): titles.append(diagnostic["summary"])
-if expected not in titles or any(title not in allowed for title in titles): raise SystemExit(1)
+  if isinstance(diagnostic,dict) and diagnostic.get("severity")=="error" and isinstance(diagnostic.get("summary"),str): titles.append(diagnostic["summary"])
+if sorted(set(titles)) != [expected]: raise SystemExit("unexpected error diagnostics: "+",".join(sorted(set(titles))))
 PYDIAG
   [ -s "$stats_file" ] || fail 'controlled endpoint was not attempted'
   python3 - "$stats_file" <<'PYSTATS' || fail 'fault proxy did not prove a pre-commit target attempt'
@@ -596,9 +709,20 @@ if [ "$MODE" = remote ]; then
 fi
 
 PHASE=${MATRIX_PHASE:-all}
-[ "$PHASE" = all ] || [ "$PHASE" = upgrade ] || fail 'MATRIX_PHASE must be all or upgrade'
+[ "$PHASE" = all ] || [ "$PHASE" = upgrade ] || [ "$PHASE" = import ] || [ "$PHASE" = scenarios ] || fail 'MATRIX_PHASE must be all, upgrade, import, or scenarios'
 
 if [ "$PHASE" = all ]; then
+# Re-run the complete non-mutating assembly against the exact selected CLI and
+# current binary. Only after that command succeeds can the three reviewed
+# documentation contracts receive execution records.
+python3 "$SCRIPT_DIR/harness.py" assembly --cli "$CLI" --provider-binary "$PROVIDER_BINARY" >>"$LOG" 2>&1 || fail 'local documentation/assembly contracts failed'
+python3 - "$SCRIPT_DIR/matrix.json" <<'PY' >"$SCRATCH/documentation.tsv"
+import json,sys
+for name in json.load(open(sys.argv[1],encoding="utf-8"))["documentation_scenarios"]: print(name)
+PY
+while IFS= read -r documentation_scenario; do
+  record "documentation:$documentation_scenario" documentation passed ''
+done <"$SCRATCH/documentation.tsv"
 # Existing lifecycle matrix covers all OSS resources and data sources. Route
 # its historical `terraform` command name to the selected Terraform/OpenTofu
 # binary so the protocol matrix cannot silently fall back to PATH Terraform.
@@ -630,26 +754,40 @@ fi
 python3 - "$SCRIPT_DIR/matrix.json" <<'PY' >"$SCRATCH/resources.tsv"
 import json,sys
 for r in json.load(open(sys.argv[1], encoding="utf-8"))["resources"]:
- print("\t".join([r["type"], ",".join(r["fixture"]), r["address"], r["import_expression"], r["lane"]]))
+ print("\t".join([r["type"], ",".join(r["fixture"]), r["address"], r["import_expression"], r["lane"], str(r.get("introduced_after_previous",False)).lower()]))
 PY
-while IFS="	" read -r resource_type fixtures address expression lane; do
-  run_upgrade "$resource_type" "$fixtures" "$lane"
-done <"$SCRATCH/resources.tsv"
+if [ "$PHASE" = all ] || [ "$PHASE" = upgrade ]; then
+  while IFS="	" read -r resource_type fixtures address expression lane introduced_after_previous; do
+    run_upgrade "$resource_type" "$fixtures" "$lane" "$introduced_after_previous"
+  done <"$SCRATCH/resources.tsv"
+fi
 if [ "$PHASE" = upgrade ]; then
   printf '%s\n' 'Upgrade-only diagnostic phase completed; no report was written'
   exit 0
 fi
-while IFS="	" read -r resource_type fixtures address expression lane; do
-  run_import "$resource_type" "$fixtures" "$address" "$expression" "$lane"
-done <"$SCRATCH/resources.tsv"
+if [ "$PHASE" != scenarios ]; then
+python3 - "$SCRIPT_DIR/matrix.json" <<'PY' >"$SCRATCH/imports.tsv"
+import json,sys
+for r in json.load(open(sys.argv[1], encoding="utf-8"))["resources"]:
+ print("\t".join([r["type"], ",".join(r["fixture"]), ",".join(r.get("import_fixture",r["fixture"])), r["address"], r["import_expression"], r["lane"], r.get("import_skip_reason", "-")]))
+PY
+while IFS="	" read -r resource_type producer_fixtures importer_fixtures address expression lane expected_skip; do
+  [ "$expected_skip" = - ] && expected_skip=
+  run_import "$resource_type" "$producer_fixtures" "$importer_fixtures" "$address" "$expression" "$lane" "$expected_skip"
+done <"$SCRATCH/imports.tsv"
+fi
+if [ "$PHASE" = import ]; then
+  printf '%s\n' 'Import-only diagnostic phase completed; no report was written'
+  exit 0
+fi
 
 python3 - "$SCRIPT_DIR/matrix.json" <<'PY' >"$SCRATCH/replacements.tsv"
 import json,sys
 for r in json.load(open(sys.argv[1], encoding="utf-8"))["replacement_scenarios"]:
- print("\t".join([r["name"],r["fixture"],r["address"],r["dependency_address"]]))
+ print("\t".join([r["name"],r["fixture"],r["address"],r["dependency_address"],r.get("minimum_cli","-")]))
 PY
-while IFS="	" read -r scenario_name fixture address dependency; do
-  run_replacement "$scenario_name" "$fixture" "$address" "$dependency"
+while IFS="	" read -r scenario_name fixture address dependency minimum_cli; do
+  run_replacement "$scenario_name" "$fixture" "$address" "$dependency" "$minimum_cli"
 done <"$SCRATCH/replacements.tsv"
 
 python3 - "$SCRIPT_DIR/matrix.json" <<'PY' >"$SCRATCH/recovery.tsv"
@@ -660,8 +798,13 @@ PY
 while IFS="	" read -r scenario_name fixture expected_title endpoint dependency target; do
   run_failure_recovery "$scenario_name" "$fixture" "$expected_title" "$endpoint" "$dependency" "$target"
 done <"$SCRATCH/recovery.tsv"
+if [ "$PHASE" = scenarios ]; then
+  printf '%s\n' 'Replacement/recovery diagnostic phase completed; no report was written'
+  exit 0
+fi
 
 python3 "$SCRIPT_DIR/harness.py" report-records \
   --records "$RESULTS" --report "$REPORT" --cli "$CLI" \
-  --provider-binary "$PROVIDER_BINARY"
+  --provider-binary "$PROVIDER_BINARY" \
+  --previous-provider-binary "$PREVIOUS_PROVIDER_BINARY"
 printf '%s\n' 'Matrix passed; report derives only from validated execution records'

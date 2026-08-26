@@ -2,6 +2,8 @@ import importlib.util
 import json
 import os
 import stat
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -31,8 +33,8 @@ class HarnessTests(unittest.TestCase):
     def test_inventory_and_assembly_contract(self):
         matrix = harness.load_json(harness.MATRIX_PATH)
         harness.check_inventory(matrix)
-        self.assertEqual(len(matrix["resources"]), 23)
-        self.assertEqual(len(matrix["data_sources"]), 33)
+        self.assertEqual(len(matrix["resources"]), 24)
+        self.assertEqual(len(matrix["data_sources"]), 35)
         self.assertEqual(sum(bool(item["action"]) for item in matrix["resources"]), 2)
 
     def test_version_selection_gates_write_only_features(self):
@@ -79,6 +81,7 @@ class HarnessTests(unittest.TestCase):
         key = tools["previous_provider"]["signing_key"]
         self.assertEqual(key["fingerprint"], "C753834A70062246C92CEF56F0A1AEC231353F8B")
         self.assertRegex(tools["previous_provider"]["signature_sha256"], r"^[0-9a-f]{64}$")
+        self.assertRegex(tools["previous_provider"]["schema_sha256"], r"^[0-9a-f]{64}$")
 
     def test_report_is_strict_derived_exclusive_and_create_only(self):
         scenario = {
@@ -162,6 +165,37 @@ class HarnessTests(unittest.TestCase):
             (destination / "decoy").write_text("sibling")
             with self.assertRaises(harness.HarnessError):
                 harness.extract_executable(good, destination, "terraform", digest)
+
+    def test_archive_duplicate_member_and_traversal_are_rejected(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            duplicate = root / "duplicate.zip"
+            with zipfile.ZipFile(duplicate, "w") as package:
+                package.writestr("terraform", b"first")
+                package.writestr("terraform", b"second")
+            with self.assertRaises(harness.HarnessError):
+                harness.extract_executable(duplicate, root / "duplicate-out", "terraform", None)
+
+            traversal = root / "traversal.zip"
+            with zipfile.ZipFile(traversal, "w") as package:
+                package.writestr("../decoy", b"escape")
+                package.writestr("terraform", b"binary")
+            with self.assertRaises(harness.HarnessError):
+                harness.extract_executable(traversal, root / "traversal-out", "terraform", None)
+
+    def test_command_deadline_and_output_bounds_fail_closed(self):
+        deadline = harness.HERE / "deadline.py"
+        timed = subprocess.run(
+            [sys.executable, str(deadline), "--seconds", "1", sys.executable, "-c", "import time; time.sleep(3)"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15, check=False,
+        )
+        self.assertEqual(timed.returncode, 124)
+        bounded = subprocess.run(
+            [sys.executable, str(deadline), "--seconds", "10", "--max-output", "1024", sys.executable, "-c", "print('x'*2048)"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15, check=False,
+        )
+        self.assertEqual(bounded.returncode, 125)
+        self.assertLessEqual(len(bounded.stdout), 1024)
 
     def test_provider_bundle_has_exactly_one_verified_executable_and_rejects_script(self):
         with tempfile.TemporaryDirectory() as raw:
