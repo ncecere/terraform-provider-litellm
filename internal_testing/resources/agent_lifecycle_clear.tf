@@ -4,13 +4,14 @@ variable "agent_lifecycle_phase" {
   default     = "set"
 
   validation {
-    condition     = contains(["set", "cleared"], var.agent_lifecycle_phase)
-    error_message = "agent_lifecycle_phase must be set or cleared."
+    condition     = contains(["set", "cleared", "adversarial"], var.agent_lifecycle_phase)
+    error_message = "agent_lifecycle_phase must be set, cleared, or adversarial."
   }
 }
 
 locals {
-  agent_lifecycle_cleared = var.agent_lifecycle_phase == "cleared"
+  agent_lifecycle_cleared     = var.agent_lifecycle_phase != "set"
+  agent_lifecycle_adversarial = var.agent_lifecycle_phase == "adversarial"
 }
 
 resource "litellm_agent" "lifecycle" {
@@ -23,7 +24,7 @@ resource "litellm_agent" "lifecycle" {
   # v1.98 cannot clear the complete parameter object, but it can replace a
   # nonempty object and thereby remove individual keys.
   litellm_params = local.agent_lifecycle_cleared ? {
-    model = "openai/gpt-4o-mini"
+    model = local.agent_lifecycle_adversarial ? "openai/gpt-4o-mini-adversarial" : "openai/gpt-4o-mini"
     } : {
     model     = "openai/gpt-4o-mini"
     qualifier = "acceptance"
@@ -36,7 +37,7 @@ resource "litellm_agent" "lifecycle" {
 
   agent_card {
     name                 = "Smoke Agent Lifecycle"
-    description          = local.agent_lifecycle_cleared ? null : "set then clear"
+    description          = local.agent_lifecycle_adversarial ? "adversarial unrelated card update" : (local.agent_lifecycle_cleared ? null : "set then clear")
     url                  = "https://agent.example.com/lifecycle"
     version              = "1.0.0"
     protocol_version     = "1.0"
@@ -69,6 +70,18 @@ resource "litellm_agent" "lifecycle" {
       examples     = local.agent_lifecycle_cleared ? [] : ["test"]
       input_modes  = local.agent_lifecycle_cleared ? [] : ["text"]
       output_modes = local.agent_lifecycle_cleared ? [] : ["text"]
+      security = local.agent_lifecycle_cleared ? [] : [
+        { oauth2 = ["read", "read"] },
+      ]
+    }
+
+    dynamic "signatures" {
+      for_each = local.agent_lifecycle_cleared ? [] : [1, 1]
+      content {
+        protected = "acceptance-protected"
+        signature = "acceptance-signature"
+        header    = jsonencode({ duplicate = signatures.key, exact = 9007199254740993 })
+      }
     }
   }
 

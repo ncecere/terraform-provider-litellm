@@ -207,18 +207,24 @@ elif [ "${SMOKE_MCP_IMPORT:-}" = "1" ]; then
   STEADY_ARGS='-var=mcp_import_phase=imported'
   CLEANUP_ARGS=$STEADY_ARGS
   for refresh_number in 1 2; do
-    echo "=== MCP IMPORT REFRESH-ONLY $refresh_number ==="
+    echo "=== MCP IMPORT REFRESH-ONLY APPLY $refresh_number ==="
     set +e
+    # Persist provider-private provenance from each authoritative refresh; a
+    # plan-only refresh discards the updated private state before stability is
+    # checked by the next process.
     # shellcheck disable=SC2086 # STEADY_ARGS is one complete optional argument.
-    terraform plan -refresh-only -detailed-exitcode $STEADY_ARGS >"mcp-import-refresh-$refresh_number.log" 2>&1
+    terraform apply -refresh-only -auto-approve $STEADY_ARGS >"mcp-import-refresh-$refresh_number.log" 2>&1
     refresh_status=$?
     set -e
     cat "mcp-import-refresh-$refresh_number.log"
     if [ "$refresh_status" -ne 0 ]; then
-      echo "MCP import refresh-only $refresh_number was not immediately stable (exit $refresh_status)." >&3
+      echo "MCP import refresh-only apply $refresh_number was not immediately stable (exit $refresh_status)." >&3
       exit 1
     fi
   done
+  echo '=== MCP IMPORT CONFIG OWNERSHIP CONVERGENCE APPLY ==='
+  # shellcheck disable=SC2086 # STEADY_ARGS is one complete optional argument.
+  terraform apply -auto-approve $STEADY_ARGS
   rm -f "$IMPORT_BACKUP"
   IMPORT_BACKUP=
 elif [ "${SMOKE_CREDENTIAL_UPDATE:-}" = "1" ]; then
@@ -254,23 +260,68 @@ skill = skills["acceptance"]
 for field in ("tags", "examples", "inputModes", "outputModes"):
     assert skill.get(field) in ([], None), (field, skill.get(field))
 PY
-  echo '=== AGENT DIRECT API-OWNED SIBLING SEED ==='
+  echo '=== AGENT DIRECT API-OWNED NULL/OMISSION/EXACT-NUMBER SEED ==='
+  curl --fail --silent --show-error -H 'Authorization: Bearer sk-testing-key' "http://localhost:4000/v1/agents/$agent_lifecycle_id" >agent-before-adversarial.json
+  python3 - agent-before-adversarial.json agent-adversarial-patch.json <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as stream:
+    value = json.load(stream)
+card = value["agent_card_params"]
+card["signatures"] = [
+    {"protected": "api-null", "signature": "api", "header": None},
+    {"protected": "api-omitted", "signature": "api"},
+]
+skills = [skill for skill in card.get("skills", []) if skill.get("id") not in {"api-null", "api-omitted"}]
+skills.extend([
+    {"id": "api-null", "name": "API Null", "security": None},
+    {"id": "api-omitted", "name": "API Omitted"},
+])
+card["skills"] = skills
+patch = {
+    "litellm_params": {
+        "model": "openai/gpt-4o-mini",
+        "api_owned_large": 9007199254740993,
+        "api_owned_null": None,
+        "api_owned_nested": {"present": None, "exact": 9007199254740993},
+    },
+    "static_headers": {"X-API-Owned": "preserve"},
+    "agent_card_params": card,
+}
+with open(sys.argv[2], "w", encoding="utf-8") as stream:
+    json.dump(patch, stream, separators=(",", ":"))
+PY
   curl --fail --silent --show-error -X PATCH \
     -H 'Authorization: Bearer sk-testing-key' -H 'Content-Type: application/json' \
-    --data '{"litellm_params":{"model":"openai/gpt-4o-mini","api_owned":"preserve"},"static_headers":{"X-API-Owned":"preserve"}}' \
+    --data-binary @agent-adversarial-patch.json \
     "http://localhost:4000/v1/agents/$agent_lifecycle_id" >/dev/null
   echo '=== AGENT CLEARED IMPORT/OWNERSHIP APPLY ==='
   terraform state rm litellm_agent.lifecycle
   terraform import -var=agent_lifecycle_phase=cleared litellm_agent.lifecycle "$agent_lifecycle_id"
   terraform apply -auto-approve -var=agent_lifecycle_phase=cleared
+  echo '=== AGENT UNRELATED LEGACY/CARD UPDATE OVER AUTHORITATIVE BASE ==='
+  terraform apply -auto-approve -var=agent_lifecycle_phase=adversarial
   curl --fail --silent --show-error -H 'Authorization: Bearer sk-testing-key' "http://localhost:4000/v1/agents/$agent_lifecycle_id" >agent-imported.json
   python3 - agent-imported.json <<'PY'
 import json, sys
-value = json.load(open(sys.argv[1], encoding="utf-8"))
-assert value.get("litellm_params", {}).get("api_owned") == "preserve"
+value = json.load(open(sys.argv[1], encoding="utf-8"), parse_int=int)
+params = value.get("litellm_params", {})
+assert params.get("model") == "openai/gpt-4o-mini-adversarial"
+assert params.get("api_owned_large") == 9007199254740993
+assert "api_owned_null" in params and params["api_owned_null"] is None
+assert params.get("api_owned_nested") == {"present": None, "exact": 9007199254740993}
 assert value.get("static_headers", {}).get("X-API-Owned") == "preserve"
+card = value.get("agent_card_params", {})
+assert card.get("description") == "adversarial unrelated card update"
+signatures = card.get("signatures", [])
+assert signatures == [
+    {"protected": "api-null", "signature": "api", "header": None},
+    {"protected": "api-omitted", "signature": "api"},
+]
+skills = {skill["id"]: skill for skill in card.get("skills", [])}
+assert "security" in skills["api-null"] and skills["api-null"]["security"] is None
+assert "security" not in skills["api-omitted"]
 PY
-  STEADY_ARGS='-var=agent_lifecycle_phase=cleared'
+  STEADY_ARGS='-var=agent_lifecycle_phase=adversarial'
   CLEANUP_ARGS=$STEADY_ARGS
 fi
 

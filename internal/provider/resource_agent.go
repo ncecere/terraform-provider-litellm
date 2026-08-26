@@ -44,13 +44,22 @@ type AgentCapabilitiesModel struct {
 }
 
 type AgentSkillModel struct {
-	ID          types.String `tfsdk:"id"`
-	Name        types.String `tfsdk:"name"`
-	Description types.String `tfsdk:"description"`
-	Tags        types.List   `tfsdk:"tags"`
-	Examples    types.List   `tfsdk:"examples"`
-	InputModes  types.List   `tfsdk:"input_modes"`
-	OutputModes types.List   `tfsdk:"output_modes"`
+	ID           types.String `tfsdk:"id"`
+	Name         types.String `tfsdk:"name"`
+	Description  types.String `tfsdk:"description"`
+	Tags         types.List   `tfsdk:"tags"`
+	Examples     types.List   `tfsdk:"examples"`
+	InputModes   types.List   `tfsdk:"input_modes"`
+	OutputModes  types.List   `tfsdk:"output_modes"`
+	Security     types.List   `tfsdk:"security"`
+	SecurityJSON types.String `tfsdk:"security_json"`
+}
+
+type AgentCardSignatureModel struct {
+	Protected  types.String `tfsdk:"protected"`
+	Signature  types.String `tfsdk:"signature"`
+	Header     types.String `tfsdk:"header"`
+	HeaderJSON types.String `tfsdk:"header_json"`
 }
 
 type AgentObjectPermissionModel struct {
@@ -62,34 +71,36 @@ type AgentObjectPermissionModel struct {
 }
 
 type AgentCardModel struct {
-	Name                              types.String            `tfsdk:"name"`
-	Description                       types.String            `tfsdk:"description"`
-	URL                               types.String            `tfsdk:"url"`
-	Version                           types.String            `tfsdk:"version"`
-	ProtocolVersion                   types.String            `tfsdk:"protocol_version"`
-	DefaultInputModes                 types.List              `tfsdk:"default_input_modes"`
-	DefaultOutputModes                types.List              `tfsdk:"default_output_modes"`
-	Capabilities                      *AgentCapabilitiesModel `tfsdk:"capabilities"`
-	Skills                            []AgentSkillModel       `tfsdk:"skills"`
-	Provider                          *AgentProviderModel     `tfsdk:"provider"`
-	PreferredTransport                types.String            `tfsdk:"preferred_transport"`
-	IconURL                           types.String            `tfsdk:"icon_url"`
-	DocumentationURL                  types.String            `tfsdk:"documentation_url"`
-	SupportsAuthenticatedExtendedCard types.Bool              `tfsdk:"supports_authenticated_extended_card"`
+	Name                              types.String              `tfsdk:"name"`
+	Description                       types.String              `tfsdk:"description"`
+	URL                               types.String              `tfsdk:"url"`
+	Version                           types.String              `tfsdk:"version"`
+	ProtocolVersion                   types.String              `tfsdk:"protocol_version"`
+	DefaultInputModes                 types.List                `tfsdk:"default_input_modes"`
+	DefaultOutputModes                types.List                `tfsdk:"default_output_modes"`
+	Capabilities                      *AgentCapabilitiesModel   `tfsdk:"capabilities"`
+	Skills                            []AgentSkillModel         `tfsdk:"skills"`
+	Provider                          *AgentProviderModel       `tfsdk:"provider"`
+	PreferredTransport                types.String              `tfsdk:"preferred_transport"`
+	IconURL                           types.String              `tfsdk:"icon_url"`
+	DocumentationURL                  types.String              `tfsdk:"documentation_url"`
+	SupportsAuthenticatedExtendedCard types.Bool                `tfsdk:"supports_authenticated_extended_card"`
+	Signatures                        []AgentCardSignatureModel `tfsdk:"signatures"`
 }
 
 type AgentResourceModel struct {
-	ID               types.String                `tfsdk:"id"`
-	AgentName        types.String                `tfsdk:"agent_name"`
-	AgentCard        *AgentCardModel             `tfsdk:"agent_card"`
-	LiteLLMParams    types.Map                   `tfsdk:"litellm_params"`
-	ObjectPermission *AgentObjectPermissionModel `tfsdk:"object_permission"`
-	TPMLimit         types.Int64                 `tfsdk:"tpm_limit"`
-	RPMLimit         types.Int64                 `tfsdk:"rpm_limit"`
-	SessionTPMLimit  types.Int64                 `tfsdk:"session_tpm_limit"`
-	SessionRPMLimit  types.Int64                 `tfsdk:"session_rpm_limit"`
-	StaticHeaders    types.Map                   `tfsdk:"static_headers"`
-	ExtraHeaders     types.List                  `tfsdk:"extra_headers"`
+	ID                types.String                `tfsdk:"id"`
+	AgentName         types.String                `tfsdk:"agent_name"`
+	AgentCard         *AgentCardModel             `tfsdk:"agent_card"`
+	LiteLLMParams     types.Map                   `tfsdk:"litellm_params"`
+	LiteLLMParamsJSON types.String                `tfsdk:"litellm_params_json"`
+	ObjectPermission  *AgentObjectPermissionModel `tfsdk:"object_permission"`
+	TPMLimit          types.Int64                 `tfsdk:"tpm_limit"`
+	RPMLimit          types.Int64                 `tfsdk:"rpm_limit"`
+	SessionTPMLimit   types.Int64                 `tfsdk:"session_tpm_limit"`
+	SessionRPMLimit   types.Int64                 `tfsdk:"session_rpm_limit"`
+	StaticHeaders     types.Map                   `tfsdk:"static_headers"`
+	ExtraHeaders      types.List                  `tfsdk:"extra_headers"`
 	// Computed
 	CreatedAt types.String `tfsdk:"created_at"`
 	UpdatedAt types.String `tfsdk:"updated_at"`
@@ -117,11 +128,21 @@ func (r *AgentResource) Schema(ctx context.Context, req resource.SchemaRequest, 
 				Required:    true,
 			},
 			"litellm_params": schema.MapAttribute{
-				Description: "LiteLLM-specific parameters for the agent (e.g. model, api_key). Marked sensitive because it can contain JWTs or AWS credentials.",
+				Description: "Legacy literal string-only LiteLLM parameters. Values are never parsed or coerced. Use litellm_params_json for heterogeneous values.",
 				Optional:    true,
 				Computed:    true,
 				Sensitive:   true,
 				ElementType: types.StringType,
+			},
+			"litellm_params_json": schema.StringAttribute{
+				Description: "Lossless JSON-object bridge for arbitrary LiteLLM parameters. It merges with non-overlapping legacy map keys; overlapping values must be the identical JSON string value. Explicit configuration owns only its exact keys.",
+				Optional:    true,
+				Computed:    true,
+				Sensitive:   true,
+				Validators:  []validator.String{agentJSONObjectValidator{}},
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"tpm_limit": schema.Int64Attribute{
 				Description: "Tokens per minute limit for the agent.",
@@ -190,7 +211,7 @@ func (r *AgentResource) Schema(ctx context.Context, req resource.SchemaRequest, 
 						Optional:    true,
 					},
 					"protocol_version": schema.StringAttribute{
-						Description: "A2A protocol version (e.g. '0.2.6').",
+						Description: "A2A protocol version string. LiteLLM serves the 0.3 and 1.0 protocol families; the registry field itself is not narrowed to a provider-defined enum.",
 						Optional:    true,
 					},
 					"default_input_modes": schema.ListAttribute{
@@ -253,6 +274,15 @@ func (r *AgentResource) Schema(ctx context.Context, req resource.SchemaRequest, 
 							},
 						},
 					},
+					"signatures": schema.ListNestedBlock{
+						Description: "Ordered JWS signatures. Duplicate entries are preserved. An empty list explicitly clears signatures.",
+						NestedObject: schema.NestedBlockObject{Attributes: map[string]schema.Attribute{
+							"protected":   schema.StringAttribute{Description: "JWS protected header.", Required: true, Sensitive: true},
+							"signature":   schema.StringAttribute{Description: "JWS signature.", Required: true, Sensitive: true},
+							"header":      schema.StringAttribute{Description: "Optional arbitrary non-null JWS header as a JSON object. Conflicts with header_json.", Optional: true, Sensitive: true, Validators: []validator.String{agentJSONObjectValidator{}}},
+							"header_json": schema.StringAttribute{Description: "Strict JSON bridge for an arbitrary JWS header, including explicit JSON null. Conflicts with header.", Optional: true, Sensitive: true, Validators: []validator.String{agentJSONNullOrObjectValidator{}}},
+						}},
+					},
 					"skills": schema.ListNestedBlock{
 						Description: "Skills the agent can perform.",
 						NestedObject: schema.NestedBlockObject{
@@ -288,6 +318,17 @@ func (r *AgentResource) Schema(ctx context.Context, req resource.SchemaRequest, 
 									Description: "Supported output MIME types.",
 									Optional:    true,
 									ElementType: types.StringType,
+								},
+								"security": schema.ListAttribute{
+									Description: "Ordered non-null A2A security requirements. Each map value is an ordered list of scopes; duplicates are preserved. Conflicts with security_json.",
+									Optional:    true,
+									ElementType: types.MapType{ElemType: types.ListType{ElemType: types.StringType}},
+								},
+								"security_json": schema.StringAttribute{
+									Description: "Strict JSON bridge for ordered A2A security requirements, including explicit JSON null. Conflicts with security.",
+									Optional:    true,
+									Sensitive:   true,
+									Validators:  []validator.String{agentJSONNullOrSecurityValidator{}},
 								},
 							},
 						},
@@ -351,6 +392,12 @@ func (r *AgentResource) Create(ctx context.Context, req resource.CreateRequest, 
 		return
 	}
 
+	// Optional+Computed JSON is unknown in a legacy-only create plan. Request
+	// construction uses the explicit configuration surface and never treats
+	// that unknown as a structured value.
+	if planned.LiteLLMParamsJSON.IsUnknown() {
+		planned.LiteLLMParamsJSON = config.LiteLLMParamsJSON
+	}
 	agentReq, err := r.buildAgentRequest(&planned)
 	if err != nil {
 		resp.Diagnostics.AddError("Invalid Agent Request", "The agent request could not be converted to the LiteLLM v1.98 wire shape.")
@@ -418,7 +465,8 @@ func (r *AgentResource) Read(ctx context.Context, req resource.ReadRequest, resp
 	}
 	imported := string(importedMarker) == "true"
 
-	if err := r.readAgentWithOwnership(ctx, &data, imported, apiOwned); err != nil {
+	var rawResult map[string]interface{}
+	if err := r.readAgentWithOwnershipTransportCapture(ctx, &data, imported, apiOwned, false, &rawResult); err != nil {
 		if IsAPIErrorStatus(err, 404) {
 			resp.State.RemoveResource(ctx)
 			return
@@ -432,7 +480,7 @@ func (r *AgentResource) Read(ctx context.Context, req resource.ReadRequest, resp
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 	if !resp.Diagnostics.HasError() && resp.Private != nil {
 		if imported {
-			apiOwned = agentImportedFieldsFromState(data)
+			apiOwned = agentImportedFieldsFromWire(data, rawResult)
 		}
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentImportedFieldsPrivateKey, encodeAgentFieldSet(apiOwned))...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipInitializedPrivateKey, []byte("true"))...)
@@ -478,26 +526,57 @@ func (r *AgentResource) Update(ctx context.Context, req resource.UpdateRequest, 
 		return
 	}
 	cardTouched := agentCardUpdateTouched(planned, state, config, importedFields)
-	if cardTouched {
-		// This GET intentionally occurs after secret hydration and immediately
-		// before request construction. The replacement card is based only on this
-		// authoritative response, never stale Terraform state.
-		fresh, err := r.sampleFreshAgentCard(ctx, state, importedFields, 8)
+	paramsTouched := agentParamsUpdateTouched(planned, state, config, importedFields)
+	var preservation agentPatchPreservation
+	if paramsTouched || cardTouched {
+		// Every complete-object PATCH starts from two matching fresh-connection
+		// samples. Terraform overlays only its exact owned keys/paths onto that
+		// wire object; typed state is never authority for unowned values.
+		paramsBase, cardBase, err := r.sampleFreshAgentUpdateBase(ctx, state, paramsTouched, cardTouched, 8)
 		if err != nil {
 			resp.Private = req.Private
 			resp.State = req.State
-			resp.Diagnostics.AddError("Agent Update Preflight Failed", "The provider could not authoritatively preserve the complete current agent card through bounded fresh-worker sampling before mutation. The agent was not changed.")
+			resp.Diagnostics.AddError("Agent Update Preflight Failed", "The provider could not obtain a stable fresh authoritative complete-object base. The agent was not changed.")
 			return
 		}
-		wirePlanned.AgentCard = overlayAgentCardWire(fresh, planned, state, config, importedFields)
+		if paramsTouched {
+			preservation.paramsBase = paramsBase
+			preservation.paramsPatch, err = overlayAgentParamsWire(paramsBase, state, config, importedFields)
+			if err != nil {
+				resp.Private = req.Private
+				resp.State = req.State
+				resp.Diagnostics.AddError("Invalid Agent Request", "The configured LiteLLM parameter overlay is not safe. The agent was not changed.")
+				return
+			}
+		}
+		if cardTouched {
+			preservation.cardBase = cardBase
+			preservation.cardPatch, err = overlayAgentCardRaw(cardBase, planned, state, config, importedFields)
+			if err != nil {
+				resp.Private = req.Private
+				resp.State = req.State
+				resp.Diagnostics.AddError("Invalid Agent Request", "The configured agent-card overlay is not safe. The agent was not changed.")
+				return
+			}
+		}
 	}
 
-	agentReq, err := r.buildAgentUpdateRequest(&wirePlanned, &state, &config, importedFields, cardTouched)
+	agentReq, err := r.buildAgentUpdateRequest(&wirePlanned, &state, &config, importedFields, false)
 	if err != nil {
 		resp.Private = req.Private
 		resp.State = req.State
 		resp.Diagnostics.AddError("Invalid Agent Request", "The agent update could not be converted to the LiteLLM v1.98 wire shape. The agent was not changed.")
 		return
+	}
+	if paramsTouched {
+		agentReq["litellm_params"] = preservation.paramsPatch
+	} else {
+		delete(agentReq, "litellm_params")
+	}
+	if cardTouched {
+		agentReq["agent_card_params"] = preservation.cardPatch
+	} else {
+		delete(agentReq, "agent_card_params")
 	}
 	endpoint := fmt.Sprintf("/v1/agents/%s", url.PathEscape(planned.ID.ValueString()))
 	if err := r.client.DoRequestWithResponse(ctx, "PATCH", endpoint, agentReq, nil); err != nil {
@@ -507,7 +586,7 @@ func (r *AgentResource) Update(ctx context.Context, req resource.UpdateRequest, 
 		return
 	}
 
-	confirmed, err := r.confirmAgentMutation(ctx, planned, state, config, importedFields, 8)
+	confirmed, err := r.confirmAgentMutationWithPreservation(ctx, planned, state, config, importedFields, &preservation, 8)
 	if err != nil {
 		resp.Private = req.Private
 		resp.State = req.State
@@ -523,7 +602,8 @@ func (r *AgentResource) Update(ctx context.Context, req resource.UpdateRequest, 
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &confirmed)...)
 	if !resp.Diagnostics.HasError() && resp.Private != nil {
-		for field := range agentConfiguredFields(config) {
+		configuredFields := agentConfiguredFields(config)
+		for field := range configuredFields {
 			delete(importedFields, field)
 		}
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentImportedFieldsPrivateKey, encodeAgentFieldSet(importedFields))...)
@@ -638,7 +718,7 @@ func (r *AgentResource) hydrateAgentUpdateFieldsWithOwnership(ctx context.Contex
 	if imported == nil {
 		imported = agentFieldSet{}
 	}
-	needsParams := data.LiteLLMParams.IsNull() || data.LiteLLMParams.IsUnknown() || agentMapContainsMaskedValues(data.LiteLLMParams) || (!config.LiteLLMParams.IsNull() && agentFieldSetHasPrefix(imported, agentFieldParams+"["))
+	needsParams := data.LiteLLMParams.IsNull() || data.LiteLLMParams.IsUnknown() || agentMapContainsMaskedValues(data.LiteLLMParams) || (!config.LiteLLMParams.IsNull() && agentFieldSetHasPrefix(imported, agentFieldParams+"[")) || (imported[agentFieldParamsJSON] && config.LiteLLMParamsJSON.IsNull())
 	needsHeaders := data.StaticHeaders.IsNull() || data.StaticHeaders.IsUnknown() || agentMapContainsMaskedValues(data.StaticHeaders) || (!config.StaticHeaders.IsNull() && agentFieldSetHasPrefix(imported, agentFieldStaticHeaders+"["))
 	needsExtraHeaders := data.ExtraHeaders.IsNull() || data.ExtraHeaders.IsUnknown()
 	if !needsParams && !needsHeaders && !needsExtraHeaders {
@@ -654,7 +734,25 @@ func (r *AgentResource) hydrateAgentUpdateFieldsWithOwnership(ctx context.Contex
 		return err
 	}
 	if needsParams {
-		params, _ := result["litellm_params"].(map[string]interface{})
+		rawParams, present := result["litellm_params"]
+		params := map[string]interface{}{}
+		if present && rawParams != nil {
+			var ok bool
+			params, ok = rawParams.(map[string]interface{})
+			if !ok {
+				return fmt.Errorf("LiteLLM returned malformed agent parameters during update preflight")
+			}
+		}
+		if imported[agentFieldParamsJSON] && config.LiteLLMParamsJSON.IsNull() {
+			if !present || rawParams == nil {
+				return fmt.Errorf("LiteLLM omitted API-owned structured agent parameters during update preflight")
+			}
+			var err error
+			data.LiteLLMParamsJSON, err = reconcileAgentJSONObject(data.LiteLLMParamsJSON, params)
+			if err != nil {
+				return err
+			}
+		}
 		value, err := hydrateAgentUpdateMap(data.LiteLLMParams, params, true)
 		if err != nil {
 			return err
@@ -766,6 +864,34 @@ func (r *AgentResource) buildAgentRequest(data *AgentResourceModel) (map[string]
 			}
 		}
 
+		// Signatures are an ordered complete-list replacement. Header is an
+		// arbitrary JSON object and is decoded with UseNumber.
+		if data.AgentCard.Signatures != nil {
+			signatures := make([]map[string]interface{}, 0, len(data.AgentCard.Signatures))
+			for _, configured := range data.AgentCard.Signatures {
+				signature := map[string]interface{}{
+					"protected": configured.Protected.ValueString(),
+					"signature": configured.Signature.ValueString(),
+				}
+				if !configured.Header.IsNull() && !configured.Header.IsUnknown() {
+					header, err := decodeAgentJSONObject(configured.Header.ValueString())
+					if err != nil {
+						return nil, err
+					}
+					signature["header"] = header
+				}
+				if !configured.HeaderJSON.IsNull() && !configured.HeaderJSON.IsUnknown() {
+					header, err := decodeAgentNullOrObject(configured.HeaderJSON.ValueString())
+					if err != nil {
+						return nil, err
+					}
+					signature["header"] = header
+				}
+				signatures = append(signatures, signature)
+			}
+			card["signatures"] = signatures
+		}
+
 		// Skills. A non-nil empty list is an explicit complete-list replacement;
 		// omission leaves the remote list untouched.
 		if data.AgentCard.Skills != nil {
@@ -790,6 +916,20 @@ func (r *AgentResource) buildAgentRequest(data *AgentResourceModel) (map[string]
 				if !s.OutputModes.IsNull() && !s.OutputModes.IsUnknown() {
 					skill["outputModes"] = listToStringSlice(s.OutputModes)
 				}
+				if !s.Security.IsNull() && !s.Security.IsUnknown() {
+					security, err := decodeAgentSecurity(s.Security)
+					if err != nil {
+						return nil, err
+					}
+					skill["security"] = security
+				}
+				if !s.SecurityJSON.IsNull() && !s.SecurityJSON.IsUnknown() {
+					security, err := decodeAgentSecurityJSON(s.SecurityJSON.ValueString())
+					if err != nil {
+						return nil, err
+					}
+					skill["security"] = security
+				}
 				skills = append(skills, skill)
 			}
 			card["skills"] = skills
@@ -798,17 +938,17 @@ func (r *AgentResource) buildAgentRequest(data *AgentResourceModel) (map[string]
 		req["agent_card_params"] = card
 	}
 
-	// LiteLLM params
-	if !data.LiteLLMParams.IsNull() && !data.LiteLLMParams.IsUnknown() {
-		params := map[string]interface{}{}
-		for k, v := range data.LiteLLMParams.Elements() {
-			if sv, ok := v.(types.String); ok {
-				params[k] = sv.ValueString()
-			}
-		}
-		if len(params) > 0 {
-			req["litellm_params"] = params
-		}
+	// LiteLLM params. The legacy map is literal; only the additive JSON
+	// attribute can introduce heterogeneous values.
+	params, paramsConfigured, err := configuredAgentParams(data.LiteLLMParams, data.LiteLLMParamsJSON)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateAgentCorePair(params); err != nil {
+		return nil, err
+	}
+	if paramsConfigured && len(params) > 0 {
+		req["litellm_params"] = params
 	}
 
 	// Object permission
@@ -965,6 +1105,11 @@ func reconcileAgentStringMapWithOwnership(current types.Map, raw map[string]inte
 			scope = agentScopeStaticHeaders
 		}
 		ownedByAPI := importAll || apiOwned[marker]
+		if !importAll && !priorPresent && apiOwned[marker] {
+			// Already-adopted API leaf omitted from plan-consistent public state.
+			// Keep its private/raw ownership without recreating perpetual drift.
+			continue
+		}
 		if !priorPresent && !ownedByAPI && apiOwned[scope] {
 			apiOwned[marker] = true
 			ownedByAPI = true
@@ -982,7 +1127,19 @@ func reconcileAgentStringMapWithOwnership(current types.Map, raw map[string]inte
 			observed[key] = types.StringValue(prior)
 			continue
 		}
-		value := metadataValueToString(rawValue)
+		// Preserve the historical import/state projection. Private JSON
+		// provenance prevents these compatibility strings from becoming wire
+		// authority on a later unrelated update.
+		remoteString, isString := rawValue.(string)
+		if !isString {
+			value := metadataValueToString(rawValue)
+			if priorPresent {
+				value = metadataValueToStringPreservingMasked(rawValue, prior)
+			}
+			observed[key] = types.StringValue(value)
+			continue
+		}
+		value := remoteString
 		if priorPresent && !ownedByAPI && (prior == value || jsonSemanticallyEqual(prior, value)) {
 			value = prior
 		}
@@ -1025,6 +1182,10 @@ func (r *AgentResource) readAgentFreshWithOwnership(ctx context.Context, data *A
 }
 
 func (r *AgentResource) readAgentWithOwnershipTransport(ctx context.Context, data *AgentResourceModel, imported bool, apiOwned agentFieldSet, freshConnection bool) error {
+	return r.readAgentWithOwnershipTransportCapture(ctx, data, imported, apiOwned, freshConnection, nil)
+}
+
+func (r *AgentResource) readAgentWithOwnershipTransportCapture(ctx context.Context, data *AgentResourceModel, imported bool, apiOwned agentFieldSet, freshConnection bool, capture *map[string]interface{}) error {
 	if apiOwned == nil {
 		apiOwned = agentFieldSet{}
 	}
@@ -1052,6 +1213,9 @@ func (r *AgentResource) readAgentWithOwnershipTransport(ctx context.Context, dat
 	}
 	if err := requireImportedStringField(true, "agent", result, "agent_name"); err != nil {
 		return err
+	}
+	if capture != nil {
+		*capture = cloneAgentWireObject(result)
 	}
 
 	// Identity is authoritative on every read, not only import. A successful
@@ -1092,7 +1256,10 @@ func (r *AgentResource) readAgentWithOwnershipTransport(ctx context.Context, dat
 		}
 	}
 
-	// LiteLLM params
+	// LiteLLM params. Present malformed values fail closed. Omission may be
+	// role sanitization, so prior resource state is retained. Imports and an
+	// existing/configured JSON bridge adopt the complete heterogeneous object;
+	// legacy-only resources remain legacy-only and are never silently migrated.
 	if rawParams, present := result["litellm_params"]; present && rawParams != nil {
 		params, ok := rawParams.(map[string]interface{})
 		if !ok {
@@ -1103,8 +1270,33 @@ func (r *AgentResource) readAgentWithOwnershipTransport(ctx context.Context, dat
 			return err
 		}
 		data.LiteLLMParams = value
-	} else if data.LiteLLMParams.IsUnknown() || (!data.LiteLLMParams.IsNull() && len(data.LiteLLMParams.Elements()) > 0) {
-		data.LiteLLMParams = types.MapNull(types.StringType)
+		adoptJSON := imported || apiOwned[agentFieldParamsJSON] || (!data.LiteLLMParamsJSON.IsNull() && !data.LiteLLMParamsJSON.IsUnknown())
+		if adoptJSON {
+			structuredParams := params
+			if !imported && !apiOwned[agentFieldParamsJSON] && !data.LiteLLMParamsJSON.IsNull() && !data.LiteLLMParamsJSON.IsUnknown() {
+				priorObject, decodeErr := decodeAgentJSONObject(data.LiteLLMParamsJSON.ValueString())
+				if decodeErr != nil {
+					return decodeErr
+				}
+				structuredParams = make(map[string]interface{}, len(priorObject))
+				for key := range priorObject {
+					if value, present := params[key]; present {
+						structuredParams[key] = value
+					}
+				}
+			}
+			data.LiteLLMParamsJSON, err = reconcileAgentJSONObject(data.LiteLLMParamsJSON, structuredParams)
+			if err != nil {
+				return fmt.Errorf("agent read response contains unrecoverable structured LiteLLM parameters")
+			}
+		}
+	} else {
+		if data.LiteLLMParams.IsUnknown() {
+			data.LiteLLMParams = types.MapNull(types.StringType)
+		}
+		if data.LiteLLMParamsJSON.IsUnknown() {
+			data.LiteLLMParamsJSON = types.StringNull()
+		}
 	}
 
 	// Static headers
@@ -1112,6 +1304,11 @@ func (r *AgentResource) readAgentWithOwnershipTransport(ctx context.Context, dat
 		headers, ok := rawHeaders.(map[string]interface{})
 		if !ok {
 			return fmt.Errorf("agent read response contains malformed static headers")
+		}
+		for _, raw := range headers {
+			if _, ok := raw.(string); !ok {
+				return fmt.Errorf("agent read response contains malformed static headers")
+			}
 		}
 		value, err := reconcileAgentStringMapWithOwnership(data.StaticHeaders, headers, false, agentFieldStaticHeaders, imported, apiOwned)
 		if err != nil {
@@ -1127,6 +1324,11 @@ func (r *AgentResource) readAgentWithOwnershipTransport(ctx context.Context, dat
 		headers, ok := rawHeaders.([]interface{})
 		if !ok {
 			return fmt.Errorf("agent read response contains malformed extra headers")
+		}
+		for _, raw := range headers {
+			if _, ok := raw.(string); !ok {
+				return fmt.Errorf("agent read response contains malformed extra headers")
+			}
 		}
 		data.ExtraHeaders = interfaceSliceToStringList(headers)
 	} else if data.ExtraHeaders.IsUnknown() || (!data.ExtraHeaders.IsNull() && len(data.ExtraHeaders.Elements()) > 0) {
@@ -1312,6 +1514,32 @@ func (r *AgentResource) readAgentCard(cardRaw map[string]interface{}, data *Agen
 		card.Provider = nil
 	}
 
+	// Signatures preserve wire order and duplicates.
+	if signaturesRaw, ok := cardRaw["signatures"].([]interface{}); ok && (populateAll || card.Signatures != nil) {
+		signatures := make([]AgentCardSignatureModel, 0, len(signaturesRaw))
+		for _, raw := range signaturesRaw {
+			object := raw.(map[string]interface{}) // validated by validateAgentCardResponse
+			signature := AgentCardSignatureModel{
+				Protected:  types.StringValue(object["protected"].(string)),
+				Signature:  types.StringValue(object["signature"].(string)),
+				Header:     types.StringNull(),
+				HeaderJSON: types.StringNull(),
+			}
+			if header, present := object["header"]; present {
+				if header == nil {
+					signature.HeaderJSON = types.StringValue("null")
+				} else if objectHeader, ok := header.(map[string]interface{}); ok {
+					encoded, _ := canonicalAgentJSON(objectHeader)
+					signature.Header = types.StringValue(encoded)
+				}
+			}
+			signatures = append(signatures, signature)
+		}
+		card.Signatures = signatures
+	} else if !populateAll && card.Signatures != nil {
+		card.Signatures = []AgentCardSignatureModel{}
+	}
+
 	// Skills
 	if skillsRaw, ok := cardRaw["skills"].([]interface{}); ok && (populateAll || card.Skills != nil) {
 		skills := make([]AgentSkillModel, 0, len(skillsRaw))
@@ -1346,6 +1574,15 @@ func (r *AgentResource) readAgentCard(cardRaw map[string]interface{}, data *Agen
 					skill.OutputModes = interfaceSliceToStringList(v)
 				} else {
 					skill.OutputModes = types.ListNull(types.StringType)
+				}
+				skill.Security = types.ListNull(types.MapType{ElemType: types.ListType{ElemType: types.StringType}})
+				skill.SecurityJSON = types.StringNull()
+				if v, present := s["security"]; present {
+					if v == nil {
+						skill.SecurityJSON = types.StringValue("null")
+					} else {
+						skill.Security, _ = readAgentSecurity(v)
+					}
 				}
 				skills = append(skills, skill)
 			}
@@ -1430,6 +1667,41 @@ func (r *AgentResource) reconcileAgentCardWithOwnership(cardRaw map[string]inter
 	reconcileString(agentFieldCardIcon, &out.IconURL, observed.IconURL)
 	reconcileString(agentFieldCardDocumentation, &out.DocumentationURL, observed.DocumentationURL)
 	reconcileBool(agentFieldCardAuthenticated, &out.SupportsAuthenticatedExtendedCard, observed.SupportsAuthenticatedExtendedCard)
+	rawSignatures, signaturesWirePresent := cardRaw["signatures"]
+	signatureMarkers := agentFieldSetHasPrefix(apiOwned, agentFieldCardSignatures+"[")
+	if prior.Signatures != nil || (apiOwned[agentScopeCardSignatures] && signaturesWirePresent && !signatureMarkers) {
+		out.Signatures = append([]AgentCardSignatureModel(nil), observed.Signatures...)
+		if apiOwned[agentScopeCardSignatures] && signaturesWirePresent {
+			for index, signature := range agentWireObjectList(rawSignatures) {
+				for _, field := range []string{"protected", "signature", "header"} {
+					_, present := signature[field]
+					adopt := index >= len(prior.Signatures)
+					if field == "header" && index < len(prior.Signatures) {
+						adopt = prior.Signatures[index].Header.IsNull() && prior.Signatures[index].HeaderJSON.IsNull()
+					}
+					if present && adopt {
+						apiOwned[agentSignatureLeaf(index, field)] = true
+					}
+				}
+			}
+		}
+		if !apiOwned[agentFieldCardSignatures] && len(prior.Signatures) == len(out.Signatures) {
+			for index := range out.Signatures {
+				oldHeader, newHeader := prior.Signatures[index].Header, out.Signatures[index].Header
+				if prior.Signatures[index].Protected.Equal(out.Signatures[index].Protected) && prior.Signatures[index].Signature.Equal(out.Signatures[index].Signature) &&
+					!oldHeader.IsNull() && !oldHeader.IsUnknown() && !newHeader.IsNull() && !newHeader.IsUnknown() && jsonSemanticallyEqual(oldHeader.ValueString(), newHeader.ValueString()) {
+					out.Signatures[index].Header = oldHeader
+				}
+			}
+		}
+		if observed.Signatures == nil {
+			for field := range apiOwned {
+				if strings.HasPrefix(field, agentFieldCardSignatures+"[") {
+					delete(apiOwned, field)
+				}
+			}
+		}
+	}
 
 	capsRaw, _ := cardRaw["capabilities"].(map[string]interface{})
 	if prior.Capabilities == nil && observed.Capabilities != nil && apiOwned[agentScopeCardCapabilities] {
@@ -1507,6 +1779,7 @@ func (r *AgentResource) reconcileAgentCardWithOwnership(cardRaw map[string]inter
 		}
 	}
 
+	rawSkillsByID := agentSkillRawByID(cardRaw)
 	remoteByID := map[string]AgentSkillModel{}
 	for _, skill := range observed.Skills {
 		remoteByID[skill.ID.ValueString()] = skill
@@ -1517,7 +1790,7 @@ func (r *AgentResource) reconcileAgentCardWithOwnership(cardRaw map[string]inter
 		id := old.ID.ValueString()
 		remote, present := remoteByID[id]
 		if !present {
-			for _, leaf := range []string{"id", "name", "description", "tags", "examples", "input_modes", "output_modes"} {
+			for _, leaf := range []string{"id", "name", "description", "tags", "examples", "input_modes", "output_modes", "security"} {
 				delete(apiOwned, agentSkillLeaf(id, leaf))
 			}
 			continue
@@ -1529,6 +1802,17 @@ func (r *AgentResource) reconcileAgentCardWithOwnership(cardRaw map[string]inter
 		reconcileList(agentSkillLeaf(id, "examples"), &current.Examples, remote.Examples, false)
 		reconcileList(agentSkillLeaf(id, "input_modes"), &current.InputModes, remote.InputModes, false)
 		reconcileList(agentSkillLeaf(id, "output_modes"), &current.OutputModes, remote.OutputModes, false)
+		securityField := agentSkillLeaf(id, "security")
+		if _, present := rawSkillsByID[id]["security"]; present && apiOwned[agentScopeCardSkills] && current.Security.IsNull() && current.SecurityJSON.IsNull() {
+			apiOwned[securityField] = true
+		}
+		if apiOwned[securityField] || (!current.Security.IsNull() || !current.SecurityJSON.IsNull()) {
+			current.Security = remote.Security
+			current.SecurityJSON = remote.SecurityJSON
+			if remote.Security.IsNull() && remote.SecurityJSON.IsNull() {
+				delete(apiOwned, securityField)
+			}
+		}
 		skills = append(skills, current)
 		seen[id] = true
 	}
@@ -1540,13 +1824,13 @@ func (r *AgentResource) reconcileAgentCardWithOwnership(cardRaw map[string]inter
 	}
 	slices.Sort(newIDs)
 	for _, id := range newIDs {
-		if !apiOwned[agentScopeCardSkills] {
+		if !apiOwned[agentScopeCardSkills] || agentFieldSetHasPrefix(apiOwned, agentLeaf(agentFieldCardSkills, id)+".") {
+			// Previously adopted API skills may be hidden after a configured-list
+			// apply. Preserve them privately/on wire without perpetual plan drift.
 			continue
 		}
 		skills = append(skills, remoteByID[id])
-		for _, leaf := range []string{"id", "name", "description", "tags", "examples", "input_modes", "output_modes"} {
-			apiOwned[agentSkillLeaf(id, leaf)] = true
-		}
+		markAgentSkillWireLeaves(apiOwned, id, rawSkillsByID[id])
 	}
 	if prior.Skills == nil && len(skills) == 0 {
 		out.Skills = nil
@@ -1705,6 +1989,7 @@ func cloneAgentResourceModel(source AgentResourceModel) AgentResourceModel {
 			cloned.AgentCard.Provider = &provider
 		}
 		cloned.AgentCard.Skills = append([]AgentSkillModel(nil), source.AgentCard.Skills...)
+		cloned.AgentCard.Signatures = append([]AgentCardSignatureModel(nil), source.AgentCard.Signatures...)
 	}
 	if source.ObjectPermission != nil {
 		permission := *source.ObjectPermission
@@ -1811,6 +2096,11 @@ func (r *AgentResource) readObjectPermission(permRaw map[string]interface{}, dat
 			items, ok := raw.([]interface{})
 			if !ok {
 				return fmt.Errorf("agent read response contains a malformed object permission collection")
+			}
+			for _, item := range items {
+				if _, ok := item.(string); !ok {
+					return fmt.Errorf("agent read response contains a malformed object permission collection")
+				}
 			}
 			*target = interfaceSliceToStringList(items)
 			return nil
