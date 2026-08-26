@@ -781,6 +781,216 @@ func safe(ctx context.Context, client *Client, value string, alternate bool) {
 	}
 }
 
+func TestExtractorRejectsLexicalEndpointShadowLeaks(t *testing.T) {
+	fixtures := map[string]string{
+		"nested-block": `
+ {
+  endpoint := endpointWithPathSegment("/inner/", value, "")
+  _ = endpoint
+ }
+`,
+		"if-init": `
+ if endpoint := endpointWithPathSegment("/inner/", value, ""); enabled {
+  _ = endpoint
+ }
+`,
+		"switch-init": `
+ switch endpoint := endpointWithPathSegment("/inner/", value, ""); enabled {
+ case true:
+  _ = endpoint
+ }
+`,
+		"type-switch-init": `
+ switch endpoint := endpointWithPathSegment("/inner/", value, ""); any(value).(type) {
+ case string:
+  _ = endpoint
+ }
+`,
+		"type-switch-case": `
+ switch any(value).(type) {
+ case string:
+  endpoint := endpointWithPathSegment("/inner/", value, "")
+  _ = endpoint
+ }
+`,
+		"for-init": `
+ for endpoint := endpointWithPathSegment("/inner/", value, ""); enabled; {
+  _ = endpoint
+  break
+ }
+`,
+		"range": `
+ for _, endpoint := range []string{endpointWithPathSegment("/inner/", value, "")} {
+  _ = endpoint
+ }
+`,
+		"closure": `
+ func() {
+  endpoint := endpointWithPathSegment("/inner/", value, "")
+  _ = endpoint
+ }()
+`,
+		"case-clause": `
+ switch enabled {
+ case true:
+  endpoint := endpointWithPathSegment("/inner/", value, "")
+  _ = endpoint
+ }
+`,
+		"comm-clause": `
+ select {
+ case <-ready:
+  endpoint := endpointWithPathSegment("/inner/", value, "")
+  _ = endpoint
+ default:
+ }
+`,
+	}
+	for name, body := range fixtures {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeHTTPFixtureSupport(t, dir)
+			fixture := `package provider
+import ("context"; "strings")
+func bad(ctx context.Context, client *Client, value string, enabled bool, ready <-chan struct{}) {
+ endpoint := endpointWithPathSegment("/things/", value, "")
+ endpoint = strings.TrimPrefix(endpoint, invalidReviewedEndpoint)
+` + body + `
+ client.DoRequestWithResponse(ctx, "GET", endpoint, nil, nil)
+}
+`
+			writeFixture(t, dir, "bad.go", fixture)
+			if _, err := ExtractProvider(dir); err == nil || (!strings.Contains(err.Error(), "unresolved") && !strings.Contains(err.Error(), "statically unqueried")) {
+				t.Fatalf("outer endpoint provenance was restored by an inner shadow: %v", err)
+			}
+		})
+	}
+}
+
+func TestExtractorKeepsLexicalEndpointShadowsIsolated(t *testing.T) {
+	dir := t.TempDir()
+	writeHTTPFixtureSupport(t, dir)
+	writeFixture(t, dir, "safe.go", `package provider
+import "context"
+func safe(ctx context.Context, client *Client, value string, enabled bool, ready <-chan struct{}) {
+ endpoint := endpointWithPathSegment("/outer/", value, "")
+ {
+  endpoint := "/not-reviewed"
+  _ = endpoint
+ }
+ if endpoint := "/not-reviewed"; enabled { _ = endpoint }
+ switch endpoint := "/not-reviewed"; enabled { case true: _ = endpoint }
+ switch endpoint := "/not-reviewed"; any(value).(type) { case string: _ = endpoint }
+ for endpoint := "/not-reviewed"; enabled; { _ = endpoint; break }
+ for _, endpoint := range []string{"/not-reviewed"} { _ = endpoint }
+ func() { endpoint := "/not-reviewed"; _ = endpoint }()
+ switch enabled { case true: endpoint := "/not-reviewed"; _ = endpoint }
+ select { case <-ready: endpoint := "/not-reviewed"; _ = endpoint; default: }
+ client.DoRequestWithResponse(ctx, "GET", endpoint, nil, nil)
+}
+func inner(ctx context.Context, client *Client, value string, enabled bool, ready <-chan struct{}) {
+ {
+  endpoint := endpointWithPathSegment("/inner/", value, "")
+  client.DoRequestWithResponse(ctx, "GET", endpoint, nil, nil)
+ }
+ if endpoint := endpointWithPathSegment("/inner/", value, ""); enabled {
+  client.DoRequestWithResponse(ctx, "GET", endpoint, nil, nil)
+ }
+ switch endpoint := endpointWithPathSegment("/inner/", value, ""); enabled {
+ case true:
+  client.DoRequestWithResponse(ctx, "GET", endpoint, nil, nil)
+ }
+ switch endpoint := endpointWithPathSegment("/inner/", value, ""); any(value).(type) {
+ case string:
+  client.DoRequestWithResponse(ctx, "GET", endpoint, nil, nil)
+ }
+ for endpoint := endpointWithPathSegment("/inner/", value, ""); enabled; {
+  client.DoRequestWithResponse(ctx, "GET", endpoint, nil, nil)
+  break
+ }
+ for _, endpoint := range []string{endpointWithPathSegment("/inner/", value, "")} {
+  client.DoRequestWithResponse(ctx, "GET", endpoint, nil, nil)
+ }
+ func() {
+  endpoint := endpointWithPathSegment("/inner/", value, "")
+  client.DoRequestWithResponse(ctx, "GET", endpoint, nil, nil)
+ }()
+ switch enabled {
+ case true:
+  endpoint := endpointWithPathSegment("/inner/", value, "")
+  client.DoRequestWithResponse(ctx, "GET", endpoint, nil, nil)
+ }
+ select {
+ case <-ready:
+  endpoint := endpointWithPathSegment("/inner/", value, "")
+  client.DoRequestWithResponse(ctx, "GET", endpoint, nil, nil)
+ default:
+ }
+}
+`)
+	if operations, err := ExtractProvider(dir); err != nil || len(operations) == 0 {
+		t.Fatalf("lexically isolated endpoint shadows were rejected: operations=%+v error=%v", operations, err)
+	}
+}
+
+func TestExtractorRejectsSameEndpointObjectOverwriteAfterInnerShadow(t *testing.T) {
+	dir := t.TempDir()
+	writeHTTPFixtureSupport(t, dir)
+	writeFixture(t, dir, "bad.go", `package provider
+import ("context"; "strings")
+func bad(ctx context.Context, client *Client, value string) {
+ endpoint := endpointWithPathSegment("/things/", value, "")
+ { endpoint := endpointWithPathSegment("/inner/", value, ""); _ = endpoint }
+ endpoint = strings.TrimPrefix(endpoint, invalidReviewedEndpoint)
+ client.DoRequestWithResponse(ctx, "GET", endpoint, nil, nil)
+}
+`)
+	if _, err := ExtractProvider(dir); err == nil || (!strings.Contains(err.Error(), "unresolved") && !strings.Contains(err.Error(), "statically unqueried")) {
+		t.Fatalf("same-object overwrite after an inner shadow was accepted: %v", err)
+	}
+}
+
+func TestCopiedAgentEndpointShadowDoesNotRestoreKilledProvenance(t *testing.T) {
+	root := repositoryRoot(t)
+	source := filepath.Join(root, "internal", "provider")
+	dir := t.TempDir()
+	entries, err := os.ReadDir(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	injected := false
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
+		}
+		contents, readErr := os.ReadFile(filepath.Join(source, entry.Name()))
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if entry.Name() == "resource_agent.go" {
+			needle := `endpoint := endpointWithPathSegment("/v1/agents/", planned.ID.ValueString(), "")`
+			replacement := needle + `
+	endpoint = strings.TrimPrefix(endpoint, invalidReviewedEndpoint)
+	{
+		endpoint := endpointWithPathSegment("/v1/agents/", planned.ID.ValueString(), "")
+		_ = endpoint
+	}`
+			updated := strings.Replace(string(contents), needle, replacement, 1)
+			injected = updated != string(contents)
+			contents = []byte(updated)
+		}
+		if writeErr := os.WriteFile(filepath.Join(dir, entry.Name()), contents, 0o600); writeErr != nil {
+			t.Fatal(writeErr)
+		}
+	}
+	if !injected {
+		t.Fatal("resource_agent.go endpoint fixture was not transformed")
+	}
+	if _, err := ExtractProvider(dir); err == nil || !strings.Contains(err.Error(), "unresolved HTTP method or path") {
+		t.Fatalf("copied agent endpoint shadow restored killed provenance: %v", err)
+	}
+}
+
 func TestCopiedSearchToolEndpointOverwriteFailsContractCheck(t *testing.T) {
 	root := repositoryRoot(t)
 	source := filepath.Join(root, "internal", "provider")

@@ -4389,15 +4389,31 @@ func dereferencedIdent(expr ast.Expr) (*ast.Ident, bool) {
 }
 
 type endpointFlowState struct {
-	env       map[string]value
-	aliases   map[string]map[string]bool
+	env       map[*types.Var]value
+	aliases   map[*types.Var]map[*types.Var]bool
 	reachable bool
 }
 
 type endpointFlowAnalyzer struct {
 	x      *extractor
 	stack  map[string]bool
-	before map[ast.Node]map[string]value
+	before map[ast.Node]map[*types.Var]value
+}
+
+func (flow *endpointFlowAnalyzer) variable(identifier *ast.Ident) *types.Var {
+	if identifier == nil || identifier.Name == "_" {
+		return nil
+	}
+	variable, _ := flow.x.typesInfo.ObjectOf(identifier).(*types.Var)
+	return variable
+}
+
+func cloneEndpointVariableSet(in map[*types.Var]bool) map[*types.Var]bool {
+	out := map[*types.Var]bool{}
+	for variable, present := range in {
+		out[variable] = present
+	}
+	return out
 }
 
 func cloneValue(v value) value {
@@ -4409,12 +4425,12 @@ func cloneValue(v value) value {
 }
 
 func cloneEndpointFlowState(in endpointFlowState) endpointFlowState {
-	out := endpointFlowState{env: map[string]value{}, aliases: map[string]map[string]bool{}, reachable: in.reachable}
-	for name, v := range in.env {
-		out.env[name] = cloneValue(v)
+	out := endpointFlowState{env: map[*types.Var]value{}, aliases: map[*types.Var]map[*types.Var]bool{}, reachable: in.reachable}
+	for variable, v := range in.env {
+		out.env[variable] = cloneValue(v)
 	}
-	for name, targets := range in.aliases {
-		out.aliases[name] = copySet(targets)
+	for variable, targets := range in.aliases {
+		out.aliases[variable] = cloneEndpointVariableSet(targets)
 	}
 	return out
 }
@@ -4438,7 +4454,7 @@ func mergeEndpointFlowValues(values ...value) value {
 }
 
 func mergeEndpointFlowStates(states ...endpointFlowState) endpointFlowState {
-	out := endpointFlowState{env: map[string]value{}, aliases: map[string]map[string]bool{}}
+	out := endpointFlowState{env: map[*types.Var]value{}, aliases: map[*types.Var]map[*types.Var]bool{}}
 	var reaching []endpointFlowState
 	for _, state := range states {
 		if state.reachable {
@@ -4449,58 +4465,63 @@ func mergeEndpointFlowStates(states ...endpointFlowState) endpointFlowState {
 		return out
 	}
 	out.reachable = true
-	names := map[string]bool{}
+	variables := map[*types.Var]bool{}
 	for _, state := range reaching {
-		for name := range state.env {
-			names[name] = true
+		for variable := range state.env {
+			variables[variable] = true
 		}
-		for name := range state.aliases {
-			names[name] = true
+		for variable := range state.aliases {
+			variables[variable] = true
 		}
 	}
-	for name := range names {
+	for variable := range variables {
 		values := make([]value, 0, len(reaching))
 		missing := false
 		for _, state := range reaching {
-			v, ok := state.env[name]
+			v, ok := state.env[variable]
 			if !ok {
 				missing = true
 				break
 			}
 			values = append(values, v)
-			if targets := state.aliases[name]; targets != nil {
-				if out.aliases[name] == nil {
-					out.aliases[name] = map[string]bool{}
+			if targets := state.aliases[variable]; targets != nil {
+				if out.aliases[variable] == nil {
+					out.aliases[variable] = map[*types.Var]bool{}
 				}
 				for target := range targets {
-					out.aliases[name][target] = true
+					out.aliases[variable][target] = true
 				}
 			}
 		}
 		if missing {
-			out.env[name] = value{}
+			out.env[variable] = value{}
 		} else {
-			out.env[name] = mergeEndpointFlowValues(values...)
+			out.env[variable] = mergeEndpointFlowValues(values...)
 		}
 	}
 	return out
 }
 
-func (x *extractor) functionEnvironments(fn *ast.FuncDecl, bindings map[string]value, stack map[string]bool) (map[ast.Node]map[string]value, map[string]value) {
-	state := endpointFlowState{env: map[string]value{}, aliases: map[string]map[string]bool{}, reachable: true}
-	for name, v := range bindings {
-		state.env[name] = cloneValue(v)
+func (x *extractor) functionEnvironments(fn *ast.FuncDecl, bindings map[*types.Var]value, stack map[string]bool) (map[ast.Node]map[*types.Var]value, map[*types.Var]value) {
+	state := endpointFlowState{env: map[*types.Var]value{}, aliases: map[*types.Var]map[*types.Var]bool{}, reachable: true}
+	for variable, v := range bindings {
+		if variable != nil {
+			state.env[variable] = cloneValue(v)
+		}
 	}
 	if fn.Type.Params != nil {
 		for _, field := range fn.Type.Params.List {
 			for _, name := range field.Names {
-				if _, bound := state.env[name.Name]; !bound {
-					state.env[name.Name] = dynamicValue()
+				variable, _ := x.typesInfo.Defs[name].(*types.Var)
+				if variable != nil {
+					if _, bound := state.env[variable]; !bound {
+						state.env[variable] = dynamicValue()
+					}
 				}
 			}
 		}
 	}
-	flow := &endpointFlowAnalyzer{x: x, stack: stack, before: map[ast.Node]map[string]value{}}
+	flow := &endpointFlowAnalyzer{x: x, stack: stack, before: map[ast.Node]map[*types.Var]value{}}
 	state = flow.block(fn.Body.List, state)
 	return flow.before, state.env
 }
@@ -4545,25 +4566,29 @@ func (flow *endpointFlowAnalyzer) expressionEffects(expr ast.Expr, state endpoin
 		}
 		literal, ok := node.(*ast.FuncLit)
 		if ok {
-			written := map[string]bool{}
+			written := map[*types.Var]bool{}
 			ast.Inspect(literal.Body, func(child ast.Node) bool {
 				switch item := child.(type) {
 				case *ast.AssignStmt:
 					for _, lhs := range item.Lhs {
-						if id, ok := dereferencedIdent(lhs); ok {
-							written[id.Name] = true
+						if identifier, ok := dereferencedIdent(lhs); ok {
+							if variable := flow.variable(identifier); variable != nil {
+								written[variable] = true
+							}
 						}
 					}
 				case *ast.IncDecStmt:
-					if id, ok := dereferencedIdent(item.X); ok {
-						written[id.Name] = true
+					if identifier, ok := dereferencedIdent(item.X); ok {
+						if variable := flow.variable(identifier); variable != nil {
+							written[variable] = true
+						}
 					}
 				}
 				return true
 			})
-			for name := range written {
-				if _, captured := state.env[name]; captured {
-					state.env[name] = value{}
+			for variable := range written {
+				if _, captured := state.env[variable]; captured {
+					state.env[variable] = value{}
 				}
 			}
 			return false
@@ -4593,12 +4618,16 @@ func (flow *endpointFlowAnalyzer) expressionEffects(expr ast.Expr, state endpoin
 }
 
 func (flow *endpointFlowAnalyzer) mutateQuery(expr, key ast.Expr, state *endpointFlowState) {
-	id, ok := dereferencedIdent(expr)
+	identifier, ok := dereferencedIdent(expr)
 	if !ok {
 		return
 	}
-	targets := map[string]bool{id.Name: true}
-	for target := range state.aliases[id.Name] {
+	variable := flow.variable(identifier)
+	if variable == nil {
+		return
+	}
+	targets := map[*types.Var]bool{variable: true}
+	for target := range state.aliases[variable] {
 		targets[target] = true
 	}
 	for target := range targets {
@@ -4622,7 +4651,11 @@ func (flow *endpointFlowAnalyzer) poisonAddressAliases(expr ast.Expr, state *end
 			flow.poisonAliasExpr(item.X, state)
 		}
 	case *ast.Ident:
-		for target := range state.aliases[item.Name] {
+		variable := flow.variable(item)
+		if variable == nil {
+			return
+		}
+		for target := range state.aliases[variable] {
 			state.env[target] = value{}
 		}
 	case *ast.ParenExpr:
@@ -4631,18 +4664,22 @@ func (flow *endpointFlowAnalyzer) poisonAddressAliases(expr ast.Expr, state *end
 }
 
 func (flow *endpointFlowAnalyzer) poisonAliasExpr(expr ast.Expr, state *endpointFlowState) {
-	id, ok := dereferencedIdent(expr)
+	identifier, ok := dereferencedIdent(expr)
 	if !ok {
 		return
 	}
-	if targets := state.aliases[id.Name]; len(targets) != 0 {
+	variable := flow.variable(identifier)
+	if variable == nil {
+		return
+	}
+	if targets := state.aliases[variable]; len(targets) != 0 {
 		for target := range targets {
 			state.env[target] = value{}
 		}
 		return
 	}
-	if _, tracked := state.env[id.Name]; tracked {
-		state.env[id.Name] = value{}
+	if _, tracked := state.env[variable]; tracked {
+		state.env[variable] = value{}
 	}
 }
 
@@ -4663,22 +4700,29 @@ func (flow *endpointFlowAnalyzer) assignmentValues(node *ast.AssignStmt, state e
 func (flow *endpointFlowAnalyzer) assign(lhs ast.Expr, rhs ast.Expr, assigned value, state *endpointFlowState) {
 	switch left := lhs.(type) {
 	case *ast.Ident:
-		if left.Name == "_" {
+		variable := flow.variable(left)
+		if variable == nil {
 			return
 		}
-		state.env[left.Name] = cloneValue(assigned)
-		delete(state.aliases, left.Name)
+		state.env[variable] = cloneValue(assigned)
+		delete(state.aliases, variable)
 		if unary, ok := rhs.(*ast.UnaryExpr); ok && unary.Op == token.AND {
-			if target, ok := dereferencedIdent(unary.X); ok {
-				state.aliases[left.Name] = map[string]bool{target.Name: true}
+			if targetIdentifier, ok := dereferencedIdent(unary.X); ok {
+				if target := flow.variable(targetIdentifier); target != nil {
+					state.aliases[variable] = map[*types.Var]bool{target: true}
+				}
 			}
-		} else if source, ok := rhs.(*ast.Ident); ok && state.aliases[source.Name] != nil {
-			state.aliases[left.Name] = copySet(state.aliases[source.Name])
+		} else if source, ok := rhs.(*ast.Ident); ok {
+			if sourceVariable := flow.variable(source); sourceVariable != nil && state.aliases[sourceVariable] != nil {
+				state.aliases[variable] = cloneEndpointVariableSet(state.aliases[sourceVariable])
+			}
 		}
 	case *ast.StarExpr:
-		if pointer, ok := dereferencedIdent(left.X); ok {
-			for target := range state.aliases[pointer.Name] {
-				state.env[target] = cloneValue(assigned)
+		if pointerIdentifier, ok := dereferencedIdent(left.X); ok {
+			if pointer := flow.variable(pointerIdentifier); pointer != nil {
+				for target := range state.aliases[pointer] {
+					state.env[target] = cloneValue(assigned)
+				}
 			}
 		}
 	case *ast.IndexExpr:
@@ -4902,7 +4946,7 @@ func (flow *endpointFlowAnalyzer) statement(statement ast.Stmt, state endpointFl
 	return state
 }
 
-func (x *extractor) evalMethod(expr ast.Expr, env map[string]value) string {
+func (x *extractor) evalMethod(expr ast.Expr, env map[*types.Var]value) string {
 	if s, ok := stringLiteral(expr); ok {
 		return strings.ToUpper(s)
 	}
@@ -4912,15 +4956,18 @@ func (x *extractor) evalMethod(expr ast.Expr, env map[string]value) string {
 			return httpMethods[object.Name()]
 		}
 	}
-	if id, ok := expr.(*ast.Ident); ok {
-		if v, yes := env[id.Name]; yes && len(v.shapes) == 1 {
-			return strings.ToUpper(v.shapes[0])
+	if identifier, ok := expr.(*ast.Ident); ok {
+		variable, _ := x.typesInfo.ObjectOf(identifier).(*types.Var)
+		if variable != nil {
+			if v, yes := env[variable]; yes && len(v.shapes) == 1 {
+				return strings.ToUpper(v.shapes[0])
+			}
 		}
 	}
 	return ""
 }
 
-func (x *extractor) eval(expr ast.Expr, env map[string]value, stack map[string]bool) value {
+func (x *extractor) eval(expr ast.Expr, env map[*types.Var]value, stack map[string]bool) value {
 	switch node := expr.(type) {
 	case *ast.BasicLit:
 		if node.Kind == token.STRING {
@@ -4931,11 +4978,15 @@ func (x *extractor) eval(expr ast.Expr, env map[string]value, stack map[string]b
 		}
 		return dynamicValue()
 	case *ast.Ident:
-		if v, ok := env[node.Name]; ok {
-			return v
+		object := x.typesInfo.ObjectOf(node)
+		if variable, ok := object.(*types.Var); ok && variable != nil {
+			if v, found := env[variable]; found {
+				return v
+			}
+			return value{}
 		}
-		if s, ok := x.constants[node.Name]; ok {
-			return literalValue(s)
+		if constantObject, ok := object.(*types.Const); ok && constantObject != nil && constantObject.Val().Kind() == constant.String {
+			return literalValue(constant.StringVal(constantObject.Val()))
 		}
 	case *ast.ParenExpr:
 		return x.eval(node.X, env, stack)
@@ -5057,13 +5108,16 @@ func (x *extractor) eval(expr ast.Expr, env map[string]value, stack map[string]b
 			}
 		}
 		if fn := x.funcDeclForObject(function); fn != nil && function.Type().(*types.Signature).Recv() == nil && function.Pkg() != nil && function.Pkg().Path() == providerPackagePath && approvedURLHelper(function.Name()) && !stack[function.Name()] {
-			bindings := map[string]value{}
+			bindings := map[*types.Var]value{}
 			idx := 0
 			if fn.Type.Params != nil {
 				for _, f := range fn.Type.Params.List {
 					for _, n := range f.Names {
 						if idx < len(node.Args) {
-							bindings[n.Name] = x.eval(node.Args[idx], env, stack)
+							parameter, _ := x.typesInfo.Defs[n].(*types.Var)
+							if parameter != nil {
+								bindings[parameter] = x.eval(node.Args[idx], env, stack)
+							}
 						}
 						idx++
 					}
@@ -5097,7 +5151,7 @@ func (x *extractor) eval(expr ast.Expr, env map[string]value, stack map[string]b
 	return value{}
 }
 
-func (x *extractor) evalSprintf(call *ast.CallExpr, env map[string]value, stack map[string]bool) value {
+func (x *extractor) evalSprintf(call *ast.CallExpr, env map[*types.Var]value, stack map[string]bool) value {
 	if len(call.Args) == 0 {
 		return value{}
 	}
