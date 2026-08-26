@@ -68,6 +68,9 @@ func hardenDotSegment(escaped string) string {
 // would make ownership of query keys ambiguous. Production callers are also
 // statically restricted to reviewed path shapes by the contract extractor.
 func endpointWithQuery(path string, values url.Values) string {
+	if strings.HasPrefix(path, invalidReviewedEndpoint) {
+		return invalidReviewedEndpoint
+	}
 	if strings.ContainsAny(path, "?#") {
 		panic("endpoint path must not contain a query or fragment")
 	}

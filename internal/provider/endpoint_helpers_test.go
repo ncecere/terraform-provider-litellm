@@ -189,6 +189,37 @@ func TestEndpointBuilderSafeReadRetriesUseIdenticalURI(t *testing.T) {
 	}
 }
 
+func TestInvalidReviewedEndpointDerivativesNeverDispatch(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		requests++
+		http.Error(writer, "must not dispatch", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	client := &Client{APIBase: server.URL, APIKey: "admin", HTTPClient: server.Client()}
+	const secret = "sentinel-derived-private-content"
+
+	if got := endpointWithQuery(invalidReviewedEndpoint+"/versions", url.Values{"scope": []string{secret}}); got != invalidReviewedEndpoint {
+		t.Fatalf("query wrapper did not preserve invalid endpoint: %q", got)
+	}
+	for _, endpoint := range []string{
+		invalidReviewedEndpoint,
+		invalidReviewedEndpoint + "?scope=" + secret,
+		invalidReviewedEndpoint + "/versions?scope=" + secret,
+		invalidReviewedEndpoint + "#" + secret,
+		invalidReviewedEndpoint + "-" + secret,
+	} {
+		err := client.DoRequestWithResponse(context.Background(), http.MethodGet, endpoint, nil, nil)
+		classification := ClassifyHTTPFailure(err)
+		if err == nil || requests != 0 || classification.RequestDispatched || classification.ResponseAccepted {
+			t.Fatalf("sentinel derivative dispatched: requests=%d classification=%#v error=%v", requests, classification, err)
+		}
+		if strings.Contains(err.Error(), secret) || strings.Contains(err.Error(), endpoint) {
+			t.Fatal("local sentinel diagnostic exposed endpoint content")
+		}
+	}
+}
+
 func TestEndpointBuilderDiagnosticsExcludeRawAndEncodedValues(t *testing.T) {
 	identity := "private-%?#雪%2F"
 	endpoint := endpointWithQuery(

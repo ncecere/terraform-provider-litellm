@@ -577,6 +577,43 @@ func bad(values url.Values, value string) string {
 	}
 }
 
+func TestExtractorRejectsBuilderResultPostTransforms(t *testing.T) {
+	fixtures := map[string]string{
+		"replace-direct": `package provider
+import ("context"; "strings")
+func bad(ctx context.Context, client *Client, value string) {
+ endpoint := endpointWithPathSegment("/things/", value, "")
+ client.DoRequestWithResponse(ctx, "GET", strings.ReplaceAll(endpoint, "things", "other"), nil, nil)
+}
+`,
+		"concatenate-alias": `package provider
+import "context"
+func bad(ctx context.Context, client *Client, value string) {
+ endpoint := endpointWithPathSegment("/things/", value, "")
+ alias := endpoint
+ client.DoRequestWithResponse(ctx, "GET", alias + "/extra", nil, nil)
+}
+`,
+		"sprintf-wrapper": `package provider
+import ("context"; "fmt")
+func thingPath(value string) string { return endpointWithPathSegment("/things/", value, "") }
+func bad(ctx context.Context, client *Client, value string) {
+ client.DoRequestWithResponse(ctx, "GET", fmt.Sprintf("%s/extra", thingPath(value)), nil, nil)
+}
+`,
+	}
+	for name, fixture := range fixtures {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeHTTPFixtureSupport(t, dir)
+			writeFixture(t, dir, "bad.go", fixture)
+			if _, err := ExtractProvider(dir); err == nil || (!strings.Contains(err.Error(), "unresolved") && !strings.Contains(err.Error(), "statically unqueried")) {
+				t.Fatalf("post-transformed builder result was accepted: %v", err)
+			}
+		})
+	}
+}
+
 func TestExtractorRejectsRangedTransformedProvenance(t *testing.T) {
 	fixtures := map[string]string{
 		"slice-literal": `package provider
@@ -653,6 +690,63 @@ func bad(value string) string {
 			writeFixture(t, dir, "bad.go", fixture)
 			if _, err := ExtractProvider(dir); err == nil || !strings.Contains(err.Error(), "raw-input provenance") {
 				t.Fatalf("ranged transformed identity was accepted: %v", err)
+			}
+		})
+	}
+}
+
+func TestExtractorRejectsIndirectRangedContainerMutation(t *testing.T) {
+	fixtures := map[string]string{
+		"slice-helper": `package provider
+import "strings"
+func populate(values *[]string, value string) { *values = append(*values, strings.ReplaceAll(value, "/", "%2F")) }
+func bad(value string) string {
+ values := make([]string, 0, 1)
+ populate(&values, value)
+ for _, ranged := range values { return endpointWithPathSegment("/things/", ranged, "") }
+ return endpointWithPathSegment("/things/", "safe", "")
+}
+`,
+		"slice-view-helper": `package provider
+import "strings"
+func populate(values []string, value string) { values[0] = strings.ReplaceAll(value, "/", "%2F") }
+func bad(value string) string {
+ values := []string{value}
+ populate(values[:], value)
+ for _, ranged := range values { return endpointWithPathSegment("/things/", ranged, "") }
+ return endpointWithPathSegment("/things/", "safe", "")
+}
+`,
+		"map-key-helper": `package provider
+import "strings"
+func populate(values map[string]string, value string) { values[strings.ReplaceAll(value, "/", "%2F")] = "safe" }
+func bad(value string) string {
+ values := make(map[string]string)
+ populate(values, value)
+ for ranged := range values { return endpointWithPathSegment("/things/", ranged, "") }
+ return endpointWithPathSegment("/things/", "safe", "")
+}
+`,
+		"map-value-method": `package provider
+import "strings"
+type identities map[int]string
+func (values identities) populate(value string) { values[1] = strings.ReplaceAll(value, "/", "%2F") }
+func bad(value string) string {
+ values := identities{}
+ mutate := values.populate
+ mutate(value)
+ for _, ranged := range values { return endpointWithPathSegment("/things/", ranged, "") }
+ return endpointWithPathSegment("/things/", "safe", "")
+}
+`,
+	}
+	for name, fixture := range fixtures {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeHTTPFixtureSupport(t, dir)
+			writeFixture(t, dir, "bad.go", fixture)
+			if _, err := ExtractProvider(dir); err == nil || !strings.Contains(err.Error(), "raw-input provenance") {
+				t.Fatalf("indirect ranged container mutation was accepted: %v", err)
 			}
 		})
 	}
@@ -744,6 +838,92 @@ func safe(value string) string {
 `)
 	if _, err := ExtractProvider(dir); err != nil {
 		t.Fatalf("safe endpoint wrapper alias was rejected: %v", err)
+	}
+}
+
+func TestExtractorRejectsSpoofedRawHelpersAndEndpointMethodIndirection(t *testing.T) {
+	fixtures := map[string]string{
+		"spoofed-raw-helper": `package provider
+import "strings"
+type KeyResourceModel struct{ ID string }
+func keyLookupIdentifier(data *KeyResourceModel) (string, error) {
+ return strings.ReplaceAll(data.ID, "/", "%2F"), nil
+}
+func bad(value string) string {
+ identity, _ := keyLookupIdentifier(&KeyResourceModel{ID: value})
+ return endpointWithPathSegment("/things/", identity, "")
+}
+`,
+		"receiver-method-value": `package provider
+import "strings"
+type routes struct{}
+func (routes) path(value string) string { return endpointWithPathSegment("/things/", value, "") }
+func bad(value string) string {
+ build := (routes{}).path
+ alias := build
+ return alias(strings.ReplaceAll(value, "/", "%2F"))
+}
+`,
+		"receiver-method-expression": `package provider
+import "strings"
+type routes struct{}
+func (routes) path(value string) string { return endpointWithPathSegment("/things/", value, "") }
+func bad(value string) string {
+ build := routes.path
+ return build(routes{}, strings.ReplaceAll(value, "/", "%2F"))
+}
+`,
+		"nested-closure-struct": `package provider
+import "strings"
+type holder struct{ build func(string) string }
+func bad(value string) string {
+ outer := func() holder {
+  inner := func(identity string) string { return endpointWithPathSegment("/things/", identity, "") }
+  return holder{build: inner}
+ }
+ stored := outer()
+ return stored.build(strings.ReplaceAll(value, "/", "%2F"))
+}
+`,
+		"spoofed-higher-order-consumer": `package provider
+import "context"
+type page struct{}
+type storedFetch struct { fetch func(context.Context, int) (page, error) }
+func collectNumberedPages(ctx context.Context, endpoint string, fetch func(context.Context, int) (page, error)) {
+ stored := storedFetch{fetch: fetch}
+ _, _ = stored.fetch(ctx, 1)
+}
+func bad(ctx context.Context, client *Client, value string) {
+ collectNumberedPages(ctx, "/things", func(ctx context.Context, pageNumber int) (page, error) {
+  client.DoRequestWithResponse(ctx, "GET", endpointWithPathSegment("/things/", value, ""), nil, nil)
+  return page{}, nil
+ })
+}
+`,
+		"nested-higher-order-consumer": `package provider
+import "context"
+type page struct{}
+func collectNumberedPages(ctx context.Context, endpoint string, fetch func(context.Context, int) (page, error)) {
+ invoke := func() { _, _ = fetch(ctx, 1) }
+ invoke()
+}
+func bad(ctx context.Context, client *Client, value string) {
+ collectNumberedPages(ctx, "/things", func(ctx context.Context, pageNumber int) (page, error) {
+  client.DoRequestWithResponse(ctx, "GET", endpointWithPathSegment("/things/", value, ""), nil, nil)
+  return page{}, nil
+ })
+}
+`,
+	}
+	for name, fixture := range fixtures {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeHTTPFixtureSupport(t, dir)
+			writeFixture(t, dir, "bad.go", fixture)
+			if _, err := ExtractProvider(dir); err == nil || (!strings.Contains(err.Error(), "raw-input provenance") && !strings.Contains(err.Error(), "endpoint-dispatch") && !strings.Contains(err.Error(), "composites")) {
+				t.Fatalf("spoofed or indirectly stored helper was accepted: %v", err)
+			}
+		})
 	}
 }
 
@@ -2298,6 +2478,7 @@ func endpointWithFallbackPathSegment(prefix, value, suffix string) string {
  return prefix + hardenDotSegment(escaped) + suffix
 }
 func endpointWithQuery(path string, values url.Values) string {
+ if strings.HasPrefix(path, invalidReviewedEndpoint) { return invalidReviewedEndpoint }
  if strings.ContainsAny(path, "?#") { panic("endpoint path must not contain a query or fragment") }
  if len(values) == 0 { return path }
  return path + "?" + values.Encode()
@@ -2347,6 +2528,7 @@ func endpointWithFallbackPathSegment(prefix, value, suffix string) string {
  return prefix + hardenDotSegment(escaped) + suffix
 }
 func endpointWithQuery(path string, values url.Values) string {
+ if strings.HasPrefix(path, invalidReviewedEndpoint) { return invalidReviewedEndpoint }
  if strings.ContainsAny(path, "?#") { panic("endpoint path must not contain a query or fragment") }
  if len(values) == 0 { return path }
  return path + "?" + values.Encode()

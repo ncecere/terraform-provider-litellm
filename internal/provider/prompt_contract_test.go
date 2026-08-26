@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"strings"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -100,8 +99,11 @@ func TestPromptEndpointsAlwaysScopeEnvironment(t *testing.T) {
 	if parsed.Query().Get("environment") != "prod/east" || parsed.EscapedPath() != "/prompts/prompt%20with%20spaces" {
 		t.Fatalf("scoped endpoint = %s", endpoint)
 	}
-	if slashEndpoint := promptEndpoint("private/prompt", "production", nil); !strings.HasPrefix(slashEndpoint, invalidReviewedEndpoint+"?") {
+	if slashEndpoint := promptEndpoint("private/prompt", "production", nil); slashEndpoint != invalidReviewedEndpoint {
 		t.Fatalf("ordinary slash endpoint did not fail closed: %q", slashEndpoint)
+	}
+	if slashVersionsEndpoint := promptVersionsEndpoint("private/prompt", "production"); slashVersionsEndpoint != invalidReviewedEndpoint {
+		t.Fatalf("ordinary slash versions endpoint did not preserve failure: %q", slashVersionsEndpoint)
 	}
 	version := int64(7)
 	versionEndpoint := promptEndpoint("prompt", "production", &version)

@@ -117,7 +117,7 @@ func promptEndpoint(promptID, environment string, version *int64) string {
 func promptVersionsEndpoint(promptID, environment string) string {
 	query := url.Values{}
 	query.Set("environment", promptEnvironment(environment))
-	return endpointWithQuery(promptPath(promptID, nil)+"/versions", query)
+	return endpointWithQuery(endpointWithPathSegment("/prompts/", promptID, "/versions"), query)
 }
 
 func promptListEndpoint(environment string, configured bool) string {

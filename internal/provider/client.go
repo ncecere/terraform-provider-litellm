@@ -47,7 +47,7 @@ func (c *Client) prepareRequest(ctx context.Context, method, requestPath string,
 	if err := ctx.Err(); errors.Is(err, context.Canceled) {
 		return nil, requestSafety{}, safeTransportFailure(context.Canceled)
 	}
-	if requestPath == invalidReviewedEndpoint || strings.HasPrefix(requestPath, invalidReviewedEndpoint+"?") {
+	if strings.HasPrefix(requestPath, invalidReviewedEndpoint) {
 		return nil, requestSafety{}, &safeResponseError{
 			kind:     "LiteLLM endpoint identity cannot be represented safely by the reviewed route",
 			terminal: true,
