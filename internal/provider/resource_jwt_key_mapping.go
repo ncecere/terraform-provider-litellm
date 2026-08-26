@@ -21,8 +21,12 @@ import (
 var _ resource.Resource = &JWTKeyMappingResource{}
 var _ resource.ResourceWithImportState = &JWTKeyMappingResource{}
 var _ resource.ResourceWithConfigValidators = &JWTKeyMappingResource{}
+var _ resource.ResourceWithModifyPlan = &JWTKeyMappingResource{}
 
-const jwtKeyMappingDescriptionOwnedPrivateKey = "jwt_key_mapping_description_owned_v1"
+const (
+	jwtKeyMappingDescriptionOwnedPrivateKey   = "jwt_key_mapping_description_owned_v1"
+	jwtKeyMappingDescriptionPendingPrivateKey = "jwt_key_mapping_description_pending_v1"
+)
 
 func NewJWTKeyMappingResource() resource.Resource { return &JWTKeyMappingResource{} }
 
@@ -52,13 +56,13 @@ func (r *JWTKeyMappingResource) ConfigValidators(context.Context) []resource.Con
 
 func (r *JWTKeyMappingResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "Manages a LiteLLM JWT claim-to-virtual-key mapping. The raw virtual key is write-only and requires Terraform 1.11 or compatible OpenTofu support for create and rotation.",
+		Description: "Manages a LiteLLM JWT claim-to-virtual-key mapping. The raw virtual key is write-only and requires Terraform 1.11 or compatible OpenTofu support for create. LiteLLM v1.98 does not expose evidence that could verify in-place key rotation.",
 		Attributes: map[string]schema.Attribute{
 			"id":              schema.StringAttribute{Description: "Authoritative LiteLLM mapping UUID and import identifier.", Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
-			"jwt_claim_name":  schema.StringAttribute{Description: "JWT claim name. Immutable after creation.", Optional: true, Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}, Validators: []validator.String{stringvalidator.LengthAtLeast(1)}},
-			"jwt_claim_value": schema.StringAttribute{Description: "Sensitive JWT claim value to match. Immutable after creation.", Optional: true, Computed: true, Sensitive: true, PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}, Validators: []validator.String{stringvalidator.LengthAtLeast(1)}},
-			"key_wo":          schema.StringAttribute{Description: "Raw existing LiteLLM virtual key. Sent only on create or when key_wo_version changes; never stored in plan or state. LiteLLM never returns the token or its hash.", Optional: true, Sensitive: true, WriteOnly: true, Validators: []validator.String{stringvalidator.LengthAtLeast(1)}},
-			"key_wo_version":  schema.StringAttribute{Description: "Persisted nonce for key_wo. Change it to rotate this mapping to the new write-only key without replacing the mapping UUID.", Optional: true, Validators: []validator.String{stringvalidator.LengthAtLeast(1)}},
+			"jwt_claim_name":  schema.StringAttribute{Description: "JWT claim name. Immutable after creation; LiteLLM accepts the empty string.", Optional: true, Computed: true, PlanModifiers: []planmodifier.String{jwtKeyMappingImmutableClaimModifier{}}},
+			"jwt_claim_value": schema.StringAttribute{Description: "Sensitive JWT claim value to match. Immutable after creation; LiteLLM accepts the empty string.", Optional: true, Computed: true, Sensitive: true, PlanModifiers: []planmodifier.String{jwtKeyMappingImmutableClaimModifier{}}},
+			"key_wo":          schema.StringAttribute{Description: "Raw existing LiteLLM virtual key. Sent only on create and never stored in plan or state. Post-create rotation is rejected because LiteLLM v1.98 returns no verifiable token identity.", Optional: true, Sensitive: true, WriteOnly: true, Validators: []validator.String{stringvalidator.LengthAtLeast(1)}},
+			"key_wo_version":  schema.StringAttribute{Description: "Persisted create-time version marker for key_wo. Post-create changes are rejected; unchanged historical values remain plannable.", Optional: true, Validators: []validator.String{stringvalidator.LengthAtLeast(1)}},
 			"description":     schema.StringAttribute{Description: "Optional mapping description. Once configured on a provider-created or previously managed mapping, assigning null clears it. An imported omitted description remains API-owned until a non-null value is configured.", Optional: true, Computed: true, PlanModifiers: []planmodifier.String{jwtKeyMappingOwnedNullableModifier{}}},
 			"is_active":       schema.BoolAttribute{Description: "Whether LiteLLM uses the mapping. Omitted imported values remain API-owned; false is sent explicitly.", Optional: true, Computed: true},
 			"created_at":      schema.StringAttribute{Description: "Creation timestamp returned by LiteLLM.", Computed: true},
@@ -66,6 +70,27 @@ func (r *JWTKeyMappingResource) Schema(_ context.Context, _ resource.SchemaReque
 			"created_by":      schema.StringAttribute{Description: "LiteLLM creator provenance when present.", Computed: true, Sensitive: true},
 			"updated_by":      schema.StringAttribute{Description: "LiteLLM updater provenance when present.", Computed: true, Sensitive: true},
 		},
+	}
+}
+
+type jwtKeyMappingImmutableClaimModifier struct{}
+
+func (jwtKeyMappingImmutableClaimModifier) Description(context.Context) string {
+	return "Preserves an omitted imported claim and requires replacement for an explicitly configured change."
+}
+func (m jwtKeyMappingImmutableClaimModifier) MarkdownDescription(ctx context.Context) string {
+	return m.Description(ctx)
+}
+func (jwtKeyMappingImmutableClaimModifier) PlanModifyString(_ context.Context, req planmodifier.StringRequest, resp *planmodifier.StringResponse) {
+	if req.State.Raw.IsNull() {
+		return
+	}
+	if req.ConfigValue.IsNull() {
+		resp.PlanValue = req.StateValue
+		return
+	}
+	if !req.PlanValue.IsUnknown() && !req.PlanValue.Equal(req.StateValue) {
+		resp.RequiresReplace = true
 	}
 }
 
@@ -85,6 +110,80 @@ func (jwtKeyMappingOwnedNullableModifier) PlanModifyString(ctx context.Context, 
 	resp.Diagnostics.Append(diags...)
 	if string(owned) == "true" {
 		resp.PlanValue = types.StringNull()
+	}
+}
+
+func (r *JWTKeyMappingResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	if req.State.Raw.IsNull() || req.Plan.Raw.IsNull() {
+		return
+	}
+	var state, config JWTKeyMappingResourceModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// Omitted API-owned leaves must remain exactly state-backed even when another
+	// leaf causes an update plan. In particular, immutable claim omissions must
+	// never become a spurious replacement during description ownership changes.
+	if config.ClaimName.IsNull() {
+		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("jwt_claim_name"), state.ClaimName)...)
+	}
+	if config.ClaimValue.IsNull() {
+		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("jwt_claim_value"), state.ClaimValue)...)
+	}
+	if config.IsActive.IsNull() {
+		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("is_active"), state.IsActive)...)
+	}
+
+	// key_wo is intentionally unavailable in state. key_wo_version is therefore
+	// the only safe transition signal. Preserve an omitted historical marker,
+	// but reject every addition/change before Update can send a mutation.
+	switch {
+	case config.KeyWOVersion.IsNull() && !state.KeyWOVersion.IsNull():
+		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("key_wo_version"), state.KeyWOVersion)...)
+	case config.KeyWOVersion.IsUnknown() || !config.KeyWOVersion.Equal(state.KeyWOVersion):
+		resp.Diagnostics.AddAttributeError(path.Root("key_wo_version"), "Unsupported JWT Key Rotation", "LiteLLM v1.98 returns no token, hash, or fingerprint that can verify an in-place key change. No mutation was sent. Create a replacement mapping or manage the rotation outside this resource and import the resulting canonical UUID.")
+		return
+	}
+
+	owned := false
+	if req.Private != nil {
+		marker, diagnostics := req.Private.GetKey(ctx, jwtKeyMappingDescriptionOwnedPrivateKey)
+		resp.Diagnostics.Append(diagnostics...)
+		owned = string(marker) == "true"
+	}
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if !owned && config.Description.IsNull() {
+		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("description"), state.Description)...)
+	}
+	mutableUpdate := (!config.IsActive.IsNull() && !config.IsActive.IsUnknown() && !config.IsActive.Equal(state.IsActive)) ||
+		(owned && config.Description.IsNull() && !state.Description.IsNull()) ||
+		(!config.Description.IsNull() && !config.Description.IsUnknown() && !config.Description.Equal(state.Description))
+	if mutableUpdate {
+		// LiteLLM advances these observable computed leaves on update. They must
+		// not remain pinned to the prior state in Terraform's planned value.
+		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("updated_at"), types.StringUnknown())...)
+		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("updated_by"), types.StringUnknown())...)
+	}
+	if resp.Private == nil {
+		return
+	}
+	if owned || config.Description.IsNull() {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, jwtKeyMappingDescriptionPendingPrivateKey, nil)...)
+		return
+	}
+	if config.Description.IsUnknown() {
+		return
+	}
+	resp.Diagnostics.Append(resp.Private.SetKey(ctx, jwtKeyMappingDescriptionPendingPrivateKey, []byte("true"))...)
+	if config.Description.Equal(state.Description) {
+		// A state-only equality would otherwise skip Apply and lose the fact that
+		// description was explicitly present in configuration.
+		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("id"), types.StringUnknown())...)
 	}
 }
 
@@ -108,8 +207,8 @@ func (r *JWTKeyMappingResource) Create(ctx context.Context, req resource.CreateR
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	if data.ClaimName.IsNull() || data.ClaimName.IsUnknown() || data.ClaimName.ValueString() == "" || data.ClaimValue.IsNull() || data.ClaimValue.IsUnknown() || data.ClaimValue.ValueString() == "" {
-		resp.Diagnostics.AddError("Invalid JWT Key Mapping", "jwt_claim_name and jwt_claim_value must be known and non-empty when creating a mapping.")
+	if data.ClaimName.IsNull() || data.ClaimName.IsUnknown() || data.ClaimValue.IsNull() || data.ClaimValue.IsUnknown() {
+		resp.Diagnostics.AddError("Invalid JWT Key Mapping", "jwt_claim_name and jwt_claim_value must be known when creating a mapping; each may be the empty string.")
 		return
 	}
 	if key.IsNull() || key.IsUnknown() || key.ValueString() == "" || data.KeyWOVersion.IsNull() || data.KeyWOVersion.IsUnknown() || data.KeyWOVersion.ValueString() == "" {
@@ -129,7 +228,7 @@ func (r *JWTKeyMappingResource) Create(ctx context.Context, req resource.CreateR
 				resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 			}
 		}
-		resp.Diagnostics.AddError("JWT Key Mapping Creation Failed", mappingMutationDiagnostic("create", err))
+		resp.Diagnostics.AddError("JWT Key Mapping Create Outcome Unconfirmed", jwtKeyMappingCreateRecoveryDiagnostic(err))
 		return
 	}
 	created, err := decodeJWTKeyMappingObject(raw)
@@ -141,23 +240,42 @@ func (r *JWTKeyMappingResource) Create(ctx context.Context, req resource.CreateR
 		resp.Diagnostics.AddError("Invalid API Response", "LiteLLM accepted the mapping create but did not return a valid recoverable mapping object. Sensitive response details were omitted.")
 		return
 	}
-	if !jwtKeyMappingCreateMatchesPlan(created, data) {
+	if !jwtKeyMappingCreateMatchesRequest(created, data) {
 		setJWTKeyMappingIdentityOnly(&data, created.ID)
 		resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 		resp.Diagnostics.AddError("Invalid API Response", "LiteLLM created a mapping whose observable fields did not match the request. Only the confirmed UUID was retained; sensitive values were omitted.")
 		return
 	}
-	observed, readErr := readJWTKeyMapping(ctx, r.client, created.ID)
+
+	if !data.IsActive.IsNull() && !data.IsActive.IsUnknown() && !data.IsActive.ValueBool() {
+		var updateRaw json.RawMessage
+		_, updateErr := r.client.doRequestWithResponse(ctx, http.MethodPost, jwtKeyMappingUpdatePath, map[string]interface{}{"id": created.ID, "is_active": false}, &updateRaw)
+		if updateErr != nil {
+			setJWTKeyMappingIdentityOnly(&data, created.ID)
+			resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+			resp.Diagnostics.AddError("JWT Key Mapping Deactivation Not Confirmed", "LiteLLM created the mapping and returned its UUID, but the single deactivation update did not return a valid success response. Only the confirmed UUID was retained; response details were omitted.")
+			return
+		}
+		updated, decodeErr := decodeJWTKeyMappingObject(updateRaw)
+		if decodeErr != nil || updated.ID != created.ID || !jwtKeyMappingFinalMatchesPlan(updated, data) {
+			setJWTKeyMappingIdentityOnly(&data, created.ID)
+			resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+			resp.Diagnostics.AddError("JWT Key Mapping Deactivation Not Confirmed", "LiteLLM created the mapping, but the deactivation response did not confirm the same UUID, claim identity, and inactive state. Only the confirmed UUID was retained; response details were omitted.")
+			return
+		}
+	}
+
+	observed, readErr := readFreshJWTKeyMapping(ctx, r.client, created.ID)
 	if readErr != nil {
 		setJWTKeyMappingIdentityOnly(&data, created.ID)
 		resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
-		resp.Diagnostics.AddError("JWT Key Mapping Create Not Confirmed", "LiteLLM returned a committed mapping UUID, but authoritative read-back failed. Only the confirmed UUID was retained for recovery; response details were omitted.")
+		resp.Diagnostics.AddError("JWT Key Mapping Create Not Confirmed", "LiteLLM returned a committed mapping UUID, but fresh authoritative read-back failed. Only the confirmed UUID was retained for recovery; response details were omitted.")
 		return
 	}
-	if !jwtKeyMappingCreateMatchesPlan(observed, data) {
+	if !jwtKeyMappingFinalMatchesPlan(observed, data) {
 		setJWTKeyMappingIdentityOnly(&data, created.ID)
 		resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
-		resp.Diagnostics.AddError("JWT Key Mapping Create Not Confirmed", "Authoritative read-back did not confirm the requested observable fields. Only the confirmed UUID was retained for recovery; sensitive values were omitted.")
+		resp.Diagnostics.AddError("JWT Key Mapping Create Not Confirmed", "Fresh authoritative read-back did not confirm the requested observable fields. Only the confirmed UUID was retained for recovery; sensitive values were omitted.")
 		return
 	}
 	setJWTKeyMappingResourceState(&data, observed)
@@ -167,10 +285,24 @@ func (r *JWTKeyMappingResource) Create(ctx context.Context, req resource.CreateR
 	}
 }
 
-func jwtKeyMappingCreateMatchesPlan(mapping jwtKeyMappingObject, data JWTKeyMappingResourceModel) bool {
+func jwtKeyMappingCreateMatchesRequest(mapping jwtKeyMappingObject, data JWTKeyMappingResourceModel) bool {
 	if mapping.ClaimName != data.ClaimName.ValueString() || mapping.ClaimValue != data.ClaimValue.ValueString() || !mapping.IsActive {
 		return false
 	}
+	return jwtKeyMappingDescriptionMatches(mapping, data)
+}
+
+func jwtKeyMappingFinalMatchesPlan(mapping jwtKeyMappingObject, data JWTKeyMappingResourceModel) bool {
+	if mapping.ClaimName != data.ClaimName.ValueString() || mapping.ClaimValue != data.ClaimValue.ValueString() {
+		return false
+	}
+	if !data.IsActive.IsNull() && !data.IsActive.IsUnknown() && mapping.IsActive != data.IsActive.ValueBool() {
+		return false
+	}
+	return jwtKeyMappingDescriptionMatches(mapping, data)
+}
+
+func jwtKeyMappingDescriptionMatches(mapping jwtKeyMappingObject, data JWTKeyMappingResourceModel) bool {
 	if data.Description.IsNull() || data.Description.IsUnknown() {
 		return mapping.Description == nil
 	}
@@ -236,10 +368,25 @@ func (r *JWTKeyMappingResource) Read(ctx context.Context, req resource.ReadReque
 
 func (r *JWTKeyMappingResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
 	var plan, state JWTKeyMappingResourceModel
+	var configDescription types.String
+	var configIsActive types.Bool
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
-	var key types.String
-	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("key_wo"), &key)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("description"), &configDescription)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("is_active"), &configIsActive)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if !plan.KeyWOVersion.Equal(state.KeyWOVersion) {
+		resp.Diagnostics.AddError("Unsupported JWT Key Rotation", "LiteLLM v1.98 returns no token, hash, or fingerprint that can verify an in-place key change. No mutation was sent.")
+		return
+	}
+	pendingDescriptionOwnership := false
+	if req.Private != nil {
+		marker, diagnostics := req.Private.GetKey(ctx, jwtKeyMappingDescriptionPendingPrivateKey)
+		resp.Diagnostics.Append(diagnostics...)
+		pendingDescriptionOwnership = string(marker) == "true"
+	}
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -261,17 +408,23 @@ func (r *JWTKeyMappingResource) Update(ctx context.Context, req resource.UpdateR
 		body["is_active"] = plan.IsActive.ValueBool()
 		changed = true
 	}
-	rotation := !plan.KeyWOVersion.Equal(state.KeyWOVersion)
-	if rotation {
-		if key.IsNull() || key.IsUnknown() || key.ValueString() == "" {
-			resp.Diagnostics.AddError("Invalid JWT Key Mapping Rotation", "A known non-empty key_wo is required when key_wo_version changes.")
+	if !changed {
+		if !pendingDescriptionOwnership {
+			resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 			return
 		}
-		body["key"] = key.ValueString()
-		changed = true
-	}
-	if !changed {
-		resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+		observed, err := readFreshJWTKeyMapping(ctx, r.client, state.ID.ValueString())
+		if err != nil || observed.ClaimName != state.ClaimName.ValueString() || observed.ClaimValue != state.ClaimValue.ValueString() || configDescription.IsNull() || configDescription.IsUnknown() || observed.Description == nil || *observed.Description != configDescription.ValueString() || (!configIsActive.IsNull() && !configIsActive.IsUnknown() && observed.IsActive != configIsActive.ValueBool()) {
+			resp.Diagnostics.AddError("JWT Key Mapping Description Ownership Not Confirmed", "Fresh authoritative read-back did not confirm the explicitly configured description. Prior state and API ownership were retained; no mutation was sent.")
+			return
+		}
+		setJWTKeyMappingResourceState(&plan, observed)
+		plan.ID, plan.KeyWO, plan.KeyWOVersion = state.ID, types.StringNull(), state.KeyWOVersion
+		resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+		if !resp.Diagnostics.HasError() && resp.Private != nil {
+			resp.Diagnostics.Append(resp.Private.SetKey(ctx, jwtKeyMappingDescriptionOwnedPrivateKey, []byte("true"))...)
+			resp.Diagnostics.Append(resp.Private.SetKey(ctx, jwtKeyMappingDescriptionPendingPrivateKey, nil)...)
+		}
 		return
 	}
 	var raw json.RawMessage
@@ -285,7 +438,7 @@ func (r *JWTKeyMappingResource) Update(ctx context.Context, req resource.UpdateR
 		resp.Diagnostics.AddError("Invalid API Response", "LiteLLM accepted the update but did not return the same mapping identity and requested observable state. Prior state and private ownership were retained.")
 		return
 	}
-	observed, err := readJWTKeyMapping(ctx, r.client, state.ID.ValueString())
+	observed, err := readFreshJWTKeyMapping(ctx, r.client, state.ID.ValueString())
 	if err != nil || observed.ClaimName != state.ClaimName.ValueString() || observed.ClaimValue != state.ClaimValue.ValueString() {
 		resp.Diagnostics.AddError("JWT Key Mapping Update Not Confirmed", "LiteLLM accepted the update, but authoritative read-back did not confirm the same mapping identity. Prior state and private ownership were retained.")
 		return
@@ -300,11 +453,22 @@ func (r *JWTKeyMappingResource) Update(ctx context.Context, req resource.UpdateR
 		resp.Diagnostics.AddError("JWT Key Mapping Update Not Confirmed", "Authoritative read-back did not confirm the requested active state. Prior state was retained.")
 		return
 	}
+	if !configDescription.IsNull() && !configDescription.IsUnknown() && (observed.Description == nil || *observed.Description != configDescription.ValueString()) {
+		resp.Diagnostics.AddError("JWT Key Mapping Update Not Confirmed", "Authoritative read-back did not confirm the explicitly configured description. Prior state and private ownership were retained.")
+		return
+	}
+	if !configIsActive.IsNull() && !configIsActive.IsUnknown() && observed.IsActive != configIsActive.ValueBool() {
+		resp.Diagnostics.AddError("JWT Key Mapping Update Not Confirmed", "Authoritative read-back did not confirm the explicitly configured active state. Prior state and private ownership were retained.")
+		return
+	}
 	setJWTKeyMappingResourceState(&plan, observed)
-	plan.ID, plan.KeyWO = state.ID, types.StringNull()
+	plan.ID, plan.KeyWO, plan.KeyWOVersion = state.ID, types.StringNull(), state.KeyWOVersion
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
-	if _, ok := body["description"]; ok && resp.Private != nil {
-		resp.Diagnostics.Append(resp.Private.SetKey(ctx, jwtKeyMappingDescriptionOwnedPrivateKey, []byte("true"))...)
+	if !resp.Diagnostics.HasError() && resp.Private != nil {
+		if _, ok := body["description"]; ok || pendingDescriptionOwnership {
+			resp.Diagnostics.Append(resp.Private.SetKey(ctx, jwtKeyMappingDescriptionOwnedPrivateKey, []byte("true"))...)
+			resp.Diagnostics.Append(resp.Private.SetKey(ctx, jwtKeyMappingDescriptionPendingPrivateKey, nil)...)
+		}
 	}
 }
 
@@ -337,19 +501,17 @@ func (r *JWTKeyMappingResource) Delete(ctx context.Context, req resource.DeleteR
 	}
 	var raw json.RawMessage
 	accepted, deleteErr := r.client.doRequestWithResponse(ctx, http.MethodPost, jwtKeyMappingDeletePath, map[string]interface{}{"id": id}, &raw)
-	if deleteErr != nil && IsAPIErrorStatus(deleteErr, http.StatusNotFound) {
-		return
-	}
+	deleteReturned404 := IsAPIErrorStatus(deleteErr, http.StatusNotFound)
 	if deleteErr == nil {
 		if err := validateJWTKeyMappingDeleteResponse(raw); err != nil {
 			deleteErr = err
 		}
 	}
-	if deleteErr != nil && !accepted {
+	if deleteErr != nil && !accepted && !deleteReturned404 {
 		resp.Diagnostics.AddError("JWT Key Mapping Delete Failed", mappingMutationDiagnostic("delete", deleteErr))
 		return
 	}
-	_, readErr := readJWTKeyMapping(ctx, r.client, id)
+	_, readErr := readFreshJWTKeyMapping(ctx, r.client, id)
 	if IsAPIErrorStatus(readErr, http.StatusNotFound) {
 		return
 	}

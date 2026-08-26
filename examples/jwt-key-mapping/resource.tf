@@ -1,5 +1,6 @@
-# Add this fixture to a configured provider module. Creating or rotating the
-# mapping requires Terraform or compatible OpenTofu 1.11 or later.
+# Add this fixture to a configured provider module. Creating the mapping
+# requires Terraform or compatible OpenTofu 1.11 or later. LiteLLM v1.98
+# cannot provide proof for a safely managed in-place key rotation.
 
 variable "oidc_subject" {
   type      = string

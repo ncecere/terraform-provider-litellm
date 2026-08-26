@@ -17,14 +17,14 @@ resource "litellm_jwt_key_mapping" "application" {
 }
 ```
 
-Create and key rotation require Terraform or compatible OpenTofu write-only attribute support (version 1.11 or later). The mapping points at an existing virtual key; it does not create a key or expose a generated token.
+Create requires Terraform or compatible OpenTofu write-only attribute support (version 1.11 or later). Import, refresh, planning with a null key/version, and reads remain usable by older supported clients. The mapping points at an existing virtual key; it does not create a key or expose a generated token.
 
 ## Arguments
 
-* `jwt_claim_name` - (Required on create, ForceNew) Non-empty JWT claim name. LiteLLM v1.98 models claim names as strings.
-* `jwt_claim_value` - (Required on create, ForceNew, Sensitive) Non-empty string claim value. The provider never includes it in diagnostics.
-* `key_wo` - (Required on create and rotation, Sensitive, Write-only) Raw existing LiteLLM virtual key. It is sent only on create or when `key_wo_version` changes and is never persisted by this resource.
-* `key_wo_version` - (Required with `key_wo`) Persisted version or nonce. Change it when `key_wo` changes; LiteLLM updates the same mapping UUID. Because the endpoint intentionally returns neither the token nor its hash, Terraform owns this rotation nonce but cannot independently read the key back.
+* `jwt_claim_name` - (Required on create, ForceNew) String JWT claim name. LiteLLM v1.98 accepts the empty string.
+* `jwt_claim_value` - (Required on create, ForceNew, Sensitive) String claim value. LiteLLM v1.98 accepts the empty string. The provider never includes the configured value in diagnostics.
+* `key_wo` - (Required on create, Sensitive, Write-only) Raw existing LiteLLM virtual key. It is sent only on create and is never persisted by this resource.
+* `key_wo_version` - (Required with `key_wo` on create) Persisted create-time version marker. An unchanged historical marker remains plannable, but adding or changing it after create/import fails before mutation with `Unsupported JWT Key Rotation`. LiteLLM v1.98 returns no token, hash, or fingerprint, so an in-place key update cannot be verified and is not supported.
 * `description` - (Optional) Nullable description. For a provider-created or previously configured description, assigning `null` sends an explicit JSON null clear. An imported omitted description remains API-owned; configure a non-null value to transfer ownership before a later null clear.
 * `is_active` - (Optional) Active state. `false` is sent explicitly. Omitted imported state remains API-owned.
 
@@ -44,10 +44,16 @@ Import uses exactly the canonical lowercase UUID returned by LiteLLM:
 terraform import litellm_jwt_key_mapping.application 01234567-89ab-4cde-8f01-23456789abcd
 ```
 
-Import reads the API-owned claim pair, description, active state, timestamps, and provenance. Omitted mutable leaves remain API-owned until configured. To rotate an imported mapping, configure both `key_wo` and a new `key_wo_version`.
+Import reads the API-owned claim pair, description, active state, timestamps, and provenance. Omitted mutable leaves remain API-owned until explicitly present in configuration. An explicitly configured description transfers ownership even when it already equals the API value; that ownership transfer performs no remote mutation, and later removal sends the documented null clear. In-place key rotation is not supported on imported or existing mappings.
 
 ## Lifecycle and failure safety
 
 The database-generated UUID is the only resource identity. Claim name and value are immutable because v1.98 update cannot change them, while the database uniquely constrains their pair. Reads remove state only for an exact HTTP 404. Delete requires a successful delete or exact 404 and then an exact-404 info read before state is discarded.
 
-Mutations are single-attempt. A create error retains state only when a canonical response UUID was confirmed. Update failures retain prior state and private ownership. Valid mutation responses and authoritative info reads must preserve UUID and claim identity; malformed 2xx objects, alternate envelopes, and stale reads fail closed without publishing false convergence. Sensitive request/response details are omitted from diagnostics.
+Mutations are single-attempt. The create endpoint always creates an active row; when `is_active = false`, the provider retains the confirmed UUID, sends one controlled deactivation update, validates its response, and performs a fresh info read before completing state. A failure after UUID confirmation retains UUID-only recovery state, preventing a duplicate create on the next apply.
+
+When a create request may have committed but no canonical UUID was received, Terraform publishes no guessed identity and does not adopt by claim pair: a concurrent creator cannot be distinguished from this request. An administrator must list JWT key mappings, locate the exact claim-name/claim-value pair, obtain its canonical UUID, and import that UUID. A later HTTP 409 can be evidence that manual recovery is required, but it is not safe identity proof.
+
+Update failures retain prior state and private ownership. Delete endpoint 404 is not sufficient by itself: the provider still requires a singular `/info?id=...` exact-404 proof before removing state. Valid mutation responses and authoritative info reads must preserve UUID and claim identity; malformed 2xx objects, alternate envelopes, and stale observable reads fail closed without publishing false convergence. Timestamps are observable metadata, not key-rotation proof. Sensitive request/response details are omitted from diagnostics.
+
+`Sensitive` controls Terraform CLI/UI redaction; it is not encryption. The API returns `jwt_claim_value` as plaintext, so that plaintext is necessarily stored in Terraform state for this resource and both data sources. Protect local and remote state, backups, plans, and access to state APIs accordingly. The raw `key_wo` is different: it is write-only and is not stored in resource state or plans by the provider.

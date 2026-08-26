@@ -77,11 +77,11 @@ func decodeJWTKeyMappingObject(raw json.RawMessage) (jwtKeyMappingObject, error)
 	if _, err = canonicalJWTKeyMappingID(result.ID); err != nil {
 		return result, fmt.Errorf("JWT key mapping response returned an invalid id")
 	}
-	if result.ClaimName, err = requiredJSONString(object, "jwt_claim_name"); err != nil || result.ClaimName == "" {
-		return result, fmt.Errorf("JWT key mapping response omitted a non-empty jwt_claim_name")
+	if result.ClaimName, err = requiredJSONString(object, "jwt_claim_name"); err != nil {
+		return result, fmt.Errorf("JWT key mapping response omitted jwt_claim_name")
 	}
-	if result.ClaimValue, err = requiredJSONString(object, "jwt_claim_value"); err != nil || result.ClaimValue == "" {
-		return result, fmt.Errorf("JWT key mapping response omitted a non-empty jwt_claim_value")
+	if result.ClaimValue, err = requiredJSONString(object, "jwt_claim_value"); err != nil {
+		return result, fmt.Errorf("JWT key mapping response omitted jwt_claim_value")
 	}
 	if result.Description, err = nullableJSONString(object, "description"); err != nil {
 		return result, err
@@ -166,8 +166,22 @@ func requiredJSONInt(object map[string]json.RawMessage, field string) (int, erro
 }
 
 func readJWTKeyMapping(ctx context.Context, client *Client, id string) (jwtKeyMappingObject, error) {
+	return readJWTKeyMappingWithConnection(ctx, client, id, false)
+}
+
+func readFreshJWTKeyMapping(ctx context.Context, client *Client, id string) (jwtKeyMappingObject, error) {
+	return readJWTKeyMappingWithConnection(ctx, client, id, true)
+}
+
+func readJWTKeyMappingWithConnection(ctx context.Context, client *Client, id string, fresh bool) (jwtKeyMappingObject, error) {
 	var raw json.RawMessage
-	if err := client.DoRequestWithResponse(ctx, http.MethodGet, jwtKeyMappingInfoEndpoint(id), nil, &raw); err != nil {
+	var err error
+	if fresh {
+		err = client.doFreshRequestWithResponse(ctx, http.MethodGet, jwtKeyMappingInfoEndpoint(id), nil, &raw)
+	} else {
+		err = client.DoRequestWithResponse(ctx, http.MethodGet, jwtKeyMappingInfoEndpoint(id), nil, &raw)
+	}
+	if err != nil {
 		return jwtKeyMappingObject{}, err
 	}
 	mapping, err := decodeJWTKeyMappingObject(raw)
@@ -238,21 +252,52 @@ func decodeJWTKeyMappingListPage(raw json.RawMessage, requestedPage int) (number
 }
 
 func listJWTKeyMappings(ctx context.Context, client *Client) ([]jwtKeyMappingObject, error) {
-	mappings, err := collectNumberedPages(ctx, jwtKeyMappingListPath, func(ctx context.Context, page int) (numberedListPage[jwtKeyMappingObject], error) {
-		query := url.Values{}
-		query.Set("page", strconv.Itoa(page))
-		query.Set("size", "100")
-		var raw json.RawMessage
-		if err := client.DoRequestWithResponse(ctx, http.MethodGet, endpointWithQuery(jwtKeyMappingListPath, query), nil, &raw); err != nil {
-			return numberedListPage[jwtKeyMappingObject]{}, err
+	fetchScan := func() ([]jwtKeyMappingObject, error) {
+		mappings, err := collectNumberedPages(ctx, jwtKeyMappingListPath, func(ctx context.Context, page int) (numberedListPage[jwtKeyMappingObject], error) {
+			query := url.Values{}
+			query.Set("page", strconv.Itoa(page))
+			query.Set("size", "100")
+			var raw json.RawMessage
+			if err := client.doFreshRequestWithResponse(ctx, http.MethodGet, endpointWithQuery(jwtKeyMappingListPath, query), nil, &raw); err != nil {
+				return numberedListPage[jwtKeyMappingObject]{}, err
+			}
+			return decodeJWTKeyMappingListPage(raw, page)
+		})
+		if err != nil {
+			return nil, err
 		}
-		return decodeJWTKeyMappingListPage(raw, page)
-	})
+		sort.Slice(mappings, func(i, j int) bool { return mappings[i].ID < mappings[j].ID })
+		return mappings, nil
+	}
+
+	first, err := fetchScan()
 	if err != nil {
 		return nil, err
 	}
-	sort.Slice(mappings, func(i, j int) bool { return mappings[i].ID < mappings[j].ID })
-	return mappings, nil
+	second, err := fetchScan()
+	if err != nil {
+		return nil, err
+	}
+	if !jwtKeyMappingScansEqual(first, second) {
+		return nil, listChurnErrorf("%s changed between two bounded full scans", jwtKeyMappingListPath)
+	}
+	return second, nil
+}
+
+func jwtKeyMappingScansEqual(first, second []jwtKeyMappingObject) bool {
+	if len(first) != len(second) {
+		return false
+	}
+	for i := range first {
+		if first[i].ID != second[i].ID || first[i].ClaimName != second[i].ClaimName || first[i].ClaimValue != second[i].ClaimValue || first[i].IsActive != second[i].IsActive || first[i].CreatedAt != second[i].CreatedAt || first[i].UpdatedAt != second[i].UpdatedAt || !equalNullableString(first[i].Description, second[i].Description) || !equalNullableString(first[i].CreatedBy, second[i].CreatedBy) || !equalNullableString(first[i].UpdatedBy, second[i].UpdatedBy) {
+			return false
+		}
+	}
+	return true
+}
+
+func equalNullableString(first, second *string) bool {
+	return (first == nil && second == nil) || (first != nil && second != nil && *first == *second)
 }
 
 func mappingMutationDiagnostic(action string, err error) string {
@@ -261,4 +306,13 @@ func mappingMutationDiagnostic(action string, err error) string {
 		return fmt.Sprintf("LiteLLM returned HTTP %d while attempting to %s the JWT key mapping. Response details were omitted because they may contain sensitive claim or key data.", apiErr.StatusCode, action)
 	}
 	return fmt.Sprintf("The JWT key mapping %s request failed. Error details were omitted because an intermediary may contain sensitive claim or key data.", action)
+}
+
+func jwtKeyMappingCreateRecoveryDiagnostic(err error) string {
+	status := "The create request failed or its committed outcome could not be confirmed."
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusConflict {
+		status = "LiteLLM returned HTTP 409; this can represent an existing mapping or a prior create whose response was lost."
+	}
+	return status + " Terraform did not guess or adopt a UUID. An administrator must list JWT key mappings, locate the exact claim-name/claim-value pair, obtain its canonical UUID, and import that UUID. Response details and configured values were omitted."
 }

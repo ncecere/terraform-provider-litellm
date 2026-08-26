@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -30,7 +31,7 @@ func jwtMappingCreateProposed(t *testing.T, schema *tfprotov6.Schema, config map
 	return jwtMappingProtocolValue(t, schema, values)
 }
 
-func TestJWTKeyMappingCreateUpdateClearRotateDeleteProtocol(t *testing.T) {
+func TestJWTKeyMappingCreateUpdateClearDeleteProtocol(t *testing.T) {
 	ctx := context.Background()
 	var mu sync.Mutex
 	mapping := jwtMappingJSON(jwtMappingID1, "claim-secret", "owned-description", true)
@@ -81,9 +82,19 @@ func TestJWTKeyMappingCreateUpdateClearRotateDeleteProtocol(t *testing.T) {
 	if err != nil || accessGroupProtocolDiagnosticsHaveError(planned.Diagnostics) {
 		t.Fatalf("create plan err=%v diagnostics=%v", err, planned.Diagnostics)
 	}
+	for name, raw := range map[string][]byte{"plan JSON": planned.PlannedState.JSON, "plan msgpack": planned.PlannedState.MsgPack, "plan private": planned.PlannedPrivate, "plan diagnostics": []byte(agentProtocolDiagnosticsText(planned.Diagnostics))} {
+		if bytes.Contains(raw, []byte("sk-create-secret")) {
+			t.Fatalf("%s retained raw write-only key", name)
+		}
+	}
 	applied, err := protocolServer.ApplyResourceChange(ctx, &tfprotov6.ApplyResourceChangeRequest{TypeName: "litellm_jwt_key_mapping", Config: config, PriorState: nullState, PlannedState: planned.PlannedState, PlannedPrivate: planned.PlannedPrivate})
 	if err != nil || accessGroupProtocolDiagnosticsHaveError(applied.Diagnostics) {
 		t.Fatalf("create apply err=%v diagnostics=%s", err, agentProtocolDiagnosticsText(applied.Diagnostics))
+	}
+	for name, raw := range map[string][]byte{"state JSON": applied.NewState.JSON, "state msgpack": applied.NewState.MsgPack, "apply private": applied.Private, "apply diagnostics": []byte(agentProtocolDiagnosticsText(applied.Diagnostics))} {
+		if bytes.Contains(raw, []byte("sk-create-secret")) {
+			t.Fatalf("%s retained raw write-only key", name)
+		}
 	}
 	if createBody["key"] != "sk-create-secret" || createBody["jwt_claim_value"] != "claim-secret" {
 		t.Fatalf("create body=%#v", createBody)
@@ -93,12 +104,16 @@ func TestJWTKeyMappingCreateUpdateClearRotateDeleteProtocol(t *testing.T) {
 		t.Fatal("write-only key persisted")
 	}
 
-	updateConfigValues := map[string]interface{}{"jwt_claim_name": "sub", "jwt_claim_value": "claim-secret", "key_wo": "sk-rotate-secret", "key_wo_version": "2", "description": nil, "is_active": false}
+	updateConfigValues := map[string]interface{}{"jwt_claim_name": "sub", "jwt_claim_value": "claim-secret", "key_wo": "sk-create-secret", "key_wo_version": "1", "description": nil, "is_active": false}
 	updateConfig := jwtMappingProtocolValue(t, schema, updateConfigValues)
-	proposed := organizationProjectProtocolReplace(t, schema, applied.NewState, map[string]interface{}{"key_wo_version": "2", "description": nil, "is_active": false})
+	proposed := organizationProjectProtocolReplace(t, schema, applied.NewState, map[string]interface{}{"description": nil, "is_active": false})
 	updatedPlan, err := protocolServer.PlanResourceChange(ctx, &tfprotov6.PlanResourceChangeRequest{TypeName: "litellm_jwt_key_mapping", Config: updateConfig, PriorState: applied.NewState, ProposedNewState: proposed, PriorPrivate: applied.Private})
 	if err != nil || accessGroupProtocolDiagnosticsHaveError(updatedPlan.Diagnostics) {
 		t.Fatalf("update plan err=%v diagnostics=%v", err, updatedPlan.Diagnostics)
+	}
+	plannedAttributes := protocolAttributeMap(t, schema, updatedPlan.PlannedState)
+	if plannedAttributes["updated_at"].IsKnown() || plannedAttributes["updated_by"].IsKnown() {
+		t.Fatalf("mutable update pinned stale computed metadata: updated_at=%s updated_by=%s", plannedAttributes["updated_at"], plannedAttributes["updated_by"])
 	}
 	updated, err := protocolServer.ApplyResourceChange(ctx, &tfprotov6.ApplyResourceChangeRequest{TypeName: "litellm_jwt_key_mapping", Config: updateConfig, PriorState: applied.NewState, PlannedState: updatedPlan.PlannedState, PlannedPrivate: updatedPlan.PlannedPrivate})
 	if err != nil || accessGroupProtocolDiagnosticsHaveError(updated.Diagnostics) {
@@ -107,8 +122,11 @@ func TestJWTKeyMappingCreateUpdateClearRotateDeleteProtocol(t *testing.T) {
 	if value, ok := updateBody["description"]; !ok || value != nil {
 		t.Fatalf("description clear body=%#v", updateBody)
 	}
-	if updateBody["is_active"] != false || updateBody["key"] != "sk-rotate-secret" {
+	if updateBody["is_active"] != false {
 		t.Fatalf("update body=%#v", updateBody)
+	}
+	if _, present := updateBody["key"]; present {
+		t.Fatalf("update sent unverifiable key rotation: %#v", updateBody)
 	}
 
 	steadyPlan, err := protocolServer.PlanResourceChange(ctx, &tfprotov6.PlanResourceChangeRequest{TypeName: "litellm_jwt_key_mapping", Config: updateConfig, PriorState: updated.NewState, ProposedNewState: updated.NewState, PriorPrivate: updated.Private})

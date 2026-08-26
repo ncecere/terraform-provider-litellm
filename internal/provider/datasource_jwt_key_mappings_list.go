@@ -37,7 +37,7 @@ func (d *JWTKeyMappingsListDataSource) Metadata(_ context.Context, req datasourc
 }
 
 func (d *JWTKeyMappingsListDataSource) Schema(_ context.Context, _ datasource.SchemaRequest, resp *datasource.SchemaResponse) {
-	resp.Schema = schema.Schema{Description: "Reads every LiteLLM JWT key mapping, exhausting v1.98 pagination with churn guards and sorting the complete result by UUID.", Attributes: map[string]schema.Attribute{
+	resp.Schema = schema.Schema{Description: "Reads every LiteLLM JWT key mapping using two bounded full v1.98 pagination scans, requiring identical observable rows before sorting by UUID.", Attributes: map[string]schema.Attribute{
 		"id": schema.StringAttribute{Description: "Stable data source identifier.", Computed: true},
 		"mappings": schema.ListNestedAttribute{Description: "Complete mapping inventory in ascending UUID order.", Computed: true, NestedObject: schema.NestedAttributeObject{Attributes: map[string]schema.Attribute{
 			"id":              schema.StringAttribute{Description: "Authoritative mapping UUID.", Computed: true},

@@ -149,7 +149,7 @@ func TestJWTKeyMappingListCompletenessOrderingAndDuplicateGuard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(mappings) != 101 || len(pages) != 2 {
+	if len(mappings) != 101 || len(pages) != 4 {
 		t.Fatalf("mappings=%d pages=%v", len(mappings), pages)
 	}
 	for i := 1; i < len(mappings); i++ {
@@ -174,6 +174,58 @@ func TestJWTKeyMappingListRejectsDuplicateIdentityAcrossPages(t *testing.T) {
 	_, err := listJWTKeyMappings(context.Background(), &Client{APIBase: server.URL, APIKey: "key", HTTPClient: server.Client()})
 	if err == nil {
 		t.Fatal("duplicate or incomplete identity listing accepted")
+	}
+}
+
+func TestJWTKeyMappingDoubleScanRejectsEqualCountReplacementAndRowChange(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		second map[string]interface{}
+	}{
+		{"equal-count insert-delete", jwtMappingJSON(jwtMappingID2, "secret", nil, true)},
+		{"same UUID observable row change", jwtMappingJSON(jwtMappingID1, "changed", nil, true)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var calls atomic.Int64
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				item := jwtMappingJSON(jwtMappingID1, "secret", nil, true)
+				if calls.Add(1) == 2 {
+					item = test.second
+				}
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{"mappings": []interface{}{item}, "total_count": 1, "current_page": 1, "total_pages": 1})
+			}))
+			defer server.Close()
+			_, err := listJWTKeyMappings(context.Background(), &Client{APIBase: server.URL, APIKey: "key", HTTPClient: server.Client()})
+			if err == nil {
+				t.Fatal("different bounded scans were accepted")
+			}
+		})
+	}
+}
+
+func TestJWTKeyMappingDoubleScanAllowsWorkerOrderVariation(t *testing.T) {
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		items := []interface{}{jwtMappingJSON(jwtMappingID1, "one", nil, true), jwtMappingJSON(jwtMappingID2, "two", nil, true)}
+		if calls.Add(1) == 2 {
+			items[0], items[1] = items[1], items[0]
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"mappings": items, "total_count": 2, "current_page": 1, "total_pages": 1})
+	}))
+	defer server.Close()
+	mappings, err := listJWTKeyMappings(context.Background(), &Client{APIBase: server.URL, APIKey: "key", HTTPClient: server.Client()})
+	if err != nil || len(mappings) != 2 || mappings[0].ID != jwtMappingID1 || mappings[1].ID != jwtMappingID2 {
+		t.Fatalf("mappings=%#v err=%v", mappings, err)
+	}
+}
+
+func TestJWTKeyMappingEmptyClaimPairIsSourceValid(t *testing.T) {
+	value := jwtMappingJSON(jwtMappingID1, "", nil, true)
+	value["jwt_claim_name"] = ""
+	raw, _ := json.Marshal(value)
+	mapping, err := decodeJWTKeyMappingObject(raw)
+	if err != nil || mapping.ClaimName != "" || mapping.ClaimValue != "" {
+		t.Fatalf("mapping=%#v err=%v", mapping, err)
 	}
 }
 
