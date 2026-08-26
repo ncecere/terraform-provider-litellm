@@ -213,7 +213,7 @@ MCP servers can be imported using their server ID:
 terraform import litellm_mcp_server.example <server-id>
 ```
 
-On the first read after import, the provider adopts visible numeric cost fields exactly, including `mcp_info.mcp_server_cost_info`. This numeric import marker does not reconstruct unrelated heterogeneous `mcp_info` content that is not represented by the current schema; configure that block explicitly when Terraform must own its display fields.
+On the first read after import, the provider adopts visible numeric cost fields exactly, including `mcp_info.mcp_server_cost_info`. An API `mcp_info` object alone does not create the optional block, and a cost-only import shell does not adopt sibling `server_name`, `description`, or `logo_url` values. Configure those display leaves explicitly when Terraform must own them. Exact private leaf provenance keeps Terraform-owned display/cost leaves separate from API-owned imported costs. Role-sanitized parent null or omission preserves tracked leaves; an explicit child null clears its public value without relinquishing ownership, so a later authoritative value can reappear.
 
 ## Transport Types
 

@@ -194,6 +194,33 @@ elif [ "${SMOKE_FALLBACK_IMPORT:-}" = "1" ]; then
   IMPORT_BACKUP=
   STEADY_ARGS='-var=fallback_import_phase=imported'
   CLEANUP_ARGS=$STEADY_ARGS
+elif [ "${SMOKE_MCP_IMPORT:-}" = "1" ]; then
+  echo '=== MCP IMPORT PROJECTION ==='
+  mcp_import_id=$(terraform output -raw mcp_import_seed_id)
+  IMPORT_BACKUP="$SMOKE_DIR/mcp-import-seed.tfstate"
+  cp terraform.tfstate "$IMPORT_BACKUP"
+  terraform state rm 'litellm_mcp_server.mcp_import_seed[0]'
+  terraform import \
+    -var=mcp_import_phase=imported \
+    'litellm_mcp_server.mcp_imported[0]' \
+    "$mcp_import_id"
+  STEADY_ARGS='-var=mcp_import_phase=imported'
+  CLEANUP_ARGS=$STEADY_ARGS
+  for refresh_number in 1 2; do
+    echo "=== MCP IMPORT REFRESH-ONLY $refresh_number ==="
+    set +e
+    # shellcheck disable=SC2086 # STEADY_ARGS is one complete optional argument.
+    terraform plan -refresh-only -detailed-exitcode $STEADY_ARGS >"mcp-import-refresh-$refresh_number.log" 2>&1
+    refresh_status=$?
+    set -e
+    cat "mcp-import-refresh-$refresh_number.log"
+    if [ "$refresh_status" -ne 0 ]; then
+      echo "MCP import refresh-only $refresh_number was not immediately stable (exit $refresh_status)." >&3
+      exit 1
+    fi
+  done
+  rm -f "$IMPORT_BACKUP"
+  IMPORT_BACKUP=
 elif [ "${SMOKE_CREDENTIAL_UPDATE:-}" = "1" ]; then
   echo '=== CREDENTIAL UPDATE APPLY ==='
   terraform apply -auto-approve -var=credential_update_phase=after
