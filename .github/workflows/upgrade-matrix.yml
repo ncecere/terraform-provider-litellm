@@ -1,0 +1,161 @@
+name: Upgrade and import matrix
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      destructive_target:
+        description: Destructive target (local or remote)
+        required: true
+        default: local
+        type: choice
+        options:
+          - local
+          - remote
+      confirmation:
+        description: Type run-issue210-destructive to enable the manual job
+        required: true
+        type: string
+      cli:
+        description: Pinned CLI lane
+        required: true
+        default: terraform-1.11.4
+        type: choice
+        options:
+          - terraform-1.0.11
+          - terraform-1.11.4
+          - opentofu-1.6.3
+          - opentofu-1.11.1
+
+permissions:
+  contents: read
+
+jobs:
+  assembly:
+    name: Offline assembly (${{ matrix.product }} ${{ matrix.version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - product: terraform
+            version: 1.0.11
+            executable: terraform
+          - product: terraform
+            version: 1.11.4
+            executable: terraform
+          - product: opentofu
+            version: 1.6.3
+            executable: tofu
+          - product: opentofu
+            version: 1.11.1
+            executable: tofu
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Verify this harness does not modify provider runtime
+        run: git diff --exit-code e2a7e6df231c03d271bd52ce7e370c018cc87594 -- main.go internal/provider
+      - name: Install checksum-pinned CLI into the job-local cache
+        run: |
+          python3 internal_testing/upgrade_matrix/harness.py install-tool \
+            "${{ matrix.product }}" "${{ matrix.version }}" --cache "$RUNNER_TEMP/tools"
+          python3 internal_testing/upgrade_matrix/harness.py install-tool \
+            "${{ matrix.product }}" "${{ matrix.version }}" --cache "$RUNNER_TEMP/tools" --offline
+      - name: Build current provider outside the repository
+        run: go build -o "$RUNNER_TEMP/provider/terraform-provider-litellm" .
+      - name: Python safety and assembly tests
+        run: python3 -m unittest discover -s internal_testing/upgrade_matrix/tests -p 'test_*.py'
+      - name: Shell safety tests
+        run: sh internal_testing/upgrade_matrix/tests/safety_test.sh
+      - name: Non-destructive offline assembly
+        env:
+          MATRIX_CLI: ${{ runner.temp }}/tools/${{ matrix.product }}/${{ matrix.version }}/linux_amd64/${{ matrix.executable }}
+          MATRIX_PROVIDER_BINARY: ${{ runner.temp }}/provider/terraform-provider-litellm
+          MATRIX_REPORT: ${{ runner.temp }}/upgrade-matrix-${{ matrix.product }}-${{ matrix.version }}.json
+        run: sh internal_testing/upgrade_matrix/run.sh assembly
+      - name: Publish concise scenario summary
+        if: ${{ !cancelled() }}
+        run: |
+          {
+            echo '## Issue #210 assembly'
+            echo ''
+            echo '| Category | Count |'
+            echo '|---|---:|'
+            python3 - <<'PY'
+          import json
+          value=json.load(open('internal_testing/upgrade_matrix/matrix.json', encoding='utf-8'))
+          for name,count in value['scenario_counts'].items():
+              print(f'| {name.replace("_", " ")} | {count} |')
+          PY
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload machine-readable release matrix result
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: upgrade-matrix-${{ matrix.product }}-${{ matrix.version }}
+          path: ${{ runner.temp }}/upgrade-matrix-${{ matrix.product }}-${{ matrix.version }}.json
+          if-no-files-found: error
+
+  destructive-manual:
+    name: Manual destructive acceptance
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.repository == 'ncecere/terraform-provider-litellm' &&
+      inputs.confirmation == 'run-issue210-destructive'
+    runs-on: ubuntu-latest
+    environment: destructive-acceptance
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Select pinned CLI
+        id: cli
+        env:
+          SELECTION: ${{ inputs.cli }}
+        run: |
+          product=${SELECTION%-*}
+          version=${SELECTION#*-}
+          executable=terraform
+          [ "$product" = terraform ] || executable=tofu
+          python3 internal_testing/upgrade_matrix/harness.py install-tool "$product" "$version" --cache "$RUNNER_TEMP/tools"
+          echo "path=$RUNNER_TEMP/tools/$product/$version/linux_amd64/$executable" >> "$GITHUB_OUTPUT"
+      - name: Build current provider
+        run: go build -o "$RUNNER_TEMP/provider/terraform-provider-litellm" .
+      - name: Start exact isolated local stack
+        if: inputs.destructive_target == 'local'
+        run: |
+          internal_testing/compose.sh up -d
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://localhost:4000/health/liveliness >/dev/null; then exit 0; fi
+            sleep 2
+          done
+          exit 1
+      - name: Run explicitly confirmed lane
+        env:
+          TF_ACC: '1'
+          LITELLM_ACCEPTANCE_CONFIRM: local-v1.98.0
+          LITELLM_REMOTE_ACCEPTANCE_CONFIRM: dev-disposable-objects-only
+          LITELLM_TEST_NAMESPACE: issue210-${{ github.run_id }}${{ github.run_attempt }}
+          LITELLM_API_BASE: ${{ inputs.destructive_target == 'remote' && 'https://dev.api.ai.it.ufl.edu' || 'http://localhost:4000' }}
+          LITELLM_API_KEY: ${{ inputs.destructive_target == 'remote' && secrets.LITELLM_DEV_API_KEY || 'sk-testing-key' }}
+          MATRIX_CLI: ${{ steps.cli.outputs.path }}
+          MATRIX_PROVIDER_BINARY: ${{ runner.temp }}/provider/terraform-provider-litellm
+          MATRIX_REPORT: ${{ runner.temp }}/upgrade-matrix-result.json
+        run: sh internal_testing/upgrade_matrix/run.sh "${{ inputs.destructive_target }}"
+      - name: Wipe isolated local stack
+        if: always() && inputs.destructive_target == 'local'
+        run: internal_testing/compose.sh down -v
+      - name: Upload redacted result only
+        if: success()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: destructive-upgrade-matrix-result
+          path: ${{ runner.temp }}/upgrade-matrix-result.json
+          if-no-files-found: error

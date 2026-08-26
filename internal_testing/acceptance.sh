@@ -6,6 +6,8 @@ set -eu
 ASSEMBLY_ONLY=${LITELLM_ACCEPTANCE_ASSEMBLY_ONLY:-0}
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 API_BASE=http://localhost:4000
+CLI_VERSION=$(terraform version 2>/dev/null | sed -n '1{s/^[^0-9]*//;s/[^0-9.].*$//;p;}')
+CLI_SUPPORTS_111=$(python3 -c 'import sys; p=tuple(int(v) for v in sys.argv[1].split(".")); print(1 if p >= (1, 11, 0) else 0)' "${CLI_VERSION:-0.0.0}")
 
 if [ "$ASSEMBLY_ONLY" != "1" ]; then
   if [ "${TF_ACC:-}" != "1" ]; then
@@ -87,8 +89,12 @@ run_case fallback resources fallback_minimal.tf
 run_fallback_import_case
 run_case guardrail resources guardrail_minimal.tf
 run_case guardrail_structured_mode resources guardrail_full.tf
-run_case key resources key_minimal.tf,key_router_settings.tf,send_invite_email.tf datasources key.tf
-run_case jwt_key_mapping resources key_minimal.tf,jwt_key_mapping.tf datasources jwt_key_mapping.tf,jwt_key_mappings_list.tf
+if [ "$CLI_SUPPORTS_111" = "1" ]; then
+  run_case key resources key_minimal.tf,key_router_settings.tf,key_write_only.tf,send_invite_email.tf datasources key.tf
+  run_case jwt_key_mapping resources key_minimal.tf,jwt_key_mapping.tf datasources jwt_key_mapping.tf,jwt_key_mappings_list.tf
+else
+  run_case key resources key_minimal.tf,key_router_settings.tf datasources key.tf
+fi
 run_case key_block resources key_minimal.tf,key_block_minimal.tf,key_block_hash.tf
 run_case mcp_server resources mcp_server_minimal.tf datasources mcp_server.tf,mcp_servers_list.tf
 run_mcp_import_case

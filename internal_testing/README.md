@@ -222,6 +222,21 @@ HCL and is suitable for CI or fixture review:
 LITELLM_ACCEPTANCE_ASSEMBLY_ONLY=1 sh internal_testing/acceptance.sh
 ```
 
+The previous-release and import harness adds checksum-verified v2.0.1 upgrade,
+Terraform/OpenTofu protocol, all-resource import, replacement, recovery,
+data-source, and documentation inventories. Its default is offline,
+non-destructive assembly; destructive lanes have separate explicit gates:
+
+```bash
+make upgrade-matrix-test
+make upgrade-matrix-assembly
+```
+
+See [`upgrade_matrix/README.md`](upgrade_matrix/README.md) for the pinned tool
+matrix, 23-resource/33-data-source coverage table, import state-rm guarantee,
+Enterprise/API limitation accounting, remote-development safeguards, and
+machine-readable report format.
+
 ## Testing a Subset Manually
 
 Since Terraform loads all `.tf` files in a directory, the `resources/` and
