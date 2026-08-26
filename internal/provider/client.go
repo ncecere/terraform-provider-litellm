@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // APIError represents a non-2xx LiteLLM response without retaining the raw
@@ -23,8 +24,9 @@ type APIError struct {
 	DetailOmitted bool
 	BodyTruncated bool
 
-	notFound         bool
 	fallbackNotReady bool
+	retryAfter       time.Duration
+	hasRetryAfter    bool
 }
 
 func (e *APIError) Error() string {
@@ -71,6 +73,7 @@ func (c *Client) executeRequest(request *http.Request) (*http.Response, error) {
 
 type clientRequestOptions struct {
 	freshConnection bool
+	now             func() time.Time
 }
 
 // executeRequestWithOptions keeps fresh-connection behavior deliberately narrow.
@@ -143,9 +146,9 @@ func (c *Client) DoRequest(ctx context.Context, method, requestPath string, body
 	return c.executeRequest(request)
 }
 
-// DoRequestWithResponse performs an HTTP request and decodes the JSON response.
-// Response reads are bounded and every returned error is safe to include in a
-// Terraform diagnostic.
+// DoRequestWithResponse performs one HTTP request and decodes the JSON response.
+// It never retries, including for mutations. Response reads are bounded and
+// every returned error is safe to include in a Terraform diagnostic.
 func (c *Client) DoRequestWithResponse(ctx context.Context, method, requestPath string, body interface{}, result interface{}) error {
 	_, err := c.doRequestWithResponse(ctx, method, requestPath, body, result)
 	return err
@@ -154,7 +157,8 @@ func (c *Client) DoRequestWithResponse(ctx context.Context, method, requestPath 
 // doFreshRequestWithResponse is reserved for bounded worker-cache and
 // write-convergence probes. It preserves the normal bounded response and
 // redaction path while preventing HTTP keepalive from pinning consecutive
-// probes to one LiteLLM worker.
+// probes to one LiteLLM worker. Every fresh probe remains single-attempt and
+// never invokes the safe-read retry layer.
 func (c *Client) doFreshRequestWithResponse(ctx context.Context, method, requestPath string, body interface{}, result interface{}) error {
 	_, err := c.doRequestWithResponseOptions(ctx, method, requestPath, body, result, clientRequestOptions{freshConnection: true})
 	return err
@@ -181,6 +185,11 @@ func (c *Client) doRequestWithResponseOptions(ctx context.Context, method, reque
 
 	accepted = response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices
 	requestID := safeRequestID(response.Header, safety)
+	now := time.Now()
+	if options.now != nil {
+		now = options.now()
+	}
+	retryAfter, hasRetryAfter := safeRetryAfter(response.Header, now, maxAcceptedRetryAfter)
 	limit := maxSuccessResponseBody
 	if !accepted {
 		limit = maxErrorResponseBody
@@ -192,17 +201,19 @@ func (c *Client) doRequestWithResponseOptions(ctx context.Context, method, reque
 				RequestID:     requestID,
 				DetailOmitted: true,
 				BodyTruncated: true,
+				retryAfter:    retryAfter,
+				hasRetryAfter: hasRetryAfter,
 			}
 		}
-		return true, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "LiteLLM response exceeded the provider safety limit"}
+		return true, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "LiteLLM response exceeded the provider safety limit", dispatched: true, accepted: true}
 	}
 	bodyBytes, truncated, readErr := readBoundedBody(response.Body, limit)
 
 	if !accepted {
 		if readErr != nil {
-			return false, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "failed to read LiteLLM error response", identity: safeErrorIdentity(readErr), retryable: safeTemporaryResponseFailure(readErr)}
+			return false, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "failed to read LiteLLM error response", identity: safeErrorIdentity(readErr), retryable: safeTemporaryResponseFailure(readErr), dispatched: true}
 		}
-		notFound, fallbackNotReady := classifyRawErrorBody(bodyBytes)
+		fallbackNotReady := classifyFallbackNotReadyBody(bodyBytes)
 		detail, detailOmitted := "", true
 		if !truncated {
 			detail, detailOmitted = safeResponseDetail(bodyBytes, response.Header.Get("Content-Type"), safety)
@@ -214,26 +225,27 @@ func (c *Client) doRequestWithResponseOptions(ctx context.Context, method, reque
 			Detail:           detail,
 			DetailOmitted:    detailOmitted,
 			BodyTruncated:    truncated,
-			notFound:         notFound,
 			fallbackNotReady: fallbackNotReady,
+			retryAfter:       retryAfter,
+			hasRetryAfter:    hasRetryAfter,
 		}
 	}
 
 	if readErr != nil {
-		return true, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "failed to read LiteLLM response", identity: safeErrorIdentity(readErr), retryable: safeTemporaryResponseFailure(readErr)}
+		return true, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "failed to read LiteLLM response", identity: safeErrorIdentity(readErr), retryable: safeTemporaryResponseFailure(readErr), dispatched: true, accepted: true}
 	}
 	if truncated {
-		return true, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "LiteLLM response exceeded the provider safety limit"}
+		return true, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "LiteLLM response exceeded the provider safety limit", dispatched: true, accepted: true}
 	}
 	if result == nil {
 		return true, nil
 	}
 	trimmedBody := bytes.TrimSpace(bodyBytes)
 	if len(trimmedBody) == 0 || bytes.Equal(trimmedBody, []byte("null")) {
-		return true, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "LiteLLM returned an empty JSON response where an object or array was required", retryable: true}
+		return true, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "LiteLLM returned an empty JSON response where an object or array was required", retryable: true, dispatched: true, accepted: true}
 	}
 	if err := decodeJSONUseNumber(trimmedBody, result); err != nil {
-		return true, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "failed to decode LiteLLM response as JSON", identity: safeErrorIdentity(err), retryable: true}
+		return true, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "failed to decode LiteLLM response as JSON", identity: safeErrorIdentity(err), retryable: true, dispatched: true, accepted: true}
 	}
 	return true, nil
 }
@@ -242,36 +254,16 @@ func (c *Client) doRequestWithResponseOptions(ctx context.Context, method, reque
 // with the exact status code. Callers that must distinguish absence from an
 // unexpected error should use this instead of response-body heuristics.
 func IsAPIErrorStatus(err error, statusCode int) bool {
-	var apiErr *APIError
-	return errors.As(err, &apiErr) && apiErr.StatusCode == statusCode
+	classification := ClassifyHTTPFailure(err)
+	return (classification.Kind == HTTPFailureTransientResponse || classification.Kind == HTTPFailureTerminalResponse) &&
+		classification.StatusCode == statusCode
 }
 
-// IsNotFoundError retains compatibility with LiteLLM endpoints that return
-// non-404 statuses (commonly 400) with a not-found message. Client-generated
-// API errors carry a private classification so their raw body can be discarded.
+// IsNotFoundError reports exact typed HTTP 404 responses only.
+// Deprecated: use IsAPIErrorStatus(err, http.StatusNotFound) when the endpoint's
+// absence contract is explicit.
 func IsNotFoundError(err error) bool {
-	if err == nil {
-		return false
-	}
-	if IsAPIErrorStatus(err, http.StatusNotFound) {
-		return true
-	}
-	var apiErr *APIError
-	if errors.As(err, &apiErr) {
-		if apiErr.notFound {
-			return true
-		}
-		// Compatibility for synthetic APIError values in callers and tests.
-		text := strings.ToLower(apiErr.Detail + " " + apiErr.Body)
-		return strings.Contains(text, "not found") || strings.Contains(text, "does not exist") || strings.Contains(text, "404")
-	}
-	var responseErr *safeResponseError
-	var transportErr *safeTransportError
-	if errors.As(err, &responseErr) || errors.As(err, &transportErr) {
-		return false
-	}
-	errText := strings.ToLower(err.Error())
-	return strings.Contains(errText, "not found") || strings.Contains(errText, "404") || strings.Contains(errText, "does not exist")
+	return IsAPIErrorStatus(err, http.StatusNotFound)
 }
 
 func isFallbackNotReadyError(err error) bool {

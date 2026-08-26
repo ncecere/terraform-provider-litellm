@@ -57,6 +57,8 @@ type safeTransportError struct {
 	kind          string
 	identity      error
 	timeout       bool
+	canceled      bool
+	deadline      bool
 	retryCategory safeTransportRetryCategory
 	dispatched    bool
 }
@@ -85,6 +87,8 @@ type safeResponseError struct {
 	kind       string
 	identity   error
 	retryable  bool
+	dispatched bool
+	accepted   bool
 }
 
 func (e *safeResponseError) Error() string {
@@ -104,15 +108,19 @@ func safeTransportFailure(err error) error {
 	kind := "LiteLLM HTTP transport request failed"
 	var identity error
 	timedOut := false
+	canceled := false
+	deadline := false
 	retryCategory := safeTransportRetryNone
 	switch {
 	case errors.Is(err, context.Canceled):
 		kind = "LiteLLM HTTP request was canceled"
 		identity = context.Canceled
+		canceled = true
 	case errors.Is(err, context.DeadlineExceeded):
 		kind = "LiteLLM HTTP request timed out"
 		identity = context.DeadlineExceeded
 		timedOut = true
+		deadline = true
 		retryCategory = safeTransportRetryTimeout
 	default:
 		var netErr net.Error
@@ -133,11 +141,15 @@ func safeTransportFailure(err error) error {
 			retryCategory = safeTransportRetryTimeout
 		case errors.As(err, &netErr) && netErr.Temporary():
 			retryCategory = safeTransportRetryTemporary
-		case errors.Is(err, syscall.ECONNRESET):
+		case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF),
+			errors.Is(err, syscall.ECONNRESET), errors.Is(err, syscall.ECONNABORTED),
+			errors.Is(err, syscall.ECONNREFUSED), errors.Is(err, syscall.EPIPE),
+			errors.Is(err, syscall.ENETDOWN), errors.Is(err, syscall.ENETUNREACH),
+			errors.Is(err, syscall.EHOSTUNREACH):
 			retryCategory = safeTransportRetryConnectionReset
 		}
 	}
-	return &safeTransportError{kind: kind, identity: identity, timeout: timedOut, retryCategory: retryCategory}
+	return &safeTransportError{kind: kind, identity: identity, timeout: timedOut, canceled: canceled, deadline: deadline, retryCategory: retryCategory}
 }
 
 func safeTemporaryResponseFailure(err error) bool {
@@ -341,13 +353,11 @@ func looksLikeSecret(value string) bool {
 	return authorizationPattern.MatchString(value) || apiTokenPattern.MatchString(value)
 }
 
-func classifyRawErrorBody(body []byte) (notFound, fallbackNotReady bool) {
+func classifyFallbackNotReadyBody(body []byte) bool {
 	text := strings.ToLower(string(body))
-	// Keep the pre-hardening compatibility heuristic here. This classification is
-	// private and does not retain or expose the response body; exact status/body
-	// absence semantics are handled separately by issue #202.
-	return strings.Contains(text, "not found") || strings.Contains(text, "does not exist") || strings.Contains(text, "404"),
-		strings.Contains(text, "invalid fallback models") || strings.Contains(text, "not found in router")
+	// Preserve only the fallback propagation behavior used by existing resource
+	// writes. Absence classification never consults response content.
+	return strings.Contains(text, "invalid fallback models") || strings.Contains(text, "not found in router")
 }
 
 func safeResponseDetail(body []byte, contentType string, safety requestSafety) (string, bool) {

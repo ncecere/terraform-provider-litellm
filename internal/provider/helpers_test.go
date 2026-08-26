@@ -18,11 +18,11 @@ func TestIsNotFoundError(t *testing.T) {
 		want bool
 	}{
 		{"nil", nil, false},
-		{"not found phrase", errors.New("resource not found"), true},
-		{"404 status", errors.New("request failed with status 404"), true},
-		{"does not exist", errors.New("the key does not exist"), true},
+		{"not found phrase", errors.New("resource not found"), false},
+		{"404 status", errors.New("request failed with status 404"), false},
+		{"does not exist", errors.New("the key does not exist"), false},
 		{"typed 404", &APIError{StatusCode: 404, Body: "internal error"}, true},
-		{"typed 500 body compatibility heuristic", &APIError{StatusCode: 500, Body: "server not found after 404 lookup"}, true},
+		{"typed 500 misleading body", &APIError{StatusCode: 500, Body: "server not found after 404 lookup"}, false},
 		{"unrelated", errors.New("internal server error"), false},
 	}
 	for _, tc := range cases {
