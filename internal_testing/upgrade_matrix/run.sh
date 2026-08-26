@@ -596,17 +596,17 @@ PYNS
   [ "$plan_status" -eq 0 ] || [ "$plan_status" -eq 2 ] || fail 'post-import convergence plan failed'
   if [ "$plan_status" -eq 2 ]; then
     (cd "$importer" && run_cli show -json import-converge.tfplan) >"$SCRATCH/import-converge.json" 2>>"$LOG" || fail 'post-import convergence plan inspection failed'
-    python3 - "$SCRATCH/import-converge.json" "$address" <<'PY' || fail 'post-import convergence was not a target-only in-place update'
-import json,sys
-value=json.load(open(sys.argv[1],encoding="utf-8")); target=sys.argv[2]
-for change in value.get("resource_changes",[]):
-  actions=change.get("change",{}).get("actions",[])
-  if change.get("address")==target:
-    if actions != ["update"]: raise SystemExit(1)
-  elif actions not in ([],["no-op"]): raise SystemExit(1)
-PY
-    # Imported state can lack provider-private configured markers. Apply only
-    # the reviewed target-only in-place convergence plan, then prove stability.
+    convergence_kind=$(python3 "$SCRIPT_DIR/import_convergence.py" \
+      "$SCRATCH/import-converge.json" "$address") || \
+      fail 'post-import convergence contained a non-reviewed action'
+    # Imported state can lack provider-private configured markers. Terraform
+    # 1.1 also reports removal of the producer-only matrix_import_id output as
+    # detailed exit 2. Apply only an exact target update and/or that exact local
+    # output deletion, then prove state and remote stability.
+    case "$convergence_kind" in
+      target-update|stale-output-delete) ;;
+      *) fail 'post-import convergence classification was not reviewed' ;;
+    esac
     (cd "$importer" && run_cli apply -auto-approve import-converge.tfplan) >>"$LOG" 2>&1 || fail 'post-import convergence apply failed'
     set +e
     (cd "$importer" && run_cli plan -detailed-exitcode) >>"$LOG" 2>&1
