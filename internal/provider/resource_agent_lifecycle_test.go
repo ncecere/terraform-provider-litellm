@@ -646,13 +646,14 @@ func TestAgentSkillRemovalOwnershipAndPayload(t *testing.T) {
 	if err := validateAgentUpdateClears(plan, state, config, agentFieldSet{agentSkillLeaf("remove", "name"): true}); err == nil {
 		t.Fatal("API-owned skill removal was accepted")
 	}
-	if err := validateAgentUpdateClears(plan, state, config, agentFieldSet{}); err != nil {
-		t.Fatalf("Terraform-owned skill removal rejected: %v", err)
+	structuralScope := agentFieldSet{agentScopeCardSkills: true}
+	if err := validateAgentUpdateClears(plan, state, config, structuralScope); err != nil {
+		t.Fatalf("Terraform-owned skill removal rejected with retained import scope: %v", err)
 	}
 	fresh := cloneAgentResourceModel(state)
 	wire := cloneAgentResourceModel(plan)
-	wire.AgentCard = overlayAgentCardWire(fresh, plan, state, config, agentFieldSet{})
-	request, err := (&AgentResource{}).buildAgentUpdateRequest(&wire, &state, &config, agentFieldSet{}, true)
+	wire.AgentCard = overlayAgentCardWire(fresh, plan, state, config, structuralScope)
+	request, err := (&AgentResource{}).buildAgentUpdateRequest(&wire, &state, &config, structuralScope, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -661,8 +662,56 @@ func TestAgentSkillRemovalOwnershipAndPayload(t *testing.T) {
 		t.Fatalf("removal payload retained omitted skill: %#v", skills)
 	}
 	observed := cloneAgentResourceModel(plan)
-	if !agentSkillsMutationMatch(plan.AgentCard.Skills, state.AgentCard, config.AgentCard.Skills, observed.AgentCard.Skills, nil) {
+	if !agentSkillsMutationMatch(plan.AgentCard.Skills, state.AgentCard, config.AgentCard.Skills, observed.AgentCard.Skills, structuralScope) {
 		t.Fatal("confirmed Terraform-owned skill absence did not match")
+	}
+}
+
+func TestImportedAgentPermissionScopeAdoptsFieldAndParentAbsence(t *testing.T) {
+	t.Parallel()
+	list := func(values ...string) types.List { return stringListValue(values...) }
+	data := AgentResourceModel{ObjectPermission: &AgentObjectPermissionModel{
+		MCPServers: list("server"), MCPAccessGroups: list("group"), MCPToolPermissions: types.MapNull(types.StringType),
+		Models: list("model"), Agents: list("agent"),
+	}}
+	owned := agentFieldSet{
+		agentScopePermission: true, agentFieldPermissionServers: true, agentFieldPermissionGroups: true,
+		agentFieldPermissionModels: true, agentFieldPermissionAgents: true,
+	}
+	r := &AgentResource{}
+	if err := r.readObjectPermissionWithOwnership(map[string]interface{}{
+		"mcp_servers": nil, "mcp_access_groups": nil, "models": []interface{}{}, "agents": []interface{}{"agent"},
+	}, &data, false, owned); err != nil {
+		t.Fatal(err)
+	}
+	if !data.ObjectPermission.MCPServers.IsNull() || !data.ObjectPermission.MCPAccessGroups.IsNull() {
+		t.Fatalf("explicit-null imported permission lists were retained: %#v", data.ObjectPermission)
+	}
+	if owned[agentFieldPermissionServers] || owned[agentFieldPermissionGroups] || !owned[agentScopePermission] {
+		t.Fatalf("permission field/scope ownership after absence = %#v", owned)
+	}
+	if data.ObjectPermission.Models.IsNull() || len(data.ObjectPermission.Models.Elements()) != 0 {
+		t.Fatalf("present empty imported permission list was not adopted: %#v", data.ObjectPermission.Models)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"agent_id":"permission","agent_name":"agent","object_permission":null}`)
+	}))
+	defer server.Close()
+	data.ID = types.StringValue("permission")
+	data.AgentName = types.StringValue("agent")
+	r.client = &Client{APIBase: server.URL, HTTPClient: server.Client()}
+	if err := r.readAgentWithOwnership(context.Background(), &data, false, owned); err != nil {
+		t.Fatal(err)
+	}
+	if data.ObjectPermission != nil || !owned[agentScopePermission] {
+		t.Fatalf("absent imported permission parent was not reconciled: data=%#v ownership=%#v", data.ObjectPermission, owned)
+	}
+	for _, field := range []string{agentFieldPermissionServers, agentFieldPermissionGroups, agentFieldPermissionTools, agentFieldPermissionModels, agentFieldPermissionAgents} {
+		if owned[field] {
+			t.Fatalf("absent permission parent retained leaf ownership %q", field)
+		}
 	}
 }
 

@@ -980,6 +980,14 @@ func overlayAgentCardWire(fresh, plan, state, config AgentResourceModel, importe
 		for _, skill := range wire.Skills {
 			freshByID[skill.ID.ValueString()] = skill
 		}
+		priorSkillIDs := map[string]bool{}
+		if state.AgentCard != nil {
+			for _, skill := range state.AgentCard.Skills {
+				if !skill.ID.IsNull() && !skill.ID.IsUnknown() {
+					priorSkillIDs[skill.ID.ValueString()] = true
+				}
+			}
+		}
 		merged := make([]AgentSkillModel, 0, len(wire.Skills))
 		seen := map[string]bool{}
 		for _, desired := range plan.AgentCard.Skills {
@@ -1010,7 +1018,13 @@ func overlayAgentCardWire(fresh, plan, state, config AgentResourceModel, importe
 			seen[id] = true
 		}
 		for _, remote := range wire.Skills {
-			if !seen[remote.ID.ValueString()] && (imported[agentScopeCardSkills] || agentFieldSetHasPrefix(imported, agentLeaf(agentFieldCardSkills, remote.ID.ValueString())+".")) {
+			id := remote.ID.ValueString()
+			if seen[id] {
+				continue
+			}
+			apiOwnedLeaves := agentFieldSetHasPrefix(imported, agentLeaf(agentFieldCardSkills, id)+".")
+			apiAddedAfterImport := imported[agentScopeCardSkills] && !priorSkillIDs[id]
+			if apiOwnedLeaves || apiAddedAfterImport {
 				merged = append(merged, remote)
 			}
 		}

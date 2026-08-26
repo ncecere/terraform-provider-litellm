@@ -1169,7 +1169,39 @@ func (r *AgentResource) readAgentWithOwnershipTransport(ctx context.Context, dat
 				return err
 			}
 		}
-	} else if !objectPermissionPresent || rawObjectPermission == nil {
+	} else if objectPermissionPresent && rawObjectPermission == nil {
+		if data.ObjectPermission != nil && apiOwned[agentScopePermission] {
+			// Explicit parent null is authoritative for imported leaves. Preserve
+			// independently Terraform-owned siblings whose leaf markers transferred.
+			for _, item := range []struct {
+				field  string
+				target *types.List
+			}{
+				{agentFieldPermissionServers, &data.ObjectPermission.MCPServers},
+				{agentFieldPermissionGroups, &data.ObjectPermission.MCPAccessGroups},
+				{agentFieldPermissionModels, &data.ObjectPermission.Models},
+				{agentFieldPermissionAgents, &data.ObjectPermission.Agents},
+			} {
+				if apiOwned[item.field] {
+					*item.target = types.ListNull(types.StringType)
+					delete(apiOwned, item.field)
+				}
+			}
+			if apiOwned[agentFieldPermissionTools] {
+				data.ObjectPermission.MCPToolPermissions = types.MapNull(types.StringType)
+				delete(apiOwned, agentFieldPermissionTools)
+			}
+			if data.ObjectPermission.MCPServers.IsNull() && data.ObjectPermission.MCPAccessGroups.IsNull() &&
+				data.ObjectPermission.MCPToolPermissions.IsNull() && data.ObjectPermission.Models.IsNull() && data.ObjectPermission.Agents.IsNull() {
+				data.ObjectPermission = nil
+			}
+		} else {
+			reconcileAbsentAgentMCPToolPermissions(data)
+			delete(apiOwned, agentFieldPermissionTools)
+		}
+	} else if !objectPermissionPresent {
+		// Whole-object omission can be role sanitization. Preserve independently
+		// scoped sibling lists while retaining #197's authoritative tool absence.
 		reconcileAbsentAgentMCPToolPermissions(data)
 		delete(apiOwned, agentFieldPermissionTools)
 	} else {
@@ -1711,13 +1743,26 @@ func (r *AgentResource) readObjectPermissionWithOwnership(permRaw map[string]int
 	}
 	current := data.ObjectPermission
 	copyList := func(field, wire string, target *types.List, observed types.List) {
-		if raw, present := permRaw[wire]; present && raw != nil {
+		raw, present := permRaw[wire]
+		if !present {
+			// Omission may be role sanitization and cannot prove removal.
+			return
+		}
+		if raw != nil {
 			if target.IsNull() && !apiOwned[field] && apiOwned[agentScopePermission] {
 				apiOwned[field] = true
 			}
 			if apiOwned[field] || !target.IsNull() {
 				*target = observed
 			}
+			return
+		}
+		// Explicit null is authoritative absence for an imported/API-owned sibling
+		// and real drift for a configured sibling. An unconfigured normal resource
+		// remains unmanaged because it has neither marker nor state value.
+		if apiOwned[field] || apiOwned[agentScopePermission] || !target.IsNull() {
+			*target = types.ListNull(types.StringType)
+			delete(apiOwned, field)
 		}
 	}
 	copyList(agentFieldPermissionServers, "mcp_servers", &current.MCPServers, remote.ObjectPermission.MCPServers)
