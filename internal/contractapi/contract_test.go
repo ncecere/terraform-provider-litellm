@@ -803,6 +803,225 @@ func safe(query queryAlias) {
 	}
 }
 
+func TestStrictQueryPolicyRejectsBackingMapStorageErasure(t *testing.T) {
+	fixtures := map[string]string{
+		"package-map-var": `package provider
+import "net/url"
+var query = url.Values{}
+var hidden map[string][]string = query
+`,
+		"package-container": `package provider
+import "net/url"
+var query = url.Values{}
+var hidden = []url.Values{query}
+`,
+		"package-function-return": `package provider
+import "net/url"
+var erase = func(query url.Values) any { return query }
+`,
+		"unnamed-map-var": `package provider
+import "net/url"
+func bad(query url.Values, key string) {
+ var hidden map[string][]string = query
+ hidden[key] = []string{"dynamic"}
+}
+`,
+		"unnamed-map-assignment": `package provider
+import "net/url"
+func bad(query url.Values, key string) {
+ var hidden map[string][]string
+ hidden = query
+ hidden[key] = []string{"dynamic"}
+}
+`,
+		"map-alias-var": `package provider
+import "net/url"
+type hiddenValues = map[string][]string
+func bad(query url.Values, key string) {
+ var hidden hiddenValues = query
+ hidden[key] = []string{"dynamic"}
+}
+`,
+		"defined-map-conversion": `package provider
+import "net/url"
+type hiddenValues map[string][]string
+func bad(query url.Values, key string) {
+ hidden := hiddenValues(query)
+ hidden[key] = []string{"dynamic"}
+}
+`,
+		"pointer-defined-conversion": `package provider
+import "net/url"
+type hiddenValues map[string][]string
+func bad(query url.Values, key string) {
+ hidden := (*hiddenValues)(&query)
+ (*hidden)[key] = []string{"dynamic"}
+}
+`,
+		"struct-map-literal": `package provider
+import "net/url"
+type holder struct { query map[string][]string }
+func bad(query url.Values, key string) {
+ hidden := holder{query: query}
+ hidden.query[key] = []string{"dynamic"}
+}
+`,
+		"struct-interface-assignment": `package provider
+import "net/url"
+type holder struct { query any }
+func bad(query url.Values, key string) {
+ var hidden holder
+ hidden.query = query
+ hidden.query.(url.Values)[key] = []string{"dynamic"}
+}
+`,
+		"struct-exact-field": `package provider
+import "net/url"
+type holder struct { query url.Values }
+func bad(query url.Values, key string) {
+ hidden := holder{query: query}
+ hidden.query[key] = []string{"dynamic"}
+}
+`,
+		"interface-assertion": `package provider
+import "net/url"
+func bad(query url.Values, key string) {
+ var hidden any = query
+ restored := hidden.(url.Values)
+ restored[key] = []string{"dynamic"}
+}
+`,
+		"interface-type-switch": `package provider
+import "net/url"
+func bad(query url.Values, key string) {
+ var hidden any = query
+ switch restored := hidden.(type) {
+ case url.Values:
+  restored[key] = []string{"dynamic"}
+ }
+}
+`,
+		"map-parameter": `package provider
+import "net/url"
+func erase(hidden map[string][]string, key string) { hidden[key] = []string{"dynamic"} }
+func bad(query url.Values, key string) { erase(query, key) }
+`,
+		"interface-parameter": `package provider
+import "net/url"
+func erase(hidden any, key string) { hidden.(url.Values)[key] = []string{"dynamic"} }
+func bad(query url.Values, key string) { erase(query, key) }
+`,
+		"map-return": `package provider
+import "net/url"
+func erase(query url.Values) map[string][]string { return query }
+func bad(query url.Values, key string) { erase(query)[key] = []string{"dynamic"} }
+`,
+		"interface-return": `package provider
+import "net/url"
+func erase(query url.Values) any { return query }
+func bad(query url.Values, key string) { erase(query).(url.Values)[key] = []string{"dynamic"} }
+`,
+		"slice-literal": `package provider
+import "net/url"
+func bad(query url.Values, key string) {
+ hidden := []url.Values{query}
+ hidden[0][key] = []string{"dynamic"}
+}
+`,
+		"array-literal": `package provider
+import "net/url"
+func bad(query url.Values, key string) {
+ hidden := [1]url.Values{query}
+ hidden[0][key] = []string{"dynamic"}
+}
+`,
+		"channel-send": `package provider
+import "net/url"
+func bad(query url.Values, hidden chan url.Values) { hidden <- query }
+`,
+		"map-literal": `package provider
+import "net/url"
+func bad(query url.Values, key string) {
+ hidden := map[string]url.Values{"query": query}
+ hidden["query"][key] = []string{"dynamic"}
+}
+`,
+		"append-container": `package provider
+import "net/url"
+func bad(query url.Values, key string) {
+ hidden := append([]url.Values(nil), query)
+ hidden[0][key] = []string{"dynamic"}
+}
+`,
+		"higher-order-interface": `package provider
+import "net/url"
+func apply(operation func(any, string), query url.Values, key string) { operation(query, key) }
+func mutate(hidden any, key string) { hidden.(url.Values)[key] = []string{"dynamic"} }
+func bad(query url.Values, key string) { apply(mutate, query, key) }
+`,
+		"generic-parameter": `package provider
+import "net/url"
+func store[T any](value T) []T { return []T{value} }
+func bad(query url.Values, key string) {
+ hidden := store(query)
+ hidden[0][key] = []string{"dynamic"}
+}
+`,
+		"generic-map-constraint": `package provider
+import "net/url"
+func erase[T ~map[string][]string](value T, key string) T { value[key] = []string{"dynamic"}; return value }
+func bad(query url.Values, key string) { _ = erase(query, key) }
+`,
+		"closure-interface-capture": `package provider
+import "net/url"
+func bad(query url.Values, key string) func() {
+ hidden := any(query)
+ return func() { hidden.(url.Values)[key] = []string{"dynamic"} }
+}
+`,
+	}
+	for name, fixture := range fixtures {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFixture(t, dir, "bad.go", fixture)
+			_, err := ExtractProvider(dir)
+			if err == nil || (!strings.Contains(err.Error(), "url.Values backing map") && !strings.Contains(err.Error(), "url.Values may only be passed")) {
+				t.Fatalf("url.Values backing-map erasure was accepted: %v", err)
+			}
+		})
+	}
+}
+
+func TestStrictQueryPolicyAllowsExactTrackedFlowAndClone(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir, "safe.go", `package provider
+import "net/url"
+type queryAlias = url.Values
+var packageQuery = url.Values{"scope": {"package"}}
+var packageAlias url.Values = packageQuery
+func cloneURLValues(values url.Values) url.Values {
+ cloned := make(url.Values, len(values))
+ for key, entries := range values {
+  cloned[key] = append([]string(nil), entries...)
+ }
+ return cloned
+}
+func safe(query url.Values) {
+ alias := query
+ var exact url.Values = alias
+ var trueAlias queryAlias = exact
+ trueAlias.Set("page", "1")
+ trueAlias["sort"] = []string{"name"}
+ cloned := cloneURLValues(trueAlias)
+ cloned.Add("filter", "active")
+}
+`)
+	operations, err := ExtractProvider(dir)
+	if err != nil || len(operations) != 0 {
+		t.Fatalf("exact tracked url.Values flow or reviewed clone was rejected: operations=%v error=%v", operations, err)
+	}
+}
+
 func TestStaticPointerQueryMutationIsInventoried(t *testing.T) {
 	dir := t.TempDir()
 	writeHTTPFixtureSupport(t, dir)

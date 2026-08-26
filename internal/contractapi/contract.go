@@ -844,6 +844,13 @@ func exactURLValuesCarrierType(t types.Type) bool {
 	}
 }
 
+func exactURLValuesFlow(source, destination types.Type) bool {
+	if !exactURLValuesCarrierType(source) || !exactURLValuesCarrierType(destination) {
+		return false
+	}
+	return types.Identical(types.Unalias(source), types.Unalias(destination))
+}
+
 func (x *extractor) exactURLValuesMethod(object types.Object, names ...string) bool {
 	function, ok := object.(*types.Func)
 	if !ok || function.Pkg() == nil || function.Pkg().Path() != "net/url" {
@@ -969,6 +976,57 @@ func (x *extractor) validateStrictSourcePolicy() error {
 		problems = append(problems, fmt.Sprintf("%s:%d: %s", filepath.Base(path), position.Line, message))
 	}
 	isSensitive := func(t types.Type) bool { return x.isClientType(t) || isSensitiveHTTPType(t) }
+	checkQueryStorageAt := func(path string, source ast.Expr, destination types.Type, nested bool) {
+		sourceType := x.typesInfo.TypeOf(source)
+		if !exactURLValuesCarrierType(sourceType) {
+			return
+		}
+		// url.Values is a map. Assignment to a true url.Values alias is the
+		// same statically reviewed type, but every other destination can retain
+		// and mutate the same map while hiding its keys from this analyzer.
+		if !nested && exactURLValuesFlow(sourceType, destination) {
+			return
+		}
+		add(path, source, "url.Values backing map may not be stored in a non-exact type or container")
+	}
+	checkCompositeQueryStorageAt := func(path string, item *ast.CompositeLit) {
+		switch composite := originalGenericUnderlying(x.typesInfo.TypeOf(item)).(type) {
+		case *types.Slice:
+			for _, element := range item.Elts {
+				checkQueryStorageAt(path, element, composite.Elem(), true)
+			}
+		case *types.Array:
+			for _, element := range item.Elts {
+				checkQueryStorageAt(path, element, composite.Elem(), true)
+			}
+		case *types.Map:
+			for _, element := range item.Elts {
+				if pair, ok := element.(*ast.KeyValueExpr); ok {
+					checkQueryStorageAt(path, pair.Value, composite.Elem(), true)
+				}
+			}
+		case *types.Struct:
+			for index, element := range item.Elts {
+				valueExpression := ast.Expr(element)
+				fieldIndex := index
+				if pair, keyed := element.(*ast.KeyValueExpr); keyed {
+					valueExpression = pair.Value
+					fieldIndex = -1
+					if name, ok := pair.Key.(*ast.Ident); ok {
+						for candidate := 0; candidate < composite.NumFields(); candidate++ {
+							if composite.Field(candidate).Name() == name.Name {
+								fieldIndex = candidate
+								break
+							}
+						}
+					}
+				}
+				if fieldIndex >= 0 && fieldIndex < composite.NumFields() {
+					checkQueryStorageAt(path, valueExpression, composite.Field(fieldIndex).Type(), true)
+				}
+			}
+		}
+	}
 
 	for path, file := range x.files {
 		// Reserve transport method names at declaration time, including methods
@@ -1006,8 +1064,12 @@ func (x *extractor) validateStrictSourcePolicy() error {
 				}
 			case *ast.ValueSpec:
 				for index, source := range item.Values {
-					if index < len(item.Names) && isSensitive(x.typesInfo.TypeOf(source)) && isTypeErasureDestination(x.typesInfo.TypeOf(item.Names[index])) {
-						add(path, source, "Client or HTTP transport may not be stored in a package-level interface or type parameter")
+					if index < len(item.Names) {
+						destination := x.typesInfo.TypeOf(item.Names[index])
+						if isSensitive(x.typesInfo.TypeOf(source)) && isTypeErasureDestination(destination) {
+							add(path, source, "Client or HTTP transport may not be stored in a package-level interface or type parameter")
+						}
+						checkQueryStorageAt(path, source, destination, false)
 					}
 					ast.Inspect(source, func(child ast.Node) bool {
 						switch expression := child.(type) {
@@ -1019,6 +1081,113 @@ func (x *extractor) validateStrictSourcePolicy() error {
 							if reviewedTransportName(expression.Sel.Name) || expression.Sel.Name == "Do" || expression.Sel.Name == "RoundTrip" || x.isNetHTTPTransportObject(object) || x.reflectDynamicDispatch(object) {
 								add(path, expression, "transport and reflective method values are forbidden in package-level declarations")
 							}
+						case *ast.AssignStmt:
+							for assignmentIndex, right := range expression.Rhs {
+								if assignmentIndex >= len(expression.Lhs) {
+									continue
+								}
+								left := expression.Lhs[assignmentIndex]
+								_, indexed := left.(*ast.IndexExpr)
+								selector, selected := left.(*ast.SelectorExpr)
+								nested := indexed || (selected && x.typesInfo.Selections[selector] != nil && x.typesInfo.Selections[selector].Kind() == types.FieldVal)
+								checkQueryStorageAt(path, right, x.originalErasureDestination(left), nested)
+							}
+						case *ast.SendStmt:
+							channel, _ := types.Unalias(x.typesInfo.TypeOf(expression.Chan)).(*types.Chan)
+							if channel != nil {
+								checkQueryStorageAt(path, expression.Value, channel.Elem(), true)
+							}
+						case *ast.DeclStmt:
+							general, _ := expression.Decl.(*ast.GenDecl)
+							if general != nil {
+								for _, specification := range general.Specs {
+									values, _ := specification.(*ast.ValueSpec)
+									if values == nil {
+										continue
+									}
+									for valueIndex, right := range values.Values {
+										if valueIndex < len(values.Names) {
+											checkQueryStorageAt(path, right, x.typesInfo.TypeOf(values.Names[valueIndex]), false)
+										}
+									}
+								}
+							}
+						case *ast.CallExpr:
+							called := calledFunctionObject(x.typesInfo, expression.Fun)
+							isConversion := len(expression.Args) == 1 && x.typesInfo.Types[expression.Fun].IsType()
+							exactIdentity := isConversion && exactURLValuesFlow(x.typesInfo.TypeOf(expression.Args[0]), x.typesInfo.TypeOf(expression))
+							if isConversion {
+								checkQueryStorageAt(path, expression.Args[0], x.typesInfo.TypeOf(expression), false)
+							}
+							signature, _ := x.typesInfo.TypeOf(expression.Fun).(*types.Signature)
+							if function, ok := called.(*types.Func); ok {
+								declared := function.Type().(*types.Signature)
+								if declared.TypeParams() != nil && declared.TypeParams().Len() != 0 {
+									signature = declared
+								}
+							}
+							if signature != nil {
+								for argumentIndex, argument := range expression.Args {
+									parameterIndex := argumentIndex
+									if signature.Variadic() && parameterIndex >= signature.Params().Len()-1 {
+										parameterIndex = signature.Params().Len() - 1
+									}
+									if parameterIndex >= 0 && parameterIndex < signature.Params().Len() {
+										parameterType := signature.Params().At(parameterIndex).Type()
+										if signature.Variadic() && parameterIndex == signature.Params().Len()-1 {
+											if slice, ok := types.Unalias(parameterType).(*types.Slice); ok {
+												parameterType = slice.Elem()
+											}
+										}
+										checkQueryStorageAt(path, argument, parameterType, false)
+									}
+								}
+							}
+							for _, argument := range expression.Args {
+								if !exactURLValuesCarrierType(x.typesInfo.TypeOf(argument)) {
+									continue
+								}
+								if builtin, ok := called.(*types.Builtin); ok {
+									if builtin.Name() == "append" {
+										checkQueryStorageAt(path, argument, x.typesInfo.TypeOf(argument), true)
+									}
+									continue
+								}
+								if !exactIdentity && !x.exactQueryHelper(called) {
+									add(path, argument, "url.Values may only be passed to an exact reviewed query helper")
+								}
+							}
+						case *ast.FuncLit:
+							signature, _ := x.typesInfo.TypeOf(expression.Type).(*types.Signature)
+							if signature != nil {
+								ast.Inspect(expression.Body, func(descendant ast.Node) bool {
+									if nested, ok := descendant.(*ast.FuncLit); ok && nested != expression {
+										return false
+									}
+									returned, ok := descendant.(*ast.ReturnStmt)
+									if !ok {
+										return true
+									}
+									for resultIndex, result := range returned.Results {
+										if resultIndex < signature.Results().Len() {
+											checkQueryStorageAt(path, result, signature.Results().At(resultIndex).Type(), false)
+										}
+									}
+									return true
+								})
+							}
+						case *ast.TypeAssertExpr:
+							if exactURLValuesCarrierType(x.typesInfo.TypeOf(expression.Type)) {
+								add(path, expression, "url.Values may not be recovered from an interface")
+							}
+						case *ast.CaseClause:
+							for _, caseType := range expression.List {
+								if exactURLValuesCarrierType(x.typesInfo.TypeOf(caseType)) {
+									add(path, caseType, "url.Values type-switch recovery is forbidden")
+								}
+							}
+						case *ast.CompositeLit:
+							checkCompositeQueryStorageAt(path, expression)
 						}
 						return true
 					})
@@ -1061,6 +1230,9 @@ func (x *extractor) validateStrictSourcePolicy() error {
 				}
 				add(path, source, message)
 			}
+			checkQueryStorage := func(source ast.Expr, destination types.Type, nested bool) {
+				checkQueryStorageAt(path, source, destination, nested)
+			}
 
 			ast.Inspect(fn.Body, func(node ast.Node) bool {
 				switch item := node.(type) {
@@ -1071,10 +1243,16 @@ func (x *extractor) validateStrictSourcePolicy() error {
 					if isSensitiveHTTPType(x.typesInfo.TypeOf(item.Type)) && !x.isReviewedHTTPTransportAssertion(item, fn) {
 						add(path, item, "HTTP transport may only be recovered from an interface by the exact reviewed transport assertion")
 					}
+					if exactURLValuesCarrierType(x.typesInfo.TypeOf(item.Type)) {
+						add(path, item, "url.Values may not be recovered from an interface")
+					}
 				case *ast.CaseClause:
 					for _, expression := range item.List {
 						if x.isClientType(x.typesInfo.TypeOf(expression)) || isSensitiveHTTPType(x.typesInfo.TypeOf(expression)) {
 							add(path, expression, "Client and HTTP transport type-switch recovery is forbidden")
+						}
+						if exactURLValuesCarrierType(x.typesInfo.TypeOf(expression)) {
+							add(path, expression, "url.Values type-switch recovery is forbidden")
 						}
 					}
 				case *ast.FuncLit:
@@ -1092,7 +1270,9 @@ func (x *extractor) validateStrictSourcePolicy() error {
 						}
 						for index, source := range returned.Results {
 							if index < signature.Results().Len() {
-								checkErasure(source, signature.Results().At(index).Type(), "returning Client as an interface is forbidden; HTTP transports may not be returned as an interface or type parameter", nil)
+								destination := signature.Results().At(index).Type()
+								checkErasure(source, destination, "returning Client as an interface is forbidden; HTTP transports may not be returned as an interface or type parameter", nil)
+								checkQueryStorage(source, destination, false)
 							}
 						}
 						return true
@@ -1155,10 +1335,21 @@ func (x *extractor) validateStrictSourcePolicy() error {
 					if (x.isNetHTTPTransportObject(object) || x.reflectDynamicDispatch(object)) && (!selectorIdentifier || parentSelector.Sel != item) {
 						add(path, item, "raw net/http transport or reflective dispatch function may not be used as a value")
 					}
+				case *ast.SendStmt:
+					channel, _ := types.Unalias(x.typesInfo.TypeOf(item.Chan)).(*types.Chan)
+					if channel != nil {
+						checkQueryStorage(item.Value, channel.Elem(), true)
+					}
 				case *ast.AssignStmt:
 					for index, source := range item.Rhs {
 						if index < len(item.Lhs) {
-							checkErasure(source, x.originalErasureDestination(item.Lhs[index]), "Client-to-interface assignment is forbidden; HTTP transports may not be assigned to an interface or type parameter", item.Lhs[index])
+							left := item.Lhs[index]
+							destination := x.originalErasureDestination(left)
+							checkErasure(source, destination, "Client-to-interface assignment is forbidden; HTTP transports may not be assigned to an interface or type parameter", left)
+							_, indexed := left.(*ast.IndexExpr)
+							selector, selected := left.(*ast.SelectorExpr)
+							nested := indexed || (selected && x.typesInfo.Selections[selector] != nil && x.typesInfo.Selections[selector].Kind() == types.FieldVal)
+							checkQueryStorage(source, destination, nested)
 						}
 					}
 				case *ast.DeclStmt:
@@ -1173,7 +1364,9 @@ func (x *extractor) validateStrictSourcePolicy() error {
 						}
 						for index, source := range values.Values {
 							if index < len(values.Names) {
-								checkErasure(source, x.typesInfo.TypeOf(values.Names[index]), "Client-to-interface assignment is forbidden; HTTP transports may not be stored in an interface or type parameter", values.Names[index])
+								destination := x.typesInfo.TypeOf(values.Names[index])
+								checkErasure(source, destination, "Client-to-interface assignment is forbidden; HTTP transports may not be stored in an interface or type parameter", values.Names[index])
+								checkQueryStorage(source, destination, false)
 							}
 						}
 					}
@@ -1183,14 +1376,20 @@ func (x *extractor) validateStrictSourcePolicy() error {
 						signature := function.Type().(*types.Signature)
 						for index, source := range item.Results {
 							if index < signature.Results().Len() {
-								checkErasure(source, signature.Results().At(index).Type(), "returning Client as an interface is forbidden; HTTP transports may not be returned as an interface or type parameter", nil)
+								destination := signature.Results().At(index).Type()
+								checkErasure(source, destination, "returning Client as an interface is forbidden; HTTP transports may not be returned as an interface or type parameter", nil)
+								checkQueryStorage(source, destination, false)
 							}
 						}
 					}
 				case *ast.CallExpr:
 					called := calledFunctionObject(x.typesInfo, item.Fun)
-					urlValuesConversion := len(item.Args) == 1 && x.typesInfo.Types[item.Fun].IsType() && exactURLValuesCarrierType(x.typesInfo.TypeOf(item))
-					exactURLValuesIdentity := urlValuesConversion && types.Identical(types.Unalias(x.typesInfo.TypeOf(item)), types.Unalias(x.typesInfo.TypeOf(item.Args[0])))
+					isConversion := len(item.Args) == 1 && x.typesInfo.Types[item.Fun].IsType()
+					urlValuesConversion := isConversion && exactURLValuesCarrierType(x.typesInfo.TypeOf(item))
+					exactURLValuesIdentity := urlValuesConversion && exactURLValuesFlow(x.typesInfo.TypeOf(item.Args[0]), x.typesInfo.TypeOf(item))
+					if isConversion {
+						checkQueryStorage(item.Args[0], x.typesInfo.TypeOf(item), false)
+					}
 					if urlValuesConversion && !exactURLValuesIdentity {
 						// A conversion from a map, defined type, pointer, or type parameter can
 						// hide dynamic-key mutation before the value regains url.Values methods.
@@ -1245,7 +1444,13 @@ func (x *extractor) validateStrictSourcePolicy() error {
 									}
 								}
 								checkErasure(argument, parameterType, "passing Client to an interface parameter is forbidden; HTTP transports may not be passed to an interface or type parameter", nil)
+								checkQueryStorage(argument, parameterType, false)
 							}
+						}
+					}
+					if builtin, ok := called.(*types.Builtin); ok && builtin.Name() == "append" && len(item.Args) > 1 {
+						for _, argument := range item.Args[1:] {
+							checkQueryStorage(argument, x.typesInfo.TypeOf(argument), true)
 						}
 					}
 					for _, argument := range item.Args {
@@ -1276,6 +1481,7 @@ func (x *extractor) validateStrictSourcePolicy() error {
 						}
 					}
 				case *ast.CompositeLit:
+					checkCompositeQueryStorageAt(path, item)
 					if x.isURLValuesExpr(item) {
 						for _, element := range item.Elts {
 							if pair, ok := element.(*ast.KeyValueExpr); ok {
@@ -1320,7 +1526,8 @@ func (x *extractor) validateStrictSourcePolicy() error {
 								}
 							}
 							if fieldIndex >= 0 && fieldIndex < composite.NumFields() {
-								checkErasure(valueExpression, composite.Field(fieldIndex).Type(), "storing Client in an interface field is forbidden; HTTP transports may not be stored in an interface or type-parameter field", nil)
+								fieldType := composite.Field(fieldIndex).Type()
+								checkErasure(valueExpression, fieldType, "storing Client in an interface field is forbidden; HTTP transports may not be stored in an interface or type-parameter field", nil)
 							}
 						}
 					}
