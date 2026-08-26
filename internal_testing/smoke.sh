@@ -190,6 +190,21 @@ echo '=== APPLY ==='
 APPLY_STARTED=1
 terraform apply -auto-approve tfplan
 
+if [ -f datasource_agent_structured_parity.tf ]; then
+  echo '=== AGENT SINGLE/LIST STRUCTURED PARITY ==='
+  terraform output -json ds_agent_structured_projection >agent-single-projection.json
+  terraform output -json ds_agents_structured_parity >agent-list-projection.json
+  python3 - agent-single-projection.json agent-list-projection.json <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as stream:
+    single = json.load(stream, parse_int=int)
+with open(sys.argv[2], encoding="utf-8") as stream:
+    listed = json.load(stream, parse_int=int)
+if single != listed:
+    raise SystemExit("Single-agent and list-agent structured projections differ.")
+PY
+fi
+
 STEADY_ARGS=
 if [ "${SMOKE_CREDENTIAL_IMPORT:-}" = "1" ]; then
   echo '=== CREDENTIAL SOURCE-FREE IMPORT ==='

@@ -26,13 +26,6 @@ locals {
   }
 }
 
-check "agent_structured_single_list_parity" {
-  assert {
-    condition     = nonsensitive(local.agent_structured_single_projection == local.agent_structured_list_projection)
-    error_message = "Single-agent and list-agent structured projections must be identical for the target agent."
-  }
-}
-
 output "ds_agents_structured_parity" {
   value     = local.agent_structured_list_projection
   sensitive = true
