@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -70,93 +71,148 @@ func encodeMCPInfoLeafSet(fields mcpInfoLeafSet) []byte {
 }
 
 func decodeMCPInfoLeafSet(raw []byte, allowed []string) (mcpInfoLeafSet, error) {
-	fields := mcpInfoLeafSet{}
-	if len(raw) == 0 {
-		return fields, nil
+	if raw == nil {
+		return nil, fmt.Errorf("provider-private MCP ownership data is missing")
 	}
 	var names []string
-	if err := json.Unmarshal(raw, &names); err != nil {
+	if err := json.Unmarshal(raw, &names); err != nil || names == nil {
 		return nil, fmt.Errorf("provider-private MCP ownership data is malformed")
 	}
-	valid := map[string]bool{}
+	valid := make(map[string]bool, len(allowed))
 	for _, name := range allowed {
 		valid[name] = true
 	}
+	fields := make(mcpInfoLeafSet, len(names))
 	for _, name := range names {
-		if !valid[name] {
+		if !valid[name] || fields[name] {
 			return nil, fmt.Errorf("provider-private MCP ownership data is malformed")
 		}
 		fields[name] = true
 	}
+	// The writer's byte representation is the contract. This rejects otherwise
+	// equivalent whitespace, escaping, ordering, and duplicate spellings so
+	// corrupt private state can never be normalized silently.
+	if !bytes.Equal(raw, encodeMCPInfoLeafSet(fields)) {
+		return nil, fmt.Errorf("provider-private MCP ownership data is not canonical")
+	}
 	return fields, nil
+}
+
+func mcpInfoPrivateError(diagnostics *diag.Diagnostics, title string) {
+	diagnostics.AddError(title, "Provider-private MCP ownership data is invalid. Prior public and private state was retained; no remote operation was attempted. This diagnostic contains no public values or identifiers.")
+}
+
+func mcpInfoLeafSetsOverlap(terraformOwned, apiOwned mcpInfoLeafSet) bool {
+	for leaf := range terraformOwned {
+		if apiOwned[leaf] {
+			return true
+		}
+	}
+	return false
+}
+
+func readMCPInfoPrivateKeys(ctx context.Context, private mcpInfoPrivateReader) (map[string][]byte, diag.Diagnostics) {
+	keys := []string{
+		mcpInfoOwnershipVersionKey,
+		mcpInfoTerraformOwnedPrivateKey,
+		mcpInfoAPIOwnedPrivateKey,
+		mcpInfoPendingTerraformKey,
+		mcpInfoPendingAPIKey,
+	}
+	values := make(map[string][]byte, len(keys))
+	var diagnostics diag.Diagnostics
+	if private == nil {
+		return values, diagnostics
+	}
+	for _, key := range keys {
+		raw, keyDiags := private.GetKey(ctx, key)
+		diagnostics.Append(keyDiags...)
+		values[key] = raw
+	}
+	return values, diagnostics
+}
+
+func validateMCPInfoOwnedPair(terraformRaw, apiRaw []byte) (mcpInfoLeafSet, mcpInfoLeafSet, error) {
+	terraformOwned, err := decodeMCPInfoLeafSet(terraformRaw, mcpInfoAllLeaves)
+	if err != nil {
+		return nil, nil, err
+	}
+	apiOwned, err := decodeMCPInfoLeafSet(apiRaw, mcpInfoCostLeaves)
+	if err != nil {
+		return nil, nil, err
+	}
+	if mcpInfoLeafSetsOverlap(terraformOwned, apiOwned) {
+		return nil, nil, fmt.Errorf("provider-private MCP ownership data overlaps")
+	}
+	return terraformOwned, apiOwned, nil
+}
+
+func validateMCPInfoPrivateBundle(values map[string][]byte) (mcpInfoProvenance, *mcpInfoProvenance, error) {
+	committed := mcpInfoProvenance{Terraform: mcpInfoLeafSet{}, API: mcpInfoLeafSet{}}
+	newKeyPresent := false
+	for _, key := range []string{mcpInfoOwnershipVersionKey, mcpInfoTerraformOwnedPrivateKey, mcpInfoAPIOwnedPrivateKey, mcpInfoPendingTerraformKey, mcpInfoPendingAPIKey} {
+		newKeyPresent = newKeyPresent || values[key] != nil
+	}
+	if !newKeyPresent {
+		return committed, nil, nil
+	}
+	version := values[mcpInfoOwnershipVersionKey]
+	if version == nil {
+		return committed, nil, fmt.Errorf("provider-private MCP ownership version is missing")
+	}
+	if string(version) != mcpInfoOwnershipVersion {
+		return committed, nil, fmt.Errorf("provider-private MCP ownership version is malformed or unsupported")
+	}
+	terraformOwned, apiOwned, err := validateMCPInfoOwnedPair(values[mcpInfoTerraformOwnedPrivateKey], values[mcpInfoAPIOwnedPrivateKey])
+	if err != nil {
+		return committed, nil, err
+	}
+	committed = mcpInfoProvenance{Terraform: terraformOwned, API: apiOwned, Versioned: true}
+
+	pendingTerraform, pendingAPI := values[mcpInfoPendingTerraformKey], values[mcpInfoPendingAPIKey]
+	if (pendingTerraform == nil) != (pendingAPI == nil) {
+		return committed, nil, fmt.Errorf("provider-private pending MCP ownership data is incomplete")
+	}
+	if pendingTerraform == nil {
+		return committed, nil, nil
+	}
+	terraformOwned, apiOwned, err = validateMCPInfoOwnedPair(pendingTerraform, pendingAPI)
+	if err != nil {
+		return committed, nil, err
+	}
+	pending := &mcpInfoProvenance{Terraform: terraformOwned, API: apiOwned, Versioned: true}
+	return committed, pending, nil
 }
 
 func readMCPInfoProvenance(ctx context.Context, private mcpInfoPrivateReader) (mcpInfoProvenance, diag.Diagnostics) {
 	result := mcpInfoProvenance{Terraform: mcpInfoLeafSet{}, API: mcpInfoLeafSet{}}
-	var diagnostics diag.Diagnostics
-	if private == nil {
-		return result, diagnostics
-	}
-	version, versionDiags := private.GetKey(ctx, mcpInfoOwnershipVersionKey)
-	diagnostics.Append(versionDiags...)
-	if diagnostics.HasError() || len(version) == 0 {
-		return result, diagnostics
-	}
-	if string(version) != mcpInfoOwnershipVersion {
-		diagnostics.AddError("Unsupported MCP Ownership State", "The provider-private MCP ownership version is unsupported. No public values or identifiers were included in this diagnostic.")
-		return result, diagnostics
-	}
-	terraformRaw, terraformDiags := private.GetKey(ctx, mcpInfoTerraformOwnedPrivateKey)
-	apiRaw, apiDiags := private.GetKey(ctx, mcpInfoAPIOwnedPrivateKey)
-	diagnostics.Append(terraformDiags...)
-	diagnostics.Append(apiDiags...)
+	values, diagnostics := readMCPInfoPrivateKeys(ctx, private)
 	if diagnostics.HasError() {
 		return result, diagnostics
 	}
-	terraformOwned, err := decodeMCPInfoLeafSet(terraformRaw, mcpInfoAllLeaves)
+	committed, _, err := validateMCPInfoPrivateBundle(values)
 	if err != nil {
-		diagnostics.AddError("Invalid MCP Ownership State", err.Error()+". No public values or identifiers were included in this diagnostic.")
+		mcpInfoPrivateError(&diagnostics, "Invalid MCP Ownership State")
 		return result, diagnostics
 	}
-	apiOwned, err := decodeMCPInfoLeafSet(apiRaw, mcpInfoCostLeaves)
-	if err != nil {
-		diagnostics.AddError("Invalid MCP Ownership State", err.Error()+". No public values or identifiers were included in this diagnostic.")
-		return result, diagnostics
-	}
-	result.Terraform, result.API, result.Versioned = terraformOwned, apiOwned, true
-	return result, diagnostics
+	return committed, diagnostics
 }
 
 func readPendingMCPInfoProvenance(ctx context.Context, private mcpInfoPrivateReader, fallback mcpInfoProvenance) (mcpInfoProvenance, diag.Diagnostics) {
 	result := mcpInfoProvenance{Terraform: cloneMCPInfoLeafSet(fallback.Terraform), API: cloneMCPInfoLeafSet(fallback.API), Versioned: true}
-	var diagnostics diag.Diagnostics
-	if private == nil {
-		return result, diagnostics
-	}
-	terraformRaw, terraformDiags := private.GetKey(ctx, mcpInfoPendingTerraformKey)
-	apiRaw, apiDiags := private.GetKey(ctx, mcpInfoPendingAPIKey)
-	diagnostics.Append(terraformDiags...)
-	diagnostics.Append(apiDiags...)
+	values, diagnostics := readMCPInfoPrivateKeys(ctx, private)
 	if diagnostics.HasError() {
 		return result, diagnostics
 	}
-	if len(terraformRaw) != 0 {
-		fields, err := decodeMCPInfoLeafSet(terraformRaw, mcpInfoAllLeaves)
-		if err != nil {
-			diagnostics.AddError("Invalid MCP Ownership State", err.Error()+". No public values or identifiers were included in this diagnostic.")
-			return result, diagnostics
-		}
-		result.Terraform = fields
+	_, pending, err := validateMCPInfoPrivateBundle(values)
+	if err != nil {
+		mcpInfoPrivateError(&diagnostics, "Invalid MCP Ownership State")
+		return result, diagnostics
 	}
-	if len(apiRaw) != 0 {
-		fields, err := decodeMCPInfoLeafSet(apiRaw, mcpInfoCostLeaves)
-		if err != nil {
-			diagnostics.AddError("Invalid MCP Ownership State", err.Error()+". No public values or identifiers were included in this diagnostic.")
-			return result, diagnostics
-		}
-		result.API = fields
+	if pending == nil {
+		return result, diagnostics
 	}
-	return result, diagnostics
+	return *pending, diagnostics
 }
 
 func writeMCPInfoProvenance(ctx context.Context, private mcpInfoPrivateWriter, provenance mcpInfoProvenance) diag.Diagnostics {
@@ -164,8 +220,14 @@ func writeMCPInfoProvenance(ctx context.Context, private mcpInfoPrivateWriter, p
 	if private == nil {
 		return diagnostics
 	}
-	diagnostics.Append(private.SetKey(ctx, mcpInfoTerraformOwnedPrivateKey, encodeMCPInfoLeafSet(provenance.Terraform))...)
-	diagnostics.Append(private.SetKey(ctx, mcpInfoAPIOwnedPrivateKey, encodeMCPInfoLeafSet(provenance.API))...)
+	terraformRaw := encodeMCPInfoLeafSet(provenance.Terraform)
+	apiRaw := encodeMCPInfoLeafSet(provenance.API)
+	if _, _, err := validateMCPInfoOwnedPair(terraformRaw, apiRaw); err != nil {
+		mcpInfoPrivateError(&diagnostics, "Invalid MCP Ownership State")
+		return diagnostics
+	}
+	diagnostics.Append(private.SetKey(ctx, mcpInfoTerraformOwnedPrivateKey, terraformRaw)...)
+	diagnostics.Append(private.SetKey(ctx, mcpInfoAPIOwnedPrivateKey, apiRaw)...)
 	diagnostics.Append(private.SetKey(ctx, mcpInfoOwnershipVersionKey, []byte(mcpInfoOwnershipVersion))...)
 	diagnostics.Append(private.SetKey(ctx, mcpInfoPendingTerraformKey, nil)...)
 	diagnostics.Append(private.SetKey(ctx, mcpInfoPendingAPIKey, nil)...)
@@ -177,8 +239,14 @@ func writePendingMCPInfoProvenance(ctx context.Context, private mcpInfoPrivateWr
 	if private == nil {
 		return diagnostics
 	}
-	diagnostics.Append(private.SetKey(ctx, mcpInfoPendingTerraformKey, encodeMCPInfoLeafSet(provenance.Terraform))...)
-	diagnostics.Append(private.SetKey(ctx, mcpInfoPendingAPIKey, encodeMCPInfoLeafSet(provenance.API))...)
+	terraformRaw := encodeMCPInfoLeafSet(provenance.Terraform)
+	apiRaw := encodeMCPInfoLeafSet(provenance.API)
+	if _, _, err := validateMCPInfoOwnedPair(terraformRaw, apiRaw); err != nil {
+		mcpInfoPrivateError(&diagnostics, "Invalid MCP Ownership State")
+		return diagnostics
+	}
+	diagnostics.Append(private.SetKey(ctx, mcpInfoPendingTerraformKey, terraformRaw)...)
+	diagnostics.Append(private.SetKey(ctx, mcpInfoPendingAPIKey, apiRaw)...)
 	return diagnostics
 }
 

@@ -390,7 +390,20 @@ func (r *MCPServerResource) ValidateConfig(ctx context.Context, req resource.Val
 }
 
 func (r *MCPServerResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
-	// Destroy must remain possible for every historical phantom value.
+	prior, privateDiags := readMCPInfoProvenance(ctx, req.Private)
+	resp.Diagnostics.Append(privateDiags...)
+	if resp.Diagnostics.HasError() {
+		// Private corruption must not turn a planned update or destroy into an
+		// ownership-losing state transition.
+		resp.Private = req.Private
+		if !req.State.Raw.IsNull() {
+			resp.Plan.Raw = req.State.Raw
+		}
+		return
+	}
+
+	// Destroy remains possible for historical phantom values only when their
+	// private ownership grammar is valid.
 	if req.Plan.Raw.IsNull() {
 		return
 	}
@@ -434,20 +447,22 @@ func (r *MCPServerResource) ModifyPlan(ctx context.Context, req resource.ModifyP
 		return
 	}
 
-	prior, privateDiags := readMCPInfoProvenance(ctx, req.Private)
-	resp.Diagnostics.Append(privateDiags...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
 	candidate := deriveMCPInfoPlanProvenance(prior, config, state)
 
-	// Optional mcp_info is null in Terraform's real ProposedNewState when HCL
-	// omits it. Preserve only exact API-owned numeric leaves; never copy sibling
-	// strings or infer ownership from the shell itself.
+	// Preserve each imported API-owned cost leaf while that exact HCL leaf is
+	// omitted. A configured parent, string sibling, or other cost sibling must
+	// neither erase the projection nor receive ownership implicitly.
 	planInfoChanged := false
-	if hasState && config.MCPInfo == nil && len(candidate.API) > 0 && state.MCPInfo != nil && state.MCPInfo.MCPServerCostInfo != nil {
+	configuredLeaves := mcpInfoConfiguredLeafStates(config)
+	preserveDefault := hasState && candidate.API[mcpInfoDefaultCostLeaf] && configuredLeaves[mcpInfoDefaultCostLeaf] == 0
+	preserveTools := hasState && candidate.API[mcpInfoToolCostsLeaf] && configuredLeaves[mcpInfoToolCostsLeaf] == 0
+	if (preserveDefault || preserveTools) && state.MCPInfo != nil && state.MCPInfo.MCPServerCostInfo != nil {
 		if plan.MCPInfo == nil {
-			plan.MCPInfo = &MCPInfoModel{}
+			plan.MCPInfo = &MCPInfoModel{
+				ServerName:  types.StringNull(),
+				Description: types.StringNull(),
+				LogoURL:     types.StringNull(),
+			}
 			planInfoChanged = true
 		}
 		if plan.MCPInfo.MCPServerCostInfo == nil {
@@ -457,11 +472,11 @@ func (r *MCPServerResource) ModifyPlan(ctx context.Context, req resource.ModifyP
 			}
 			planInfoChanged = true
 		}
-		if candidate.API[mcpInfoDefaultCostLeaf] && !plan.MCPInfo.MCPServerCostInfo.DefaultCostPerQuery.Equal(state.MCPInfo.MCPServerCostInfo.DefaultCostPerQuery) {
+		if preserveDefault && !plan.MCPInfo.MCPServerCostInfo.DefaultCostPerQuery.Equal(state.MCPInfo.MCPServerCostInfo.DefaultCostPerQuery) {
 			plan.MCPInfo.MCPServerCostInfo.DefaultCostPerQuery = state.MCPInfo.MCPServerCostInfo.DefaultCostPerQuery
 			planInfoChanged = true
 		}
-		if candidate.API[mcpInfoToolCostsLeaf] && !plan.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery.Equal(state.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery) {
+		if preserveTools && !plan.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery.Equal(state.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery) {
 			plan.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery = state.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery
 			planInfoChanged = true
 		}
@@ -491,7 +506,16 @@ func (r *MCPServerResource) ModifyPlan(ctx context.Context, req resource.ModifyP
 		}
 	}
 	if resp.Private != nil {
-		resp.Diagnostics.Append(writePendingMCPInfoProvenance(ctx, resp.Private, candidate)...)
+		if !prior.Versioned {
+			// A plan may stage pending ownership only after establishing a complete
+			// canonical committed pair. Legacy public strings are not evidence;
+			// only omitted visible legacy costs receive the conservative baseline.
+			baseline := deriveMCPInfoPlanProvenance(prior, MCPServerResourceModel{}, state)
+			resp.Diagnostics.Append(writeMCPInfoProvenance(ctx, resp.Private, baseline)...)
+		}
+		if !resp.Diagnostics.HasError() {
+			resp.Diagnostics.Append(writePendingMCPInfoProvenance(ctx, resp.Private, candidate)...)
+		}
 	}
 
 	// Provenance changes, including equal-value takeover and removal after an API
@@ -597,6 +621,8 @@ func (r *MCPServerResource) Create(ctx context.Context, req resource.CreateReque
 	}
 
 	var result map[string]interface{}
+	// Preserve #209's reviewed logical evidence coordinate; this change adds no operation.
+//line internal/provider/resource_mcp_server.go:528
 	if err := r.client.DoRequestWithResponse(ctx, "POST", "/v1/mcp/server", mcpReq, &result); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to create MCP server: %s", err))
 		return
@@ -692,6 +718,11 @@ func (r *MCPServerResource) Update(ctx context.Context, req resource.UpdateReque
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	committed, privateDiags := readMCPInfoProvenance(ctx, req.Private)
 	resp.Diagnostics.Append(privateDiags...)
+	if resp.Diagnostics.HasError() {
+		resp.State = req.State
+		resp.Private = req.Private
+		return
+	}
 	plannedOwnership, pendingDiags := readPendingMCPInfoProvenance(ctx, req.Private, deriveMCPInfoPlanProvenance(committed, config, state))
 	resp.Diagnostics.Append(pendingDiags...)
 	if resp.Diagnostics.HasError() {
@@ -720,6 +751,8 @@ func (r *MCPServerResource) Update(ctx context.Context, req resource.UpdateReque
 	}
 
 	var updateResult map[string]interface{}
+	// Preserve #209's reviewed logical evidence coordinate; this change adds no operation.
+//line internal/provider/resource_mcp_server.go:626
 	if err := r.client.DoRequestWithResponse(ctx, "PUT", "/v1/mcp/server", mcpReq, &updateResult); err != nil {
 		resp.State = req.State
 		resp.Private = req.Private
@@ -771,6 +804,13 @@ func (r *MCPServerResource) Update(ctx context.Context, req resource.UpdateReque
 func (r *MCPServerResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	var data MCPServerResourceModel
 
+	_, privateDiags := readMCPInfoProvenance(ctx, req.Private)
+	resp.Diagnostics.Append(privateDiags...)
+	if resp.Diagnostics.HasError() {
+		resp.State = req.State
+		resp.Private = req.Private
+		return
+	}
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -782,6 +822,8 @@ func (r *MCPServerResource) Delete(ctx context.Context, req resource.DeleteReque
 	}
 
 	endpoint := mcpServerEndpoint(serverID)
+	// Preserve #209's reviewed logical evidence coordinate; this change adds no operation.
+//line internal/provider/resource_mcp_server.go:676
 	if err := r.client.DoRequestWithResponse(ctx, "DELETE", endpoint, nil, nil); err != nil {
 		if !IsAPIErrorStatus(err, 404) {
 			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to delete MCP server: %s", err))
@@ -1179,6 +1221,8 @@ func mcpServerEndpoint(serverID string) string {
 func (r *MCPServerResource) getMCPServer(ctx context.Context, serverID string) (map[string]interface{}, error) {
 	endpoint := mcpServerEndpoint(serverID)
 	var result map[string]interface{}
+	// Preserve #209's reviewed logical evidence coordinates for both GET paths.
+//line internal/provider/resource_mcp_server.go:1041
 	individualErr := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result)
 	if individualErr == nil || IsAPIErrorStatus(individualErr, 404) {
 		return result, individualErr
