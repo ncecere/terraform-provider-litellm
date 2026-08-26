@@ -29,6 +29,11 @@ class AuthoritativeAbsenceTests(unittest.TestCase):
                 "while attempting to read during import the fallback.",
                 "litellm_fallback",
             ),
+            (
+                "Error: Client Error\nUnable to read tag: API request failed with "
+                "status 500: 404: Tags not found: ['test-tag-minimal']",
+                "litellm_tag",
+            ),
         )
         for diagnostic, resource_type in accepted:
             with self.subTest(diagnostic=diagnostic, resource_type=resource_type):
@@ -48,6 +53,20 @@ class AuthoritativeAbsenceTests(unittest.TestCase):
                 self.assertFalse(
                     absence.is_authoritative_not_found(diagnostic, "litellm_team")
                 )
+        self.assertFalse(
+            absence.is_authoritative_not_found(
+                "Unable to read tag: API request failed with status 500: "
+                "dependency plugin not found",
+                "litellm_tag",
+            )
+        )
+        self.assertFalse(
+            absence.is_authoritative_not_found(
+                "Unable to read tag: API request failed with status 500: 404: "
+                "Tags not found: []",
+                "litellm_tag",
+            )
+        )
 
     def test_forbidden_or_malformed_evidence_fails_closed(self):
         self.assertFalse(
