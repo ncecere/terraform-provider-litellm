@@ -577,6 +577,226 @@ func bad(values url.Values, value string) string {
 	}
 }
 
+func TestExtractorRejectsRangedTransformedProvenance(t *testing.T) {
+	fixtures := map[string]string{
+		"slice-literal": `package provider
+import "strings"
+func bad(value string) string {
+ for _, ranged := range []string{strings.ReplaceAll(value, "/", "%2F")} {
+  return endpointWithPathSegment("/things/", ranged, "")
+ }
+ return endpointWithPathSegment("/things/", "safe", "")
+}
+`,
+		"slice-alias-mutation": `package provider
+import "strings"
+func bad(value string) string {
+ values := []string{value}
+ alias := values
+ alias[0] = strings.ReplaceAll(value, "/", "%2F")
+ for _, ranged := range values {
+  return endpointWithPathSegment("/things/", ranged, "")
+ }
+ return endpointWithPathSegment("/things/", "safe", "")
+}
+`,
+		"array-alias": `package provider
+import "strings"
+func bad(value string) string {
+ values := [1]string{strings.ReplaceAll(value, "/", "%2F")}
+ alias := values
+ for _, ranged := range alias {
+  return endpointWithPathSegment("/things/", ranged, "")
+ }
+ return endpointWithPathSegment("/things/", "safe", "")
+}
+`,
+		"map-key": `package provider
+import "strings"
+func bad(value string) string {
+ values := map[string]struct{}{strings.ReplaceAll(value, "/", "%2F"): {}}
+ for ranged := range values {
+  return endpointWithPathSegment("/things/", ranged, "")
+ }
+ return endpointWithPathSegment("/things/", "safe", "")
+}
+`,
+		"map-value-alias": `package provider
+import "strings"
+func bad(value string) string {
+ values := map[int]string{1: value}
+ alias := values
+ alias[1] = strings.ReplaceAll(value, "/", "%2F")
+ for _, ranged := range values {
+  return endpointWithPathSegment("/things/", ranged, "")
+ }
+ return endpointWithPathSegment("/things/", "safe", "")
+}
+`,
+	}
+	for name, fixture := range fixtures {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeHTTPFixtureSupport(t, dir)
+			writeFixture(t, dir, "bad.go", fixture)
+			if _, err := ExtractProvider(dir); err == nil || !strings.Contains(err.Error(), "raw-input provenance") {
+				t.Fatalf("ranged transformed identity was accepted: %v", err)
+			}
+		})
+	}
+}
+
+func TestExtractorAllowsRangedRawProvenance(t *testing.T) {
+	dir := t.TempDir()
+	writeHTTPFixtureSupport(t, dir)
+	writeFixture(t, dir, "safe.go", `package provider
+func safe(value string) string {
+ values := []string{value, "literal"}
+ alias := values
+ for _, ranged := range alias {
+  return endpointWithPathSegment("/things/", ranged, "")
+ }
+ return endpointWithPathSegment("/things/", "safe", "")
+}
+`)
+	if _, err := ExtractProvider(dir); err != nil {
+		t.Fatalf("safe ranged raw provenance was rejected: %v", err)
+	}
+}
+
+func TestExtractorRejectsAliasedEndpointDispatchWrappers(t *testing.T) {
+	fixtures := map[string]string{
+		"function-alias": `package provider
+import "strings"
+func thingPath(value string) string { return endpointWithPathSegment("/things/", value, "") }
+func bad(value string) string {
+ alias := thingPath
+ return alias(strings.ReplaceAll(value, "/", "%2F"))
+}
+`,
+		"alias-chain": `package provider
+import "strings"
+func thingPath(value string) string { return endpointWithPathSegment("/things/", value, "") }
+func bad(value string) string {
+ first := thingPath
+ second := first
+ return second(strings.ReplaceAll(value, "/", "%2F"))
+}
+`,
+		"recursive-wrapper-alias": `package provider
+import "strings"
+func thingPath(value string) string { return endpointWithPathSegment("/things/", value, "") }
+func outer(value string) string { return thingPath(value) }
+func bad(value string) string {
+ alias := outer
+ return alias(strings.ReplaceAll(value, "/", "%2F"))
+}
+`,
+		"closure-alias": `package provider
+import "strings"
+func bad(value string) string {
+ alias := func(identity string) string { return endpointWithPathSegment("/things/", identity, "") }
+ return alias(strings.ReplaceAll(value, "/", "%2F"))
+}
+`,
+		"slice-storage": `package provider
+func thingPath(value string) string { return endpointWithPathSegment("/things/", value, "") }
+var bad = []func(string) string{thingPath}
+`,
+		"map-storage": `package provider
+func thingPath(value string) string { return endpointWithPathSegment("/things/", value, "") }
+var bad = map[string]func(string) string{"path": thingPath}
+`,
+	}
+	for name, fixture := range fixtures {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeHTTPFixtureSupport(t, dir)
+			writeFixture(t, dir, "bad.go", fixture)
+			if _, err := ExtractProvider(dir); err == nil || (!strings.Contains(err.Error(), "raw-input provenance") && !strings.Contains(err.Error(), "endpoint-dispatch wrappers")) {
+				t.Fatalf("aliased endpoint wrapper bypass was accepted: %v", err)
+			}
+		})
+	}
+}
+
+func TestExtractorAllowsRawEndpointDispatchAlias(t *testing.T) {
+	dir := t.TempDir()
+	writeHTTPFixtureSupport(t, dir)
+	writeFixture(t, dir, "safe.go", `package provider
+func thingPath(value string) string { return endpointWithPathSegment("/things/", value, "") }
+func safe(value string) string {
+ alias := thingPath
+ return alias(value)
+}
+`)
+	if _, err := ExtractProvider(dir); err != nil {
+		t.Fatalf("safe endpoint wrapper alias was rejected: %v", err)
+	}
+}
+
+func TestExtractorRejectsSpoofedReviewedPathHelpers(t *testing.T) {
+	fixtures := map[string]struct {
+		contains string
+		harden   string
+	}{
+		"dot-guard-always-false": {
+			contains: `func containsDotPathComponent(value string) bool { return false }`,
+			harden:   exactFixtureHardenDotSegment,
+		},
+		"dot-guard-skips-parent": {
+			contains: `func containsDotPathComponent(value string) bool {
+ for _, component := range strings.Split(value, "/") {
+  if component == "." { return true }
+ }
+ return false
+}`,
+			harden: exactFixtureHardenDotSegment,
+		},
+		"hardener-post-transform": {
+			contains: exactFixtureContainsDotPathComponent,
+			harden: `func hardenDotSegment(value string) string {
+ return strings.ReplaceAll(value, ".", "%2E")
+}`,
+		},
+		"hardener-wrong-default": {
+			contains: exactFixtureContainsDotPathComponent,
+			harden: `func hardenDotSegment(value string) string {
+ switch value {
+ case ".": return "%2E"
+ case "..": return "%2E%2E"
+ default: return value + "changed"
+ }
+}`,
+		},
+	}
+	for name, fixture := range fixtures {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeReviewedBuilderFixture(t, dir, fixture.contains, fixture.harden, "", "")
+			if _, err := ExtractProvider(dir); err == nil || (!strings.Contains(err.Error(), "dot-component guard") && !strings.Contains(err.Error(), "dot-segment hardening")) {
+				t.Fatalf("spoofed reviewed path helper was accepted: %v", err)
+			}
+		})
+	}
+}
+
+func TestExtractorRejectsAdditionalBuilderSentinels(t *testing.T) {
+	fixtures := map[string]struct{ before, after string }{
+		"before-reviewed-guard": {before: `if value == "blocked" { return invalidReviewedEndpoint }`},
+		"after-escape":          {after: `if len(value) > 100 { return invalidReviewedEndpoint }`},
+	}
+	for name, extra := range fixtures {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeReviewedBuilderFixture(t, dir, exactFixtureContainsDotPathComponent, exactFixtureHardenDotSegment, extra.before, extra.after)
+			if _, err := ExtractProvider(dir); err == nil || !strings.Contains(err.Error(), "escape result") {
+				t.Fatalf("additional identity rejection sentinel was accepted: %v", err)
+			}
+		})
+	}
+}
+
 func TestExtractorRejectsMaliciousEndpointBuilderBodies(t *testing.T) {
 	fixtures := map[string]string{
 		"discard": `func endpointWithPathCapture(prefix, value, suffix string) string {
@@ -2022,6 +2242,57 @@ func TestStaleManifestEntryFails(t *testing.T) {
 	}
 }
 
+const exactFixtureContainsDotPathComponent = `func containsDotPathComponent(value string) bool {
+ for _, component := range strings.Split(value, "/") {
+  if component == "." || component == ".." { return true }
+ }
+ return false
+}`
+
+const exactFixtureHardenDotSegment = `func hardenDotSegment(value string) string {
+ switch value {
+ case ".":
+  return "%2E"
+ case "..":
+  return "%2E%2E"
+ default:
+  return value
+ }
+}`
+
+func writeReviewedBuilderFixture(t *testing.T, dir, contains, harden, beforeEscape, afterEscape string) {
+	t.Helper()
+	writeFixture(t, dir, "builders.go", `package provider
+import (
+ "net/url"
+ "strings"
+)
+const invalidReviewedEndpoint = "/.terraform-provider-litellm-invalid-reviewed-endpoint"
+`+contains+"\n"+harden+`
+func endpointWithPathSegment(prefix, value, suffix string) string {
+ `+beforeEscape+`
+ if strings.Contains(value, "/") { return invalidReviewedEndpoint }
+ escaped := url.PathEscape(value)
+ `+afterEscape+`
+ return prefix + hardenDotSegment(escaped) + suffix
+}
+func endpointWithPathCapture(prefix, value, suffix string) string {
+ if containsDotPathComponent(value) { return invalidReviewedEndpoint }
+ escaped := url.PathEscape(value)
+ return prefix + escaped + suffix
+}
+func endpointWithFallbackPathSegment(prefix, value, suffix string) string {
+ escaped := url.PathEscape(value)
+ return prefix + hardenDotSegment(escaped) + suffix
+}
+func endpointWithQuery(path string, values url.Values) string {
+ if strings.ContainsAny(path, "?#") { panic("endpoint path must not contain a query or fragment") }
+ if len(values) == 0 { return path }
+ return path + "?" + values.Encode()
+}
+`)
+}
+
 func writeHTTPFixtureSupport(t *testing.T, dir string) {
 	t.Helper()
 	writeFixture(t, dir, "support.go", `package provider
@@ -2033,8 +2304,22 @@ import (
 const invalidReviewedEndpoint = "/.terraform-provider-litellm-invalid-reviewed-endpoint"
 type Client struct{}
 func (*Client) DoRequestWithResponse(context.Context, string, string, any, any) error { return nil }
-func hardenDotSegment(value string) string { return value }
-func containsDotPathComponent(string) bool { return false }
+func hardenDotSegment(value string) string {
+ switch value {
+ case ".":
+  return "%2E"
+ case "..":
+  return "%2E%2E"
+ default:
+  return value
+ }
+}
+func containsDotPathComponent(value string) bool {
+ for _, component := range strings.Split(value, "/") {
+  if component == "." || component == ".." { return true }
+ }
+ return false
+}
 func endpointWithPathSegment(prefix, value, suffix string) string {
  if strings.Contains(value, "/") { return invalidReviewedEndpoint }
  escaped := url.PathEscape(value)
