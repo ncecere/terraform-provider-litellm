@@ -41,6 +41,13 @@ func (e *APIError) Error() string {
 }
 
 func (c *Client) prepareRequest(ctx context.Context, method, requestPath string, body interface{}) (*http.Request, requestSafety, error) {
+	// Explicit cancellation is the only context state that precedes local
+	// request validation. A deadline still allows malformed bodies, URLs, and
+	// other terminal local configuration to fail closed before dispatch.
+	if err := ctx.Err(); errors.Is(err, context.Canceled) {
+		return nil, requestSafety{}, safeTransportFailure(context.Canceled)
+	}
+
 	var jsonBody []byte
 	if body != nil {
 		encoded, err := json.Marshal(body)
@@ -215,12 +222,16 @@ func (c *Client) doRequestWithResponseOptions(ctx context.Context, method, reque
 
 	if !accepted {
 		if readErr != nil {
+			traits := collectRawHTTPFailureTraits(readErr)
 			return false, withSafeRetrySchedule(&safeResponseError{
 				statusCode:        response.StatusCode,
 				requestID:         requestID,
 				kind:              "failed to read LiteLLM error response",
 				identity:          safeErrorIdentity(readErr),
 				retryable:         safeTemporaryResponseFailure(readErr),
+				canceled:          traits.canceled,
+				terminal:          traits.terminal(),
+				deadline:          traits.deadline,
 				safeReadTransient: safeReadTransientFailure(readErr),
 				stage:             safeResponseFailureStatusBodyRead,
 				dispatched:        true,
@@ -243,12 +254,16 @@ func (c *Client) doRequestWithResponseOptions(ctx context.Context, method, reque
 	}
 
 	if readErr != nil {
+		traits := collectRawHTTPFailureTraits(readErr)
 		return true, &safeResponseError{
 			statusCode:        response.StatusCode,
 			requestID:         requestID,
 			kind:              "failed to read LiteLLM response",
 			identity:          safeErrorIdentity(readErr),
 			retryable:         safeTemporaryResponseFailure(readErr),
+			canceled:          traits.canceled,
+			terminal:          traits.terminal(),
+			deadline:          traits.deadline,
 			safeReadTransient: safeReadTransientFailure(readErr),
 			stage:             safeResponseFailureAcceptedBodyRead,
 			dispatched:        true,

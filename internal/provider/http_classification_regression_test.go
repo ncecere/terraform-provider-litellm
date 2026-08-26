@@ -171,7 +171,6 @@ func TestSafeReadRetriesTransientAcceptedBodyReadsOnly(t *testing.T) {
 		name string
 		err  error
 	}{
-		{"timeout", context.DeadlineExceeded},
 		{"reset", syscall.ECONNRESET},
 		{"unexpected-eof", io.ErrUnexpectedEOF},
 	}

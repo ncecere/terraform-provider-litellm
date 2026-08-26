@@ -58,6 +58,7 @@ type safeTransportError struct {
 	identity          error
 	timeout           bool
 	canceled          bool
+	terminal          bool
 	deadline          bool
 	retryCategory     safeTransportRetryCategory
 	safeReadTransient bool
@@ -97,6 +98,9 @@ type safeResponseError struct {
 	kind              string
 	identity          error
 	retryable         bool
+	canceled          bool
+	terminal          bool
+	deadline          bool
 	safeReadTransient bool
 	stage             safeResponseFailureStage
 	dispatched        bool
@@ -116,154 +120,161 @@ func (e *safeResponseError) Error() string {
 func (e *safeResponseError) Unwrap() error   { return e.identity }
 func (e *safeResponseError) Temporary() bool { return e.retryable }
 
+type rawHTTPFailureTraits struct {
+	canceled       bool
+	tlsTerminal    bool
+	configTerminal bool
+	deadline       bool
+	timeout        bool
+	temporary      bool
+	reset          bool
+	transient      bool
+}
+
+// collectRawHTTPFailureTraits examines every node rather than asking
+// errors.As for the first value of a given interface type. This makes joined
+// and nested error classification independent of sibling order.
+func collectRawHTTPFailureTraits(err error) rawHTTPFailureTraits {
+	var traits rawHTTPFailureTraits
+	walkErrorTree(err, func(node error) {
+		switch node {
+		case context.Canceled:
+			traits.canceled = true
+		case context.DeadlineExceeded:
+			traits.deadline = true
+		case http.ErrSchemeMismatch, http.ErrNotSupported, errors.ErrUnsupported:
+			traits.configTerminal = true
+		case io.EOF, io.ErrUnexpectedEOF,
+			syscall.ECONNRESET, syscall.ECONNABORTED, syscall.ECONNREFUSED,
+			syscall.EPIPE, syscall.ENETDOWN, syscall.ENETUNREACH, syscall.EHOSTUNREACH:
+			traits.transient = true
+			if node == syscall.ECONNRESET {
+				traits.reset = true
+			}
+		}
+
+		switch node.(type) {
+		case x509.UnknownAuthorityError, *x509.UnknownAuthorityError,
+			x509.HostnameError, *x509.HostnameError,
+			x509.CertificateInvalidError, *x509.CertificateInvalidError,
+			x509.SystemRootsError, *x509.SystemRootsError,
+			x509.ConstraintViolationError, *x509.ConstraintViolationError,
+			x509.InsecureAlgorithmError, *x509.InsecureAlgorithmError,
+			x509.UnhandledCriticalExtension, *x509.UnhandledCriticalExtension,
+			*tls.CertificateVerificationError,
+			tls.RecordHeaderError, *tls.RecordHeaderError,
+			tls.AlertError, *tls.AlertError:
+			traits.tlsTerminal = true
+		case *http.ProtocolError,
+			net.InvalidAddrError, *net.InvalidAddrError,
+			net.UnknownNetworkError, *net.UnknownNetworkError,
+			*net.ParseError,
+			url.InvalidHostError, *url.InvalidHostError:
+			traits.configTerminal = true
+		}
+
+		if netErr, ok := node.(net.Error); ok {
+			if netErr.Timeout() {
+				traits.timeout = true
+				traits.transient = true
+			}
+			if netErr.Temporary() {
+				traits.temporary = true
+				traits.transient = true
+			}
+		}
+	})
+	return traits
+}
+
+func (t rawHTTPFailureTraits) terminal() bool {
+	return t.tlsTerminal || t.configTerminal
+}
+
+func (t rawHTTPFailureTraits) effectiveTransient() bool {
+	return !t.canceled && !t.terminal() && t.transient
+}
+
 func safeTransportFailure(err error) error {
+	traits := collectRawHTTPFailureTraits(err)
 	kind := "LiteLLM HTTP transport request failed"
 	var identity error
-	timedOut := false
-	canceled := false
-	deadline := false
 	retryCategory := safeTransportRetryNone
-	terminal := false
 
-	// Error chains, including errors.Join trees, are classified by a fixed
-	// fail-closed priority: cancellation, terminal TLS/protocol/local
-	// configuration, deadline, transient transport, then opaque local failure.
+	// Preserve every sanitized trait, then use the global fail-closed priority
+	// for the legacy message and retry contract.
 	switch {
-	case errors.Is(err, context.Canceled):
+	case traits.canceled:
 		kind = "LiteLLM HTTP request was canceled"
 		identity = context.Canceled
-		canceled = true
-	default:
-		if terminalKind, ok := terminalTransportFailure(err); ok {
-			kind = terminalKind
-			terminal = true
-			break
-		}
-		if errors.Is(err, context.DeadlineExceeded) {
-			kind = "LiteLLM HTTP request timed out"
-			identity = context.DeadlineExceeded
-			timedOut = true
-			deadline = true
-			retryCategory = safeTransportRetryTimeout
-			break
-		}
-		var netErr net.Error
-		switch {
-		case errors.As(err, &netErr) && netErr.Timeout():
-			kind = "LiteLLM HTTP request timed out"
-			identity = context.DeadlineExceeded
-			timedOut = true
-			retryCategory = safeTransportRetryTimeout
-		case errors.As(err, &netErr) && netErr.Temporary():
-			retryCategory = safeTransportRetryTemporary
-		case errors.Is(err, syscall.ECONNRESET):
-			retryCategory = safeTransportRetryConnectionReset
-		}
+	case traits.tlsTerminal:
+		kind = "LiteLLM TLS verification or protocol failed"
+	case traits.configTerminal:
+		kind = "LiteLLM HTTP transport configuration or protocol failed"
+	case traits.deadline:
+		kind = "LiteLLM HTTP request timed out"
+		identity = context.DeadlineExceeded
+		retryCategory = safeTransportRetryTimeout
+	case traits.timeout:
+		kind = "LiteLLM HTTP request timed out"
+		identity = context.DeadlineExceeded
+		retryCategory = safeTransportRetryTimeout
+	case traits.temporary:
+		retryCategory = safeTransportRetryTemporary
+	case traits.reset:
+		retryCategory = safeTransportRetryConnectionReset
 	}
+
 	return &safeTransportError{
 		kind:              kind,
 		identity:          identity,
-		timeout:           timedOut,
-		canceled:          canceled,
-		deadline:          deadline,
+		timeout:           !traits.canceled && !traits.terminal() && (traits.deadline || traits.timeout),
+		canceled:          traits.canceled,
+		terminal:          traits.terminal(),
+		deadline:          traits.deadline,
 		retryCategory:     retryCategory,
-		safeReadTransient: !terminal && (retryCategory != safeTransportRetryNone || safeReadTransientFailure(err)),
+		safeReadTransient: traits.effectiveTransient(),
 	}
 }
 
 // terminalTransportFailure recognizes typed failures for which another request
 // cannot repair the peer protocol, trust, address, or local transport setup.
-// It deliberately runs before all net.Error and errno transient traits.
 func terminalTransportFailure(err error) (string, bool) {
-	if err == nil {
-		return "", false
-	}
-
-	var unknownAuthority x509.UnknownAuthorityError
-	var hostname x509.HostnameError
-	var invalidCertificate x509.CertificateInvalidError
-	var systemRoots x509.SystemRootsError
-	var constraintViolation x509.ConstraintViolationError
-	var insecureAlgorithm x509.InsecureAlgorithmError
-	var unhandledExtension x509.UnhandledCriticalExtension
-	var verification *tls.CertificateVerificationError
-	var recordHeader tls.RecordHeaderError
-	var alert tls.AlertError
-	if errors.As(err, &unknownAuthority) || errors.As(err, &hostname) ||
-		errors.As(err, &invalidCertificate) || errors.As(err, &systemRoots) ||
-		errors.As(err, &constraintViolation) || errors.As(err, &insecureAlgorithm) ||
-		errors.As(err, &unhandledExtension) || errors.As(err, &verification) ||
-		errors.As(err, &recordHeader) || errors.As(err, &alert) {
+	traits := collectRawHTTPFailureTraits(err)
+	if traits.tlsTerminal {
 		return "LiteLLM TLS verification or protocol failed", true
 	}
-
-	var protocol *http.ProtocolError
-	var invalidAddress net.InvalidAddrError
-	var unknownNetwork net.UnknownNetworkError
-	var parse *net.ParseError
-	var invalidHost url.InvalidHostError
-	if errors.Is(err, http.ErrSchemeMismatch) || errors.Is(err, http.ErrNotSupported) ||
-		errors.Is(err, errors.ErrUnsupported) || errors.As(err, &protocol) ||
-		errors.As(err, &invalidAddress) || errors.As(err, &unknownNetwork) ||
-		errors.As(err, &parse) || errors.As(err, &invalidHost) {
+	if traits.configTerminal {
 		return "LiteLLM HTTP transport configuration or protocol failed", true
 	}
 	return "", false
 }
 
-// safeReadTransientFailure is deliberately broader than safeTransportError's
-// legacy Retryable/Temporary contract. Only the GET/HEAD safe-read layer uses
-// these additional content-free network categories. Its priority matches
-// safeTransportFailure so terminal traits cannot be masked by a joined
-// temporary error.
+// safeReadTransientFailure is deliberately broader than the legacy
+// Retryable/Temporary contract. It is consumed only by the safe-read layer.
 func safeReadTransientFailure(err error) bool {
-	if err == nil || errors.Is(err, context.Canceled) {
-		return false
-	}
-	if _, terminal := terminalTransportFailure(err); terminal {
-		return false
-	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		return true
-	}
-	var netErr net.Error
-	if errors.As(err, &netErr) && (netErr.Timeout() || netErr.Temporary()) {
-		return true
-	}
-	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
-		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNABORTED) ||
-		errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.EPIPE) ||
-		errors.Is(err, syscall.ENETDOWN) || errors.Is(err, syscall.ENETUNREACH) ||
-		errors.Is(err, syscall.EHOSTUNREACH)
+	traits := collectRawHTTPFailureTraits(err)
+	return traits.effectiveTransient() || (!traits.canceled && !traits.terminal() && traits.deadline)
 }
 
 func safeTemporaryResponseFailure(err error) bool {
-	if err == nil || errors.Is(err, context.Canceled) {
-		return false
-	}
-	if _, terminal := terminalTransportFailure(err); terminal {
-		return false
-	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		return true
-	}
-	var netErr net.Error
-	return errors.As(err, &netErr) && (netErr.Timeout() || netErr.Temporary() || errors.Is(err, syscall.ECONNRESET))
+	traits := collectRawHTTPFailureTraits(err)
+	return !traits.canceled && !traits.terminal() &&
+		(traits.deadline || traits.timeout || traits.temporary || traits.reset)
 }
 
 func safeErrorIdentity(err error) error {
-	switch {
-	case errors.Is(err, context.Canceled):
+	traits := collectRawHTTPFailureTraits(err)
+	if traits.canceled {
 		return context.Canceled
-	default:
-		if _, terminal := terminalTransportFailure(err); terminal {
-			return nil
-		}
-		if errors.Is(err, context.DeadlineExceeded) {
-			return context.DeadlineExceeded
-		}
+	}
+	if traits.terminal() {
 		return nil
 	}
+	if traits.deadline {
+		return context.DeadlineExceeded
+	}
+	return nil
 }
 
 func readBoundedBody(reader io.Reader, limit int64) ([]byte, bool, error) {

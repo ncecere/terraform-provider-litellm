@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"math/rand"
 	"net/http"
 	"time"
@@ -60,6 +61,12 @@ func (c *Client) DoReadWithResponse(ctx context.Context, method, requestPath str
 }
 
 func (c *Client) doReadWithResponsePolicy(ctx context.Context, method, requestPath string, body interface{}, result interface{}, policy safeReadRetryPolicy, hooks safeReadRetryHooks) error {
+	// Explicit cancellation wins even over method and policy validation. A
+	// deadline intentionally does not: pre-dispatch local configuration remains
+	// terminal and must not be hidden by an expired deadline.
+	if err := ctx.Err(); errors.Is(err, context.Canceled) {
+		return safeTransportFailure(context.Canceled)
+	}
 	if method != http.MethodGet && method != http.MethodHead {
 		return &safeResponseError{kind: "safe read requests require GET or HEAD"}
 	}

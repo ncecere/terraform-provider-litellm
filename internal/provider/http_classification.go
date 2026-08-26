@@ -2,12 +2,18 @@ package provider
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
+	"reflect"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -41,81 +47,230 @@ type HTTPFailureClassification struct {
 	ResponseAccepted  bool
 }
 
-// ClassifyHTTPFailure returns a typed, content-free classification for err.
-// Wrapped provider errors are recognized with errors.As/errors.Is.
+type httpStatusCandidate struct {
+	code      int
+	set       bool
+	ambiguous bool
+}
+
+func (c *httpStatusCandidate) add(statusCode int) {
+	if statusCode < 100 || statusCode > 599 {
+		return
+	}
+	if !c.set {
+		c.code = statusCode
+		c.set = true
+		return
+	}
+	if c.code != statusCode {
+		c.ambiguous = true
+	}
+}
+
+func (c httpStatusCandidate) value() int {
+	if !c.set || c.ambiguous {
+		return 0
+	}
+	return c.code
+}
+
+type httpFailureTraits struct {
+	canceled           bool
+	terminal           bool
+	deadline           bool
+	transientTransport bool
+	transientAccepted  bool
+	transientStatus    bool
+	terminalStatus     bool
+	dispatched         bool
+	accepted           bool
+	transientCode      httpStatusCandidate
+	terminalCode       httpStatusCandidate
+	acceptedCode       httpStatusCandidate
+	contractCode       httpStatusCandidate
+}
+
+// ClassifyHTTPFailure walks the complete error tree and aggregates only
+// content-free traits. Provider sanitizer nodes are classification boundaries:
+// their raw cause has already been discarded and their synthetic identity must
+// not be mistaken for a stronger trait (for example, a net timeout identity is
+// not an explicit context deadline).
 func ClassifyHTTPFailure(err error) HTTPFailureClassification {
 	if err == nil {
 		return HTTPFailureClassification{Kind: HTTPFailureNone}
 	}
 
-	var transportErr *safeTransportError
-	if errors.As(err, &transportErr) {
-		classification := HTTPFailureClassification{RequestDispatched: transportErr.dispatched}
-		switch {
-		case transportErr.canceled:
-			classification.Kind = HTTPFailureCanceled
-		case transportErr.deadline:
-			classification.Kind = HTTPFailureDeadline
-		case transportErr.safeReadTransient || transportErr.Retryable():
-			classification.Kind = HTTPFailureTransientTransport
-		default:
-			classification.Kind = HTTPFailureContractOrLocal
-		}
-		return classification
-	}
+	var traits httpFailureTraits
+	walkErrorTreeControlled(err, func(node error) bool {
+		switch typed := node.(type) {
+		case *safeTransportError:
+			traits.canceled = traits.canceled || typed.canceled
+			traits.terminal = traits.terminal || typed.terminal
+			traits.deadline = traits.deadline || typed.deadline
+			traits.transientTransport = traits.transientTransport || typed.safeReadTransient || typed.Retryable()
+			traits.dispatched = traits.dispatched || typed.dispatched
+			return false
+		case *safeResponseError:
+			traits.canceled = traits.canceled || typed.canceled
+			traits.terminal = traits.terminal || typed.terminal
+			traits.deadline = traits.deadline || typed.deadline
+			traits.dispatched = traits.dispatched || typed.dispatched
+			traits.accepted = traits.accepted || typed.accepted
 
-	var apiErr *APIError
-	if errors.As(err, &apiErr) {
-		retryAfter, hasRetryAfter := safeRetryScheduleFromError(err)
-		classification := HTTPFailureClassification{
-			StatusCode:        apiErr.StatusCode,
-			RetryAfter:        retryAfter.delay,
-			HasRetryAfter:     hasRetryAfter,
-			RequestDispatched: true,
-		}
-		if isTransientHTTPStatus(apiErr.StatusCode) {
-			classification.Kind = HTTPFailureTransientResponse
-		} else {
-			classification.Kind = HTTPFailureTerminalResponse
-		}
-		return classification
-	}
-
-	var responseErr *safeResponseError
-	if errors.As(err, &responseErr) {
-		retryAfter, hasRetryAfter := safeRetryScheduleFromError(err)
-		classification := HTTPFailureClassification{
-			Kind:              HTTPFailureContractOrLocal,
-			StatusCode:        responseErr.statusCode,
-			RetryAfter:        retryAfter.delay,
-			HasRetryAfter:     hasRetryAfter,
-			RequestDispatched: responseErr.dispatched,
-			ResponseAccepted:  responseErr.accepted,
-		}
-		switch {
-		case errors.Is(responseErr, context.Canceled):
-			classification.Kind = HTTPFailureCanceled
-		case responseErr.stage == safeResponseFailureAcceptedBodyRead && responseErr.safeReadTransient:
-			classification.Kind = HTTPFailureTransientAcceptedResponse
-		case errors.Is(responseErr, context.DeadlineExceeded):
-			classification.Kind = HTTPFailureDeadline
-		case responseErr.dispatched && !responseErr.accepted && responseErr.statusCode >= http.StatusMultipleChoices && responseErr.statusCode <= 599:
-			if isTransientHTTPStatus(responseErr.statusCode) {
-				classification.Kind = HTTPFailureTransientResponse
-			} else {
-				classification.Kind = HTTPFailureTerminalResponse
+			if typed.accepted {
+				if typed.stage == safeResponseFailureAcceptedBodyRead && typed.safeReadTransient {
+					traits.transientAccepted = true
+					traits.acceptedCode.add(typed.statusCode)
+				} else {
+					traits.contractCode.add(typed.statusCode)
+				}
+			} else if typed.dispatched && typed.statusCode >= http.StatusMultipleChoices && typed.statusCode <= 599 {
+				if isTransientHTTPStatus(typed.statusCode) {
+					traits.transientStatus = true
+					traits.transientCode.add(typed.statusCode)
+				} else {
+					traits.terminalStatus = true
+					traits.terminalCode.add(typed.statusCode)
+				}
 			}
+			if typed.safeReadTransient && typed.stage == safeResponseFailureAcceptedBodyRead {
+				traits.transientAccepted = true
+			}
+			return false
+		case *APIError:
+			traits.dispatched = true
+			if isTransientHTTPStatus(typed.StatusCode) {
+				traits.transientStatus = true
+				traits.transientCode.add(typed.StatusCode)
+			} else if typed.StatusCode >= http.StatusMultipleChoices && typed.StatusCode <= 599 {
+				traits.terminalStatus = true
+				traits.terminalCode.add(typed.StatusCode)
+			}
+			return false
+		case *safeRetryScheduledError:
+			return true
 		}
-		return classification
+
+		switch node {
+		case context.Canceled:
+			traits.canceled = true
+		case context.DeadlineExceeded:
+			traits.deadline = true
+		case http.ErrSchemeMismatch, http.ErrNotSupported, errors.ErrUnsupported:
+			traits.terminal = true
+		case io.EOF, io.ErrUnexpectedEOF,
+			syscall.ECONNRESET, syscall.ECONNABORTED, syscall.ECONNREFUSED,
+			syscall.EPIPE, syscall.ENETDOWN, syscall.ENETUNREACH, syscall.EHOSTUNREACH:
+			traits.transientTransport = true
+		}
+		switch node.(type) {
+		case x509.UnknownAuthorityError, *x509.UnknownAuthorityError,
+			x509.HostnameError, *x509.HostnameError,
+			x509.CertificateInvalidError, *x509.CertificateInvalidError,
+			x509.SystemRootsError, *x509.SystemRootsError,
+			x509.ConstraintViolationError, *x509.ConstraintViolationError,
+			x509.InsecureAlgorithmError, *x509.InsecureAlgorithmError,
+			x509.UnhandledCriticalExtension, *x509.UnhandledCriticalExtension,
+			*tls.CertificateVerificationError,
+			tls.RecordHeaderError, *tls.RecordHeaderError,
+			tls.AlertError, *tls.AlertError,
+			*http.ProtocolError,
+			net.InvalidAddrError, *net.InvalidAddrError,
+			net.UnknownNetworkError, *net.UnknownNetworkError,
+			*net.ParseError,
+			url.InvalidHostError, *url.InvalidHostError:
+			traits.terminal = true
+		}
+		if netErr, ok := node.(net.Error); ok && (netErr.Timeout() || netErr.Temporary()) {
+			traits.transientTransport = true
+		}
+		return true
+	})
+
+	classification := HTTPFailureClassification{
+		Kind:              HTTPFailureContractOrLocal,
+		RequestDispatched: traits.dispatched || traits.accepted,
+		ResponseAccepted:  traits.accepted,
 	}
 
+	// Exact global precedence. The order of transient sub-kinds is fixed as
+	// transport, accepted body, then status so a typed terminal status can never
+	// turn a stronger joined failure into absence.
 	switch {
-	case errors.Is(err, context.Canceled):
-		return HTTPFailureClassification{Kind: HTTPFailureCanceled}
-	case errors.Is(err, context.DeadlineExceeded):
-		return HTTPFailureClassification{Kind: HTTPFailureDeadline}
+	case traits.canceled:
+		classification.Kind = HTTPFailureCanceled
+	case traits.terminal:
+		classification.Kind = HTTPFailureContractOrLocal
+	case traits.deadline:
+		classification.Kind = HTTPFailureDeadline
+	case traits.transientTransport:
+		classification.Kind = HTTPFailureTransientTransport
+		classification.StatusCode = traits.transientCode.value()
+		if classification.StatusCode == 0 {
+			classification.StatusCode = traits.terminalCode.value()
+		}
+	case traits.transientAccepted:
+		classification.Kind = HTTPFailureTransientAcceptedResponse
+		classification.StatusCode = traits.acceptedCode.value()
+	case traits.transientStatus:
+		classification.Kind = HTTPFailureTransientResponse
+		classification.StatusCode = traits.transientCode.value()
+	case traits.terminalStatus:
+		classification.Kind = HTTPFailureTerminalResponse
+		classification.StatusCode = traits.terminalCode.value()
 	default:
-		return HTTPFailureClassification{Kind: HTTPFailureContractOrLocal}
+		classification.StatusCode = traits.contractCode.value()
+	}
+
+	// Status and schedule metadata remain available when a transient trait wins,
+	// but are suppressed whenever cancellation, terminal transport/configuration,
+	// or deadline controls the result. Exact-status predicates still require a
+	// response kind, so a joined transient transport plus HTTP 404 is not absence.
+	if classification.StatusCode != 0 && !traits.canceled && !traits.terminal && !traits.deadline {
+		retryAfter, ok := safeRetryScheduleFromError(err)
+		if ok {
+			classification.RetryAfter = retryAfter.delay
+			classification.HasRetryAfter = true
+		}
+	}
+	return classification
+}
+
+func walkErrorTree(err error, visit func(error)) {
+	walkErrorTreeControlled(err, func(node error) bool {
+		visit(node)
+		return true
+	})
+}
+
+func walkErrorTreeControlled(err error, visit func(error) bool) {
+	stack := []error{err}
+	visited := make(map[error]struct{})
+	for len(stack) > 0 {
+		last := len(stack) - 1
+		node := stack[last]
+		stack = stack[:last]
+		if node == nil {
+			continue
+		}
+		if reflect.ValueOf(node).Comparable() {
+			if _, ok := visited[node]; ok {
+				continue
+			}
+			visited[node] = struct{}{}
+		}
+		if !visit(node) {
+			continue
+		}
+		switch wrapped := node.(type) {
+		case interface{ Unwrap() []error }:
+			children := wrapped.Unwrap()
+			for i := len(children) - 1; i >= 0; i-- {
+				stack = append(stack, children[i])
+			}
+		case interface{ Unwrap() error }:
+			stack = append(stack, wrapped.Unwrap())
+		}
 	}
 }
 
@@ -164,11 +319,23 @@ func withSafeRetrySchedule(err error, schedule safeRetryAfterSpec, ok bool) erro
 }
 
 func safeRetryScheduleFromError(err error) (safeRetryAfterSpec, bool) {
-	var scheduled *safeRetryScheduledError
-	if !errors.As(err, &scheduled) {
-		return safeRetryAfterSpec{}, false
-	}
-	return scheduled.schedule, true
+	var selected safeRetryAfterSpec
+	found := false
+	walkErrorTree(err, func(node error) {
+		scheduled, ok := node.(*safeRetryScheduledError)
+		if !ok {
+			return
+		}
+		candidate := scheduled.schedule
+		// Multiple schedules are not expected from one request, but joined errors
+		// still need an order-independent conservative result.
+		if !found || candidate.delay > selected.delay ||
+			(candidate.delay == selected.delay && candidate.deadline.After(selected.deadline)) {
+			selected = candidate
+			found = true
+		}
+	})
+	return selected, found
 }
 
 func safeRetryAfter(headers http.Header, now time.Time, maximum time.Duration) (time.Duration, bool) {
