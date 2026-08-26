@@ -106,11 +106,24 @@ func retrySafeRead(ctx context.Context, policy safeReadRetryPolicy, hooks safeRe
 		delay := safeReadRetryDelay(policy, hooks, attempt)
 		if classification.HasRetryAfter {
 			retryAfter := classification.RetryAfter
-			if retryAfter > policy.maxRetryAfter {
-				retryAfter = policy.maxRetryAfter
-			}
-			if retryAfter > delay {
+			if !classification.retryAfterDeadline.IsZero() {
+				retryAfter = classification.retryAfterDeadline.Sub(hooks.now())
+				if retryAfter < 0 {
+					retryAfter = 0
+				}
+				if retryAfter > policy.maxRetryAfter {
+					retryAfter = policy.maxRetryAfter
+				}
+				// An HTTP-date is an absolute server time, not a duration that
+				// restarts after a slow response-body read.
 				delay = retryAfter
+			} else {
+				if retryAfter > policy.maxRetryAfter {
+					retryAfter = policy.maxRetryAfter
+				}
+				if retryAfter > delay {
+					delay = retryAfter
+				}
 			}
 		}
 		remaining := policy.maxElapsed - hooks.now().Sub(start)
@@ -128,7 +141,9 @@ func retrySafeRead(ctx context.Context, policy safeReadRetryPolicy, hooks safeRe
 }
 
 func retryableSafeReadClassification(classification HTTPFailureClassification) bool {
-	return classification.Kind == HTTPFailureTransientTransport || classification.Kind == HTTPFailureTransientResponse
+	return classification.Kind == HTTPFailureTransientTransport ||
+		classification.Kind == HTTPFailureTransientAcceptedResponse ||
+		classification.Kind == HTTPFailureTransientResponse
 }
 
 func safeReadRetryDelay(policy safeReadRetryPolicy, hooks safeReadRetryHooks, failedAttempt int) time.Duration {

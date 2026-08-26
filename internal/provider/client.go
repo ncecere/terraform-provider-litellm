@@ -24,9 +24,10 @@ type APIError struct {
 	DetailOmitted bool
 	BodyTruncated bool
 
-	fallbackNotReady bool
-	retryAfter       time.Duration
-	hasRetryAfter    bool
+	fallbackNotReady   bool
+	retryAfter         time.Duration
+	retryAfterDeadline time.Time
+	hasRetryAfter      bool
 }
 
 func (e *APIError) Error() string {
@@ -47,7 +48,7 @@ func (c *Client) prepareRequest(ctx context.Context, method, requestPath string,
 	if body != nil {
 		encoded, err := json.Marshal(body)
 		if err != nil {
-			return nil, requestSafety{}, &safeResponseError{kind: "failed to encode LiteLLM request", identity: safeErrorIdentity(err)}
+			return nil, requestSafety{}, &safeResponseError{kind: "failed to encode LiteLLM request", identity: safeErrorIdentity(err), stage: safeResponseFailureLocal}
 		}
 		jsonBody = encoded
 	}
@@ -83,10 +84,23 @@ type clientRequestOptions struct {
 // An arbitrary custom RoundTripper fails closed because connection freshness cannot
 // be proved. The cloned transport is closed after the response body is consumed.
 func (c *Client) executeRequestWithOptions(request *http.Request, options clientRequestOptions) (*http.Response, error) {
-	httpClient := c.HTTPClient
-	if httpClient == nil {
-		httpClient = http.DefaultClient
+	configuredClient := c.HTTPClient
+	if configuredClient == nil {
+		configuredClient = http.DefaultClient
 	}
+	if err := request.Context().Err(); err != nil {
+		return nil, safeTransportFailure(err)
+	}
+
+	// Redirect policy is mutable client configuration. Clone the value for every
+	// execution so provider requests never follow redirects and never race with
+	// or modify a caller-supplied client.
+	httpClientValue := *configuredClient
+	httpClientValue.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	httpClient := &httpClientValue
+
 	cleanup := func() {}
 	if options.freshConnection {
 		transport := httpClient.Transport
@@ -103,12 +117,7 @@ func (c *Client) executeRequestWithOptions(request *http.Request, options client
 		request.Close = true
 		freshTransport := baseTransport.Clone()
 		freshTransport.DisableKeepAlives = true
-		httpClient = &http.Client{
-			Transport:     freshTransport,
-			CheckRedirect: httpClient.CheckRedirect,
-			Jar:           httpClient.Jar,
-			Timeout:       httpClient.Timeout,
-		}
+		httpClient.Transport = freshTransport
 		cleanup = freshTransport.CloseIdleConnections
 	}
 	response, err := httpClient.Do(request)
@@ -189,7 +198,7 @@ func (c *Client) doRequestWithResponseOptions(ctx context.Context, method, reque
 	if options.now != nil {
 		now = options.now()
 	}
-	retryAfter, hasRetryAfter := safeRetryAfter(response.Header, now, maxAcceptedRetryAfter)
+	retryAfter, hasRetryAfter := safeRetryAfterWithDeadline(response.Header, now, maxAcceptedRetryAfter)
 	limit := maxSuccessResponseBody
 	if !accepted {
 		limit = maxErrorResponseBody
@@ -197,55 +206,79 @@ func (c *Client) doRequestWithResponseOptions(ctx context.Context, method, reque
 	if response.ContentLength > limit {
 		if !accepted {
 			return false, &APIError{
-				StatusCode:    response.StatusCode,
-				RequestID:     requestID,
-				DetailOmitted: true,
-				BodyTruncated: true,
-				retryAfter:    retryAfter,
-				hasRetryAfter: hasRetryAfter,
+				StatusCode:         response.StatusCode,
+				RequestID:          requestID,
+				DetailOmitted:      true,
+				BodyTruncated:      true,
+				retryAfter:         retryAfter.delay,
+				retryAfterDeadline: retryAfter.deadline,
+				hasRetryAfter:      hasRetryAfter,
 			}
 		}
-		return true, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "LiteLLM response exceeded the provider safety limit", dispatched: true, accepted: true}
+		return true, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "LiteLLM response exceeded the provider safety limit", stage: safeResponseFailureContract, dispatched: true, accepted: true}
 	}
 	bodyBytes, truncated, readErr := readBoundedBody(response.Body, limit)
 
 	if !accepted {
 		if readErr != nil {
-			return false, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "failed to read LiteLLM error response", identity: safeErrorIdentity(readErr), retryable: safeTemporaryResponseFailure(readErr), dispatched: true}
+			return false, &safeResponseError{
+				statusCode:         response.StatusCode,
+				requestID:          requestID,
+				kind:               "failed to read LiteLLM error response",
+				identity:           safeErrorIdentity(readErr),
+				retryable:          safeTemporaryResponseFailure(readErr),
+				safeReadTransient:  safeReadTransientFailure(readErr),
+				stage:              safeResponseFailureStatusBodyRead,
+				retryAfter:         retryAfter.delay,
+				retryAfterDeadline: retryAfter.deadline,
+				hasRetryAfter:      hasRetryAfter,
+				dispatched:         true,
+			}
 		}
 		fallbackNotReady := classifyFallbackNotReadyBody(bodyBytes)
 		detail, detailOmitted := "", true
-		if !truncated {
+		if !truncated && (response.StatusCode < http.StatusMultipleChoices || response.StatusCode >= http.StatusBadRequest) {
 			detail, detailOmitted = safeResponseDetail(bodyBytes, response.Header.Get("Content-Type"), safety)
 		}
 		return false, &APIError{
-			StatusCode:       response.StatusCode,
-			Body:             detail,
-			RequestID:        requestID,
-			Detail:           detail,
-			DetailOmitted:    detailOmitted,
-			BodyTruncated:    truncated,
-			fallbackNotReady: fallbackNotReady,
-			retryAfter:       retryAfter,
-			hasRetryAfter:    hasRetryAfter,
+			StatusCode:         response.StatusCode,
+			Body:               detail,
+			RequestID:          requestID,
+			Detail:             detail,
+			DetailOmitted:      detailOmitted,
+			BodyTruncated:      truncated,
+			fallbackNotReady:   fallbackNotReady,
+			retryAfter:         retryAfter.delay,
+			retryAfterDeadline: retryAfter.deadline,
+			hasRetryAfter:      hasRetryAfter,
 		}
 	}
 
 	if readErr != nil {
-		return true, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "failed to read LiteLLM response", identity: safeErrorIdentity(readErr), retryable: safeTemporaryResponseFailure(readErr), dispatched: true, accepted: true}
+		return true, &safeResponseError{
+			statusCode:        response.StatusCode,
+			requestID:         requestID,
+			kind:              "failed to read LiteLLM response",
+			identity:          safeErrorIdentity(readErr),
+			retryable:         safeTemporaryResponseFailure(readErr),
+			safeReadTransient: safeReadTransientFailure(readErr),
+			stage:             safeResponseFailureAcceptedBodyRead,
+			dispatched:        true,
+			accepted:          true,
+		}
 	}
 	if truncated {
-		return true, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "LiteLLM response exceeded the provider safety limit", dispatched: true, accepted: true}
+		return true, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "LiteLLM response exceeded the provider safety limit", stage: safeResponseFailureContract, dispatched: true, accepted: true}
 	}
 	if result == nil {
 		return true, nil
 	}
 	trimmedBody := bytes.TrimSpace(bodyBytes)
 	if len(trimmedBody) == 0 || bytes.Equal(trimmedBody, []byte("null")) {
-		return true, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "LiteLLM returned an empty JSON response where an object or array was required", retryable: true, dispatched: true, accepted: true}
+		return true, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "LiteLLM returned an empty JSON response where an object or array was required", retryable: true, stage: safeResponseFailureContract, dispatched: true, accepted: true}
 	}
 	if err := decodeJSONUseNumber(trimmedBody, result); err != nil {
-		return true, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "failed to decode LiteLLM response as JSON", identity: safeErrorIdentity(err), retryable: true, dispatched: true, accepted: true}
+		return true, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "failed to decode LiteLLM response as JSON", identity: safeErrorIdentity(err), retryable: true, stage: safeResponseFailureContract, dispatched: true, accepted: true}
 	}
 	return true, nil
 }

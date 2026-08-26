@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 	"unicode"
 	"unicode/utf8"
 )
@@ -54,13 +55,14 @@ const (
 )
 
 type safeTransportError struct {
-	kind          string
-	identity      error
-	timeout       bool
-	canceled      bool
-	deadline      bool
-	retryCategory safeTransportRetryCategory
-	dispatched    bool
+	kind              string
+	identity          error
+	timeout           bool
+	canceled          bool
+	deadline          bool
+	retryCategory     safeTransportRetryCategory
+	safeReadTransient bool
+	dispatched        bool
 }
 
 func (e *safeTransportError) Error() string   { return e.kind }
@@ -81,14 +83,28 @@ func safeDispatchedTransportFailure(err error) error {
 	return safeErr
 }
 
+type safeResponseFailureStage uint8
+
+const (
+	safeResponseFailureLocal safeResponseFailureStage = iota
+	safeResponseFailureStatusBodyRead
+	safeResponseFailureAcceptedBodyRead
+	safeResponseFailureContract
+)
+
 type safeResponseError struct {
-	statusCode int
-	requestID  string
-	kind       string
-	identity   error
-	retryable  bool
-	dispatched bool
-	accepted   bool
+	statusCode         int
+	requestID          string
+	kind               string
+	identity           error
+	retryable          bool
+	safeReadTransient  bool
+	stage              safeResponseFailureStage
+	retryAfter         time.Duration
+	retryAfterDeadline time.Time
+	hasRetryAfter      bool
+	dispatched         bool
+	accepted           bool
 }
 
 func (e *safeResponseError) Error() string {
@@ -141,15 +157,40 @@ func safeTransportFailure(err error) error {
 			retryCategory = safeTransportRetryTimeout
 		case errors.As(err, &netErr) && netErr.Temporary():
 			retryCategory = safeTransportRetryTemporary
-		case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF),
-			errors.Is(err, syscall.ECONNRESET), errors.Is(err, syscall.ECONNABORTED),
-			errors.Is(err, syscall.ECONNREFUSED), errors.Is(err, syscall.EPIPE),
-			errors.Is(err, syscall.ENETDOWN), errors.Is(err, syscall.ENETUNREACH),
-			errors.Is(err, syscall.EHOSTUNREACH):
+		case errors.Is(err, syscall.ECONNRESET):
 			retryCategory = safeTransportRetryConnectionReset
 		}
 	}
-	return &safeTransportError{kind: kind, identity: identity, timeout: timedOut, canceled: canceled, deadline: deadline, retryCategory: retryCategory}
+	return &safeTransportError{
+		kind:              kind,
+		identity:          identity,
+		timeout:           timedOut,
+		canceled:          canceled,
+		deadline:          deadline,
+		retryCategory:     retryCategory,
+		safeReadTransient: retryCategory != safeTransportRetryNone || safeReadTransientFailure(err),
+	}
+}
+
+// safeReadTransientFailure is deliberately broader than safeTransportError's
+// legacy Retryable/Temporary contract. Only the GET/HEAD safe-read layer uses
+// these additional content-free network categories.
+func safeReadTransientFailure(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && (netErr.Timeout() || netErr.Temporary()) {
+		return true
+	}
+	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNABORTED) ||
+		errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.EPIPE) ||
+		errors.Is(err, syscall.ENETDOWN) || errors.Is(err, syscall.ENETUNREACH) ||
+		errors.Is(err, syscall.EHOSTUNREACH)
 }
 
 func safeTemporaryResponseFailure(err error) bool {

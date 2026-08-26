@@ -427,7 +427,7 @@ func TestClientTransportRetryCategoryIsSafeAndNarrow(t *testing.T) {
 		{name: "deadline", cause: context.DeadlineExceeded, category: safeTransportRetryTimeout, retryable: true},
 		{name: "temporary", cause: temporaryTransportTestError{}, category: safeTransportRetryTemporary, retryable: true},
 		{name: "connection reset", cause: fmt.Errorf("wrapped: %w", syscall.ECONNRESET), category: safeTransportRetryConnectionReset, retryable: true},
-		{name: "early EOF", cause: io.ErrUnexpectedEOF, category: safeTransportRetryConnectionReset, retryable: true},
+		{name: "early EOF", cause: io.ErrUnexpectedEOF, category: safeTransportRetryNone, retryable: false},
 		{name: "certificate", cause: x509.UnknownAuthorityError{}, category: safeTransportRetryNone},
 		{name: "configuration", cause: errors.New("invalid proxy configuration with secret"), category: safeTransportRetryNone},
 		{name: "cancellation", cause: context.Canceled, category: safeTransportRetryNone},

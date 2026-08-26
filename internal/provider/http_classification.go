@@ -19,6 +19,7 @@ const (
 	HTTPFailureCanceled
 	HTTPFailureDeadline
 	HTTPFailureTransientTransport
+	HTTPFailureTransientAcceptedResponse
 	HTTPFailureTransientResponse
 	HTTPFailureTerminalResponse
 	HTTPFailureContractOrLocal
@@ -36,6 +37,10 @@ type HTTPFailureClassification struct {
 	HasRetryAfter     bool
 	RequestDispatched bool
 	ResponseAccepted  bool
+
+	// retryAfterDeadline is retained only for HTTP-date scheduling. It is not
+	// exported or rendered and lets slow body reads consume the server's wait.
+	retryAfterDeadline time.Time
 }
 
 // ClassifyHTTPFailure returns a typed, content-free classification for err.
@@ -53,7 +58,7 @@ func ClassifyHTTPFailure(err error) HTTPFailureClassification {
 			classification.Kind = HTTPFailureCanceled
 		case transportErr.deadline:
 			classification.Kind = HTTPFailureDeadline
-		case transportErr.Retryable():
+		case transportErr.safeReadTransient || transportErr.Retryable():
 			classification.Kind = HTTPFailureTransientTransport
 		default:
 			classification.Kind = HTTPFailureContractOrLocal
@@ -64,10 +69,11 @@ func ClassifyHTTPFailure(err error) HTTPFailureClassification {
 	var apiErr *APIError
 	if errors.As(err, &apiErr) {
 		classification := HTTPFailureClassification{
-			StatusCode:        apiErr.StatusCode,
-			RetryAfter:        apiErr.retryAfter,
-			HasRetryAfter:     apiErr.hasRetryAfter,
-			RequestDispatched: true,
+			StatusCode:         apiErr.StatusCode,
+			RetryAfter:         apiErr.retryAfter,
+			HasRetryAfter:      apiErr.hasRetryAfter,
+			RequestDispatched:  true,
+			retryAfterDeadline: apiErr.retryAfterDeadline,
 		}
 		if isTransientHTTPStatus(apiErr.StatusCode) {
 			classification.Kind = HTTPFailureTransientResponse
@@ -80,14 +86,19 @@ func ClassifyHTTPFailure(err error) HTTPFailureClassification {
 	var responseErr *safeResponseError
 	if errors.As(err, &responseErr) {
 		classification := HTTPFailureClassification{
-			Kind:              HTTPFailureContractOrLocal,
-			StatusCode:        responseErr.statusCode,
-			RequestDispatched: responseErr.dispatched,
-			ResponseAccepted:  responseErr.accepted,
+			Kind:               HTTPFailureContractOrLocal,
+			StatusCode:         responseErr.statusCode,
+			RetryAfter:         responseErr.retryAfter,
+			HasRetryAfter:      responseErr.hasRetryAfter,
+			RequestDispatched:  responseErr.dispatched,
+			ResponseAccepted:   responseErr.accepted,
+			retryAfterDeadline: responseErr.retryAfterDeadline,
 		}
 		switch {
 		case errors.Is(responseErr, context.Canceled):
 			classification.Kind = HTTPFailureCanceled
+		case responseErr.stage == safeResponseFailureAcceptedBodyRead && responseErr.safeReadTransient:
+			classification.Kind = HTTPFailureTransientAcceptedResponse
 		case errors.Is(responseErr, context.DeadlineExceeded):
 			classification.Kind = HTTPFailureDeadline
 		case responseErr.dispatched && !responseErr.accepted && responseErr.statusCode >= http.StatusMultipleChoices && responseErr.statusCode <= 599:
@@ -118,36 +129,51 @@ func isTransientHTTPStatus(statusCode int) bool {
 
 const maxAcceptedRetryAfter = 5 * time.Minute
 
+type safeRetryAfterSpec struct {
+	delay    time.Duration
+	deadline time.Time
+}
+
 func safeRetryAfter(headers http.Header, now time.Time, maximum time.Duration) (time.Duration, bool) {
+	spec, ok := safeRetryAfterWithDeadline(headers, now, maximum)
+	return spec.delay, ok
+}
+
+func safeRetryAfterWithDeadline(headers http.Header, now time.Time, maximum time.Duration) (safeRetryAfterSpec, bool) {
 	values := headers.Values("Retry-After")
 	if len(values) != 1 {
-		return 0, false
+		return safeRetryAfterSpec{}, false
 	}
-	return parseRetryAfter(values[0], now, maximum)
+	return parseRetryAfterSpec(values[0], now, maximum)
 }
 
 // parseRetryAfter converts either delta-seconds or an HTTP-date to a bounded
 // duration. It returns false for negative, malformed, overflowed, excessive,
 // or ambiguous values and never returns or stores the original header text.
 func parseRetryAfter(value string, now time.Time, maximum time.Duration) (time.Duration, bool) {
+	spec, ok := parseRetryAfterSpec(value, now, maximum)
+	return spec.delay, ok
+}
+
+func parseRetryAfterSpec(value string, now time.Time, maximum time.Duration) (safeRetryAfterSpec, bool) {
 	if value == "" || value != strings.TrimSpace(value) || maximum < 0 {
-		return 0, false
+		return safeRetryAfterSpec{}, false
 	}
 	if strings.IndexFunc(value, func(r rune) bool { return r < '0' || r > '9' }) == -1 {
 		seconds, err := strconv.ParseUint(value, 10, 64)
 		if err != nil || seconds > uint64(maximum/time.Second) {
-			return 0, false
+			return safeRetryAfterSpec{}, false
 		}
-		return time.Duration(seconds) * time.Second, true
+		return safeRetryAfterSpec{delay: time.Duration(seconds) * time.Second}, true
 	}
 
 	when, err := http.ParseTime(value)
 	if err != nil || when.Before(now) {
-		return 0, false
+		return safeRetryAfterSpec{}, false
 	}
 	delay := when.Sub(now)
 	if delay < 0 || delay > maximum {
-		return 0, false
+		return safeRetryAfterSpec{}, false
 	}
-	return delay, true
+	return safeRetryAfterSpec{delay: delay, deadline: when}, true
 }
