@@ -13,225 +13,219 @@ import (
 
 var _ datasource.DataSource = &AgentDataSource{}
 
-func NewAgentDataSource() datasource.DataSource {
-	return &AgentDataSource{}
-}
+func NewAgentDataSource() datasource.DataSource { return &AgentDataSource{} }
 
-type AgentDataSource struct {
-	client *Client
-}
+type AgentDataSource struct{ client *Client }
 
 type AgentDataSourceModel struct {
-	ID              types.String  `tfsdk:"id"`
-	AgentName       types.String  `tfsdk:"agent_name"`
-	AgentCardParams types.Map     `tfsdk:"agent_card_params"`
-	LiteLLMParams   types.Map     `tfsdk:"litellm_params"`
-	TPMLimit        types.Int64   `tfsdk:"tpm_limit"`
-	RPMLimit        types.Int64   `tfsdk:"rpm_limit"`
-	SessionTPMLimit types.Int64   `tfsdk:"session_tpm_limit"`
-	SessionRPMLimit types.Int64   `tfsdk:"session_rpm_limit"`
-	StaticHeaders   types.Map     `tfsdk:"static_headers"`
-	ExtraHeaders    types.List    `tfsdk:"extra_headers"`
-	Spend           types.Float64 `tfsdk:"spend"`
-	CreatedAt       types.String  `tfsdk:"created_at"`
-	UpdatedAt       types.String  `tfsdk:"updated_at"`
-	CreatedBy       types.String  `tfsdk:"created_by"`
-	UpdatedBy       types.String  `tfsdk:"updated_by"`
+	ID                   types.String  `tfsdk:"id"`
+	AgentName            types.String  `tfsdk:"agent_name"`
+	AgentCardParams      types.Map     `tfsdk:"agent_card_params"`
+	AgentCardParamsJSON  types.String  `tfsdk:"agent_card_params_json"`
+	LiteLLMParams        types.Map     `tfsdk:"litellm_params"`
+	LiteLLMParamsJSON    types.String  `tfsdk:"litellm_params_json"`
+	ObjectPermissionJSON types.String  `tfsdk:"object_permission_json"`
+	TPMLimit             types.Int64   `tfsdk:"tpm_limit"`
+	RPMLimit             types.Int64   `tfsdk:"rpm_limit"`
+	SessionTPMLimit      types.Int64   `tfsdk:"session_tpm_limit"`
+	SessionRPMLimit      types.Int64   `tfsdk:"session_rpm_limit"`
+	StaticHeaders        types.Map     `tfsdk:"static_headers"`
+	ExtraHeaders         types.List    `tfsdk:"extra_headers"`
+	Spend                types.Float64 `tfsdk:"spend"`
+	CreatedAt            types.String  `tfsdk:"created_at"`
+	UpdatedAt            types.String  `tfsdk:"updated_at"`
+	CreatedBy            types.String  `tfsdk:"created_by"`
+	UpdatedBy            types.String  `tfsdk:"updated_by"`
 }
 
-func (d *AgentDataSource) Metadata(ctx context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
-	resp.TypeName = req.ProviderTypeName + "_agent"
-}
-
-func (d *AgentDataSource) Schema(ctx context.Context, req datasource.SchemaRequest, resp *datasource.SchemaResponse) {
-	resp.Schema = schema.Schema{
-		Description: "Retrieves information about a LiteLLM Agent (A2A).",
-		Attributes: map[string]schema.Attribute{
-			"id": schema.StringAttribute{
-				Description: "The agent ID to look up.",
-				Required:    true,
-			},
-			"agent_name": schema.StringAttribute{
-				Description: "The name of the agent.",
-				Computed:    true,
-			},
-			"agent_card_params": schema.MapAttribute{
-				Description: "The agent card parameters as a flat string map.",
-				Computed:    true,
-				ElementType: types.StringType,
-			},
-			"litellm_params": schema.MapAttribute{
-				Description: "LiteLLM-specific parameters for the agent. Marked sensitive because it can contain JWTs or AWS credentials.",
-				Computed:    true,
-				Sensitive:   true,
-				ElementType: types.StringType,
-			},
-			"tpm_limit": schema.Int64Attribute{
-				Description: "Tokens per minute limit.",
-				Computed:    true,
-			},
-			"rpm_limit": schema.Int64Attribute{
-				Description: "Requests per minute limit.",
-				Computed:    true,
-			},
-			"session_tpm_limit": schema.Int64Attribute{
-				Description: "Per-session tokens per minute limit.",
-				Computed:    true,
-			},
-			"session_rpm_limit": schema.Int64Attribute{
-				Description: "Per-session requests per minute limit.",
-				Computed:    true,
-			},
-			"static_headers": schema.MapAttribute{
-				Description: "Static headers sent with agent requests. Marked sensitive because headers commonly contain authorization credentials.",
-				Computed:    true,
-				Sensitive:   true,
-				ElementType: types.StringType,
-			},
-			"extra_headers": schema.ListAttribute{
-				Description: "Extra header names forwarded from incoming requests.",
-				Computed:    true,
-				ElementType: types.StringType,
-			},
-			"spend": schema.Float64Attribute{
-				Description: "Total spend for this agent.",
-				Computed:    true,
-			},
-			"created_at": schema.StringAttribute{
-				Description: "Timestamp when the agent was created.",
-				Computed:    true,
-			},
-			"updated_at": schema.StringAttribute{
-				Description: "Timestamp when the agent was last updated.",
-				Computed:    true,
-			},
-			"created_by": schema.StringAttribute{
-				Description: "User who created the agent.",
-				Computed:    true,
-			},
-			"updated_by": schema.StringAttribute{
-				Description: "User who last updated the agent.",
-				Computed:    true,
-			},
-		},
+func agentDataComputedAttributes() map[string]schema.Attribute {
+	return map[string]schema.Attribute{
+		"agent_name":             schema.StringAttribute{Description: "The name of the agent.", Computed: true},
+		"agent_card_params":      schema.MapAttribute{Description: "Historical flat map(string) compatibility projection; nested card values use deterministic JSON rendering.", Computed: true, Sensitive: true, ElementType: types.StringType},
+		"agent_card_params_json": schema.StringAttribute{Description: "Canonical lossless JSON object containing every observable agent-card field.", Computed: true, Sensitive: true},
+		"litellm_params":         schema.MapAttribute{Description: "Historical map(string) compatibility projection; heterogeneous API values use deterministic exact JSON rendering while litellm_params_json preserves wire types.", Computed: true, Sensitive: true, ElementType: types.StringType},
+		"litellm_params_json":    schema.StringAttribute{Description: "Canonical lossless JSON object containing every observable heterogeneous LiteLLM parameter.", Computed: true, Sensitive: true},
+		"object_permission_json": schema.StringAttribute{Description: "Canonical lossless JSON object containing every observable object-permission field.", Computed: true},
+		"tpm_limit":              schema.Int64Attribute{Description: "Tokens per minute limit.", Computed: true},
+		"rpm_limit":              schema.Int64Attribute{Description: "Requests per minute limit.", Computed: true},
+		"session_tpm_limit":      schema.Int64Attribute{Description: "Per-session tokens per minute limit.", Computed: true},
+		"session_rpm_limit":      schema.Int64Attribute{Description: "Per-session requests per minute limit.", Computed: true},
+		"static_headers":         schema.MapAttribute{Description: "Static headers sent with agent requests.", Computed: true, Sensitive: true, ElementType: types.StringType},
+		"extra_headers":          schema.ListAttribute{Description: "Extra header names forwarded from incoming requests.", Computed: true, ElementType: types.StringType},
+		"spend":                  schema.Float64Attribute{Description: "Total spend for this agent.", Computed: true},
+		"created_at":             schema.StringAttribute{Description: "Timestamp when the agent was created.", Computed: true},
+		"updated_at":             schema.StringAttribute{Description: "Timestamp when the agent was last updated.", Computed: true},
+		"created_by":             schema.StringAttribute{Description: "User who created the agent.", Computed: true},
+		"updated_by":             schema.StringAttribute{Description: "User who last updated the agent.", Computed: true},
 	}
 }
 
-func (d *AgentDataSource) Configure(ctx context.Context, req datasource.ConfigureRequest, resp *datasource.ConfigureResponse) {
+func (d *AgentDataSource) Metadata(_ context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
+	resp.TypeName = req.ProviderTypeName + "_agent"
+}
+
+func (d *AgentDataSource) Schema(_ context.Context, _ datasource.SchemaRequest, resp *datasource.SchemaResponse) {
+	attributes := agentDataComputedAttributes()
+	attributes["id"] = schema.StringAttribute{Description: "The exact agent ID to look up.", Required: true}
+	resp.Schema = schema.Schema{Description: "Retrieves a lossless, strictly validated LiteLLM Agent (A2A) projection.", Attributes: attributes}
+}
+
+func (d *AgentDataSource) Configure(_ context.Context, req datasource.ConfigureRequest, resp *datasource.ConfigureResponse) {
 	if req.ProviderData == nil {
 		return
 	}
 	client, ok := req.ProviderData.(*Client)
 	if !ok {
-		resp.Diagnostics.AddError("Unexpected DataSource Configure Type",
-			fmt.Sprintf("Expected *Client, got: %T.", req.ProviderData))
+		resp.Diagnostics.AddError("Unexpected DataSource Configure Type", fmt.Sprintf("Expected *Client, got: %T.", req.ProviderData))
 		return
 	}
 	d.client = client
 }
 
-func (d *AgentDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
-	var data AgentDataSourceModel
-	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
-	if resp.Diagnostics.HasError() {
-		return
+func nullAgentDataProjection(id types.String) AgentDataSourceModel {
+	return AgentDataSourceModel{
+		ID: id, AgentName: types.StringNull(), AgentCardParams: types.MapNull(types.StringType), AgentCardParamsJSON: types.StringNull(),
+		LiteLLMParams: types.MapNull(types.StringType), LiteLLMParamsJSON: types.StringNull(), ObjectPermissionJSON: types.StringNull(),
+		TPMLimit: types.Int64Null(), RPMLimit: types.Int64Null(), SessionTPMLimit: types.Int64Null(), SessionRPMLimit: types.Int64Null(),
+		StaticHeaders: types.MapNull(types.StringType), ExtraHeaders: types.ListNull(types.StringType), Spend: types.Float64Null(),
+		CreatedAt: types.StringNull(), UpdatedAt: types.StringNull(), CreatedBy: types.StringNull(), UpdatedBy: types.StringNull(),
 	}
+}
 
-	endpoint := fmt.Sprintf("/v1/agents/%s", url.PathEscape(data.ID.ValueString()))
-
-	var result map[string]interface{}
-	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read agent: %s", err))
-		return
+func projectAgentData(item map[string]interface{}, expectedID string) (AgentDataSourceModel, error) {
+	data := nullAgentDataProjection(types.StringValue(expectedID))
+	if err := validateImportedObjectIdentity(true, "agent", item, "agent_id", expectedID); err != nil {
+		return data, err
 	}
-
-	if v, ok := result["agent_id"].(string); ok {
-		data.ID = types.StringValue(v)
+	if err := requireImportedStringField(true, "agent", item, "agent_name"); err != nil {
+		return data, err
 	}
-	if v, ok := result["agent_name"].(string); ok {
-		data.AgentName = types.StringValue(v)
-	}
+	data.ID = types.StringValue(item["agent_id"].(string))
+	data.AgentName = types.StringValue(item["agent_name"].(string))
 
-	// Flatten agent_card_params to a string map for datasource simplicity
-	if cardRaw, ok := result["agent_card_params"].(map[string]interface{}); ok {
-		cardMap := map[string]attr.Value{}
-		for k, v := range cardRaw {
-			cardMap[k] = types.StringValue(fmt.Sprintf("%v", v))
+	if raw, present := item["agent_card_params"]; present && raw != nil {
+		card, ok := raw.(map[string]interface{})
+		if !ok {
+			return data, fmt.Errorf("invalid agent_card_params")
 		}
-		data.AgentCardParams, _ = types.MapValue(types.StringType, cardMap)
-	} else {
-		data.AgentCardParams = types.MapNull(types.StringType)
-	}
-
-	// LiteLLM params
-	if params, ok := result["litellm_params"].(map[string]interface{}); ok && len(params) > 0 {
-		paramMap := map[string]attr.Value{}
-		for k, v := range params {
-			paramMap[k] = types.StringValue(fmt.Sprintf("%v", v))
+		if err := validateAgentCardResponse(card, false); err != nil {
+			return data, err
 		}
-		data.LiteLLMParams, _ = types.MapValue(types.StringType, paramMap)
-	} else {
-		data.LiteLLMParams = types.MapNull(types.StringType)
+		legacy, err := agentStringProjection(card, false)
+		if err != nil {
+			return data, err
+		}
+		data.AgentCardParams = legacy
+		encoded, err := canonicalAgentJSON(card)
+		if err != nil {
+			return data, err
+		}
+		data.AgentCardParamsJSON = types.StringValue(encoded)
 	}
-
-	// Rate limits
+	if raw, present := item["litellm_params"]; present && raw != nil {
+		params, ok := raw.(map[string]interface{})
+		if !ok {
+			return data, fmt.Errorf("invalid litellm_params")
+		}
+		legacy, err := agentStringProjection(params, true)
+		if err != nil {
+			return data, err
+		}
+		data.LiteLLMParams = legacy
+		structured, err := reconcileAgentJSONObject(types.StringNull(), params)
+		if err != nil {
+			return data, fmt.Errorf("unrecoverable masked litellm_params")
+		}
+		data.LiteLLMParamsJSON = structured
+	}
+	if raw, present := item["object_permission"]; present && raw != nil {
+		permission, ok := raw.(map[string]interface{})
+		if !ok {
+			return data, fmt.Errorf("invalid object_permission")
+		}
+		temporary := emptyKnownAgentResourceModel()
+		if err := (&AgentResource{}).readObjectPermission(permission, &temporary); err != nil {
+			return data, err
+		}
+		encoded, err := canonicalAgentJSON(permission)
+		if err != nil {
+			return data, err
+		}
+		data.ObjectPermissionJSON = types.StringValue(encoded)
+	}
 	for _, field := range []struct {
 		name   string
 		target *types.Int64
 	}{
-		{"tpm_limit", &data.TPMLimit},
-		{"rpm_limit", &data.RPMLimit},
-		{"session_tpm_limit", &data.SessionTPMLimit},
-		{"session_rpm_limit", &data.SessionRPMLimit},
+		{"tpm_limit", &data.TPMLimit}, {"rpm_limit", &data.RPMLimit}, {"session_tpm_limit", &data.SessionTPMLimit}, {"session_rpm_limit", &data.SessionRPMLimit},
 	} {
-		if err := updateInt64FromAPI(field.target, result, true, true, field.name); err != nil {
-			resp.Diagnostics.AddError("Invalid API Response", err.Error())
-			return
+		if err := updateInt64FromAPI(field.target, item, true, true, field.name); err != nil {
+			return data, err
 		}
 	}
-
-	if err := updateFloat64FromAPI(&data.Spend, result, true, true, "spend"); err != nil {
-		resp.Diagnostics.AddError("Invalid API Response", err.Error())
-		return
+	if err := updateFloat64FromAPI(&data.Spend, item, true, true, "spend"); err != nil {
+		return data, err
 	}
-
-	// Static headers
-	if headers, ok := result["static_headers"].(map[string]interface{}); ok && len(headers) > 0 {
-		headerMap := map[string]attr.Value{}
-		for k, v := range headers {
-			headerMap[k] = types.StringValue(fmt.Sprintf("%v", v))
+	if raw, present := item["static_headers"]; present && raw != nil {
+		headers, ok := raw.(map[string]interface{})
+		if !ok {
+			return data, fmt.Errorf("invalid static_headers")
 		}
-		data.StaticHeaders, _ = types.MapValue(types.StringType, headerMap)
-	} else {
-		data.StaticHeaders = types.MapNull(types.StringType)
+		values := map[string]attr.Value{}
+		for key, rawValue := range headers {
+			value, ok := rawValue.(string)
+			if !ok {
+				return data, fmt.Errorf("invalid static_headers")
+			}
+			values[key] = types.StringValue(value)
+		}
+		data.StaticHeaders = types.MapValueMust(types.StringType, values)
 	}
-
-	// Extra headers
-	if headers, ok := result["extra_headers"].([]interface{}); ok && len(headers) > 0 {
-		vals := make([]attr.Value, 0, len(headers))
-		for _, h := range headers {
-			if s, ok := h.(string); ok {
-				vals = append(vals, types.StringValue(s))
+	if raw, present := item["extra_headers"]; present && raw != nil {
+		headers, ok := raw.([]interface{})
+		if !ok {
+			return data, fmt.Errorf("invalid extra_headers")
+		}
+		for _, value := range headers {
+			if _, ok := value.(string); !ok {
+				return data, fmt.Errorf("invalid extra_headers")
 			}
 		}
-		data.ExtraHeaders, _ = types.ListValue(types.StringType, vals)
-	} else {
-		data.ExtraHeaders = types.ListNull(types.StringType)
+		data.ExtraHeaders = interfaceSliceToStringList(headers)
 	}
+	for _, field := range []struct {
+		name   string
+		target *types.String
+	}{
+		{"created_at", &data.CreatedAt}, {"updated_at", &data.UpdatedAt}, {"created_by", &data.CreatedBy}, {"updated_by", &data.UpdatedBy},
+	} {
+		if raw, present := item[field.name]; present && raw != nil {
+			value, ok := raw.(string)
+			if !ok {
+				return data, fmt.Errorf("invalid %s", field.name)
+			}
+			*field.target = types.StringValue(value)
+		}
+	}
+	return data, nil
+}
 
-	// Computed timestamps
-	if v, ok := result["created_at"].(string); ok {
-		data.CreatedAt = types.StringValue(v)
+func (d *AgentDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
+	var config AgentDataSourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+	if resp.Diagnostics.HasError() {
+		return
 	}
-	if v, ok := result["updated_at"].(string); ok {
-		data.UpdatedAt = types.StringValue(v)
+	var result map[string]interface{}
+	endpoint := fmt.Sprintf("/v1/agents/%s", url.PathEscape(config.ID.ValueString()))
+	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
+		resp.Diagnostics.AddError("Client Error", "Unable to read the requested agent authoritatively.")
+		return
 	}
-	if v, ok := result["created_by"].(string); ok {
-		data.CreatedBy = types.StringValue(v)
+	data, err := projectAgentData(result, config.ID.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned a malformed or identity-mismatched agent.")
+		return
 	}
-	if v, ok := result["updated_by"].(string); ok {
-		data.UpdatedBy = types.StringValue(v)
-	}
-
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }

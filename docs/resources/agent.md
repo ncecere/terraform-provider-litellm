@@ -63,9 +63,16 @@ resource "litellm_agent" "full" {
   session_tpm_limit = 5000
   session_rpm_limit = 50
 
+  # Legacy map values remain literal strings. Use the additive JSON bridge for
+  # heterogeneous nested values; non-overlapping keys from both surfaces merge.
   litellm_params = {
     model = "gpt-4o"
   }
+  litellm_params_json = jsonencode({
+    stream = false
+    retries = 3
+    routing = { regions = ["us-east-1", "us-west-2"] }
+  })
 
   static_headers = {
     "X-Custom-Header" = "value"
@@ -78,7 +85,7 @@ resource "litellm_agent" "full" {
     description      = "An agent that reviews code for quality and best practices"
     url              = "https://agent.example.com/a2a"
     version          = "1.0.0"
-    protocol_version = "0.2.6"
+    protocol_version = "0.3"
 
     default_input_modes  = ["application/json"]
     default_output_modes = ["application/json", "text/plain"]
@@ -107,6 +114,16 @@ resource "litellm_agent" "full" {
       examples    = ["Review this Go function", "Check this Python script"]
       input_modes = ["application/json"]
       output_modes = ["text/plain"]
+      security = [
+        { oauth2 = ["code:read", "code:review"] },
+        { api_key = [] },
+      ]
+    }
+
+    signatures {
+      protected = "eyJhbGciOiJFUzI1NiJ9"
+      signature = "base64url-signature"
+      header    = jsonencode({ kid = "reviewer-key", critical = ["kid"] })
     }
 
     skills {
@@ -137,7 +154,8 @@ resource "litellm_agent" "full" {
 ### Top-level
 
 * `agent_name` - (Required) The name of the agent.
-* `litellm_params` - (Optional, Sensitive) Map of LiteLLM-specific parameters (e.g. `model`, `api_key`). Prefer proxy workload identity over static credentials. Sensitive values remain present in Terraform state.
+* `litellm_params` - (Optional, Sensitive) Legacy `map(string)` of literal LiteLLM parameters. Values such as `"false"`, `"001"`, and JSON-looking text are sent as strings without guessing or coercion.
+* `litellm_params_json` - (Optional, Computed, Sensitive) A lossless JSON object for arbitrary string, boolean, exact number, null, list, and object values. It merges with non-overlapping legacy keys. An overlap is valid only when the JSON value is the identical string; otherwise planning fails. Each explicitly configured JSON key transfers only that key's ownership; legacy-only configurations are not rewritten or silently migrated.
 * `tpm_limit` - (Optional) Tokens per minute limit for the agent.
 * `rpm_limit` - (Optional) Requests per minute limit for the agent.
 * `session_tpm_limit` - (Optional) Per-session tokens per minute limit.
@@ -151,13 +169,20 @@ resource "litellm_agent" "full" {
 * `url` - (Required) The URL endpoint for the agent. Set it to an empty string for provider-backed agents such as Bedrock AgentCore, where LiteLLM derives the endpoint from `litellm_params`.
 * `description` - (Optional) Human-readable description of the agent.
 * `version` - (Optional) Version of the agent.
-* `protocol_version` - (Optional) A2A protocol version (e.g. `0.2.6`).
+* `protocol_version` - (Optional) A2A protocol version. LiteLLM's supported served families are `0.3` and `1.0`; the registry request itself accepts a string, so the provider does not invent a narrower enum.
 * `default_input_modes` - (Optional) List of default input MIME types.
 * `default_output_modes` - (Optional) List of default output MIME types.
 * `preferred_transport` - (Optional) Preferred transport protocol (e.g. `httpsse`, `websocket`).
 * `icon_url` - (Optional) URL for the agent's icon.
 * `documentation_url` - (Optional) URL for the agent's documentation.
 * `supports_authenticated_extended_card` - (Optional) Whether the agent supports an authenticated extended A2A card.
+
+### signatures Block (Optional, repeatable, inside agent_card)
+
+* `protected` - (Required, Sensitive) JWS protected header.
+* `signature` - (Required, Sensitive) JWS signature value.
+* `header` - (Optional, Sensitive) Arbitrary non-null header object encoded as JSON. Exact numbers and nested values are preserved. Conflicts with `header_json`.
+* `header_json` - (Optional, Sensitive) Strict JSON bridge accepting either an object or explicit JSON `null`. Use `header_json = jsonencode(null)` when wire-level null must differ from omission. Conflicts with `header`. Signature order and duplicates are significant; an explicitly empty signatures list clears the list on full-card replacement.
 
 ### capabilities Block (Optional, inside agent_card)
 
@@ -181,6 +206,8 @@ Configured capability values are read authoritatively. If LiteLLM accepts a flag
 * `examples` - (Optional) List of example inputs.
 * `input_modes` - (Optional) List of supported input MIME types.
 * `output_modes` - (Optional) List of supported output MIME types.
+* `security` - (Optional) Ordered non-null `list(map(list(string)))` of A2A security requirements. Requirement and scope ordering and duplicates are preserved; an explicit empty list clears the skill security field. Conflicts with `security_json`.
+* `security_json` - (Optional, Sensitive) Strict JSON bridge accepting either the same ordered security list or explicit JSON `null`. Use `security_json = jsonencode(null)` when wire-level null must differ from omission. Conflicts with `security`.
 
 ### object_permission Block (Optional)
 
@@ -221,12 +248,12 @@ Removing previously configured values emits endpoint-specific clears instead of 
 * `tpm_limit`, `rpm_limit`, `session_tpm_limit`, and `session_rpm_limit` use JSON `null` through `PATCH`.
 * `static_headers` uses `{}` and `extra_headers` uses `[]`.
 * `object_permission` sends empty arrays for MCP servers, MCP access groups, models, and agents, plus an empty object for MCP tool permissions. Removing the whole Terraform block clears only fields Terraform previously owned; imported or otherwise unowned siblings remain remote-owned.
-* Agent-card optional scalars, capabilities, individual provider fields, and nested skill fields/collections are cleared through a complete card replacement. Any card-changing update first samples the authoritative complete card immediately before PATCH, overlays only exact configured/owned changes, and preserves API-owned provider, capability, and skill leaves. Removing an individual Terraform-owned skill sends and confirms its absence; removing a skill with any API-owned leaf is rejected before PATCH. If required preservation or unique nonblank skill identity cannot be proved, PATCH is not sent.
-* Removing keys from `litellm_params` is supported while at least one key remains; the nonempty object replaces the prior parameter document.
+* Agent-card optional scalars, capabilities, signatures, individual provider fields, and nested skill fields/collections are cleared through a complete card replacement. Any card-changing update first samples the raw authoritative complete card immediately before PATCH, overlays only exact configured/owned paths, and preserves all other keys, types, exact numbers, nulls, and omission. Unowned signature headers and skill security never pass through typed reconstruction. Omitting an API-owned skill preserves it; after HCL has transferred every wire-present leaf, a later omission safely removes it. If required preservation or unique nonblank skill identity cannot be proved, PATCH is not sent.
+* Removing keys from `litellm_params` is supported while at least one key remains. Every legacy or structured parameter PATCH starts from a stable fresh authoritative raw object and overlays/removes only exact Terraform-owned keys; unowned values and presence remain byte-semantically exact JSON values.
 
 LiteLLM v1.98 substitutes defaults instead of persisting several empty values. To prevent a false successful apply, the provider rejects these transitions before mutation: clearing the complete `litellm_params` object; removing the complete `agent_card`; clearing `agent_card.version` or `protocol_version`; emptying `default_input_modes` or `default_output_modes`; and removing the complete provider block. An explicitly empty Terraform-owned skills list is allowed because confirmation proves every removed skill ID is absent even if LiteLLM injects a separate unmanaged default chat skill. Keep other defaulted values configured. Direct database changes are outside this API-only provider's safety boundary.
 
-Import records private leaf-level ownership provenance plus separate structural scope for API-owned collections. Imported/API-owned map keys, card fields, provider/capability children, object-permission fields, and skill leaves remain adopted and refresh from API; later API-added or removed collection members are reconciled without transferring ownership to configured siblings. Ordinary configured resources never adopt an omitted leaf merely because LiteLLM returns an injected default. Configured JSON-bearing map values preserve their spelling when each value is semantically equal. Explicit HCL transfers only its exact configured leaves after authoritative apply; configuring one provider, capability, or skill child does not claim its siblings or consume structural API scope. Optional-only unconfigured object-permission siblings are not adopted on ordinary configured-resource reads. Parent removal is rejected only when fresh ownership proves it would discard an API-owned child. Secret-bearing omitted leaves are preserved by `PATCH`; masked values still require the proxy-admin preflight before mutation.
+Import records private leaf-level ownership provenance plus separate structural scope for API-owned collections. Imports populate `litellm_params_json` with the complete canonical API object and retain the historical `map(string)` state projection for every legacy key. The JSON bridge and private ownership marker remain the wire authority, so imported booleans, numbers, nulls, lists, and objects cannot be sent back as their compatibility strings. A legacy-only configured resource keeps `litellm_params_json` null and is not rewritten during upgrade. Configuring the JSON bridge transfers only its explicitly present keys after verified apply; configuring either JSON or a legacy key preserves imported structured siblings. Imported/API-owned map keys, card fields, provider/capability children, object-permission fields, and skill leaves remain adopted and refresh from API; later API-added or removed collection members are reconciled without transferring ownership to configured siblings. Ordinary configured resources never adopt an omitted leaf merely because LiteLLM returns an injected default. Configured JSON-bearing map values preserve their spelling when each value is semantically equal. Explicit HCL transfers only its exact configured leaves after authoritative apply; configuring one provider, capability, or skill child does not claim its siblings or consume structural API scope. Optional-only unconfigured object-permission siblings are not adopted on ordinary configured-resource reads. Parent removal is rejected only when fresh ownership proves it would discard an API-owned child. Secret-bearing omitted leaves are preserved by `PATCH`; masked values still require the proxy-admin preflight before mutation.
 
 ## Upgrade Note: MCP Tool Permission JSON Values
 

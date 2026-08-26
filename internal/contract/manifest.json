@@ -16,7 +16,7 @@
   "provider_golden": {
     "operation_count": 108,
     "path": "internal/contractapi/testdata/provider-operations.golden.json",
-    "sha256": "aca11a58978fde722ff99abb4256d2be769fd4cea3ce518c8e86950589c99731"
+    "sha256": "da2a2c5dc5bbf20450280c9abcd8dab407a767b405ee6856ab0dd23f2856eade"
   },
   "provider_operations": [
     {
@@ -1521,11 +1521,11 @@
       "evidence": [
         {
           "file": "internal/provider/datasource_agents_list.go",
-          "line": 130
+          "line": 89
         },
         {
           "file": "internal/provider/resource_agent_lifecycle.go",
-          "line": 633
+          "line": 747
         }
       ],
       "method": "GET",
@@ -1537,7 +1537,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_agent.go",
-          "line": 361
+          "line": 408
         }
       ],
       "method": "POST",
@@ -1549,7 +1549,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_agent.go",
-          "line": 542
+          "line": 622
         }
       ],
       "method": "DELETE",
@@ -1562,20 +1562,24 @@
     {
       "evidence": [
         {
+          "file": "internal/provider/agent_patch.go",
+          "line": 139
+        },
+        {
           "file": "internal/provider/datasource_agent.go",
-          "line": 143
+          "line": 221
         },
         {
           "file": "internal/provider/resource_agent.go",
-          "line": 650
+          "line": 730
         },
         {
           "file": "internal/provider/resource_agent.go",
-          "line": 1043
+          "line": 1204
         },
         {
           "file": "internal/provider/resource_agent.go",
-          "line": 1045
+          "line": 1206
         }
       ],
       "method": "GET",
@@ -1589,7 +1593,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_agent.go",
-          "line": 503
+          "line": 582
         }
       ],
       "method": "PATCH",

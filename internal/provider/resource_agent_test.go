@@ -326,7 +326,7 @@ func TestBuildAgentRequest_Full(t *testing.T) {
 			Description:                       types.StringValue("A fully configured agent"),
 			URL:                               types.StringValue("https://agent.example.com/a2a"),
 			Version:                           types.StringValue("1.0.0"),
-			ProtocolVersion:                   types.StringValue("0.2.6"),
+			ProtocolVersion:                   types.StringValue("0.3"),
 			DefaultInputModes:                 stringListValue("application/json"),
 			DefaultOutputModes:                stringListValue("application/json", "text/plain"),
 			PreferredTransport:                types.StringValue("httpsse"),
@@ -383,8 +383,8 @@ func TestBuildAgentRequest_Full(t *testing.T) {
 	if !ok {
 		t.Fatal("expected agent_card_params map")
 	}
-	if card["protocolVersion"] != "0.2.6" {
-		t.Errorf("expected protocolVersion '0.2.6', got %v", card["protocolVersion"])
+	if card["protocolVersion"] != "0.3" {
+		t.Errorf("expected protocolVersion '0.3', got %v", card["protocolVersion"])
 	}
 	if card["preferredTransport"] != "httpsse" {
 		t.Errorf("expected preferredTransport 'httpsse', got %v", card["preferredTransport"])
@@ -451,7 +451,7 @@ func TestReadAgent_PopulatesState(t *testing.T) {
 				"description":                       "A helpful agent",
 				"url":                               "https://agent.example.com",
 				"version":                           "1.0.0",
-				"protocolVersion":                   "0.2.6",
+				"protocolVersion":                   "1.0",
 				"supportsAuthenticatedExtendedCard": true,
 				"capabilities": map[string]interface{}{
 					"streaming":         true,
@@ -553,8 +553,8 @@ func TestReadAgent_PopulatesState(t *testing.T) {
 	if data.AgentCard.Description.ValueString() != "A helpful agent" {
 		t.Errorf("expected card description 'A helpful agent', got %q", data.AgentCard.Description.ValueString())
 	}
-	if data.AgentCard.ProtocolVersion.ValueString() != "0.2.6" {
-		t.Errorf("expected protocolVersion '0.2.6', got %q", data.AgentCard.ProtocolVersion.ValueString())
+	if data.AgentCard.ProtocolVersion.ValueString() != "1.0" {
+		t.Errorf("expected protocolVersion '1.0', got %q", data.AgentCard.ProtocolVersion.ValueString())
 	}
 	if !data.AgentCard.SupportsAuthenticatedExtendedCard.ValueBool() {
 		t.Error("expected supportsAuthenticatedExtendedCard true")

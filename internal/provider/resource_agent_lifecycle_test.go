@@ -643,8 +643,8 @@ func TestAgentSkillRemovalOwnershipAndPayload(t *testing.T) {
 	plan := cloneAgentResourceModel(state)
 	plan.AgentCard.Skills = []AgentSkillModel{skill("keep")}
 	config := cloneAgentResourceModel(plan)
-	if err := validateAgentUpdateClears(plan, state, config, agentFieldSet{agentSkillLeaf("remove", "name"): true}); err == nil {
-		t.Fatal("API-owned skill removal was accepted")
+	if err := validateAgentUpdateClears(plan, state, config, agentFieldSet{agentSkillLeaf("remove", "name"): true}); err != nil {
+		t.Fatalf("API-owned skill preservation was rejected: %v", err)
 	}
 	structuralScope := agentFieldSet{agentScopeCardSkills: true}
 	if err := validateAgentUpdateClears(plan, state, config, structuralScope); err != nil {

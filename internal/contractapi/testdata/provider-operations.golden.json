@@ -1505,11 +1505,11 @@
     "evidence": [
       {
         "file": "internal/provider/datasource_agents_list.go",
-        "line": 130
+        "line": 89
       },
       {
         "file": "internal/provider/resource_agent_lifecycle.go",
-        "line": 633
+        "line": 747
       }
     ]
   },
@@ -1521,7 +1521,7 @@
     "evidence": [
       {
         "file": "internal/provider/resource_agent.go",
-        "line": 361
+        "line": 408
       }
     ]
   },
@@ -1535,7 +1535,7 @@
     "evidence": [
       {
         "file": "internal/provider/resource_agent.go",
-        "line": 542
+        "line": 622
       }
     ]
   },
@@ -1548,20 +1548,24 @@
     "query_parameters": [],
     "evidence": [
       {
+        "file": "internal/provider/agent_patch.go",
+        "line": 139
+      },
+      {
         "file": "internal/provider/datasource_agent.go",
-        "line": 143
+        "line": 221
       },
       {
         "file": "internal/provider/resource_agent.go",
-        "line": 650
+        "line": 730
       },
       {
         "file": "internal/provider/resource_agent.go",
-        "line": 1043
+        "line": 1204
       },
       {
         "file": "internal/provider/resource_agent.go",
-        "line": 1045
+        "line": 1206
       }
     ]
   },
@@ -1575,7 +1579,7 @@
     "evidence": [
       {
         "file": "internal/provider/resource_agent.go",
-        "line": 503
+        "line": 582
       }
     ]
   },
