@@ -582,6 +582,238 @@ func bad(values url.Values, value string) string {
 	}
 }
 
+func TestExtractorRejectsKilledEndpointProvenance(t *testing.T) {
+	fixtures := map[string]string{
+		"sentinel-trim-prefix": `package provider
+import ("context"; "strings")
+func bad(ctx context.Context, client *Client, value string) {
+ endpoint := endpointWithPathSegment("/things/", value, "")
+ endpoint = strings.TrimPrefix(endpoint, invalidReviewedEndpoint)
+ client.DoRequestWithResponse(ctx, "GET", endpoint, nil, nil)
+}
+`,
+		"short-declaration-tuple": `package provider
+import ("context"; "strings")
+func bad(ctx context.Context, client *Client, value string) {
+ endpoint := endpointWithPathSegment("/things/", value, "")
+ endpoint, changed := strings.TrimPrefix(endpoint, invalidReviewedEndpoint), true
+ _ = changed
+ client.DoRequestWithResponse(ctx, "GET", endpoint, nil, nil)
+}
+`,
+		"multi-return": `package provider
+import "context"
+func reload(string) (string, error) { return "/things/reloaded", nil }
+func bad(ctx context.Context, client *Client, value string) {
+ endpoint := endpointWithPathSegment("/things/", value, "")
+ endpoint, _ = reload(endpoint)
+ client.DoRequestWithResponse(ctx, "GET", endpoint, nil, nil)
+}
+`,
+		"compound-assignment": `package provider
+import "context"
+func bad(ctx context.Context, client *Client, value string) {
+ endpoint := endpointWithPathSegment("/things/", value, "")
+ endpoint += "/reloaded"
+ client.DoRequestWithResponse(ctx, "GET", endpoint, nil, nil)
+}
+`,
+		"conditional-reassignment": `package provider
+import ("context"; "strings")
+func bad(ctx context.Context, client *Client, value string, rewrite bool) {
+ endpoint := endpointWithPathSegment("/things/", value, "")
+ if rewrite { endpoint = strings.TrimPrefix(endpoint, invalidReviewedEndpoint) }
+ client.DoRequestWithResponse(ctx, "GET", endpoint, nil, nil)
+}
+`,
+		"switch-reassignment": `package provider
+import ("context"; "strings")
+func bad(ctx context.Context, client *Client, value string, rewrite int) {
+ endpoint := endpointWithPathSegment("/things/", value, "")
+ switch rewrite { case 1: endpoint = strings.TrimPrefix(endpoint, invalidReviewedEndpoint); case 2: endpoint = "/things/static" }
+ client.DoRequestWithResponse(ctx, "GET", endpoint, nil, nil)
+}
+`,
+		"type-switch-reassignment": `package provider
+import ("context"; "strings")
+func bad(ctx context.Context, client *Client, value string, rewrite any) {
+ endpoint := endpointWithPathSegment("/things/", value, "")
+ switch rewrite.(type) { case string: endpoint = strings.TrimPrefix(endpoint, invalidReviewedEndpoint) }
+ client.DoRequestWithResponse(ctx, "GET", endpoint, nil, nil)
+}
+`,
+		"select-reassignment": `package provider
+import ("context"; "strings")
+func bad(ctx context.Context, client *Client, value string, rewrite <-chan bool) {
+ endpoint := endpointWithPathSegment("/things/", value, "")
+ select { case <-rewrite: endpoint = strings.TrimPrefix(endpoint, invalidReviewedEndpoint); default: }
+ client.DoRequestWithResponse(ctx, "GET", endpoint, nil, nil)
+}
+`,
+		"loop-carried-reassignment": `package provider
+import ("context"; "strings")
+func bad(ctx context.Context, client *Client, value string, count int) {
+ endpoint := endpointWithPathSegment("/things/", value, "")
+ for i := 0; i < count; i++ { endpoint = strings.TrimPrefix(endpoint, invalidReviewedEndpoint) }
+ client.DoRequestWithResponse(ctx, "GET", endpoint, nil, nil)
+}
+`,
+		"struct-reload": `package provider
+import "context"
+type endpointHolder struct { endpoint string }
+func bad(ctx context.Context, client *Client, value string) {
+ endpoint := endpointWithPathSegment("/things/", value, "")
+ holder := endpointHolder{endpoint: endpoint}
+ endpoint = holder.endpoint
+ client.DoRequestWithResponse(ctx, "GET", endpoint, nil, nil)
+}
+`,
+		"array-reload": `package provider
+import "context"
+func bad(ctx context.Context, client *Client, value string) {
+ endpoint := endpointWithPathSegment("/things/", value, "")
+ holder := [1]string{endpoint}
+ endpoint = holder[0]
+ client.DoRequestWithResponse(ctx, "GET", endpoint, nil, nil)
+}
+`,
+		"map-reload": `package provider
+import "context"
+func bad(ctx context.Context, client *Client, value string) {
+ endpoint := endpointWithPathSegment("/things/", value, "")
+ holder := map[string]string{"endpoint": endpoint}
+ endpoint = holder["endpoint"]
+ client.DoRequestWithResponse(ctx, "GET", endpoint, nil, nil)
+}
+`,
+		"closure-result": `package provider
+import "context"
+func bad(ctx context.Context, client *Client, value string) {
+ endpoint := endpointWithPathSegment("/things/", value, "")
+ reload := func() string { return endpoint }
+ endpoint = reload()
+ client.DoRequestWithResponse(ctx, "GET", endpoint, nil, nil)
+}
+`,
+		"closure-capture-write": `package provider
+import ("context"; "strings")
+func bad(ctx context.Context, client *Client, value string) {
+ endpoint := endpointWithPathSegment("/things/", value, "")
+ reload := func() { endpoint = strings.TrimPrefix(endpoint, invalidReviewedEndpoint) }
+ reload()
+ client.DoRequestWithResponse(ctx, "GET", endpoint, nil, nil)
+}
+`,
+		"method-result": `package provider
+import "context"
+type endpointReloader struct{}
+func (endpointReloader) reload(value string) string { return value }
+func bad(ctx context.Context, client *Client, value string) {
+ endpoint := endpointWithPathSegment("/things/", value, "")
+ endpoint = (endpointReloader{}).reload(endpoint)
+ client.DoRequestWithResponse(ctx, "GET", endpoint, nil, nil)
+}
+`,
+		"pointer-alias-write": `package provider
+import ("context"; "strings")
+func bad(ctx context.Context, client *Client, value string) {
+ endpoint := endpointWithPathSegment("/things/", value, "")
+ alias := &endpoint
+ *alias = strings.TrimPrefix(*alias, invalidReviewedEndpoint)
+ client.DoRequestWithResponse(ctx, "GET", endpoint, nil, nil)
+}
+`,
+		"unknown-pointer-write": `package provider
+import "context"
+func reload(value *string) { *value = "/things/reloaded" }
+func bad(ctx context.Context, client *Client, value string) {
+ endpoint := endpointWithPathSegment("/things/", value, "")
+ reload(&endpoint)
+ client.DoRequestWithResponse(ctx, "GET", endpoint, nil, nil)
+}
+`,
+		"pointer-field-write": `package provider
+import ("context"; "strings")
+type pointerHolder struct { endpoint *string }
+func bad(ctx context.Context, client *Client, value string) {
+ endpoint := endpointWithPathSegment("/things/", value, "")
+ holder := pointerHolder{endpoint: &endpoint}
+ *holder.endpoint = strings.TrimPrefix(*holder.endpoint, invalidReviewedEndpoint)
+ client.DoRequestWithResponse(ctx, "GET", endpoint, nil, nil)
+}
+`,
+		"pointer-array-write": `package provider
+import ("context"; "strings")
+func bad(ctx context.Context, client *Client, value string) {
+ endpoint := endpointWithPathSegment("/things/", value, "")
+ holder := [1]*string{&endpoint}
+ *holder[0] = strings.TrimPrefix(*holder[0], invalidReviewedEndpoint)
+ client.DoRequestWithResponse(ctx, "GET", endpoint, nil, nil)
+}
+`,
+	}
+	for name, fixture := range fixtures {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeHTTPFixtureSupport(t, dir)
+			writeFixture(t, dir, "bad.go", fixture)
+			if _, err := ExtractProvider(dir); err == nil || (!strings.Contains(err.Error(), "unresolved") && !strings.Contains(err.Error(), "statically unqueried")) {
+				t.Fatalf("killed endpoint provenance was accepted: %v", err)
+			}
+		})
+	}
+}
+
+func TestExtractorAllowsCanonicalBranchAlternatives(t *testing.T) {
+	dir := t.TempDir()
+	writeHTTPFixtureSupport(t, dir)
+	writeFixture(t, dir, "safe.go", `package provider
+import "context"
+func safe(ctx context.Context, client *Client, value string, alternate bool) {
+ endpoint := endpointWithPathSegment("/things/", value, "")
+ if alternate { endpoint = endpointWithPathSegment("/other/", value, "") }
+ client.DoRequestWithResponse(ctx, "GET", endpoint, nil, nil)
+}
+`)
+	operations, err := ExtractProvider(dir)
+	if err != nil || len(operations) != 6 {
+		t.Fatalf("canonical branch alternatives rejected: operations=%+v error=%v", operations, err)
+	}
+}
+
+func TestCopiedSearchToolEndpointOverwriteFailsContractCheck(t *testing.T) {
+	root := repositoryRoot(t)
+	source := filepath.Join(root, "internal", "provider")
+	dir := t.TempDir()
+	entries, err := os.ReadDir(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+			continue
+		}
+		contents, readErr := os.ReadFile(filepath.Join(source, entry.Name()))
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if entry.Name() == "datasource_search_tool.go" {
+			needle := `endpoint := endpointWithPathSegment("/search_tools/", searchToolID, "")`
+			replacement := needle + `
+	endpoint = strings.TrimPrefix(endpoint, invalidReviewedEndpoint)`
+			contents = []byte(strings.Replace(string(contents), needle, replacement, 1))
+			contents = []byte(strings.Replace(string(contents), `"fmt"`, `"fmt"
+	"strings"`, 1))
+		}
+		if writeErr := os.WriteFile(filepath.Join(dir, entry.Name()), contents, 0o600); writeErr != nil {
+			t.Fatal(writeErr)
+		}
+	}
+	if _, err := ExtractProvider(dir); err == nil || !strings.Contains(err.Error(), "unresolved HTTP method or path") {
+		t.Fatalf("copied search-tool overwrite passed contract check: %v", err)
+	}
+}
+
 func TestExtractorRejectsBuilderResultPostTransforms(t *testing.T) {
 	fixtures := map[string]string{
 		"replace-direct": `package provider

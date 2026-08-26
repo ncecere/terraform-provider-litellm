@@ -102,6 +102,21 @@ func TestOrdinaryPathSlashFailsLocallyWithoutIdentityDiagnostics(t *testing.T) {
 	}
 }
 
+func TestTrimmedInvalidReviewedEndpointNeverDispatches(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests++ }))
+	defer server.Close()
+
+	endpoint := endpointWithPathSegment("/things/", "private/slash-id", "")
+	endpoint = strings.TrimPrefix(endpoint, invalidReviewedEndpoint)
+	client := &Client{APIBase: server.URL, APIKey: "admin", HTTPClient: server.Client()}
+	err := client.DoRequestWithResponse(context.Background(), http.MethodGet, endpoint, nil, nil)
+	classification := ClassifyHTTPFailure(err)
+	if err == nil || requests != 0 || classification.RequestDispatched {
+		t.Fatalf("trimmed sentinel dispatched: endpoint=%q requests=%d classification=%#v error=%v", endpoint, requests, classification, err)
+	}
+}
+
 func TestEndpointWithQueryCanonicalRawRoundTrip(t *testing.T) {
 	values := []string{"/", ":", "%", "?", "#", "雪", "", ".", "..", "%2F"}
 	for _, value := range values {

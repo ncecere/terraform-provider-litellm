@@ -349,13 +349,14 @@ func ExtractProvider(root string) ([]Operation, error) {
 			if x.clientMethods[function] != nil || exactProviderFunction(function, helperRequestWrappers) {
 				continue
 			}
-			env := x.functionEnv(fn, nil, map[string]bool{})
+			envs, _ := x.functionEnvironments(fn, nil, map[string]bool{})
 			aliases := x.functionCallAliases(fn)
 			ast.Inspect(fn.Body, func(n ast.Node) bool {
 				call, ok := n.(*ast.CallExpr)
 				if !ok {
 					return true
 				}
+				env := envs[call]
 				called := calledFunctionObject(x.typesInfo, call.Fun)
 				paginationFunction, paginationExact := exactProviderFreeFunction(called, map[string]bool{"listKeys": true, "listUsers": true})
 				pos := x.fset.Position(call.Pos())
@@ -3455,6 +3456,7 @@ func (x *extractor) validateStrictSourcePolicy() error {
 			if !ok || fn.Body == nil {
 				continue
 			}
+			envs, _ := x.functionEnvironments(fn, nil, map[string]bool{})
 			parents := map[ast.Node]ast.Node{}
 			ast.Inspect(fn.Body, func(node ast.Node) bool {
 				if node == nil {
@@ -3708,7 +3710,7 @@ func (x *extractor) validateStrictSourcePolicy() error {
 							if !x.rawURLValuesProvenance(item.Args[1], fn, map[types.Object]bool{}) {
 								add(path, item.Args[1], "reviewed query builder values must retain approved raw-input provenance")
 							}
-							pathValue := x.eval(item.Args[0], x.functionEnv(fn, nil, map[string]bool{}), map[string]bool{})
+							pathValue := x.eval(item.Args[0], envs[item], map[string]bool{})
 							valid := pathValue.ok && len(pathValue.shapes) > 0 && !pathValue.unresolvedQuery
 							for _, shape := range pathValue.shapes {
 								pathShape, query, unresolved := splitShape(shape)
@@ -4386,125 +4388,518 @@ func dereferencedIdent(expr ast.Expr) (*ast.Ident, bool) {
 	}
 }
 
-func (x *extractor) functionEnv(fn *ast.FuncDecl, bindings map[string]value, stack map[string]bool) map[string]value {
-	env := map[string]value{}
-	for k, v := range bindings {
-		env[k] = v
+type endpointFlowState struct {
+	env       map[string]value
+	aliases   map[string]map[string]bool
+	reachable bool
+}
+
+type endpointFlowAnalyzer struct {
+	x      *extractor
+	stack  map[string]bool
+	before map[ast.Node]map[string]value
+}
+
+func cloneValue(v value) value {
+	out := v
+	out.shapes = append([]string(nil), v.shapes...)
+	out.queries = copySet(v.queries)
+	out.pathModes = copySet(v.pathModes)
+	return out
+}
+
+func cloneEndpointFlowState(in endpointFlowState) endpointFlowState {
+	out := endpointFlowState{env: map[string]value{}, aliases: map[string]map[string]bool{}, reachable: in.reachable}
+	for name, v := range in.env {
+		out.env[name] = cloneValue(v)
+	}
+	for name, targets := range in.aliases {
+		out.aliases[name] = copySet(targets)
+	}
+	return out
+}
+
+func mergeEndpointFlowValues(values ...value) value {
+	hasCanonical, hasNoncanonical := false, false
+	for _, v := range values {
+		if !v.ok {
+			return value{}
+		}
+		if v.canonicalBuilder {
+			hasCanonical = true
+		} else {
+			hasNoncanonical = true
+		}
+	}
+	if hasCanonical && hasNoncanonical {
+		return value{}
+	}
+	return mergeValues(values...)
+}
+
+func mergeEndpointFlowStates(states ...endpointFlowState) endpointFlowState {
+	out := endpointFlowState{env: map[string]value{}, aliases: map[string]map[string]bool{}}
+	var reaching []endpointFlowState
+	for _, state := range states {
+		if state.reachable {
+			reaching = append(reaching, state)
+		}
+	}
+	if len(reaching) == 0 {
+		return out
+	}
+	out.reachable = true
+	names := map[string]bool{}
+	for _, state := range reaching {
+		for name := range state.env {
+			names[name] = true
+		}
+		for name := range state.aliases {
+			names[name] = true
+		}
+	}
+	for name := range names {
+		values := make([]value, 0, len(reaching))
+		missing := false
+		for _, state := range reaching {
+			v, ok := state.env[name]
+			if !ok {
+				missing = true
+				break
+			}
+			values = append(values, v)
+			if targets := state.aliases[name]; targets != nil {
+				if out.aliases[name] == nil {
+					out.aliases[name] = map[string]bool{}
+				}
+				for target := range targets {
+					out.aliases[name][target] = true
+				}
+			}
+		}
+		if missing {
+			out.env[name] = value{}
+		} else {
+			out.env[name] = mergeEndpointFlowValues(values...)
+		}
+	}
+	return out
+}
+
+func (x *extractor) functionEnvironments(fn *ast.FuncDecl, bindings map[string]value, stack map[string]bool) (map[ast.Node]map[string]value, map[string]value) {
+	state := endpointFlowState{env: map[string]value{}, aliases: map[string]map[string]bool{}, reachable: true}
+	for name, v := range bindings {
+		state.env[name] = cloneValue(v)
 	}
 	if fn.Type.Params != nil {
 		for _, field := range fn.Type.Params.List {
-			for _, n := range field.Names {
-				if _, ok := env[n.Name]; !ok {
-					env[n.Name] = dynamicValue()
+			for _, name := range field.Names {
+				if _, bound := state.env[name.Name]; !bound {
+					state.env[name.Name] = dynamicValue()
 				}
 			}
 		}
 	}
-	// Fixed point handles endpoint aliases and helpers declared before or after query mutation.
-	for pass := 0; pass < 4; pass++ {
-		ast.Inspect(fn.Body, func(n ast.Node) bool {
-			switch node := n.(type) {
-			case *ast.AssignStmt:
-				for i, lhs := range node.Lhs {
-					if index, ok := lhs.(*ast.IndexExpr); ok {
-						id, identifier := dereferencedIdent(index.X)
-						if !identifier || !x.isURLValuesExpr(index.X) {
-							continue
-						}
-						v := env[id.Name]
-						if v.queries == nil {
-							v = literalValue("")
-						}
-						if query, literal := stringLiteral(index.Index); literal {
-							v.queries[query] = true
-						} else {
-							v.unresolvedQuery = true
-						}
-						env[id.Name] = v
-						continue
-					}
-					id, ok := lhs.(*ast.Ident)
-					if !ok || i >= len(node.Rhs) {
-						continue
-					}
-					v := x.eval(node.Rhs[i], env, stack)
-					if v.ok {
-						if prior, exists := env[id.Name]; exists {
-							env[id.Name] = mergeValues(prior, v)
-						} else {
-							env[id.Name] = v
-						}
-					}
-				}
-			case *ast.DeclStmt:
-				gen, ok := node.Decl.(*ast.GenDecl)
-				if !ok {
-					break
-				}
-				for _, s := range gen.Specs {
-					vs := s.(*ast.ValueSpec)
-					for i, n := range vs.Names {
-						if i < len(vs.Values) {
-							v := x.eval(vs.Values[i], env, stack)
-							if v.ok {
-								if prior, exists := env[n.Name]; exists {
-									env[n.Name] = mergeValues(prior, v)
-								} else {
-									env[n.Name] = v
-								}
-							}
-						}
-					}
-				}
-			case *ast.RangeStmt:
-				id, ok := node.Value.(*ast.Ident)
-				literal, literalOK := node.X.(*ast.CompositeLit)
-				if ok && literalOK {
-					var alternatives []value
-					for _, element := range literal.Elts {
-						if v := x.eval(element, env, stack); v.ok {
-							alternatives = append(alternatives, v)
+	flow := &endpointFlowAnalyzer{x: x, stack: stack, before: map[ast.Node]map[string]value{}}
+	state = flow.block(fn.Body.List, state)
+	return flow.before, state.env
+}
+
+func (flow *endpointFlowAnalyzer) record(node ast.Node, state endpointFlowState) {
+	if node == nil {
+		return
+	}
+	ast.Inspect(node, func(child ast.Node) bool {
+		if child == nil {
+			return false
+		}
+		flow.before[child] = cloneEndpointFlowState(state).env
+		if literal, ok := child.(*ast.FuncLit); ok {
+			captured := cloneEndpointFlowState(state)
+			flow.block(literal.Body.List, captured)
+			return false
+		}
+		return true
+	})
+}
+
+func (flow *endpointFlowAnalyzer) block(statements []ast.Stmt, state endpointFlowState) endpointFlowState {
+	for _, statement := range statements {
+		if !state.reachable {
+			flow.record(statement, state)
+			continue
+		}
+		state = flow.statement(statement, state)
+	}
+	return state
+}
+
+func (flow *endpointFlowAnalyzer) expressionEffects(expr ast.Expr, state endpointFlowState) endpointFlowState {
+	if expr == nil {
+		return state
+	}
+	flow.record(expr, state)
+	ast.Inspect(expr, func(node ast.Node) bool {
+		if address, ok := node.(*ast.UnaryExpr); ok && address.Op == token.AND {
+			flow.poisonAliasExpr(address.X, &state)
+		}
+		literal, ok := node.(*ast.FuncLit)
+		if ok {
+			written := map[string]bool{}
+			ast.Inspect(literal.Body, func(child ast.Node) bool {
+				switch item := child.(type) {
+				case *ast.AssignStmt:
+					for _, lhs := range item.Lhs {
+						if id, ok := dereferencedIdent(lhs); ok {
+							written[id.Name] = true
 						}
 					}
-					if len(alternatives) > 0 {
-						env[id.Name] = mergeValues(alternatives...)
+				case *ast.IncDecStmt:
+					if id, ok := dereferencedIdent(item.X); ok {
+						written[id.Name] = true
 					}
 				}
-			case *ast.CallExpr:
-				called := calledFunctionObject(x.typesInfo, node.Fun)
-				if x.exactURLValuesMethod(called, "Set", "Add") && len(node.Args) > 0 {
-					if sel, ok := node.Fun.(*ast.SelectorExpr); ok {
-						if id, ok := dereferencedIdent(sel.X); ok {
-							v := env[id.Name]
-							if v.queries == nil {
-								v = literalValue("")
-							}
-							if q, ok := stringLiteral(node.Args[0]); ok {
-								v.queries[q] = true
-							} else {
-								v.unresolvedQuery = true
-							}
-							env[id.Name] = v
-						}
-					}
-				}
-				if function, exact := exactProviderFreeFunction(called, map[string]bool{"addKnownStringFilter": true}); exact && function.Name() == "addKnownStringFilter" && len(node.Args) > 1 {
-					if id, ok := node.Args[0].(*ast.Ident); ok {
-						if q, ok := stringLiteral(node.Args[1]); ok {
-							v := env[id.Name]
-							if v.queries == nil {
-								v = literalValue("")
-							}
-							v.queries[q] = true
-							env[id.Name] = v
-						}
-					}
+				return true
+			})
+			for name := range written {
+				if _, captured := state.env[name]; captured {
+					state.env[name] = value{}
 				}
 			}
+			return false
+		}
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
 			return true
-		})
+		}
+		called := calledFunctionObject(flow.x.typesInfo, call.Fun)
+		if flow.x.exactURLValuesMethod(called, "Set", "Add") && len(call.Args) > 0 {
+			if selector, ok := call.Fun.(*ast.SelectorExpr); ok {
+				flow.mutateQuery(selector.X, call.Args[0], &state)
+			}
+		}
+		if function, exact := exactProviderFreeFunction(called, map[string]bool{"addKnownStringFilter": true}); exact && function.Name() == "addKnownStringFilter" && len(call.Args) > 1 {
+			flow.mutateQuery(call.Args[0], call.Args[1], &state)
+		}
+		for _, argument := range call.Args {
+			flow.poisonAddressAliases(argument, &state)
+		}
+		if selector, ok := call.Fun.(*ast.SelectorExpr); ok && !flow.x.exactURLValuesMethod(called, "Set", "Add", "Encode") {
+			flow.poisonAliasExpr(selector.X, &state)
+		}
+		return true
+	})
+	return state
+}
+
+func (flow *endpointFlowAnalyzer) mutateQuery(expr, key ast.Expr, state *endpointFlowState) {
+	id, ok := dereferencedIdent(expr)
+	if !ok {
+		return
 	}
-	return env
+	targets := map[string]bool{id.Name: true}
+	for target := range state.aliases[id.Name] {
+		targets[target] = true
+	}
+	for target := range targets {
+		v := cloneValue(state.env[target])
+		if v.queries == nil || !v.ok {
+			v = literalValue("")
+		}
+		if query, literal := stringLiteral(key); literal {
+			v.queries[query] = true
+		} else {
+			v.unresolvedQuery = true
+		}
+		state.env[target] = v
+	}
+}
+
+func (flow *endpointFlowAnalyzer) poisonAddressAliases(expr ast.Expr, state *endpointFlowState) {
+	switch item := expr.(type) {
+	case *ast.UnaryExpr:
+		if item.Op == token.AND {
+			flow.poisonAliasExpr(item.X, state)
+		}
+	case *ast.Ident:
+		for target := range state.aliases[item.Name] {
+			state.env[target] = value{}
+		}
+	case *ast.ParenExpr:
+		flow.poisonAddressAliases(item.X, state)
+	}
+}
+
+func (flow *endpointFlowAnalyzer) poisonAliasExpr(expr ast.Expr, state *endpointFlowState) {
+	id, ok := dereferencedIdent(expr)
+	if !ok {
+		return
+	}
+	if targets := state.aliases[id.Name]; len(targets) != 0 {
+		for target := range targets {
+			state.env[target] = value{}
+		}
+		return
+	}
+	if _, tracked := state.env[id.Name]; tracked {
+		state.env[id.Name] = value{}
+	}
+}
+
+func (flow *endpointFlowAnalyzer) assignmentValues(node *ast.AssignStmt, state endpointFlowState) []value {
+	values := make([]value, len(node.Lhs))
+	if node.Tok != token.ASSIGN && node.Tok != token.DEFINE {
+		return values
+	}
+	if len(node.Rhs) != len(node.Lhs) {
+		return values
+	}
+	for index, rhs := range node.Rhs {
+		values[index] = cloneValue(flow.x.eval(rhs, state.env, flow.stack))
+	}
+	return values
+}
+
+func (flow *endpointFlowAnalyzer) assign(lhs ast.Expr, rhs ast.Expr, assigned value, state *endpointFlowState) {
+	switch left := lhs.(type) {
+	case *ast.Ident:
+		if left.Name == "_" {
+			return
+		}
+		state.env[left.Name] = cloneValue(assigned)
+		delete(state.aliases, left.Name)
+		if unary, ok := rhs.(*ast.UnaryExpr); ok && unary.Op == token.AND {
+			if target, ok := dereferencedIdent(unary.X); ok {
+				state.aliases[left.Name] = map[string]bool{target.Name: true}
+			}
+		} else if source, ok := rhs.(*ast.Ident); ok && state.aliases[source.Name] != nil {
+			state.aliases[left.Name] = copySet(state.aliases[source.Name])
+		}
+	case *ast.StarExpr:
+		if pointer, ok := dereferencedIdent(left.X); ok {
+			for target := range state.aliases[pointer.Name] {
+				state.env[target] = cloneValue(assigned)
+			}
+		}
+	case *ast.IndexExpr:
+		if flow.x.isURLValuesExpr(left.X) {
+			flow.mutateQuery(left.X, left.Index, state)
+		} else {
+			flow.poisonAliasExpr(left.X, state)
+		}
+	case *ast.SelectorExpr:
+		flow.poisonAliasExpr(left.X, state)
+	default:
+		flow.poisonAliasExpr(lhs, state)
+	}
+}
+
+func (flow *endpointFlowAnalyzer) statement(statement ast.Stmt, state endpointFlowState) endpointFlowState {
+	flow.before[statement] = cloneEndpointFlowState(state).env
+	switch node := statement.(type) {
+	case *ast.AssignStmt:
+		for index, rhs := range node.Rhs {
+			directAlias := index < len(node.Lhs)
+			if _, ok := node.Lhs[index].(*ast.Ident); !ok {
+				directAlias = false
+			}
+			address, addressOfIdent := rhs.(*ast.UnaryExpr)
+			directAlias = directAlias && addressOfIdent && address.Op == token.AND
+			if directAlias {
+				flow.record(rhs, state)
+			} else {
+				state = flow.expressionEffects(rhs, state)
+			}
+		}
+		values := flow.assignmentValues(node, state)
+		for index, lhs := range node.Lhs {
+			var rhs ast.Expr
+			if len(node.Rhs) == len(node.Lhs) {
+				rhs = node.Rhs[index]
+			}
+			flow.assign(lhs, rhs, values[index], &state)
+		}
+	case *ast.DeclStmt:
+		flow.record(node, state)
+		declaration, ok := node.Decl.(*ast.GenDecl)
+		if !ok {
+			return state
+		}
+		for _, spec := range declaration.Specs {
+			values, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			for index, rhs := range values.Values {
+				directAlias := index < len(values.Names)
+				address, addressOfIdent := rhs.(*ast.UnaryExpr)
+				directAlias = directAlias && addressOfIdent && address.Op == token.AND
+				if directAlias {
+					flow.record(rhs, state)
+				} else {
+					state = flow.expressionEffects(rhs, state)
+				}
+			}
+			for index, name := range values.Names {
+				assigned := value{}
+				var rhs ast.Expr
+				if len(values.Values) == len(values.Names) {
+					rhs = values.Values[index]
+					assigned = flow.x.eval(rhs, state.env, flow.stack)
+				}
+				flow.assign(name, rhs, assigned, &state)
+			}
+		}
+	case *ast.ExprStmt:
+		state = flow.expressionEffects(node.X, state)
+	case *ast.IncDecStmt:
+		flow.record(node.X, state)
+		flow.assign(node.X, nil, value{}, &state)
+	case *ast.ReturnStmt:
+		for _, result := range node.Results {
+			state = flow.expressionEffects(result, state)
+		}
+		state.reachable = false
+	case *ast.IfStmt:
+		if node.Init != nil {
+			state = flow.statement(node.Init, state)
+		}
+		state = flow.expressionEffects(node.Cond, state)
+		thenState := flow.block(node.Body.List, cloneEndpointFlowState(state))
+		elseState := cloneEndpointFlowState(state)
+		if node.Else != nil {
+			elseState = flow.statement(node.Else, elseState)
+		}
+		state = mergeEndpointFlowStates(thenState, elseState)
+	case *ast.BlockStmt:
+		state = flow.block(node.List, state)
+	case *ast.ForStmt:
+		if node.Init != nil {
+			state = flow.statement(node.Init, state)
+		}
+		entry := cloneEndpointFlowState(state)
+		if node.Cond != nil {
+			entry = flow.expressionEffects(node.Cond, entry)
+		}
+		carried := cloneEndpointFlowState(entry)
+		for pass := 0; pass < 4; pass++ {
+			body := flow.block(node.Body.List, cloneEndpointFlowState(carried))
+			if node.Post != nil && body.reachable {
+				body = flow.statement(node.Post, body)
+			}
+			next := mergeEndpointFlowStates(entry, body)
+			if reflect.DeepEqual(next, carried) {
+				carried = next
+				break
+			}
+			carried = next
+		}
+		state = carried
+	case *ast.RangeStmt:
+		state = flow.expressionEffects(node.X, state)
+		entry := cloneEndpointFlowState(state)
+		rangeValue := value{}
+		if literal, ok := node.X.(*ast.CompositeLit); ok {
+			var alternatives []value
+			for _, element := range literal.Elts {
+				candidate := element
+				if pair, ok := element.(*ast.KeyValueExpr); ok {
+					candidate = pair.Value
+				}
+				alternatives = append(alternatives, flow.x.eval(candidate, entry.env, flow.stack))
+			}
+			if len(alternatives) != 0 {
+				rangeValue = mergeEndpointFlowValues(alternatives...)
+			}
+		}
+		carried := cloneEndpointFlowState(entry)
+		for pass := 0; pass < 4; pass++ {
+			iteration := cloneEndpointFlowState(carried)
+			if node.Key != nil {
+				flow.assign(node.Key, nil, dynamicValue(), &iteration)
+			}
+			if node.Value != nil {
+				flow.assign(node.Value, nil, rangeValue, &iteration)
+			}
+			body := flow.block(node.Body.List, iteration)
+			next := mergeEndpointFlowStates(entry, body)
+			if reflect.DeepEqual(next, carried) {
+				carried = next
+				break
+			}
+			carried = next
+		}
+		state = carried
+	case *ast.SwitchStmt:
+		if node.Init != nil {
+			state = flow.statement(node.Init, state)
+		}
+		state = flow.expressionEffects(node.Tag, state)
+		states := []endpointFlowState{}
+		hasDefault := false
+		for _, statement := range node.Body.List {
+			clause := statement.(*ast.CaseClause)
+			branch := cloneEndpointFlowState(state)
+			if len(clause.List) == 0 {
+				hasDefault = true
+			}
+			for _, expression := range clause.List {
+				branch = flow.expressionEffects(expression, branch)
+			}
+			states = append(states, flow.block(clause.Body, branch))
+		}
+		if !hasDefault {
+			states = append(states, state)
+		}
+		state = mergeEndpointFlowStates(states...)
+	case *ast.TypeSwitchStmt:
+		if node.Init != nil {
+			state = flow.statement(node.Init, state)
+		}
+		state = flow.statement(node.Assign, state)
+		states := []endpointFlowState{}
+		hasDefault := false
+		for _, statement := range node.Body.List {
+			clause := statement.(*ast.CaseClause)
+			if len(clause.List) == 0 {
+				hasDefault = true
+			}
+			states = append(states, flow.block(clause.Body, cloneEndpointFlowState(state)))
+		}
+		if !hasDefault {
+			states = append(states, state)
+		}
+		state = mergeEndpointFlowStates(states...)
+	case *ast.SelectStmt:
+		states := []endpointFlowState{}
+		hasDefault := false
+		for _, statement := range node.Body.List {
+			clause := statement.(*ast.CommClause)
+			branch := cloneEndpointFlowState(state)
+			if clause.Comm == nil {
+				hasDefault = true
+			} else {
+				branch = flow.statement(clause.Comm, branch)
+			}
+			states = append(states, flow.block(clause.Body, branch))
+		}
+		if !hasDefault {
+			states = append(states, state)
+		}
+		state = mergeEndpointFlowStates(states...)
+	case *ast.LabeledStmt:
+		state = flow.statement(node.Stmt, state)
+	case *ast.GoStmt:
+		state = flow.expressionEffects(node.Call, state)
+	case *ast.DeferStmt:
+		state = flow.expressionEffects(node.Call, state)
+	case *ast.SendStmt:
+		state = flow.expressionEffects(node.Chan, state)
+		state = flow.expressionEffects(node.Value, state)
+	default:
+		flow.record(node, state)
+	}
+	return state
 }
 
 func (x *extractor) evalMethod(expr ast.Expr, env map[string]value) string {
@@ -4676,12 +5071,12 @@ func (x *extractor) eval(expr ast.Expr, env map[string]value, stack map[string]b
 			}
 			next := copySet(stack)
 			next[function.Name()] = true
-			local := x.functionEnv(fn, bindings, next)
+			envs, _ := x.functionEnvironments(fn, bindings, next)
 			var returns []value
 			ast.Inspect(fn.Body, func(n ast.Node) bool {
 				r, ok := n.(*ast.ReturnStmt)
 				if ok && len(r.Results) > 0 {
-					v := x.eval(r.Results[0], local, next)
+					v := x.eval(r.Results[0], envs[r], next)
 					if v.ok {
 						returns = append(returns, v)
 					}
