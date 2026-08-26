@@ -2,7 +2,7 @@
 # This example demonstrates configuring various search tool providers
 
 terraform {
-  required_version = ">= 1.0.0"
+  required_version = ">= 1.1.0"
 
   required_providers {
     litellm = {

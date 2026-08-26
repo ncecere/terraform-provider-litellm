@@ -2,7 +2,7 @@
 # This example demonstrates a full enterprise setup with all resource types
 
 terraform {
-  required_version = ">= 1.0.0"
+  required_version = ">= 1.1.0"
 
   required_providers {
     litellm = {

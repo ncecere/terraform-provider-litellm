@@ -12,7 +12,7 @@ const (
 	ProtocolVersion = "6.0"
 
 	// Baseline client and development versions.
-	TerraformMinimum = "1.0.0"
+	TerraformMinimum = "1.1.0"
 	OpenTofuMinimum  = "1.6.0"
 	GoMinimum        = "1.24.0"
 
@@ -28,5 +28,5 @@ const (
 	// It must not move merely because a later compatible 2.x release is tagged.
 	MinimumProviderVersion    = "2.0.1"
 	ExampleProviderConstraint = ">= 2.0.1, < 3.0.0"
-	TerraformRequiredVersion  = ">= 1.0.0"
+	TerraformRequiredVersion  = ">= 1.1.0"
 )
