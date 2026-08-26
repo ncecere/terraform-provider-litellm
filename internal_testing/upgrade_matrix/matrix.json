@@ -77,6 +77,9 @@
     "litellm_search_tool", "litellm_tag", "litellm_team",
     "litellm_team_member", "litellm_user", "litellm_vector_store"
   ],
+  "upgrade_expected_private_plan_triggers": {
+    "litellm_agent": ["id"]
+  },
   "replacement_scenarios": [
     {"name":"model_unsupported_clear","fixture":"fixtures/replacement/model_unsupported_clear.tf","address":"litellm_model.replacement","dependency_address":"litellm_team.replacement_dependency","compare":"hmac-sha256","dependency_check":true,"expected_actions":["create","delete"],"ordering":"create-before-destroy-safe-distinct-server-id","post_replacement_no_drift":true},
     {"name":"team_member_immutable_identity","fixture":"fixtures/replacement/team_member_identity.tf","address":"litellm_team_member.replacement","dependency_address":"litellm_team_member_add.replacement_dependency","compare":"hmac-sha256","dependency_check":true,"expected_actions":["create","delete"],"ordering":"destination-before-source-removal-safe-distinct-user-id","post_replacement_no_drift":true},

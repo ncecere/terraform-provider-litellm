@@ -22,6 +22,7 @@ const (
 	agentImportedFieldsPrivateKey       = "agent_imported_fields_v1"
 	agentOwnershipInitializedPrivateKey = "agent_ownership_initialized_v1"
 	agentOwnershipPendingPrivateKey     = "agent_ownership_pending_v1"
+	agentOwnershipMigrationPrivateKey   = "agent_ownership_migration_v1"
 	agentCollectionsPrivateKey          = "agent_hidden_collections_v1"
 )
 
@@ -177,6 +178,7 @@ type agentOwnershipBundle struct {
 	pending     agentFieldSet
 	collections agentCollectionProvenance
 	versioned   bool
+	migration   bool
 }
 
 func readAgentOwnershipBundle(ctx context.Context, private agentPrivateReader) (agentOwnershipBundle, diag.Diagnostics) {
@@ -188,15 +190,17 @@ func readAgentOwnershipBundle(ctx context.Context, private agentPrivateReader) (
 	committedRaw, committedDiags := private.GetKey(ctx, agentImportedFieldsPrivateKey)
 	initializedRaw, initializedDiags := private.GetKey(ctx, agentOwnershipInitializedPrivateKey)
 	pendingRaw, pendingDiags := private.GetKey(ctx, agentOwnershipPendingPrivateKey)
+	migrationRaw, migrationDiags := private.GetKey(ctx, agentOwnershipMigrationPrivateKey)
 	collectionsRaw, collectionsDiags := private.GetKey(ctx, agentCollectionsPrivateKey)
 	diagnostics.Append(committedDiags...)
 	diagnostics.Append(initializedDiags...)
 	diagnostics.Append(pendingDiags...)
+	diagnostics.Append(migrationDiags...)
 	diagnostics.Append(collectionsDiags...)
 	if diagnostics.HasError() {
 		return result, diagnostics
 	}
-	any := committedRaw != nil || initializedRaw != nil || pendingRaw != nil || collectionsRaw != nil
+	any := committedRaw != nil || initializedRaw != nil || pendingRaw != nil || migrationRaw != nil || collectionsRaw != nil
 	if !any {
 		return result, diagnostics
 	}
@@ -216,6 +220,10 @@ func readAgentOwnershipBundle(ctx context.Context, private agentPrivateReader) (
 		return invalid()
 	}
 	result.committed, result.collections, result.versioned = committed, collections, true
+	if migrationRaw != nil && (string(migrationRaw) != "true" || pendingRaw == nil) {
+		return invalid()
+	}
+	result.migration = migrationRaw != nil
 	if pendingRaw != nil {
 		pending, err := decodeAgentFieldSet(pendingRaw)
 		if err != nil {
@@ -627,8 +635,14 @@ func (r *AgentResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanR
 	if resp.Private != nil {
 		if pendingChanged {
 			resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipPendingPrivateKey, encodeAgentFieldSet(pending))...)
+			if !bundle.versioned || bundle.migration {
+				resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipMigrationPrivateKey, []byte("true"))...)
+			} else {
+				resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipMigrationPrivateKey, nil)...)
+			}
 		} else {
 			resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipPendingPrivateKey, nil)...)
+			resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipMigrationPrivateKey, nil)...)
 		}
 	}
 	if pendingChanged {
@@ -657,6 +671,10 @@ func (r *AgentResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanR
 // pathRootID is shared here to keep the lifecycle helper independent of any
 // nested path construction.
 var pathRootID = path.Root("id")
+
+func agentModelsExactlyEqual(left, right AgentResourceModel) bool {
+	return reflect.DeepEqual(left, right)
+}
 
 func copyAgentField(target *AgentResourceModel, source AgentResourceModel, field string) {
 	switch field {

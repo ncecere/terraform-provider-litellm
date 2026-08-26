@@ -439,6 +439,7 @@ func (r *AgentResource) Create(ctx context.Context, req resource.CreateRequest, 
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentImportedFieldsPrivateKey, encodeAgentFieldSet(agentFieldSet{}))...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipInitializedPrivateKey, []byte("true"))...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipPendingPrivateKey, nil)...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipMigrationPrivateKey, nil)...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentCollectionsPrivateKey, encodeAgentCollectionProvenance(emptyAgentCollectionProvenance()))...)
 	}
 }
@@ -451,6 +452,7 @@ func setAgentIdentityOnlyCreateState(ctx context.Context, resp *resource.CreateR
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentImportedFieldsPrivateKey, encodeAgentFieldSet(agentFieldSet{}))...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipInitializedPrivateKey, []byte("true"))...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipPendingPrivateKey, nil)...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipMigrationPrivateKey, nil)...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentCollectionsPrivateKey, encodeAgentCollectionProvenance(emptyAgentCollectionProvenance()))...)
 	}
 }
@@ -504,6 +506,7 @@ func (r *AgentResource) Read(ctx context.Context, req resource.ReadRequest, resp
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentImportedFieldsPrivateKey, encodeAgentFieldSet(apiOwned))...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipInitializedPrivateKey, []byte("true"))...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipPendingPrivateKey, nil)...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipMigrationPrivateKey, nil)...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentCollectionsPrivateKey, encodeAgentCollectionProvenance(emptyAgentCollectionProvenance()))...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, nil)...)
 	}
@@ -544,6 +547,32 @@ func (r *AgentResource) Update(ctx context.Context, req resource.UpdateRequest, 
 		resp.Private = req.Private
 		resp.State = req.State
 		resp.Diagnostics.AddError("Unsupported Agent Clear", err.Error())
+		return
+	}
+	if bundle.migration && bundle.pending != nil && agentModelsExactlyEqual(planned, state) {
+		// A legacy state can transfer ownership of equal configured values. The
+		// unknown ID is only an apply trigger: verify two authoritative reads,
+		// retain public state byte-for-byte, and commit only private provenance.
+		_, err := r.confirmAgentMutation(ctx, planned, state, config, importedFields, 8)
+		if err != nil {
+			resp.Private = req.Private
+			resp.State = req.State
+			resp.Diagnostics.AddError("Agent Ownership Transfer Not Confirmed", "Authoritative read-back did not confirm an exact equal-value ownership transfer. Prior public and private state was retained; no remote mutation was attempted.")
+			return
+		}
+		resp.Private = req.Private
+		resp.State = req.State
+		if resp.Private != nil {
+			// pending already removes only the exact configured leaves that are
+			// transferring to Terraform. Preserve every unrelated API-owned scope
+			// marker so future remote additions remain correctly classified.
+			committed := cloneAgentFieldSet(bundle.pending)
+			collections := bundle.collections
+			resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentImportedFieldsPrivateKey, encodeAgentFieldSet(committed))...)
+			resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipPendingPrivateKey, nil)...)
+			resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipMigrationPrivateKey, nil)...)
+			resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentCollectionsPrivateKey, encodeAgentCollectionProvenance(collections))...)
+		}
 		return
 	}
 	// Preserve #181's proxy-admin preflight. PATCH omission is independently
@@ -672,6 +701,7 @@ func (r *AgentResource) Update(ctx context.Context, req resource.UpdateRequest, 
 		}
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentImportedFieldsPrivateKey, encodeAgentFieldSet(committed))...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipPendingPrivateKey, nil)...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipMigrationPrivateKey, nil)...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentCollectionsPrivateKey, encodeAgentCollectionProvenance(collections))...)
 	}
 }
@@ -705,6 +735,7 @@ func (r *AgentResource) ImportState(ctx context.Context, req resource.ImportStat
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentImportedFieldsPrivateKey, nil)...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipInitializedPrivateKey, nil)...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipPendingPrivateKey, nil)...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipMigrationPrivateKey, nil)...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentCollectionsPrivateKey, nil)...)
 	}
 }

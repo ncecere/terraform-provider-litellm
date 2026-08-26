@@ -39,6 +39,28 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(sum(matrix["scenario_counts"].values()) + len(matrix["optional_features"]), 166)
         self.assertEqual(len(matrix["terraform_1_11_4_expected_skips"]), 10)
         self.assertEqual(sum(bool(item["action"]) for item in matrix["resources"]), 2)
+        self.assertEqual(
+            matrix["upgrade_expected_private_plan_triggers"],
+            {"litellm_agent": ["id"]},
+        )
+        nested = [
+            (resource_type, path)
+            for resource_type, paths in matrix["upgrade_expected_computed_migrations"].items()
+            for path in paths if "." in path or "[*]" in path
+        ]
+        self.assertEqual(nested, [("litellm_team_member_add", "member[*].user_id")])
+        self.assertIn("upgrade-reviewed-private-migration", harness.EVIDENCE_CODES)
+        self.assertIn(
+            "upgrade-private-plan-trigger-migration", harness.ASSERTION_CODES
+        )
+
+    def test_private_migration_report_code_is_controlled_and_scan_safe(self):
+        scenario = {
+            "name": "upgrade:litellm_agent", "subject": "litellm_agent",
+            "category": "upgrade", "status": "passed",
+            "evidence_code": "upgrade-reviewed-private-migration",
+        }
+        self.assertTrue(harness.scanned_report_bytes(valid_report([scenario])))
 
     def test_version_selection_gates_write_only_features(self):
         self.assertFalse(harness.supports_optional_111("Terraform v1.0.11"))

@@ -75,6 +75,12 @@ func (a *agentOwnershipProtocolAPI) setReadShape(shape string) {
 	a.getTPMShape = shape
 }
 
+func (a *agentOwnershipProtocolAPI) setTPM(value int64) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.tpm = value
+}
+
 func (a *agentOwnershipProtocolAPI) setPatch(status int, confirmationOldTPM bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -186,6 +192,66 @@ func TestAgentProtocolCreateFinalizesOwnershipOnlyAfterExplicitConfirmation(t *t
 	if decodeErr != nil || len(committed) != 0 || protocolPrivateHasKey(t, applied.Private, agentOwnershipPendingPrivateKey) {
 		t.Fatalf("create ownership: committed=%#v err=%v private=%s", committed, decodeErr, applied.Private)
 	}
+}
+
+func TestAgentProtocolLegacyEqualValueTransferVerifiesWithoutPatchAndKeepsPublicState(t *testing.T) {
+	api := &agentOwnershipProtocolAPI{tpm: 10}
+	ctx, protocolServer, schema, prior := agentOwnershipProtocolFixture(t, api)
+	config, planned := agentOwnershipProtocolPlan(t, ctx, protocolServer, schema, prior.NewState, nil, 10)
+	if string(protocolPrivateValue(t, planned.PlannedPrivate, agentOwnershipMigrationPrivateKey)) != "true" {
+		t.Fatal("legacy equal-value plan lacks its private migration marker")
+	}
+	applied, err := protocolServer.ApplyResourceChange(ctx, &tfprotov6.ApplyResourceChangeRequest{
+		TypeName: "litellm_agent", Config: config, PriorState: prior.NewState,
+		PlannedState: planned.PlannedState, PlannedPrivate: planned.PlannedPrivate,
+	})
+	if err != nil || accessGroupProtocolDiagnosticsHaveError(applied.Diagnostics) {
+		t.Fatalf("equal-value transfer apply: err=%v diagnostics=%s", err, agentProtocolDiagnosticsText(applied.Diagnostics))
+	}
+	if api.patches.Load() != 0 {
+		t.Fatalf("equal-value ownership transfer sent %d PATCH requests", api.patches.Load())
+	}
+	assertAgentProtocolStateUnchanged(t, schema, prior.NewState, applied.NewState)
+	before, beforeErr := decodeAgentFieldSet(protocolPrivateValue(t, planned.PlannedPrivate, agentImportedFieldsPrivateKey))
+	expected, pendingErr := decodeAgentFieldSet(protocolPrivateValue(t, planned.PlannedPrivate, agentOwnershipPendingPrivateKey))
+	committed, decodeErr := decodeAgentFieldSet(protocolPrivateValue(t, applied.Private, agentImportedFieldsPrivateKey))
+	if beforeErr != nil || pendingErr != nil || decodeErr != nil || !agentFieldSetsEqual(committed, expected) || protocolPrivateHasKey(t, applied.Private, agentOwnershipPendingPrivateKey) || protocolPrivateHasKey(t, applied.Private, agentOwnershipMigrationPrivateKey) {
+		t.Fatalf("equal-value ownership was not committed exactly: before=%#v expected=%#v committed=%#v errors=%v/%v/%v", before, expected, committed, beforeErr, pendingErr, decodeErr)
+	}
+	for _, scope := range []string{agentScopeCardCapabilities, agentScopeCardProvider, agentScopeCardSkills, agentScopeCardSignatures, agentScopePermission} {
+		if !before[scope] || !committed[scope] {
+			t.Fatalf("equal-value transfer lost API-owned scope %q: before=%#v committed=%#v", scope, before, committed)
+		}
+	}
+	refreshed, readErr := protocolServer.ReadResource(ctx, &tfprotov6.ReadResourceRequest{
+		TypeName: "litellm_agent", CurrentState: applied.NewState, Private: applied.Private,
+	})
+	if readErr != nil || accessGroupProtocolDiagnosticsHaveError(refreshed.Diagnostics) {
+		t.Fatalf("equal-value transfer refresh: err=%v diagnostics=%s", readErr, agentProtocolDiagnosticsText(refreshed.Diagnostics))
+	}
+	assertAgentProtocolStateUnchanged(t, schema, applied.NewState, refreshed.NewState)
+	assertAgentProtocolPrivateUnchanged(t, applied.Private, refreshed.Private)
+}
+
+func TestAgentProtocolLegacyEqualValueTransferFailureKeepsPriorStateAndPrivate(t *testing.T) {
+	api := &agentOwnershipProtocolAPI{tpm: 10}
+	ctx, protocolServer, schema, prior := agentOwnershipProtocolFixture(t, api)
+	config, planned := agentOwnershipProtocolPlan(t, ctx, protocolServer, schema, prior.NewState, nil, 10)
+	api.setTPM(11)
+	applyCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer cancel()
+	applied, err := protocolServer.ApplyResourceChange(applyCtx, &tfprotov6.ApplyResourceChangeRequest{
+		TypeName: "litellm_agent", Config: config, PriorState: prior.NewState,
+		PlannedState: planned.PlannedState, PlannedPrivate: planned.PlannedPrivate,
+	})
+	if err != nil || !accessGroupProtocolDiagnosticsHaveError(applied.Diagnostics) {
+		t.Fatalf("unconfirmed equal-value transfer: err=%v diagnostics=%s", err, agentProtocolDiagnosticsText(applied.Diagnostics))
+	}
+	if api.patches.Load() != 0 {
+		t.Fatalf("unconfirmed equal-value ownership transfer sent %d PATCH requests", api.patches.Load())
+	}
+	assertAgentProtocolStateUnchanged(t, schema, prior.NewState, applied.NewState)
+	assertAgentProtocolPrivateUnchanged(t, planned.PlannedPrivate, applied.Private)
 }
 
 func TestAgentProtocolRejectedPatchRefreshNeverPromotesPending(t *testing.T) {

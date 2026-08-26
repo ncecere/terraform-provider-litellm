@@ -287,8 +287,17 @@ record() {
   log_size=$(wc -c <"$LOG")
   [ "$log_size" -le 10485760 ] || fail 'private child log exceeded its bounded size'
   assertion=terraform-plan-state-api
+  result_code=${6:-}
   case "$category" in
-    upgrade) assertion=upgrade-state-migration ;;
+    upgrade)
+      assertion=upgrade-state-migration
+      case "$result_code" in
+        upgrade-reviewed-private-plan-trigger-migration)
+          assertion=upgrade-private-plan-trigger-migration ;;
+        ''|upgrade-reviewed-migration) ;;
+        *) fail 'upgrade emitted a non-controlled migration result' ;;
+      esac
+      ;;
     import) assertion=import-authoritative-absence ;;
     replacement) assertion=replacement-plan-state ;;
     failure_recovery) assertion=fault-endpoint-diagnostic-state ;;
@@ -329,11 +338,13 @@ assemble_workspace() {
 }
 
 compare_upgrade_states() {
-  before=$1 after=$2 schema=$3 resource_type=$4 raw_before=$5 raw_after=$6
-  python3 "$SCRIPT_DIR/upgrade_state.py" compare \
+  before=$1 after=$2 schema=$3 resource_type=$4 raw_before=$5 raw_after=$6 private_trigger=$7
+  set -- compare \
     --before "$before" --after "$after" --schema "$schema" \
     --resource-type "$resource_type" --raw-before "$raw_before" \
     --raw-after "$raw_after" --matrix "$SCRIPT_DIR/matrix.json"
+  [ "$private_trigger" != true ] || set -- "$@" --require-reviewed-private-migration
+  python3 "$SCRIPT_DIR/upgrade_state.py" "$@"
 }
 
 run_upgrade() {
@@ -370,40 +381,26 @@ run_upgrade() {
   set -e
   [ "$plan_status" -eq 0 ] || [ "$plan_status" -eq 2 ] || fail 'current provider upgrade plan failed'
   (cd "$WORKSPACE" && run_cli show -json current-upgrade.tfplan) >"$SCRATCH/current-upgrade-plan.json" 2>>"$LOG" || fail 'current provider upgrade plan inspection failed'
-  python3 - "$SCRATCH/current-upgrade-plan.json" "$SCRIPT_DIR/matrix.json" \
-    "$SCRATCH/current-schema.json" "$SCRIPT_DIR" <<'PY' || fail 'upgrade proposed non-reviewed drift or replacement'
-import importlib.util,json,sys
-plan=json.load(open(sys.argv[1],encoding="utf-8")); matrix=json.load(open(sys.argv[2],encoding="utf-8"))
-schema_document=json.load(open(sys.argv[3],encoding="utf-8"))
-spec=importlib.util.spec_from_file_location("upgrade_state",sys.argv[4]+"/upgrade_state.py")
-module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
-provider_schema=schema_document["provider_schemas"][module.PROVIDER_SOURCE]
-def state(resource,values):
-  return {"values":{"root_module":{"resources":[{
-    "address":resource["address"],"mode":"managed","type":resource["type"],
-    "name":resource.get("name",resource["address"]),"schema_version":0,"values":values
-  }]}}}
-for resource in plan.get("resource_changes",[]):
-  change=resource.get("change",{}); actions=change.get("actions",[])
-  before=change.get("before") or {}; after=change.get("after") or {}
-  sensitive=(change.get("after_sensitive") or {})
-  changed={key for key in set(before)|set(after) if before.get(key)!=after.get(key)}
-  sensitive_changed={key for key in changed if sensitive.get(key,False)}
-  if sensitive_changed: raise SystemExit("sensitive upgrade migration is never auto-applied: "+resource.get("type",""))
-  if actions not in ([],["no-op"],["update"]):
-    raise SystemExit("unreviewed upgrade plan action: "+resource.get("type",""))
-  if actions == ["update"] and not changed:
-    raise SystemExit("empty upgrade update: "+resource.get("type",""))
-  if changed:
-    try:
-      migrated=module.compare_state_values(
-        state(resource,before),state(resource,after),provider_schema,matrix
-      )
-    except module.UpgradeStateError:
-      raise SystemExit("unreviewed upgrade plan: "+resource.get("type","")+":"+",".join(sorted(changed)))
-    if not migrated:
-      raise SystemExit("upgrade plan changed without reviewed migration: "+resource.get("type",""))
-PY
+  private_trigger_baseline=$SCRATCH/private-trigger-baseline.json
+  plan_review=$(python3 "$SCRIPT_DIR/upgrade_state.py" review-plan \
+    --plan "$SCRATCH/current-upgrade-plan.json" \
+    --schema "$SCRATCH/current-schema.json" \
+    --matrix "$SCRIPT_DIR/matrix.json" \
+    --resource-type "$resource_type" \
+    --private-trigger-baseline "$private_trigger_baseline") || fail 'upgrade proposed non-reviewed drift or replacement'
+  private_trigger=false
+  comparison_before=$SCRATCH/state-before.json
+  case "$plan_review" in
+    upgrade-plan-reviewed) ;;
+    upgrade-reviewed-private-plan-trigger)
+      private_trigger=true
+      comparison_before=$private_trigger_baseline
+      [ -s "$comparison_before" ] || fail 'reviewed private plan trigger lacks its public baseline'
+      ;;
+    *) fail 'upgrade plan review emitted a non-controlled result' ;;
+  esac
+  [ "$private_trigger" != true ] || [ "$plan_status" -eq 2 ] || \
+    fail 'reviewed private plan trigger did not produce an update plan'
   if [ "$plan_status" -eq 2 ]; then
     # The JSON review above limits this convergence apply to exact per-type
     # migration fields and rejects replacement or unrelated actions.
@@ -412,9 +409,9 @@ PY
   (cd "$WORKSPACE" && run_cli apply -refresh-only -auto-approve) >>"$LOG" 2>&1 || fail 'current-provider refresh-only apply failed'
   (cd "$WORKSPACE" && run_cli show -json) >"$SCRATCH/state-after.json" 2>>"$LOG" || fail 'upgraded state inspection failed'
   (cd "$WORKSPACE" && run_cli state pull) >"$SCRATCH/raw-after.json" 2>>"$LOG" || fail 'upgraded private-state inspection failed'
-  migration_code=$(compare_upgrade_states "$SCRATCH/state-before.json" "$SCRATCH/state-after.json" \
+  migration_code=$(compare_upgrade_states "$comparison_before" "$SCRATCH/state-after.json" \
     "$SCRATCH/current-schema.json" "$resource_type" "$SCRATCH/raw-before.json" \
-    "$SCRATCH/raw-after.json") || fail 'canonical upgrade state contract failed'
+    "$SCRATCH/raw-after.json" "$private_trigger") || fail 'canonical upgrade state contract failed'
   set +e
   (cd "$WORKSPACE" && run_cli plan -detailed-exitcode -refresh=true -out=final-upgrade.tfplan) >>"$LOG" 2>&1
   final_upgrade_status=$?

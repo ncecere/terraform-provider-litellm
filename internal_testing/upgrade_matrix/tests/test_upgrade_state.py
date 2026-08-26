@@ -41,7 +41,7 @@ def provider_schema():
                 "version": 0,
                 "block": {
                     "attributes": {
-                        "id": attribute("string"),
+                        "id": attribute("string", computed=True),
                         "agent_name": attribute("string", computed=True),
                         "profile": nested_attribute("single", {
                             "public_label": attribute("string"),
@@ -128,6 +128,39 @@ def agent_values():
     }
 
 
+def agent_private_trigger_matrix():
+    return {
+        "upgrade_expected_private_migrations": ["litellm_agent"],
+        "upgrade_expected_private_plan_triggers": {"litellm_agent": ["id"]},
+    }
+
+
+def agent_plan_change(*, actions=None, before=None, after=None, unknown=None,
+                      before_sensitive=None, after_sensitive=None):
+    return {"resource_changes": [{
+        "address": "litellm_agent.test",
+        "mode": "managed",
+        "type": "litellm_agent",
+        "name": "test",
+        "change": {
+            "actions": ["update"] if actions is None else actions,
+            "before": before if before is not None else agent_values(),
+            "after": after if after is not None else {**agent_values(), "id": None},
+            "after_unknown": unknown if unknown is not None else {"id": True},
+            "before_sensitive": before_sensitive or {},
+            "after_sensitive": after_sensitive or {},
+        },
+    }]}
+
+
+def raw_private(resource_type="litellm_agent", private=""):
+    return {"resources": [{
+        "type": resource_type,
+        "name": "test",
+        "instances": [{"private": private}],
+    }]}
+
+
 def members_values():
     return {
         "id": "team-id",
@@ -152,6 +185,181 @@ class UpgradeStateTests(unittest.TestCase):
                 "litellm_team_member_add": list(paths or ("member[*].user_id",))
             }
         }
+
+    def test_reviewed_private_plan_trigger_accepts_exact_agent_unknown_identity(self):
+        triggered = upgrade_state.review_upgrade_plan(
+            agent_plan_change(), provider_schema(), agent_private_trigger_matrix()
+        )
+        self.assertEqual(triggered, {"litellm_agent"})
+        baseline = upgrade_state.private_trigger_plan_baseline(
+            agent_plan_change(), provider_schema(), agent_private_trigger_matrix(),
+            "litellm_agent",
+        )
+        self.assertEqual(
+            baseline["values"]["root_module"]["resources"][0]["values"],
+            agent_values(),
+        )
+        omitted = agent_values()
+        omitted.pop("id")
+        self.assertEqual(
+            upgrade_state.review_upgrade_plan(
+                agent_plan_change(after=omitted), provider_schema(),
+                agent_private_trigger_matrix(),
+            ),
+            {"litellm_agent"},
+        )
+
+    def test_private_plan_trigger_contract_rejects_every_schema_boundary(self):
+        cases = []
+        for paths in ([], ["profile.id"], ["id", "id"]):
+            cases.append(("path", paths, None))
+        cases.extend([
+            ("not-private", ["id"], None),
+            ("not-computed", ["id"], lambda meta: meta.pop("computed")),
+            ("sensitive", ["id"], lambda meta: meta.update({"sensitive": True})),
+            ("non-string", ["id"], lambda meta: meta.update({"type": "number"})),
+        ])
+        for name, paths, mutate in cases:
+            schema = provider_schema()
+            matrix = agent_private_trigger_matrix()
+            matrix["upgrade_expected_private_plan_triggers"]["litellm_agent"] = paths
+            if name == "not-private":
+                matrix["upgrade_expected_private_migrations"] = []
+            elif mutate:
+                identity = schema["resource_schemas"]["litellm_agent"]["block"]["attributes"]["id"]
+                mutate(identity)
+            with self.subTest(name=name), self.assertRaises(upgrade_state.UpgradeStateError):
+                upgrade_state.compile_upgrade_contract(schema, matrix)
+        matrix = agent_private_trigger_matrix()
+        matrix["upgrade_expected_private_plan_triggers"] = {"litellm_missing": ["id"]}
+        with self.assertRaisesRegex(upgrade_state.UpgradeStateError, "absent"):
+            upgrade_state.compile_upgrade_contract(provider_schema(), matrix)
+
+    def test_private_plan_trigger_never_weakens_ordinary_identity_masks(self):
+        matrix = agent_private_trigger_matrix()
+        matrix["upgrade_expected_computed_migrations"] = {"litellm_agent": ["id"]}
+        with self.assertRaisesRegex(upgrade_state.UpgradeStateError, "identity"):
+            upgrade_state.compile_upgrade_contract(provider_schema(), matrix)
+
+    def test_private_plan_trigger_rejects_every_action_boundary(self):
+        for actions in (["create"], ["delete"], ["create", "delete"],
+                        ["delete", "create"], ["no-op"], []):
+            with self.subTest(actions=actions), self.assertRaises(upgrade_state.UpgradeStateError):
+                upgrade_state.review_upgrade_plan(
+                    agent_plan_change(actions=actions), provider_schema(),
+                    agent_private_trigger_matrix(),
+                )
+
+    def test_private_plan_trigger_rejects_unknown_prior_and_known_or_null_after_identity(self):
+        for prior in (None, "", "   "):
+            before = agent_values()
+            before["id"] = prior
+            with self.subTest(prior=repr(prior)), self.assertRaisesRegex(
+                upgrade_state.UpgradeStateError, "prior identity"
+            ):
+                upgrade_state.review_upgrade_plan(
+                    agent_plan_change(before=before), provider_schema(),
+                    agent_private_trigger_matrix(),
+                )
+        for proposed, unknown in (("changed", {"id": True}),
+                                  (None, {}), (None, {"id": False})):
+            after = agent_values()
+            after["id"] = proposed
+            with self.subTest(proposed=repr(proposed), unknown=unknown), self.assertRaises(
+                upgrade_state.UpgradeStateError
+            ):
+                upgrade_state.review_upgrade_plan(
+                    agent_plan_change(after=after, unknown=unknown), provider_schema(),
+                    agent_private_trigger_matrix(),
+                )
+
+    def test_private_plan_trigger_rejects_sensitive_extra_and_nested_unknowns(self):
+        extra = {**agent_values(), "id": None, "agent_name": "changed"}
+        variants = [
+            agent_plan_change(after=extra),
+            agent_plan_change(after_sensitive={"id": True}),
+            agent_plan_change(before_sensitive={"id": True}),
+            agent_plan_change(unknown={"id": True, "profile": {"public_label": True}}),
+            agent_plan_change(unknown={"profile": {"id": True}}),
+        ]
+        for index, plan in enumerate(variants):
+            with self.subTest(index=index), self.assertRaises(upgrade_state.UpgradeStateError):
+                upgrade_state.review_upgrade_plan(
+                    plan, provider_schema(), agent_private_trigger_matrix()
+                )
+
+    def test_private_plan_trigger_rejects_unreviewed_type_and_known_identity_change(self):
+        unreviewed = agent_private_trigger_matrix()
+        unreviewed["upgrade_expected_private_plan_triggers"] = {}
+        with self.assertRaisesRegex(upgrade_state.UpgradeStateError, "unreviewed identity"):
+            upgrade_state.review_upgrade_plan(
+                agent_plan_change(), provider_schema(), unreviewed
+            )
+        after = agent_values()
+        after["id"] = "known-change"
+        with self.assertRaisesRegex(upgrade_state.UpgradeStateError, "identity changed"):
+            upgrade_state.review_upgrade_plan(
+                agent_plan_change(after=after, unknown={}), provider_schema(),
+                agent_private_trigger_matrix(),
+            )
+
+    def test_required_private_migration_is_exact_absent_to_present(self):
+        self.assertTrue(upgrade_state.compare_private_state(
+            raw_private(private=""), raw_private(private="reviewed-provenance"),
+            ["litellm_agent"], "litellm_agent",
+        ))
+        rejected = [
+            (raw_private(private=""), raw_private(private="")),
+            (raw_private(private="already-present"), raw_private(private="")),
+            (raw_private(private="already-present"), raw_private(private="changed")),
+        ]
+        for before, after in rejected:
+            with self.subTest(private_after=bool(after["resources"][0]["instances"][0]["private"])), self.assertRaises(
+                upgrade_state.UpgradeStateError
+            ):
+                upgrade_state.compare_private_state(
+                    before, after, ["litellm_agent"], "litellm_agent"
+                )
+        with self.assertRaises(upgrade_state.UpgradeStateError):
+            upgrade_state.compare_private_state(
+                {"resources": [
+                    *raw_private()["resources"],
+                    *raw_private("litellm_team")["resources"],
+                ]},
+                {"resources": [
+                    *raw_private(private="reviewed")["resources"],
+                    *raw_private("litellm_team", "other")["resources"],
+                ]},
+                ["litellm_agent", "litellm_team"], "litellm_agent",
+            )
+
+    def test_exact_public_review_keeps_identity_and_computed_values_exact(self):
+        before = agent_values()
+        changed_identity = agent_values()
+        changed_identity["id"] = "changed"
+        changed_computed = agent_values()
+        changed_computed["agent_name"] = "changed"
+        matrix = agent_private_trigger_matrix()
+        matrix["upgrade_expected_computed_migrations"] = {
+            "litellm_agent": ["agent_name"]
+        }
+        for after in (changed_identity, changed_computed):
+            with self.subTest(identity=after is changed_identity), self.assertRaises(
+                upgrade_state.UpgradeStateError
+            ):
+                upgrade_state.compare_state_values(
+                    state(resource("litellm_agent.test", "litellm_agent", before)),
+                    state(resource("litellm_agent.test", "litellm_agent", after)),
+                    provider_schema(), matrix, exact_public=True,
+                )
+        missing_identity = agent_values()
+        missing_identity.pop("id")
+        with self.assertRaisesRegex(upgrade_state.UpgradeStateError, "not known"):
+            upgrade_state.compare_state_values(
+                state(resource("litellm_agent.test", "litellm_agent", missing_identity)),
+                state(resource("litellm_agent.test", "litellm_agent", missing_identity)),
+                provider_schema(), matrix, exact_public=True,
+            )
 
     def test_agent_card_nested_leaf_mutation_is_detected_for_every_block_mode(self):
         def mutate(values, mode):

@@ -14,6 +14,7 @@ import errno
 import fcntl
 import hashlib
 import hmac
+import importlib.util
 import json
 import os
 import platform
@@ -66,7 +67,8 @@ ALLOWED_PROVENANCE_KEYS = {
 EVIDENCE_CODES = {
     "inventory-validated", "format-validated", "provider-schema-validated",
     "apply-refresh-plan-destroy", "apply-refresh-plan", "import-refresh-apply-plan-detach",
-    "upgrade-refresh-plan", "upgrade-reviewed-migration", "replacement-plan-apply", "fault-retry-converged",
+    "upgrade-refresh-plan", "upgrade-reviewed-migration",
+    "upgrade-reviewed-private-migration", "replacement-plan-apply", "fault-retry-converged",
     "api-unavailable", "enterprise-unavailable", "cli-feature-unavailable",
     "previous-release-unavailable", "documentation-validated", "remote-mutation-disabled",
 }
@@ -78,7 +80,8 @@ DIAGNOSTIC_TITLE_CODES = {
 }
 DIAGNOSTIC_CODES = {value[1] for value in DIAGNOSTIC_TITLE_CODES.values()}
 ASSERTION_CODES = {
-    "terraform-plan-state-api", "upgrade-state-migration", "import-authoritative-absence",
+    "terraform-plan-state-api", "upgrade-state-migration",
+    "upgrade-private-plan-trigger-migration", "import-authoritative-absence",
     "import-immediate-no-drift-provenance", "replacement-plan-state",
     "fault-endpoint-diagnostic-state", "bounded-feature-attempt",
     "validated-documentation", "allowlisted-unavailability",
@@ -348,6 +351,21 @@ def check_inventory(matrix: dict) -> None:
             raise HarnessError("failure-recovery accounting is incomplete")
         if not (HERE / scenario["fixture"]).is_file():
             raise HarnessError("failure-recovery fixture is missing")
+    computed = matrix.get("upgrade_expected_computed_migrations", {})
+    nested_masks = sorted(
+        (resource_type, path)
+        for resource_type, paths in computed.items()
+        for path in paths if "." in path or "[*]" in path
+    )
+    if nested_masks != [("litellm_team_member_add", "member[*].user_id")]:
+        raise HarnessError("the reviewed nested computed migration inventory changed")
+    private_migrations = matrix.get("upgrade_expected_private_migrations", [])
+    if (
+        matrix.get("upgrade_expected_private_plan_triggers")
+        != {"litellm_agent": ["id"]}
+        or "litellm_agent" not in private_migrations
+    ):
+        raise HarnessError("reviewed private plan trigger inventory is incomplete")
     account_skips([], set(matrix["allowed_skip_reasons"]))
 
 
@@ -429,7 +447,23 @@ def make_cli_config(directory: Path, provider_binary: Path) -> Path:
     return config
 
 
-def provider_schema_fingerprint(cli: str, provider_binary: Path) -> tuple[str, str]:
+def validate_upgrade_schema_contract(provider_schema: dict) -> None:
+    spec = importlib.util.spec_from_file_location(
+        "litellm_upgrade_state_contract", HERE / "upgrade_state.py"
+    )
+    if spec is None or spec.loader is None:
+        raise HarnessError("upgrade contract validator could not be loaded")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    try:
+        module.compile_upgrade_contract(provider_schema, load_json(MATRIX_PATH))
+    except module.UpgradeStateError as error:
+        raise HarnessError("upgrade migration contract failed current-schema validation") from error
+
+
+def provider_schema_fingerprint(
+    cli: str, provider_binary: Path, *, validate_upgrade_contract: bool = True,
+) -> tuple[str, str]:
     with tempfile.TemporaryDirectory(prefix="litellm-provider-schema-") as raw:
         module = Path(raw)
         module.chmod(0o700)
@@ -449,6 +483,8 @@ def provider_schema_fingerprint(cli: str, provider_binary: Path) -> tuple[str, s
             selected = schema["provider_schemas"]["registry.terraform.io/ncecere/litellm"]
         except (json.JSONDecodeError, KeyError, TypeError) as error:
             raise HarnessError("current provider schema response was invalid") from error
+        if validate_upgrade_contract:
+            validate_upgrade_schema_contract(selected)
         canonical = json.dumps(selected, sort_keys=True, separators=(",", ":")).encode()
         return hash_file(provider_binary), hashlib.sha256(canonical).hexdigest()
 
@@ -1627,6 +1663,11 @@ def finalize_evidence(args: argparse.Namespace) -> int:
     for item in scenarios:
         value = {key: item[key] for key in ("name", "subject", "category", "status")}
         value["evidence_code"] = evidence_codes[item["category"]]
+        if (
+            item["category"] == "upgrade"
+            and item.get("assertion") == "upgrade-private-plan-trigger-migration"
+        ):
+            value["evidence_code"] = "upgrade-reviewed-private-migration"
         if item.get("reason"):
             value["reason"] = item["reason"]
             value["evidence_code"] = {
@@ -1639,7 +1680,9 @@ def finalize_evidence(args: argparse.Namespace) -> int:
         report_scenarios.append(value)
     previous = load_json(TOOLS_PATH)["previous_provider"]
     previous_archive = previous["archives"][platform_key()]
-    previous_executable_digest, previous_schema_digest = provider_schema_fingerprint(args.cli, Path(args.previous_provider_binary))
+    previous_executable_digest, previous_schema_digest = provider_schema_fingerprint(
+        args.cli, Path(args.previous_provider_binary), validate_upgrade_contract=False
+    )
     if previous_executable_digest != previous_archive["executable_sha256"] or previous_schema_digest != previous["schema_sha256"]:
         raise HarnessError("executed previous provider differs from its signed exact pin")
     ledger_digest = hash_file(Path(session["ledger"]))

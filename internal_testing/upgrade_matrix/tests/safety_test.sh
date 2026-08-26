@@ -15,6 +15,7 @@ fi
 
 TF_ACC=1 LITELLM_ACCEPTANCE_CONFIRM=local-v1.98.0 \
   python3 "$SCRIPT_DIR/harness.py" preflight local >/dev/null
+sh "$SCRIPT_DIR/tests/private_plan_trigger_test.sh"
 TF_ACC=1 LITELLM_REMOTE_ACCEPTANCE_CONFIRM=dev-disposable-objects-only \
 LITELLM_TEST_NAMESPACE=issue210-abcdef12 \
   python3 "$SCRIPT_DIR/harness.py" preflight remote >/dev/null
@@ -24,6 +25,10 @@ LITELLM_TEST_NAMESPACE=issue210-abcdef12 \
 grep -q 'run_cli state rm "$address"' "$SCRIPT_DIR/run.sh"
 grep -q 'producer-owned import cleanup' "$SCRIPT_DIR/run.sh"
 grep -q 'fault_proxy.py' "$SCRIPT_DIR/run.sh"
+grep -q -- '--require-reviewed-private-migration' "$SCRIPT_DIR/run.sh"
+grep -q 'upgrade-private-plan-trigger-migration' "$SCRIPT_DIR/run.sh"
+grep -q 'upgrade-reviewed-private-migration' "$SCRIPT_DIR/harness.py"
+grep -q '"litellm_agent": \["id"\]' "$SCRIPT_DIR/matrix.json"
 if grep -q 'litellm_api_base=http://127.0.0.1:1' "$SCRIPT_DIR/run.sh"; then
   echo 'failure recovery uses a dead base URL instead of the controlled proxy' >&2
   exit 1

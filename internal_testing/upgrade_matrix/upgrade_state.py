@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import math
+import os
 import re
 import secrets
 import sys
@@ -136,6 +137,83 @@ def _compile_migration_paths(provider_schema: Any, value: Any) -> Dict[str, Dict
             node[_MIGRATION_TERMINAL] = True
         output[resource_type] = root
     return output
+
+
+def _compile_private_plan_triggers(
+    provider_schema: Any, value: Any, reviewed_private_migrations: Any,
+) -> set[str]:
+    selected_schema = _mapping(provider_schema, "provider schema")
+    resource_schemas = _schema_map(
+        selected_schema.get("resource_schemas"), "provider resource_schemas"
+    )
+    private_items = _sequence(reviewed_private_migrations, "private migrations")
+    if any(not isinstance(item, str) or not item for item in private_items):
+        raise UpgradeStateError("private migrations contain a malformed resource type")
+    if len(private_items) != len(set(private_items)):
+        raise UpgradeStateError("private migrations contain a duplicate resource type")
+    reviewed_private = set(private_items)
+    configured = _mapping(value, "reviewed private plan triggers")
+    output: set[str] = set()
+    for resource_type, raw_paths in configured.items():
+        if resource_type not in resource_schemas:
+            raise UpgradeStateError(
+                "reviewed private plan trigger resource is absent from the current schema"
+            )
+        if resource_type not in reviewed_private:
+            raise UpgradeStateError(
+                "reviewed private plan trigger resource lacks a private migration"
+            )
+        paths = _sequence(
+            raw_paths, "reviewed private plan triggers." + resource_type
+        )
+        if paths != ["id"]:
+            raise UpgradeStateError(
+                "reviewed private plan trigger must be exact top-level id"
+            )
+        schema_entry = _mapping(
+            resource_schemas[resource_type], resource_type + " schema"
+        )
+        block = _validate_block_schema(schema_entry.get("block"), resource_type)
+        attributes = _schema_map(
+            block.get("attributes", {}), resource_type + " schema attributes"
+        )
+        if "id" not in attributes:
+            raise UpgradeStateError(
+                "reviewed private plan trigger identity is absent from the current schema"
+            )
+        identity = _validate_attribute_schema(
+            attributes["id"], resource_type + ".id"
+        )
+        if identity.get("type") != "string":
+            raise UpgradeStateError(
+                "reviewed private plan trigger identity is not a string"
+            )
+        if identity.get("sensitive", False):
+            raise UpgradeStateError(
+                "reviewed private plan trigger identity is sensitive"
+            )
+        if identity.get("computed") is not True:
+            raise UpgradeStateError(
+                "reviewed private plan trigger identity is not computed"
+            )
+        output.add(resource_type)
+    return output
+
+
+def compile_upgrade_contract(
+    provider_schema: Any, matrix: Any,
+) -> Tuple[Dict[str, Dict[Any, Any]], set[str]]:
+    """Compile all reviewed upgrade exceptions against the current schema."""
+    matrix_obj = _mapping(matrix, "matrix")
+    migration_masks = _compile_migration_paths(
+        provider_schema, matrix_obj.get("upgrade_expected_computed_migrations", {})
+    )
+    private_triggers = _compile_private_plan_triggers(
+        provider_schema,
+        matrix_obj.get("upgrade_expected_private_plan_triggers", {}),
+        matrix_obj.get("upgrade_expected_private_migrations", []),
+    )
+    return migration_masks, private_triggers
 
 
 def _migration_child(mask: Optional[Mapping[Any, Any]], name: str) -> Optional[Mapping[Any, Any]]:
@@ -487,12 +565,15 @@ def canonicalize_resources(
     return output
 
 
-def compare_state_values(before: Any, after: Any, provider_schema: Any, matrix: Any) -> bool:
+def compare_state_values(
+    before: Any, after: Any, provider_schema: Any, matrix: Any,
+    *, exact_public: bool = False,
+) -> bool:
     """Compare public state, returning whether a reviewed migration occurred."""
     matrix_obj = _mapping(matrix, "matrix")
-    migration_masks = _compile_migration_paths(
-        provider_schema, matrix_obj.get("upgrade_expected_computed_migrations", {})
-    )
+    migration_masks, _ = compile_upgrade_contract(provider_schema, matrix_obj)
+    if exact_public:
+        migration_masks = {}
     schema_migrations = _mapping(matrix_obj.get("upgrade_expected_schema_migrations", {}), "schema migrations")
     identity_migrations = _mapping(matrix_obj.get("upgrade_expected_identity_migrations", {}), "identity migrations")
     left, right = canonicalize_resources(before, provider_schema), canonicalize_resources(after, provider_schema)
@@ -509,7 +590,10 @@ def compare_state_values(before: Any, after: Any, provider_schema: Any, matrix: 
         old_version, new_version = left[address]["schema_version"], right[address]["schema_version"]
         if old_version != new_version:
             reviewed = schema_migrations.get(resource_type)
-            if not isinstance(reviewed, list) or reviewed != [old_version, new_version]:
+            if (
+                exact_public or not isinstance(reviewed, list)
+                or reviewed != [old_version, new_version]
+            ):
                 raise UpgradeStateError("schema version changed without reviewed migration")
             migrated = True
         old_values = dict(left[address]["values"])
@@ -521,6 +605,13 @@ def compare_state_values(before: Any, after: Any, provider_schema: Any, matrix: 
         old_masked_values.pop("id", None)
         new_masked_values.pop("id", None)
         identity_rule = identity_migrations.get(resource_type)
+        if exact_public:
+            if (
+                not isinstance(old_id, str) or not old_id.strip()
+                or not isinstance(new_id, str) or not new_id.strip()
+            ):
+                raise UpgradeStateError("exact public comparison identity is not known")
+            identity_rule = None
         if identity_rule == "sha256-of-prior-id":
             expected = "sha256:" + hashlib.sha256(str(old_id).encode()).hexdigest()
             if not hmac.compare_digest(expected, str(new_id)):
@@ -542,6 +633,204 @@ def compare_state_values(before: Any, after: Any, provider_schema: Any, matrix: 
         if old_values != new_values:
             migrated = True
     return migrated
+
+
+def _true_plan_paths(value: Any, context: str) -> set[Tuple[Any, ...]]:
+    result: set[Tuple[Any, ...]] = set()
+
+    def walk(item: Any, path: Tuple[Any, ...]) -> None:
+        if isinstance(item, bool):
+            if item:
+                result.add(path)
+            return
+        if isinstance(item, dict):
+            obj = _mapping(item, context)
+            for name, child in obj.items():
+                walk(child, path + (name,))
+            return
+        if isinstance(item, list):
+            for index, child in enumerate(item):
+                walk(child, path + (index,))
+            return
+        raise UpgradeStateError(context + " contains a malformed unknown/sensitive marker")
+
+    walk(value, ())
+    return result
+
+
+def _plan_state(resource: Mapping[str, Any], values: Mapping[str, Any]) -> Dict[str, Any]:
+    address, resource_type = resource.get("address"), resource.get("type")
+    if not isinstance(address, str) or not address:
+        raise UpgradeStateError("upgrade plan resource address is malformed")
+    if not isinstance(resource_type, str) or not resource_type:
+        raise UpgradeStateError("upgrade plan resource type is malformed")
+    return {"values": {"root_module": {"resources": [{
+        "address": address,
+        "mode": "managed",
+        "type": resource_type,
+        "name": resource.get("name", address),
+        "schema_version": 0,
+        "values": dict(values),
+    }]}}}
+
+
+def review_upgrade_plan(plan: Any, provider_schema: Any, matrix: Any) -> set[str]:
+    """Review migration-only plan changes and identify private-only triggers."""
+    document = _mapping(plan, "upgrade plan")
+    matrix_obj = _mapping(matrix, "matrix")
+    _, private_trigger_types = compile_upgrade_contract(provider_schema, matrix_obj)
+    changes = _sequence(document.get("resource_changes", []), "upgrade plan resource_changes")
+    triggered: set[str] = set()
+    for raw_resource in changes:
+        resource = _mapping(raw_resource, "upgrade plan resource")
+        if resource.get("mode", "managed") != "managed":
+            raise UpgradeStateError("upgrade plan contains a non-managed resource change")
+        resource_type = resource.get("type")
+        if not isinstance(resource_type, str) or not resource_type:
+            raise UpgradeStateError("upgrade plan resource type is malformed")
+        change = _mapping(resource.get("change"), "upgrade plan change")
+        actions = _sequence(change.get("actions"), "upgrade plan actions")
+        if actions not in ([], ["no-op"], ["update"]):
+            raise UpgradeStateError("upgrade plan contains an unreviewed action")
+        before = _mapping(change.get("before"), "upgrade plan prior values")
+        after = _mapping(change.get("after"), "upgrade plan proposed values")
+        after_unknown = _mapping(
+            change.get("after_unknown", {}), "upgrade plan unknown markers"
+        )
+        before_sensitive = _mapping(
+            change.get("before_sensitive", {}), "upgrade plan prior sensitive markers"
+        )
+        after_sensitive = _mapping(
+            change.get("after_sensitive", {}), "upgrade plan sensitive markers"
+        )
+        unknown_paths = _true_plan_paths(after_unknown, "upgrade plan unknown markers")
+        sensitive_paths = (
+            _true_plan_paths(before_sensitive, "upgrade plan prior sensitive markers")
+            | _true_plan_paths(after_sensitive, "upgrade plan sensitive markers")
+        )
+        changed_roots = {
+            name for name in set(before) | set(after)
+            if before.get(name, _MISSING) != after.get(name, _MISSING)
+        }
+        identity_unknown = ("id",) in unknown_paths
+        if identity_unknown:
+            if resource_type not in private_trigger_types:
+                raise UpgradeStateError("upgrade plan contains an unreviewed identity trigger")
+            if actions != ["update"]:
+                raise UpgradeStateError("reviewed private plan trigger requires an update")
+            old_id = before.get("id", _MISSING)
+            if not isinstance(old_id, str) or not old_id.strip():
+                raise UpgradeStateError("reviewed private plan trigger prior identity is not known")
+            # Terraform's plan JSON may omit an unknown null attribute from
+            # `after`; the exact top-level after_unknown marker is authoritative.
+            if after.get("id") is not None:
+                raise UpgradeStateError("reviewed private plan trigger proposed identity is known")
+            if after_unknown.get("id") is not True or unknown_paths != {("id",)}:
+                raise UpgradeStateError("reviewed private plan trigger has arbitrary unknown values")
+            if any(path and path[0] == "id" for path in sensitive_paths):
+                raise UpgradeStateError("reviewed private plan trigger identity is sensitive")
+            if changed_roots != {"id"}:
+                raise UpgradeStateError("reviewed private plan trigger changed another public value")
+            normalized_after = dict(after)
+            normalized_after["id"] = old_id
+            if compare_state_values(
+                _plan_state(resource, before), _plan_state(resource, normalized_after),
+                provider_schema, matrix_obj, exact_public=True,
+            ):
+                raise UpgradeStateError("reviewed private plan trigger hid a public migration")
+            triggered.add(resource_type)
+            continue
+        if any(path and path[0] == "id" for path in unknown_paths):
+            raise UpgradeStateError("upgrade plan contains an unresolved identity alias")
+        if sensitive_paths and any(path and path[0] in changed_roots for path in sensitive_paths):
+            raise UpgradeStateError("upgrade plan changes a sensitive value")
+        if actions in ([], ["no-op"]):
+            if changed_roots or unknown_paths:
+                raise UpgradeStateError("no-op upgrade plan contains changed values")
+            continue
+        if not changed_roots:
+            raise UpgradeStateError("upgrade update contains no changed public values")
+        migrated = compare_state_values(
+            _plan_state(resource, before), _plan_state(resource, after),
+            provider_schema, matrix_obj,
+        )
+        if not migrated:
+            raise UpgradeStateError("upgrade plan changed without a reviewed migration")
+    return triggered
+
+
+def private_trigger_plan_baseline(
+    plan: Any, provider_schema: Any, matrix: Any, resource_type: str,
+) -> Dict[str, Any]:
+    """Return the reviewed trigger's refreshed prior public state document."""
+    triggered = review_upgrade_plan(plan, provider_schema, matrix)
+    if triggered != {resource_type}:
+        raise UpgradeStateError(
+            "reviewed private plan trigger does not match the baseline subject"
+        )
+    document = _mapping(plan, "upgrade plan")
+    candidates = []
+    for raw_resource in _sequence(
+        document.get("resource_changes", []), "upgrade plan resource_changes"
+    ):
+        resource = _mapping(raw_resource, "upgrade plan resource")
+        if resource.get("type") != resource_type:
+            continue
+        change = _mapping(resource.get("change"), "upgrade plan change")
+        unknown = _mapping(
+            change.get("after_unknown", {}), "upgrade plan unknown markers"
+        )
+        if _true_plan_paths(unknown, "upgrade plan unknown markers") == {("id",)}:
+            candidates.append((resource, _mapping(
+                change.get("before"), "upgrade plan prior values"
+            )))
+    if len(candidates) != 1:
+        raise UpgradeStateError(
+            "reviewed private plan trigger baseline is not an exact resource"
+        )
+    resource, values = candidates[0]
+    schemas = _schema_map(
+        _mapping(provider_schema, "provider schema").get("resource_schemas"),
+        "provider resource_schemas",
+    )
+    schema_version = _mapping(
+        schemas[resource_type], resource_type + " schema"
+    ).get("version", 0)
+    if (
+        isinstance(schema_version, bool) or not isinstance(schema_version, int)
+        or schema_version < 0
+    ):
+        raise UpgradeStateError("reviewed private plan trigger schema version is malformed")
+    address = resource.get("address")
+    if not isinstance(address, str) or not address:
+        raise UpgradeStateError("reviewed private plan trigger address is malformed")
+    return {"values": {"root_module": {"resources": [{
+        "address": address,
+        "mode": "managed",
+        "type": resource_type,
+        "name": resource.get("name", address),
+        "schema_version": schema_version,
+        "values": dict(values),
+    }]}}}
+
+
+def _exclusive_json_write(path: Path, value: Any) -> None:
+    encoded = (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags, 0o600)
+    except OSError as error:
+        raise UpgradeStateError("unable to create private plan baseline") from error
+    try:
+        written = 0
+        while written < len(encoded):
+            count = os.write(descriptor, encoded[written:])
+            if count <= 0:
+                raise UpgradeStateError("unable to write private plan baseline")
+            written += count
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def private_signals(state: Any) -> Dict[Tuple[str, str, str, int], bool]:
@@ -569,7 +858,10 @@ def private_signals(state: Any) -> Dict[Tuple[str, str, str, int], bool]:
     return result
 
 
-def compare_private_state(before: Any, after: Any, reviewed_types: Any) -> bool:
+def compare_private_state(
+    before: Any, after: Any, reviewed_types: Any,
+    required_type: Optional[str] = None,
+) -> bool:
     items = _sequence(reviewed_types, "private migrations")
     if any(not isinstance(item, str) or not item for item in items):
         raise UpgradeStateError("private migrations contain a malformed resource type")
@@ -578,13 +870,26 @@ def compare_private_state(before: Any, after: Any, reviewed_types: Any) -> bool:
     if set(left) != set(right):
         raise UpgradeStateError("provider-private address set changed")
     migrated = False
+    required_changes = 0
     for identity in sorted(left):
         if left[identity] == right[identity]:
             continue
         if not left[identity] and right[identity] and identity[1] in reviewed:
+            if required_type is not None and identity[1] != required_type:
+                raise UpgradeStateError(
+                    "provider-private change differs from the required reviewed migration"
+                )
             migrated = True
+            required_changes += int(identity[1] == required_type)
             continue
         raise UpgradeStateError("provider-private presence changed without reviewed migration")
+    if required_type is not None:
+        if required_type not in reviewed:
+            raise UpgradeStateError("required provider-private migration is not reviewed")
+        if required_changes != 1:
+            raise UpgradeStateError(
+                "reviewed private plan trigger did not produce its exact private migration"
+            )
     return migrated
 
 
@@ -621,13 +926,55 @@ def compare_files(args: argparse.Namespace) -> int:
         raise UpgradeStateError("requested resource type is absent from current schema")
     if not any(row["type"] == args.resource_type for row in rows.values()):
         raise UpgradeStateError("requested resource type is absent from baseline state")
-    migrated = compare_state_values(before, after, provider_schema, matrix)
-    migrated = compare_private_state(
+    required_private = args.resource_type if args.require_reviewed_private_migration else None
+    _, private_trigger_types = compile_upgrade_contract(provider_schema, matrix)
+    if required_private is not None and required_private not in private_trigger_types:
+        raise UpgradeStateError("required provider-private migration lacks a reviewed plan trigger")
+    migrated = compare_state_values(
+        before, after, provider_schema, matrix,
+        exact_public=required_private is not None,
+    )
+    private_migrated = compare_private_state(
         load_json(Path(args.raw_before)), load_json(Path(args.raw_after)),
-        matrix.get("upgrade_expected_private_migrations", []),
-    ) or migrated
-    if migrated:
+        matrix.get("upgrade_expected_private_migrations", []), required_private,
+    )
+    migrated = private_migrated or migrated
+    if required_private is not None:
+        if not private_migrated or not migrated:
+            raise UpgradeStateError(
+                "reviewed private plan trigger did not produce a reviewed migration"
+            )
+        print("upgrade-reviewed-private-plan-trigger-migration")
+    elif migrated:
         print("upgrade-reviewed-migration")
+    return 0
+
+
+def review_plan_files(args: argparse.Namespace) -> int:
+    schema_document = _mapping(load_json(Path(args.schema)), "schema document")
+    provider_schemas = _mapping(schema_document.get("provider_schemas"), "provider_schemas")
+    if PROVIDER_SOURCE not in provider_schemas:
+        raise UpgradeStateError("current provider schema is absent")
+    matrix = _mapping(load_json(Path(args.matrix)), "matrix")
+    triggered = review_upgrade_plan(
+        load_json(Path(args.plan)), provider_schemas[PROVIDER_SOURCE], matrix
+    )
+    if triggered:
+        if triggered != {args.resource_type}:
+            raise UpgradeStateError(
+                "reviewed private plan trigger does not match the upgrade subject"
+            )
+        if args.private_trigger_baseline:
+            _exclusive_json_write(
+                Path(args.private_trigger_baseline),
+                private_trigger_plan_baseline(
+                    load_json(Path(args.plan)), provider_schemas[PROVIDER_SOURCE],
+                    matrix, args.resource_type,
+                ),
+            )
+        print("upgrade-reviewed-private-plan-trigger")
+    else:
+        print("upgrade-plan-reviewed")
     return 0
 
 
@@ -642,7 +989,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     compare.add_argument("--raw-before", required=True)
     compare.add_argument("--raw-after", required=True)
     compare.add_argument("--matrix", required=True)
+    compare.add_argument("--require-reviewed-private-migration", action="store_true")
     compare.set_defaults(handler=compare_files)
+    review = subparsers.add_parser("review-plan")
+    review.add_argument("--plan", required=True)
+    review.add_argument("--schema", required=True)
+    review.add_argument("--matrix", required=True)
+    review.add_argument("--resource-type", required=True)
+    review.add_argument("--private-trigger-baseline")
+    review.set_defaults(handler=review_plan_files)
     args = parser.parse_args(argv)
     try:
         return args.handler(args)
