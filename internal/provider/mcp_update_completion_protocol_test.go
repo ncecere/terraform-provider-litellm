@@ -226,6 +226,56 @@ func TestMCPServerCredentialsClearIncludesOwnedLiftedColumnsProtocol(t *testing.
 	}
 }
 
+func TestMCPServerObservableCredentialDriftIsReassertedProtocol(t *testing.T) {
+	credentials := map[string]tftypes.Value{
+		"client_secret":     tftypes.NewValue(tftypes.String, "secret"),
+		"upstream_resource": tftypes.NewValue(tftypes.String, "configured-resource"),
+	}
+	remoteCredentials := map[string]tftypes.Value{
+		"client_secret":     tftypes.NewValue(tftypes.String, "secret"),
+		"upstream_resource": tftypes.NewValue(tftypes.String, "remote-drift"),
+	}
+	state := map[string]interface{}{
+		"id": "observable-credential", "server_id": "observable-credential", "server_name": "observable-credential", "transport": "http",
+		"url": "https://known.invalid/mcp", "auth_type": "oauth2", "spec_version": "2024-11-05",
+		"credentials": remoteCredentials, "field_ownership_generation": int64(1),
+	}
+	config := map[string]interface{}{
+		"server_name": "observable-credential", "transport": "http", "url": "https://known.invalid/mcp", "auth_type": "oauth2", "credentials": credentials,
+	}
+	before := map[string]interface{}{
+		"server_id": "observable-credential", "server_name": "observable-credential", "transport": "http", "url": "https://known.invalid/mcp",
+		"auth_type": "oauth2", "credentials": map[string]string{"upstream_resource": "remote-drift"}, "mcp_info": map[string]interface{}{},
+	}
+	owned := mcpFieldOwnership{Owned: map[string]bool{mcpFieldCredentialsPath: true}, Removals: map[string]bool{}, Generation: 1, Versioned: true}
+	for _, test := range []struct {
+		name        string
+		readback    string
+		wantFailure bool
+	}{
+		{name: "confirmed repair", readback: "configured-resource"},
+		{name: "unconfirmed repair", readback: "remote-drift", wantFailure: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			after := map[string]interface{}{
+				"server_id": "observable-credential", "server_name": "observable-credential", "transport": "http", "url": "https://known.invalid/mcp",
+				"auth_type": "oauth2", "credentials": map[string]string{"upstream_resource": test.readback}, "mcp_info": map[string]interface{}{},
+			}
+			result := runMCPUpdateCompletionProtocol(t, state, config, map[string]interface{}{"credentials": credentials}, before, after, protocolMCPFieldPrivate(t, owned))
+			if accessGroupProtocolDiagnosticsHaveError(result.applied.Diagnostics) != test.wantFailure || result.puts != 1 {
+				t.Fatalf("observable credential drift result: puts=%d diagnostics=%v", result.puts, result.applied.Diagnostics)
+			}
+			wireCredentials, _ := result.body["credentials"].(map[string]interface{})
+			if wireCredentials["upstream_resource"] != "configured-resource" {
+				t.Fatalf("observable credential intent missing from PUT: %#v", result.body)
+			}
+			if test.wantFailure {
+				assertMCPServerFailedUpdateRetainsPriorState(t, result.schema, result.state, result.applied.NewState)
+			}
+		})
+	}
+}
+
 func TestMCPServerCredentialsUpdateProjectsLiftedColumnIntentProtocol(t *testing.T) {
 	priorCredentials := map[string]tftypes.Value{
 		"client_secret": tftypes.NewValue(tftypes.String, "secret"),

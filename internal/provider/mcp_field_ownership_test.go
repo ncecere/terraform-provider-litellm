@@ -187,6 +187,57 @@ func TestMCPFieldDeltaEmitsAllAndOnlyV198RemovalSentinels(t *testing.T) {
 	}
 }
 
+func TestMCPObservableCredentialCreateAndReadProjection(t *testing.T) {
+	ctx := context.Background()
+	credentials := types.MapValueMust(types.StringType, map[string]attr.Value{
+		"client_secret":     types.StringValue("secret"),
+		"audience":          types.StringValue("audience"),
+		"upstream_resource": types.StringValue("resource-old"),
+	})
+	config := MCPServerResourceModel{Credentials: credentials}
+	ownership := mcpFieldOwnership{Owned: map[string]bool{mcpFieldCredentialsPath: true}, Removals: map[string]bool{}, Versioned: true}
+	observed := map[string]interface{}{
+		"audience":    "audience",
+		"credentials": map[string]interface{}{"upstream_resource": "resource-old"},
+	}
+	if err := verifyMCPFieldCreateReadback(ctx, config, observed, ownership); err != nil {
+		t.Fatalf("observable create credentials rejected: %v", err)
+	}
+	missingLifted := map[string]interface{}{"credentials": map[string]interface{}{"upstream_resource": "resource-old"}}
+	if err := verifyMCPFieldCreateReadback(ctx, config, missingLifted, ownership); err == nil {
+		t.Fatal("create accepted missing lifted credential persistence")
+	}
+	missingAdminConfig := map[string]interface{}{"audience": "audience", "credentials": nil}
+	if err := verifyMCPFieldCreateReadback(ctx, config, missingAdminConfig, ownership); err == nil {
+		t.Fatal("create accepted missing observable credential persistence")
+	}
+
+	data := MCPServerResourceModel{
+		ID: types.StringValue("credential-read"), ServerID: types.StringValue("credential-read"),
+		Credentials: credentials,
+	}
+	response := map[string]interface{}{
+		"server_id": "credential-read", "transport": "http", "audience": "audience-new",
+		"credentials": map[string]interface{}{"upstream_resource": "resource-new"},
+	}
+	if err := (&MCPServerResource{}).readMCPServerResultProjection(ctx, &data, response, emptyMCPInfoProvenance(), ownership, false, mcpInfoLeafSet{}, mcpInfoLeafSet{}); err != nil {
+		t.Fatalf("observable credential read projection: %v", err)
+	}
+	projected, err := mcpFieldStringMap(ctx, data.Credentials)
+	if err != nil || projected["client_secret"] != "secret" || projected["audience"] != "audience-new" || projected["upstream_resource"] != "resource-new" {
+		t.Fatalf("credential projection did not preserve secrets and expose visible drift: %#v err=%v", projected, err)
+	}
+	response["credentials"] = nil
+	response["audience"] = nil
+	if err := (&MCPServerResource{}).readMCPServerResultProjection(ctx, &data, response, emptyMCPInfoProvenance(), ownership, false, mcpInfoLeafSet{}, mcpInfoLeafSet{}); err != nil {
+		t.Fatalf("masked credential read projection: %v", err)
+	}
+	masked, _ := mcpFieldStringMap(ctx, data.Credentials)
+	if masked["audience"] != "audience-new" || masked["upstream_resource"] != "resource-new" {
+		t.Fatalf("masked read erased prior observable credential state: %#v", masked)
+	}
+}
+
 func TestMCPImplicitClearPreflightRejectsUnchangedAndAllowsCompleteClear(t *testing.T) {
 	hydration := map[string]interface{}{
 		"authorization_url": "https://auth.example/authorize", "token_url": "https://auth.example/token", "registration_url": "https://auth.example/register",

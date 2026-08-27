@@ -164,11 +164,56 @@ func (r *MCPServerResource) buildMCPServerCreateRequest(ctx context.Context, pla
 	return request, nil
 }
 
+func mcpObservedCredentialString(observed map[string]interface{}, name string) (string, bool) {
+	raw, present := observed["credentials"]
+	if !present || raw == nil {
+		return "", false
+	}
+	var value string
+	switch credentials := raw.(type) {
+	case map[string]interface{}:
+		value, _ = credentials[name].(string)
+	case map[string]string:
+		value = credentials[name]
+	default:
+		return "", false
+	}
+	return value, value != ""
+}
+
+func verifyMCPObservableCredentialReadback(ctx context.Context, desired types.Map, observed map[string]interface{}) error {
+	credentials, err := mcpFieldStringMap(ctx, desired)
+	if err != nil {
+		return err
+	}
+	for _, name := range mcpCredentialLiftedColumnNames {
+		want, configured := credentials[name]
+		if !configured {
+			continue
+		}
+		got, present := observed[name]
+		if !present || !mcpWireValuesEqual(want, got) {
+			return fmt.Errorf("an observable credential column did not converge")
+		}
+	}
+	if want, configured := credentials["upstream_resource"]; configured {
+		got, present := mcpObservedCredentialString(observed, "upstream_resource")
+		if !present || want != got {
+			return fmt.Errorf("observable credential configuration did not converge")
+		}
+	}
+	return nil
+}
+
 func verifyMCPFieldCreateReadback(ctx context.Context, config MCPServerResourceModel, observed map[string]interface{}, ownership mcpFieldOwnership) error {
 	for fieldPath := range ownership.Owned {
 		if fieldPath == mcpFieldCredentialsPath {
-			// Credential values are redacted. A successful write plus an
-			// identity/schema-valid direct read is the only v1.98 evidence.
+			// Secret credential values are redacted, but v1.98 exposes four
+			// lifted token-exchange columns and upstream_resource. Verify every
+			// configured observable member before committing ownership.
+			if err := verifyMCPObservableCredentialReadback(ctx, config.Credentials, observed); err != nil {
+				return err
+			}
 			continue
 		}
 		want, err := mcpFieldDesiredValue(ctx, config, fieldPath)
@@ -380,6 +425,10 @@ func buildMCPFieldDelta(ctx context.Context, plan MCPServerResourceModel, config
 						writeCredentials = writeCredentials || !present || !mcpWireValuesEqual(liftedValue, remote)
 					}
 				}
+				if upstreamResource, configured := credentials["upstream_resource"]; configured {
+					remote, present := mcpObservedCredentialString(hydration, "upstream_resource")
+					writeCredentials = writeCredentials || !present || upstreamResource != remote
+				}
 				if writeCredentials {
 					delta[name] = desired
 					addLiftedCredentialIntent(credentials)
@@ -588,6 +637,9 @@ func verifyMCPFieldUpdateReadback(ctx context.Context, plan, config MCPServerRes
 		name := mcpFieldWireName(fieldPath)
 		if sent, changed := delta[name]; changed {
 			if fieldPath == mcpFieldCredentialsPath {
+				if sent != nil && verifyMCPObservableCredentialReadback(ctx, config.Credentials, observed) != nil {
+					return fmt.Errorf("observable credential configuration did not converge")
+				}
 				continue
 			}
 			got, present := observed[name]

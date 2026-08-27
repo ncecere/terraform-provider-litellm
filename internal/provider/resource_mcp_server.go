@@ -1555,7 +1555,7 @@ func (r *MCPServerResource) readMCPServerProjection(ctx context.Context, data *M
 	return r.readMCPServerResultProjection(ctx, data, result, ownership, fieldOwnership, imported, confirmed, adoptedAPI)
 }
 
-func (r *MCPServerResource) readMCPServerResultProjection(_ context.Context, data *MCPServerResourceModel, result map[string]interface{}, ownership mcpInfoProvenance, fieldOwnership mcpFieldOwnership, imported bool, confirmed, adoptedAPI mcpInfoLeafSet) error {
+func (r *MCPServerResource) readMCPServerResultProjection(ctx context.Context, data *MCPServerResourceModel, result map[string]interface{}, ownership mcpInfoProvenance, fieldOwnership mcpFieldOwnership, imported bool, confirmed, adoptedAPI mcpInfoLeafSet) error {
 	serverID := data.ID.ValueString()
 	if serverID == "" {
 		serverID = data.ServerID.ValueString()
@@ -1672,6 +1672,33 @@ func (r *MCPServerResource) readMCPServerResultProjection(_ context.Context, dat
 	// Keep configured sensitive values through redaction and keep imports null.
 	if data.Credentials.IsUnknown() {
 		data.Credentials = types.MapNull(types.StringType)
+	}
+	if fieldOwnership.Owned[mcpFieldCredentialsPath] && !data.Credentials.IsNull() && !data.Credentials.IsUnknown() {
+		priorCredentials, err := mcpFieldStringMap(ctx, data.Credentials)
+		if err != nil {
+			return fmt.Errorf("invalid owned credential state")
+		}
+		changed := false
+		for _, name := range mcpCredentialLiftedColumnNames {
+			if _, configured := priorCredentials[name]; !configured {
+				continue
+			}
+			if remote, visible := result[name].(string); visible {
+				priorCredentials[name], changed = remote, true
+			}
+		}
+		if _, configured := priorCredentials["upstream_resource"]; configured {
+			if remote, visible := mcpObservedCredentialString(result, "upstream_resource"); visible {
+				priorCredentials["upstream_resource"], changed = remote, true
+			}
+		}
+		if changed {
+			values := make(map[string]attr.Value, len(priorCredentials))
+			for name, value := range priorCredentials {
+				values[name] = types.StringValue(value)
+			}
+			data.Credentials = types.MapValueMust(types.StringType, values)
+		}
 	}
 
 	for _, item := range []struct {
