@@ -95,6 +95,30 @@ func NewMCPServerResource() resource.Resource {
 	return &MCPServerResource{}
 }
 
+func mcpServerIDValidV198(value string) bool {
+	return value != "" && value != "." && value != ".." && !strings.Contains(value, "/") &&
+		value != "all-team-mcpservers" && value != "all-proxy-mcpservers"
+}
+
+func mcpToolPrefixValidV198(value string) bool {
+	if value == "" || len(value) > 128 {
+		return false
+	}
+	for index := 0; index < len(value); index++ {
+		character := value[index]
+		if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') || character == '_' || character == '.' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func mcpNormalizeAliasV198(value string) string {
+	return strings.ReplaceAll(value, " ", "_")
+}
+
 type MCPServerResource struct {
 	client *Client
 }
@@ -189,19 +213,22 @@ func (r *MCPServerResource) Schema(ctx context.Context, req resource.SchemaReque
 				},
 			},
 			"server_id": schema.StringAttribute{
-				Description: "Unique identifier for the MCP server.",
+				Description: "Create-only unique identifier for the MCP server. When omitted, the provider selects a stable generated identifier.",
+				Optional:    true,
 				Computed:    true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
+					stringplanmodifier.RequiresReplace(),
 				},
 			},
 			"server_name": schema.StringAttribute{
-				Description: "Name of the MCP server.",
-				Required:    true,
+				Description: "Optional name of the MCP server. When name and alias are omitted, LiteLLM uses server_id as the tool-prefix fallback.",
+				Optional:    true,
 			},
 			"alias": schema.StringAttribute{
-				Description: "Alias for the MCP server.",
+				Description: "Alias for the MCP server. LiteLLM normalizes ASCII spaces to underscores and defaults an omitted alias from server_name.",
 				Optional:    true,
+				Computed:    true,
 			},
 			"description": schema.StringAttribute{
 				Description: "Description of the MCP server.",
@@ -368,6 +395,17 @@ func (r *MCPServerResource) ValidateConfig(ctx context.Context, req resource.Val
 		return
 	}
 
+	if !data.ServerID.IsNull() && !data.ServerID.IsUnknown() && !mcpServerIDValidV198(data.ServerID.ValueString()) {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("server_id"),
+			"Invalid MCP Server Identity",
+			"Configured server_id must be a non-empty manageable path-segment identity and must not use a LiteLLM reserved server identifier.",
+		)
+	}
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	for name, value := range map[string]types.String{"url": data.URL, "spec_path": data.SpecPath} {
 		if !value.IsNull() && !value.IsUnknown() && value.ValueString() == "" {
 			resp.Diagnostics.AddAttributeError(
@@ -461,6 +499,32 @@ func (r *MCPServerResource) ModifyPlan(ctx context.Context, req resource.ModifyP
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	if hasState && !config.ServerID.IsNull() && !config.ServerID.IsUnknown() && !config.ServerID.Equal(state.ServerID) {
+		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("id"), types.StringUnknown())...)
+	}
+	if !config.ServerName.IsNull() && !config.ServerName.IsUnknown() && !mcpToolPrefixValidV198(config.ServerName.ValueString()) {
+		unchangedHistorical := hasState && !state.ServerName.IsNull() && !state.ServerName.IsUnknown() && config.ServerName.Equal(state.ServerName)
+		if !unchangedHistorical {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("server_name"),
+				"Invalid MCP Server Name",
+				"Configured server_name must contain 1 to 128 ASCII letters, digits, underscores, or periods and must not contain LiteLLM v1.98's tool-prefix separator.",
+			)
+		}
+	}
+	if !config.Alias.IsNull() && !config.Alias.IsUnknown() && config.Alias.ValueString() != "" && !mcpToolPrefixValidV198(mcpNormalizeAliasV198(config.Alias.ValueString())) {
+		unchangedHistorical := hasState && !state.Alias.IsNull() && !state.Alias.IsUnknown() && config.Alias.Equal(state.Alias)
+		if !unchangedHistorical {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("alias"),
+				"Invalid MCP Server Alias",
+				"Configured alias must normalize to 1 to 128 ASCII letters, digits, underscores, or periods and must not contain LiteLLM v1.98's tool-prefix separator.",
+			)
+		}
+	}
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	// Re-run ownership validation from Config at resource plan time. This is
 	// intentionally not based on ProposedNewState, where Optional+Computed
 	// values can contain prior state.
@@ -534,6 +598,7 @@ func (r *MCPServerResource) ModifyPlan(ctx context.Context, req resource.ModifyP
 		priorValue attr.Value
 		nullValue  attr.Value
 	}{
+		{name: "alias", fieldPath: mcpFieldAliasPath, configured: config.Alias, priorValue: state.Alias, nullValue: types.StringNull()},
 		{name: "mcp_access_groups", fieldPath: mcpFieldAccessGroupsPath, configured: config.MCPAccessGroups, priorValue: state.MCPAccessGroups, nullValue: types.ListNull(types.StringType)},
 		{name: "args", fieldPath: mcpFieldArgsPath, configured: config.Args, priorValue: state.Args, nullValue: types.ListNull(types.StringType)},
 		{name: "env", fieldPath: mcpFieldEnvPath, configured: config.Env, priorValue: state.Env, nullValue: types.MapNull(types.StringType)},
@@ -551,7 +616,6 @@ func (r *MCPServerResource) ModifyPlan(ctx context.Context, req resource.ModifyP
 			resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root(item.name), item.priorValue)...)
 		}
 	}
-
 	// Preserve each imported API-owned cost leaf while that exact HCL leaf is
 	// omitted. A configured parent, string sibling, or other cost sibling must
 	// neither erase the projection nor receive ownership implicitly.
@@ -606,6 +670,15 @@ func (r *MCPServerResource) ModifyPlan(ctx context.Context, req resource.ModifyP
 			if item.configured.IsNull() && item.planned.IsUnknown() && !item.prior.IsUnknown() {
 				resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root(item.name), item.prior)...)
 			}
+		}
+	}
+	if !config.Alias.IsNull() && !config.Alias.IsUnknown() && config.Alias.ValueString() != "" {
+		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("alias"), types.StringValue(mcpNormalizeAliasV198(config.Alias.ValueString())))...)
+	} else if !hasState && config.Alias.IsNull() {
+		if !config.ServerName.IsNull() && !config.ServerName.IsUnknown() {
+			resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("alias"), types.StringValue(mcpNormalizeAliasV198(config.ServerName.ValueString())))...)
+		} else {
+			resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("alias"), types.StringNull())...)
 		}
 	}
 	if resp.Private != nil && !resp.Diagnostics.HasError() {
@@ -721,6 +794,17 @@ func (r *MCPServerResource) Create(ctx context.Context, req resource.CreateReque
 	// Preselect identity so an accepted response-body failure can be reconciled
 	// through the direct endpoint without list discovery or an orphaned row.
 	serverID := uuid.NewString()
+	if config.ServerID.IsUnknown() {
+		resp.Diagnostics.AddError("Unknown MCP Server Identity", "Configured server_id must be known before create. No request was attempted.")
+		return
+	}
+	if !config.ServerID.IsNull() {
+		serverID = config.ServerID.ValueString()
+		if !mcpServerIDValidV198(serverID) {
+			resp.Diagnostics.AddError("Invalid MCP Server Identity", "Configured server_id cannot be represented safely by LiteLLM's management endpoints. No request was attempted.")
+			return
+		}
+	}
 	mcpReq["server_id"] = serverID
 	var result map[string]interface{}
 	accepted, createErr := r.client.doRequestWithResponse(ctx, "POST", "/v1/mcp/server", mcpReq, &result)
@@ -1045,6 +1129,10 @@ func (r *MCPServerResource) Delete(ctx context.Context, req resource.DeleteReque
 }
 
 func (r *MCPServerResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	if !mcpServerIDValidV198(req.ID) {
+		resp.Diagnostics.AddError("Invalid MCP Server Import Identity", "Import identity must be a non-empty manageable MCP server path segment and must not use a LiteLLM reserved server identifier.")
+		return
+	}
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("server_id"), req.ID)...)
 	if resp.Private != nil {
@@ -1111,9 +1199,11 @@ func (r *MCPServerResource) UpgradeState(ctx context.Context) map[int64]resource
 
 func (r *MCPServerResource) buildMCPServerRequest(ctx context.Context, data *MCPServerResourceModel, resolvedMCPInfo map[string]interface{}, mcpInfoPresent bool) (map[string]interface{}, error) {
 	mcpReq := map[string]interface{}{
-		"server_name": data.ServerName.ValueString(),
-		"transport":   data.Transport.ValueString(),
-		"auth_type":   data.AuthType.ValueString(),
+		"transport": data.Transport.ValueString(),
+		"auth_type": data.AuthType.ValueString(),
+	}
+	if !data.ServerName.IsNull() && !data.ServerName.IsUnknown() {
+		mcpReq["server_name"] = data.ServerName.ValueString()
 	}
 
 	// String fields - check IsNull, IsUnknown, and empty string.
@@ -1577,11 +1667,8 @@ func (r *MCPServerResource) readMCPServerResultProjection(ctx context.Context, d
 		data.ServerID = types.StringValue(serverID)
 		data.ID = types.StringValue(serverID)
 	}
-	if serverName, ok := result["server_name"].(string); ok {
-		data.ServerName = types.StringValue(serverName)
-	}
 	projectString := func(fieldPath, name string, current *types.String) {
-		projected := fieldOwnership.Owned[fieldPath] || (!current.IsNull() && !current.IsUnknown())
+		projected := imported || fieldOwnership.Owned[fieldPath] || (!current.IsNull() && !current.IsUnknown())
 		if !projected {
 			return
 		}
@@ -1594,6 +1681,13 @@ func (r *MCPServerResource) readMCPServerResultProjection(ctx context.Context, d
 			return
 		}
 		*current = types.StringValue(raw.(string))
+	}
+	if raw, present := result["server_name"]; present {
+		if raw == nil {
+			data.ServerName = types.StringNull()
+		} else {
+			data.ServerName = types.StringValue(raw.(string))
+		}
 	}
 	projectString(mcpFieldAliasPath, "alias", &data.Alias)
 	projectString(mcpFieldDescriptionPath, "description", &data.Description)

@@ -370,7 +370,7 @@ func TestMCPServerUnsupportedCredentialKeysRejectedBeforeMutationProtocol(t *tes
 		protocolServer, schemas := configuredImportProtocolServer(t, ctx, server.URL)
 		schema := schemas.ResourceSchemas["litellm_mcp_server"]
 		configValues := map[string]interface{}{
-			"server_name": "unsupported-credentials", "transport": "http", "url": "https://known.invalid/mcp", "auth_type": "none", "credentials": unsupported,
+			"server_name": "unsupported_credentials", "transport": "http", "url": "https://known.invalid/mcp", "auth_type": "none", "credentials": unsupported,
 		}
 		config := accessGroupProtocolDynamicValue(t, schema, organizationProjectProtocolValue(t, schema, configValues))
 		proposedValues := map[string]interface{}{}
@@ -403,7 +403,7 @@ func TestMCPServerUnsupportedCredentialKeysRejectedBeforeMutationProtocol(t *tes
 		protocolServer, schemas := configuredImportProtocolServer(t, ctx, server.URL)
 		schema := schemas.ResourceSchemas["litellm_mcp_server"]
 		config, nullState, planned := mcpServerProtocolCreatePlan(t, protocolServer, schema, map[string]interface{}{
-			"server_name": "empty-observable-credential", "transport": "http", "url": "https://known.invalid/mcp", "auth_type": "oauth2",
+			"server_name": "empty_observable_credential", "transport": "http", "url": "https://known.invalid/mcp", "auth_type": "oauth2",
 			"credentials": map[string]tftypes.Value{"upstream_resource": tftypes.NewValue(tftypes.String, "")},
 		})
 		applied, err := protocolServer.ApplyResourceChange(ctx, &tfprotov6.ApplyResourceChangeRequest{
@@ -448,7 +448,7 @@ func TestMCPServerEmptyAliasCreateRejectedAndUpdateConvergesProtocol(t *testing.
 	schema := schemas.ResourceSchemas["litellm_mcp_server"]
 
 	t.Run("create", func(t *testing.T) {
-		configValues := map[string]interface{}{"server_name": "empty-alias-create", "alias": "", "transport": "http", "url": "https://alias.invalid/mcp"}
+		configValues := map[string]interface{}{"server_name": "empty_alias_create", "alias": "", "transport": "http", "url": "https://alias.invalid/mcp"}
 		config := accessGroupProtocolDynamicValue(t, schema, organizationProjectProtocolValue(t, schema, configValues))
 		proposedValues := map[string]interface{}{}
 		for key, value := range configValues {

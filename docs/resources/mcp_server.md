@@ -2,7 +2,7 @@
 
 Manages MCP (Model Context Protocol) server configurations in LiteLLM. MCP servers allow LLM models to access external tools and data sources through a standardized protocol.
 
-> **Note:** Server names and aliases **cannot contain hyphens** (`-`). The LiteLLM API rejects them. Use underscores (`_`) instead.
+> **Note:** Server names and canonical aliases use 1–128 ASCII letters, digits, underscores, or periods. They cannot contain LiteLLM v1.98's default tool-prefix separator (`-`). Non-empty aliases may contain ASCII spaces in configuration; LiteLLM and the provider normalize each space to an underscore in plans and state.
 >
 > Ordinary refresh can fall back to LiteLLM's MCP server collection endpoint if the individual read returns an unexpected error. Create and Update verification use only the direct singular endpoint as mutation authority. A committed create without confirmed readback retains only the server identity; a failed Update or readback retains the complete prior state.
 
@@ -17,6 +17,19 @@ resource "litellm_mcp_server" "minimal" {
   transport   = "sse"
 }
 ```
+
+### Custom Identity and Unnamed Server
+
+```hcl
+resource "litellm_mcp_server" "custom_identity" {
+  server_id = "inventory.tools"
+  alias     = "inventory tools"
+  transport = "http"
+  url       = "https://example.com/mcp"
+}
+```
+
+The planned and stored alias is `inventory_tools`. Omitting both `server_name` and `alias` is also supported; LiteLLM then uses `server_id` as the effective MCP tool prefix.
 
 ### Full Configuration
 
@@ -141,12 +154,13 @@ The following arguments are supported:
 
 ### Required
 
-- `server_name` - (String) The name of the MCP server. **Must not contain hyphens.**
 - `transport` - (String) The transport protocol. Must be one of: `http`, `sse`, `stdio`.
 
 ### Optional
 
-- `alias` - (String) An alias for the server. **Must not contain hyphens.**
+- `server_id` - (String, Computed, Forces Replacement) A create-only server identity. It must be a non-empty manageable path segment and cannot be `.`/`..` or LiteLLM's reserved `all-team-mcpservers`/`all-proxy-mcpservers` identities. When omitted, the provider selects a stable generated identity. Adding or changing a configured value replaces the resource; existing generated-ID configurations and imports can continue omitting it without replacement.
+- `server_name` - (String) An optional 1–128 character MCP tool-prefix name. When omitted, LiteLLM uses `alias`, then `server_id`, as the effective prefix fallback. Removing a configured name sends an explicit null.
+- `alias` - (String, Computed) An optional server alias. Non-empty configured aliases normalize ASCII spaces to underscores. When alias is omitted on Create and `server_name` is set, LiteLLM defaults alias from the name; when both are omitted, `server_id` is the fallback.
 - `description` - (String) A human-readable description of the MCP server.
 - `url` - (String) The MCP server URL. HTTP and SSE require at least one of `url` or `spec_path`; stdio does not require a URL.
 - `spec_path` - (String) A LiteLLM-local path or HTTP(S) URL for an OpenAPI specification. It can satisfy the HTTP/SSE endpoint requirement without `url`; if both are set, LiteLLM uses `url` as the OpenAPI base URL.
@@ -175,7 +189,7 @@ The following arguments are supported:
 
 ### Presence-aware field clears
 
-The existing `alias`, `description`, `command`, OAuth URL, access-group, argument, environment, tool/header, credential, and `allow_all_keys` arguments now have presence-aware ownership without changing any public argument type or Optional/Computed flag. A known configured value, including an empty collection, empty string, or `false`, acquires ownership. An unknown expression retains prior ownership. Removing a previously owned argument sends LiteLLM v1.98's exact clear sentinel; an omitted unowned argument is never projected into an Update.
+The existing `alias`, `description`, `command`, OAuth URL, access-group, argument, environment, tool/header, credential, and `allow_all_keys` arguments have presence-aware ownership without changing their value types. Alias is now Optional+Computed so its canonical LiteLLM normalization/default can be represented without drift. A known configured value, including an empty collection, empty string, or `false`, acquires ownership. An unknown expression retains prior ownership. Removing a previously owned argument sends LiteLLM v1.98's exact clear sentinel; an omitted unowned argument is never projected into an Update.
 
 Update always performs an identity- and type-valid direct singular read first, then sends only the changed managed values and owned removals. Collection null/omission/empty responses may be role-redacted and therefore do not erase a prior owned projection. Credential response values are never authoritative; configured sensitive values survive redaction, and confirmation uses the successful write plus identity/schema-valid direct readback. Because v1.98 merges credential maps, deleting individual configured keys is rejected. Remove the entire `credentials` argument and apply its top-level `null` clear first, then re-add the replacement map in a second apply.
 
@@ -205,7 +219,7 @@ Optional nested block within `mcp_info` containing cost configuration.
 In addition to all arguments above, the following attributes are exported:
 
 - `id` - The unique identifier for the MCP server (same as `server_id`).
-- `server_id` - The server identifier assigned by LiteLLM.
+- `server_id` - The canonical server identifier. It is configurable only at Create and otherwise contains the provider-selected generated identity.
 - `created_at` - Timestamp of when the MCP server was created.
 - `created_by` - The user or system that created the MCP server.
 - `mcp_info_ownership_generation` - A non-sensitive computed generation that changes when MCP info ownership intent changes, including equal-value takeover. It forces Apply without making the resource ID unknown.
@@ -250,7 +264,7 @@ Standard input/output communication executed by the LiteLLM runtime. A URL is no
 
 ## Notes
 
-- Server names and aliases must use underscores, not hyphens.
+- Server names and canonical aliases use ASCII letters, digits, underscores, or periods; aliases normalize ASCII spaces to underscores. Hyphens are reserved as LiteLLM v1.98's tool-prefix separator.
 - The `auth_type` field accepts exactly `none`, `api_key`, `bearer_token`, `basic`, `authorization`, `oauth2`, `aws_sigv4`, `token`, `oauth2_token_exchange`, `oauth2_id_jag`, `true_passthrough`, or `oauth_delegate` under the LiteLLM v1.98 request contract. The legacy literal `bearer` is not supported.
 - For authenticated modes, provide the credentials and endpoint-specific fields required by the selected authentication type.
 - The `credentials` attribute is sensitive and will not appear in CLI output or state file in plain text.

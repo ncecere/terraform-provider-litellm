@@ -19,7 +19,12 @@ func mcpServerProtocolCreatePlan(t *testing.T, protocolServer tfprotov6.Provider
 	for key, value := range configValues {
 		proposedValues[key] = value
 	}
-	proposedValues["id"], proposedValues["server_id"] = tftypes.UnknownValue, tftypes.UnknownValue
+	proposedValues["id"] = tftypes.UnknownValue
+	if configuredServerID, present := configValues["server_id"]; present {
+		proposedValues["server_id"] = configuredServerID
+	} else {
+		proposedValues["server_id"] = tftypes.UnknownValue
+	}
 	proposed := accessGroupProtocolDynamicValue(t, schema, organizationProjectProtocolValue(t, schema, proposedValues))
 	nullState := accessGroupProtocolDynamicValue(t, schema, tftypes.NewValue(schema.ValueType(), nil))
 	planned, err := protocolServer.PlanResourceChange(context.Background(), &tfprotov6.PlanResourceChangeRequest{
@@ -89,7 +94,7 @@ func TestMCPServerMalformedCreateRetainsOnlyConfirmedIdentityProtocol(t *testing
 	protocolServer, schemas := configuredImportProtocolServer(t, ctx, server.URL)
 	schema := schemas.ResourceSchemas["litellm_mcp_server"]
 	config, nullState, planned := mcpServerProtocolCreatePlan(t, protocolServer, schema, map[string]interface{}{
-		"server_name": "planned-name", "transport": "http", "url": "https://planned.invalid/mcp",
+		"server_name": "planned_name", "transport": "http", "url": "https://planned.invalid/mcp",
 	})
 	applied, err := protocolServer.ApplyResourceChange(ctx, &tfprotov6.ApplyResourceChangeRequest{
 		TypeName: "litellm_mcp_server", Config: config, PriorState: nullState,
@@ -116,7 +121,7 @@ func TestMCPServerAcceptedCreateBodyFailureRecoversBySelectedIdentityProtocol(t 
 		}
 		reads.Add(1)
 		_ = json.NewEncoder(writer).Encode(map[string]interface{}{
-			"server_id": requestedID.Load().(string), "server_name": "selected-identity", "transport": "http",
+			"server_id": requestedID.Load().(string), "server_name": "selected_identity", "transport": "http",
 			"url": "https://configured.invalid/mcp", "auth_type": "none", "mcp_info": map[string]interface{}{},
 		})
 	}))
@@ -125,7 +130,7 @@ func TestMCPServerAcceptedCreateBodyFailureRecoversBySelectedIdentityProtocol(t 
 	protocolServer, schemas := configuredImportProtocolServer(t, ctx, server.URL)
 	schema := schemas.ResourceSchemas["litellm_mcp_server"]
 	config, nullState, planned := mcpServerProtocolCreatePlan(t, protocolServer, schema, map[string]interface{}{
-		"server_name": "selected-identity", "transport": "http", "url": "https://configured.invalid/mcp",
+		"server_name": "selected_identity", "transport": "http", "url": "https://configured.invalid/mcp",
 	})
 	applied, err := protocolServer.ApplyResourceChange(ctx, &tfprotov6.ApplyResourceChangeRequest{
 		TypeName: "litellm_mcp_server", Config: config, PriorState: nullState,
