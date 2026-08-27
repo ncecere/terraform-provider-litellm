@@ -59,13 +59,13 @@ func TestNumericPerModelRequestMapsPreserveNullVersusKnownEmpty(t *testing.T) {
 	emptyIntMap := types.MapValueMust(types.Int64Type, map[string]attr.Value{})
 	emptyFloatMap := types.MapValueMust(types.Float64Type, map[string]attr.Value{})
 
-	keyRequest, err := (&KeyResource{}).buildKeyRequest(context.Background(), &KeyResourceModel{
+	keyRequest, keyDiagnostics := (&KeyResource{}).buildKeyRequest(context.Background(), &KeyResourceModel{
 		ModelMaxBudget: emptyFloatMap,
 		ModelRPMLimit:  emptyIntMap,
 		ModelTPMLimit:  emptyIntMap,
 	})
-	if err != nil {
-		t.Fatal(err)
+	if keyDiagnostics.HasError() {
+		t.Fatal(keyDiagnostics)
 	}
 	for _, field := range []string{"model_max_budget", "model_rpm_limit", "model_tpm_limit"} {
 		value, present := keyRequest[field]
@@ -109,13 +109,13 @@ func TestNumericPerModelRequestMapsPreserveNullVersusKnownEmpty(t *testing.T) {
 		}
 	}
 
-	keyNullRequest, err := (&KeyResource{}).buildKeyRequest(context.Background(), &KeyResourceModel{
+	keyNullRequest, keyNullDiagnostics := (&KeyResource{}).buildKeyRequest(context.Background(), &KeyResourceModel{
 		ModelMaxBudget: types.MapNull(types.Float64Type),
 		ModelRPMLimit:  types.MapNull(types.Int64Type),
 		ModelTPMLimit:  types.MapNull(types.Int64Type),
 	})
-	if err != nil {
-		t.Fatal(err)
+	if keyNullDiagnostics.HasError() {
+		t.Fatal(keyNullDiagnostics)
 	}
 	for _, field := range []string{"model_max_budget", "model_rpm_limit", "model_tpm_limit"} {
 		if _, present := keyNullRequest[field]; present {

@@ -282,29 +282,6 @@ func reconcileAgentJSONObject(current types.String, remote map[string]interface{
 	return types.StringValue(canonical), nil
 }
 
-func decodeAgentSecurity(value types.List) ([]map[string][]string, error) {
-	if value.IsNull() || value.IsUnknown() {
-		return nil, nil
-	}
-	result := make([]map[string][]string, 0, len(value.Elements()))
-	for _, raw := range value.Elements() {
-		mapping, ok := raw.(types.Map)
-		if !ok || mapping.IsNull() || mapping.IsUnknown() {
-			return nil, errors.New("security must contain known maps")
-		}
-		item := make(map[string][]string, len(mapping.Elements()))
-		for name, scopesRaw := range mapping.Elements() {
-			scopes, ok := scopesRaw.(types.List)
-			if !ok || scopes.IsNull() || scopes.IsUnknown() {
-				return nil, errors.New("security scopes must be known string lists")
-			}
-			item[name] = listToStringSlice(scopes)
-		}
-		result = append(result, item)
-	}
-	return result, nil
-}
-
 func readAgentSecurity(raw interface{}) (types.List, error) {
 	items, ok := raw.([]interface{})
 	if !ok {

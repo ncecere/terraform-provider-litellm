@@ -433,12 +433,12 @@ func TestLimitAndRoleRequestBuildersPreserveValidatedLiterals(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	keyRequest, err := (&KeyResource{}).buildKeyRequest(ctx, &KeyResourceModel{
+	keyRequest, keyDiagnostics := (&KeyResource{}).buildKeyRequest(ctx, &KeyResourceModel{
 		TPMLimitType: types.StringValue("dynamic"),
 		RPMLimitType: types.StringValue("guaranteed_throughput"),
 	})
-	if err != nil {
-		t.Fatalf("build key request: %v", err)
+	if keyDiagnostics.HasError() {
+		t.Fatalf("build key request: %v", keyDiagnostics)
 	}
 	if got := keyRequest["tpm_limit_type"]; got != "dynamic" {
 		t.Errorf("key tpm_limit_type = %#v, want dynamic", got)

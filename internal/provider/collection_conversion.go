@@ -25,6 +25,9 @@ const (
 	invalidTerraformStringListSummary = "Invalid Terraform String List"
 	invalidTerraformStringSetSummary  = "Invalid Terraform String Set"
 	invalidTerraformStringMapSummary  = "Invalid Terraform String Map"
+	invalidTerraformInt64MapSummary   = "Invalid Terraform Integer Map"
+	invalidTerraformFloat64MapSummary = "Invalid Terraform Number Map"
+	invalidTerraformSecuritySummary   = "Invalid Terraform Security Collection"
 	invalidAPIStringListSummary       = "Invalid API String List"
 	invalidAPIStringMapSummary        = "Invalid API String Map"
 	collectionConversionCanceled      = "Collection Conversion Canceled"
@@ -32,6 +35,9 @@ const (
 	invalidTerraformStringListDetail   = "The collection must contain only known, non-null string elements. No collection value was converted."
 	invalidTerraformStringSetDetail    = "The collection must contain only known, non-null string elements. No collection value was converted."
 	invalidTerraformStringMapDetail    = "The collection must contain only known, non-null string elements. No collection value was converted."
+	invalidTerraformInt64MapDetail     = "The collection must contain only known, non-null integer elements. No collection value was converted."
+	invalidTerraformFloat64MapDetail   = "The collection must contain only known, non-null number elements. No collection value was converted."
+	invalidTerraformSecurityDetail     = "The collection must contain only known, non-null maps of known, non-null string lists. No collection value was converted."
 	invalidAPIStringListDetail         = "LiteLLM returned a collection that cannot be represented as a list of strings. No collection value was projected."
 	invalidAPIStringMapDetail          = "LiteLLM returned a collection that cannot be represented as a map of strings. No collection value was projected."
 	collectionConversionCanceledDetail = "The collection conversion was canceled before it completed. No collection value was converted or projected."
@@ -171,6 +177,149 @@ func strictTerraformStringMap(ctx context.Context, value types.Map, valuePath pa
 		return nil, state, canceled
 	}
 	return converted, state, nil
+}
+
+// strictTerraformInt64Map and strictTerraformFloat64Map preserve Terraform's
+// outer collection state while rejecting malformed elements atomically.
+func strictTerraformInt64Map(ctx context.Context, value types.Map, valuePath path.Path) (map[string]int64, collectionValueState, diag.Diagnostics) {
+	state := mapCollectionState(value)
+	if diagnostics := canceledCollectionDiagnostics(ctx, valuePath); diagnostics.HasError() {
+		return nil, state, diagnostics
+	}
+	if value.IsNull() || value.IsUnknown() {
+		return nil, state, nil
+	}
+	var diagnostics diag.Diagnostics
+	if !value.ElementType(ctx).Equal(types.Int64Type) {
+		diagnostics.AddAttributeError(valuePath, invalidTerraformInt64MapSummary, invalidTerraformInt64MapDetail)
+		return nil, state, diagnostics
+	}
+	keys := sortedAttributeKeys(value.Elements())
+	for _, key := range keys {
+		if canceled := canceledCollectionDiagnostics(ctx, valuePath); canceled.HasError() {
+			return nil, state, canceled
+		}
+		number, ok := value.Elements()[key].(types.Int64)
+		if !ok || number.IsNull() || number.IsUnknown() {
+			diagnostics.AddAttributeError(valuePath.AtMapKey(key), invalidTerraformInt64MapSummary, invalidTerraformInt64MapDetail)
+		}
+	}
+	if diagnostics.HasError() {
+		return nil, state, diagnostics
+	}
+	result := make(map[string]int64, len(keys))
+	for _, key := range keys {
+		if canceled := canceledCollectionDiagnostics(ctx, valuePath); canceled.HasError() {
+			return nil, state, canceled
+		}
+		result[key] = value.Elements()[key].(types.Int64).ValueInt64()
+	}
+	if canceled := canceledCollectionDiagnostics(ctx, valuePath); canceled.HasError() {
+		return nil, state, canceled
+	}
+	return result, state, nil
+}
+
+func strictTerraformFloat64Map(ctx context.Context, value types.Map, valuePath path.Path) (map[string]float64, collectionValueState, diag.Diagnostics) {
+	state := mapCollectionState(value)
+	if diagnostics := canceledCollectionDiagnostics(ctx, valuePath); diagnostics.HasError() {
+		return nil, state, diagnostics
+	}
+	if value.IsNull() || value.IsUnknown() {
+		return nil, state, nil
+	}
+	var diagnostics diag.Diagnostics
+	if !value.ElementType(ctx).Equal(types.Float64Type) {
+		diagnostics.AddAttributeError(valuePath, invalidTerraformFloat64MapSummary, invalidTerraformFloat64MapDetail)
+		return nil, state, diagnostics
+	}
+	keys := sortedAttributeKeys(value.Elements())
+	for _, key := range keys {
+		if canceled := canceledCollectionDiagnostics(ctx, valuePath); canceled.HasError() {
+			return nil, state, canceled
+		}
+		number, ok := value.Elements()[key].(types.Float64)
+		if !ok || number.IsNull() || number.IsUnknown() {
+			diagnostics.AddAttributeError(valuePath.AtMapKey(key), invalidTerraformFloat64MapSummary, invalidTerraformFloat64MapDetail)
+		}
+	}
+	if diagnostics.HasError() {
+		return nil, state, diagnostics
+	}
+	result := make(map[string]float64, len(keys))
+	for _, key := range keys {
+		if canceled := canceledCollectionDiagnostics(ctx, valuePath); canceled.HasError() {
+			return nil, state, canceled
+		}
+		result[key] = value.Elements()[key].(types.Float64).ValueFloat64()
+	}
+	if canceled := canceledCollectionDiagnostics(ctx, valuePath); canceled.HasError() {
+		return nil, state, canceled
+	}
+	return result, state, nil
+}
+
+// strictTerraformStringListMapList converts list(map(list(string))) values in
+// two passes. Map keys and element contents are never included in diagnostics.
+func strictTerraformStringListMapList(ctx context.Context, value types.List, valuePath path.Path) ([]map[string][]string, collectionValueState, diag.Diagnostics) {
+	state := listCollectionState(value)
+	if diagnostics := canceledCollectionDiagnostics(ctx, valuePath); diagnostics.HasError() {
+		return nil, state, diagnostics
+	}
+	if value.IsNull() || value.IsUnknown() {
+		return nil, state, nil
+	}
+	wantType := types.MapType{ElemType: types.ListType{ElemType: types.StringType}}
+	var diagnostics diag.Diagnostics
+	if !value.ElementType(ctx).Equal(wantType) {
+		diagnostics.AddAttributeError(valuePath, invalidTerraformSecuritySummary, invalidTerraformSecurityDetail)
+		return nil, state, diagnostics
+	}
+	for index, raw := range value.Elements() {
+		itemPath := valuePath.AtListIndex(index)
+		mapping, ok := raw.(types.Map)
+		if !ok || mapping.IsNull() || mapping.IsUnknown() || !mapping.ElementType(ctx).Equal(types.ListType{ElemType: types.StringType}) {
+			diagnostics.AddAttributeError(itemPath, invalidTerraformSecuritySummary, invalidTerraformSecurityDetail)
+			continue
+		}
+		for _, key := range sortedAttributeKeys(mapping.Elements()) {
+			scopes, ok := mapping.Elements()[key].(types.List)
+			if !ok || scopes.IsNull() || scopes.IsUnknown() || !scopes.ElementType(ctx).Equal(types.StringType) {
+				diagnostics.AddAttributeError(itemPath, invalidTerraformSecuritySummary, invalidTerraformSecurityDetail)
+				continue
+			}
+			for _, scope := range scopes.Elements() {
+				stringValue, ok := scope.(types.String)
+				if !ok || stringValue.IsNull() || stringValue.IsUnknown() {
+					diagnostics.AddAttributeError(itemPath, invalidTerraformSecuritySummary, invalidTerraformSecurityDetail)
+				}
+			}
+		}
+	}
+	if diagnostics.HasError() {
+		return nil, state, diagnostics
+	}
+	result := make([]map[string][]string, len(value.Elements()))
+	for index, raw := range value.Elements() {
+		if canceled := canceledCollectionDiagnostics(ctx, valuePath); canceled.HasError() {
+			return nil, state, canceled
+		}
+		mapping := raw.(types.Map)
+		item := make(map[string][]string, len(mapping.Elements()))
+		for _, key := range sortedAttributeKeys(mapping.Elements()) {
+			scopes := mapping.Elements()[key].(types.List)
+			converted := make([]string, len(scopes.Elements()))
+			for scopeIndex, scope := range scopes.Elements() {
+				converted[scopeIndex] = scope.(types.String).ValueString()
+			}
+			item[key] = converted
+		}
+		result[index] = item
+	}
+	if canceled := canceledCollectionDiagnostics(ctx, valuePath); canceled.HasError() {
+		return nil, state, canceled
+	}
+	return result, state, nil
 }
 
 // strictAPIStringList projects one API object field to Terraform while keeping

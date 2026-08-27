@@ -155,6 +155,31 @@ func TestMigratedCollectionLifecycleRejectsUnknownElementsBeforeHTTPProtocol(t *
 			config: map[string]interface{}{"access_group_name": "group", "access_model_names": unknownList},
 			prior:  map[string]interface{}{"id": "group-1", "access_group_id": "group-1", "access_group_name": "old", "access_model_names": []tftypes.Value{tftypes.NewValue(tftypes.String, "old")}},
 		},
+		{
+			name: "key", typeName: "litellm_key",
+			config: map[string]interface{}{"key": "stage3-key", "models": unknownList},
+			prior:  map[string]interface{}{"id": hashKeyForID("stage3-key"), "key": "stage3-key", "models": []tftypes.Value{tftypes.NewValue(tftypes.String, "old")}},
+		},
+		{
+			name: "model", typeName: "litellm_model",
+			config: map[string]interface{}{
+				"model_name": "stage3-model", "custom_llm_provider": "openai", "base_model": "gpt-stage3", "access_groups": unknownList,
+			},
+			prior: map[string]interface{}{
+				"id": "model-stage3", "model_name": "stage3-model", "custom_llm_provider": "openai", "base_model": "gpt-stage3",
+				"access_groups": []tftypes.Value{tftypes.NewValue(tftypes.String, "old")},
+			},
+		},
+		{
+			// Agent Update normally performs hydration and stable-base GETs before
+			// PATCH. The malformed sensitive map must stop all of those endpoints.
+			name: "agent multi-endpoint update", typeName: "litellm_agent",
+			config: map[string]interface{}{"agent_name": "stage3-agent", "static_headers": unknownMap},
+			prior: map[string]interface{}{
+				"id": "agent-stage3", "agent_name": "stage3-agent",
+				"static_headers": map[string]tftypes.Value{"old": tftypes.NewValue(tftypes.String, "value")},
+			},
+		},
 	}
 
 	for _, test := range tests {

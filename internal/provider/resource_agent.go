@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -396,6 +397,11 @@ func (r *AgentResource) Create(ctx context.Context, req resource.CreateRequest, 
 	if planned.LiteLLMParamsJSON.IsUnknown() {
 		planned.LiteLLMParamsJSON = config.LiteLLMParamsJSON
 	}
+	resp.Diagnostics.Append(validateAgentRequestCollections(ctx, planned)...)
+	resp.Diagnostics.Append(validateAgentConfiguredParams(planned)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	agentReq, err := r.buildAgentRequest(&planned)
 	if err != nil {
 		resp.Diagnostics.AddError("Invalid Agent Request", "The agent request could not be converted to the LiteLLM v1.98 wire shape.")
@@ -527,6 +533,14 @@ func (r *AgentResource) Update(ctx context.Context, req resource.UpdateRequest, 
 	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
 	bundle, ownershipDiags := readAgentOwnershipBundle(ctx, req.Private)
 	resp.Diagnostics.Append(ownershipDiags...)
+	if resp.Diagnostics.HasError() {
+		resp.Private = req.Private
+		resp.State = req.State
+		return
+	}
+	resp.Diagnostics.Append(validateAgentRequestCollections(ctx, planned)...)
+	resp.Diagnostics.Append(validateAgentRequestCollections(ctx, state)...)
+	resp.Diagnostics.Append(validateAgentConfiguredParams(config)...)
 	if resp.Diagnostics.HasError() {
 		resp.Private = req.Private
 		resp.State = req.State
@@ -903,7 +917,143 @@ func (r *AgentResource) hydrateAgentUpdateFieldsWithOwnership(ctx context.Contex
 
 // --- Build request ---
 
+type agentRequestCollections struct {
+	params              map[string]string
+	staticHeaders       map[string]string
+	extraHeaders        []string
+	defaultInputModes   []string
+	defaultOutputModes  []string
+	skillLists          map[int]map[string][]string
+	skillSecurity       map[int][]map[string][]string
+	permissionLists     map[string][]string
+	toolPermissionTexts map[string]string
+}
+
+func convertAgentRequestCollections(ctx context.Context, data AgentResourceModel) (agentRequestCollections, diag.Diagnostics) {
+	result := agentRequestCollections{
+		skillLists:      map[int]map[string][]string{},
+		skillSecurity:   map[int][]map[string][]string{},
+		permissionLists: map[string][]string{},
+	}
+	var diagnostics diag.Diagnostics
+	if canceled := canceledCollectionDiagnostics(ctx, path.Root("litellm_params")); canceled.HasError() {
+		return result, canceled
+	}
+	appendMap := func(target *map[string]string, value types.Map, valuePath path.Path, sensitive bool) {
+		converted, _, convertedDiagnostics := strictTerraformStringMap(ctx, value, valuePath, sensitive)
+		diagnostics.Append(convertedDiagnostics...)
+		*target = converted
+	}
+	appendList := func(target *[]string, value types.List, valuePath path.Path) {
+		converted, _, convertedDiagnostics := strictTerraformStringList(ctx, value, valuePath)
+		diagnostics.Append(convertedDiagnostics...)
+		*target = converted
+	}
+	appendMap(&result.params, data.LiteLLMParams, path.Root("litellm_params"), true)
+	appendMap(&result.staticHeaders, data.StaticHeaders, path.Root("static_headers"), true)
+	appendList(&result.extraHeaders, data.ExtraHeaders, path.Root("extra_headers"))
+	if data.AgentCard != nil {
+		cardPath := path.Root("agent_card")
+		appendList(&result.defaultInputModes, data.AgentCard.DefaultInputModes, cardPath.AtName("default_input_modes"))
+		appendList(&result.defaultOutputModes, data.AgentCard.DefaultOutputModes, cardPath.AtName("default_output_modes"))
+		for index, skill := range data.AgentCard.Skills {
+			skillPath := cardPath.AtName("skills").AtListIndex(index)
+			result.skillLists[index] = map[string][]string{}
+			for _, item := range []struct {
+				name  string
+				value types.List
+			}{{"tags", skill.Tags}, {"examples", skill.Examples}, {"input_modes", skill.InputModes}, {"output_modes", skill.OutputModes}} {
+				converted, _, convertedDiagnostics := strictTerraformStringList(ctx, item.value, skillPath.AtName(item.name))
+				diagnostics.Append(convertedDiagnostics...)
+				result.skillLists[index][item.name] = converted
+			}
+			security, _, convertedDiagnostics := strictTerraformStringListMapList(ctx, skill.Security, skillPath.AtName("security"))
+			diagnostics.Append(convertedDiagnostics...)
+			result.skillSecurity[index] = security
+		}
+	}
+	if data.ObjectPermission != nil {
+		permissionPath := path.Root("object_permission")
+		for _, item := range []struct {
+			name  string
+			value types.List
+		}{{"mcp_servers", data.ObjectPermission.MCPServers}, {"mcp_access_groups", data.ObjectPermission.MCPAccessGroups}, {"models", data.ObjectPermission.Models}, {"agents", data.ObjectPermission.Agents}} {
+			converted, _, convertedDiagnostics := strictTerraformStringList(ctx, item.value, permissionPath.AtName(item.name))
+			diagnostics.Append(convertedDiagnostics...)
+			result.permissionLists[item.name] = converted
+		}
+		toolTexts, _, toolDiagnostics := strictTerraformStringMap(ctx, data.ObjectPermission.MCPToolPermissions, permissionPath.AtName("mcp_tool_permissions"), true)
+		diagnostics.Append(toolDiagnostics...)
+		result.toolPermissionTexts = toolTexts
+		if !toolDiagnostics.HasError() && result.toolPermissionTexts != nil {
+			for _, encoded := range result.toolPermissionTexts {
+				if _, err := decodeAgentMCPToolArray(encoded); err != nil {
+					diagnostics.AddAttributeError(permissionPath.AtName("mcp_tool_permissions"), "Invalid MCP Tool Permissions", "Each permission must be a JSON array containing only known string values. No collection value was converted.")
+					break
+				}
+			}
+		}
+	}
+	if diagnostics.HasError() {
+		return agentRequestCollections{}, diagnostics
+	}
+	return result, diagnostics
+}
+
+func validateAgentConfiguredParams(data AgentResourceModel) diag.Diagnostics {
+	var diagnostics diag.Diagnostics
+	if _, _, err := configuredAgentParams(data.LiteLLMParams, data.LiteLLMParamsJSON); err != nil {
+		// Both parameter surfaces are sensitive. Root this at the legacy map so
+		// neither an overlapping key nor either value can enter the path/detail.
+		diagnostics.AddAttributeError(path.Root("litellm_params"), "Invalid Agent Parameter Conversion", "The configured agent parameters could not be converted without changing their types. No request was sent.")
+	}
+	return diagnostics
+}
+
+func validateAgentRequestCollections(ctx context.Context, data AgentResourceModel) diag.Diagnostics {
+	_, diagnostics := convertAgentRequestCollections(ctx, data)
+	invalidNested := func(valuePath path.Path, summary, detail string) {
+		diagnostics.AddAttributeError(valuePath, summary, detail)
+	}
+	if data.AgentCard == nil {
+		return diagnostics
+	}
+	cardPath := path.Root("agent_card")
+	for index, skill := range data.AgentCard.Skills {
+		skillPath := cardPath.AtName("skills").AtListIndex(index)
+		if !skill.Security.IsNull() && !skill.Security.IsUnknown() && !skill.SecurityJSON.IsNull() && !skill.SecurityJSON.IsUnknown() {
+			invalidNested(skillPath.AtName("security"), "Conflicting Agent Security", "Only one security representation may be configured. No request was sent.")
+		}
+		if !skill.SecurityJSON.IsNull() && !skill.SecurityJSON.IsUnknown() {
+			if _, err := decodeAgentSecurityJSON(skill.SecurityJSON.ValueString()); err != nil {
+				invalidNested(skillPath.AtName("security_json"), "Invalid Agent Security", "The configured security JSON could not be converted to an ordered security collection. No request was sent.")
+			}
+		}
+	}
+	for index, signature := range data.AgentCard.Signatures {
+		signaturePath := cardPath.AtName("signatures").AtListIndex(index)
+		if !signature.Header.IsNull() && !signature.Header.IsUnknown() && !signature.HeaderJSON.IsNull() && !signature.HeaderJSON.IsUnknown() {
+			invalidNested(signaturePath.AtName("header"), "Conflicting Agent Signature Header", "Only one signature header representation may be configured. No request was sent.")
+		}
+		if !signature.Header.IsNull() && !signature.Header.IsUnknown() {
+			if _, err := decodeAgentJSONObject(signature.Header.ValueString()); err != nil {
+				invalidNested(signaturePath.AtName("header"), "Invalid Agent Signature Header", "The configured signature header could not be converted to an object. No request was sent.")
+			}
+		}
+		if !signature.HeaderJSON.IsNull() && !signature.HeaderJSON.IsUnknown() {
+			if _, err := decodeAgentNullOrObject(signature.HeaderJSON.ValueString()); err != nil {
+				invalidNested(signaturePath.AtName("header_json"), "Invalid Agent Signature Header", "The configured signature header JSON could not be converted to null or an object. No request was sent.")
+			}
+		}
+	}
+	return diagnostics
+}
+
 func (r *AgentResource) buildAgentRequest(data *AgentResourceModel) (map[string]interface{}, error) {
+	collections, diagnostics := convertAgentRequestCollections(context.Background(), *data)
+	if diagnostics.HasError() {
+		return nil, fmt.Errorf("agent request collection conversion failed")
+	}
 	if err := validateAgentModelSkillIdentities(*data); err != nil {
 		return nil, err
 	}
@@ -939,10 +1089,10 @@ func (r *AgentResource) buildAgentRequest(data *AgentResourceModel) (map[string]
 			card["supportsAuthenticatedExtendedCard"] = data.AgentCard.SupportsAuthenticatedExtendedCard.ValueBool()
 		}
 		if !data.AgentCard.DefaultInputModes.IsNull() && !data.AgentCard.DefaultInputModes.IsUnknown() {
-			card["defaultInputModes"] = listToStringSlice(data.AgentCard.DefaultInputModes)
+			card["defaultInputModes"] = collections.defaultInputModes
 		}
 		if !data.AgentCard.DefaultOutputModes.IsNull() && !data.AgentCard.DefaultOutputModes.IsUnknown() {
-			card["defaultOutputModes"] = listToStringSlice(data.AgentCard.DefaultOutputModes)
+			card["defaultOutputModes"] = collections.defaultOutputModes
 		}
 
 		// Capabilities
@@ -1008,7 +1158,7 @@ func (r *AgentResource) buildAgentRequest(data *AgentResourceModel) (map[string]
 		// omission leaves the remote list untouched.
 		if data.AgentCard.Skills != nil {
 			skills := make([]map[string]interface{}, 0, len(data.AgentCard.Skills))
-			for _, s := range data.AgentCard.Skills {
+			for skillIndex, s := range data.AgentCard.Skills {
 				skill := map[string]interface{}{
 					"id":   s.ID.ValueString(),
 					"name": s.Name.ValueString(),
@@ -1017,23 +1167,19 @@ func (r *AgentResource) buildAgentRequest(data *AgentResourceModel) (map[string]
 					skill["description"] = s.Description.ValueString()
 				}
 				if !s.Tags.IsNull() && !s.Tags.IsUnknown() {
-					skill["tags"] = listToStringSlice(s.Tags)
+					skill["tags"] = collections.skillLists[skillIndex]["tags"]
 				}
 				if !s.Examples.IsNull() && !s.Examples.IsUnknown() {
-					skill["examples"] = listToStringSlice(s.Examples)
+					skill["examples"] = collections.skillLists[skillIndex]["examples"]
 				}
 				if !s.InputModes.IsNull() && !s.InputModes.IsUnknown() {
-					skill["inputModes"] = listToStringSlice(s.InputModes)
+					skill["inputModes"] = collections.skillLists[skillIndex]["input_modes"]
 				}
 				if !s.OutputModes.IsNull() && !s.OutputModes.IsUnknown() {
-					skill["outputModes"] = listToStringSlice(s.OutputModes)
+					skill["outputModes"] = collections.skillLists[skillIndex]["output_modes"]
 				}
 				if !s.Security.IsNull() && !s.Security.IsUnknown() {
-					security, err := decodeAgentSecurity(s.Security)
-					if err != nil {
-						return nil, err
-					}
-					skill["security"] = security
+					skill["security"] = collections.skillSecurity[skillIndex]
 				}
 				if !s.SecurityJSON.IsNull() && !s.SecurityJSON.IsUnknown() {
 					security, err := decodeAgentSecurityJSON(s.SecurityJSON.ValueString())
@@ -1067,16 +1213,16 @@ func (r *AgentResource) buildAgentRequest(data *AgentResourceModel) (map[string]
 	if data.ObjectPermission != nil {
 		perm := map[string]interface{}{}
 		if !data.ObjectPermission.MCPServers.IsNull() && !data.ObjectPermission.MCPServers.IsUnknown() {
-			perm["mcp_servers"] = listToStringSlice(data.ObjectPermission.MCPServers)
+			perm["mcp_servers"] = collections.permissionLists["mcp_servers"]
 		}
 		if !data.ObjectPermission.MCPAccessGroups.IsNull() && !data.ObjectPermission.MCPAccessGroups.IsUnknown() {
-			perm["mcp_access_groups"] = listToStringSlice(data.ObjectPermission.MCPAccessGroups)
+			perm["mcp_access_groups"] = collections.permissionLists["mcp_access_groups"]
 		}
 		if !data.ObjectPermission.Models.IsNull() && !data.ObjectPermission.Models.IsUnknown() {
-			perm["models"] = listToStringSlice(data.ObjectPermission.Models)
+			perm["models"] = collections.permissionLists["models"]
 		}
 		if !data.ObjectPermission.Agents.IsNull() && !data.ObjectPermission.Agents.IsUnknown() {
-			perm["agents"] = listToStringSlice(data.ObjectPermission.Agents)
+			perm["agents"] = collections.permissionLists["agents"]
 		}
 		if !data.ObjectPermission.MCPToolPermissions.IsNull() && !data.ObjectPermission.MCPToolPermissions.IsUnknown() {
 			toolPerms, err := decodeConfiguredAgentMCPToolPermissions(data.ObjectPermission.MCPToolPermissions)
@@ -1108,18 +1254,16 @@ func (r *AgentResource) buildAgentRequest(data *AgentResourceModel) (map[string]
 
 	// Headers
 	if !data.StaticHeaders.IsNull() && !data.StaticHeaders.IsUnknown() {
-		headers := map[string]interface{}{}
-		for k, v := range data.StaticHeaders.Elements() {
-			if sv, ok := v.(types.String); ok {
-				headers[k] = sv.ValueString()
+		if len(collections.staticHeaders) > 0 {
+			headers := make(map[string]interface{}, len(collections.staticHeaders))
+			for key, value := range collections.staticHeaders {
+				headers[key] = value
 			}
-		}
-		if len(headers) > 0 {
 			req["static_headers"] = headers
 		}
 	}
 	if !data.ExtraHeaders.IsNull() && !data.ExtraHeaders.IsUnknown() {
-		req["extra_headers"] = listToStringSlice(data.ExtraHeaders)
+		req["extra_headers"] = collections.extraHeaders
 	}
 
 	return req, nil

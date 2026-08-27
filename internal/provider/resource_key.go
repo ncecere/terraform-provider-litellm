@@ -16,6 +16,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework-validators/resourcevalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -420,16 +421,19 @@ func (r *KeyResource) Create(ctx context.Context, req resource.CreateRequest, re
 		return
 	}
 
+	keyReq, conversionDiagnostics := r.buildKeyRequest(ctx, &data)
+	resp.Diagnostics.Append(conversionDiagnostics...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// Invitation validation can issue a recipient lookup. Complete every local
+	// collection conversion before that first HTTP preflight request.
 	if err := r.validateKeyInviteRecipient(ctx, &data, sendInviteEmail); err != nil {
 		resp.Diagnostics.AddError("Invalid Key Invitation", err.Error())
 		return
 	}
 
-	keyReq, err := r.buildKeyRequest(ctx, &data)
-	if err != nil {
-		resp.Diagnostics.AddError("Invalid Key Request", err.Error())
-		return
-	}
 	if writeOnlyMode {
 		keyReq["key"] = writeOnlyKey.ValueString()
 	}
@@ -525,9 +529,9 @@ func (r *KeyResource) Update(ctx context.Context, req resource.UpdateRequest, re
 		resp.Diagnostics.AddError("Key Identity Error", fmt.Sprintf("Unable to identify key for update: %s", err))
 		return
 	}
-	updateReq, err := r.buildKeyRequest(ctx, &data)
-	if err != nil {
-		resp.Diagnostics.AddError("Invalid Key Request", err.Error())
+	updateReq, conversionDiagnostics := r.buildKeyRequest(ctx, &data)
+	resp.Diagnostics.Append(conversionDiagnostics...)
+	if resp.Diagnostics.HasError() {
 		return
 	}
 	updateReq["key"] = keyIdentifier
@@ -676,7 +680,42 @@ func (r *KeyResource) UpgradeState(ctx context.Context) map[int64]resource.State
 	}
 }
 
-func (r *KeyResource) buildKeyRequest(ctx context.Context, data *KeyResourceModel) (map[string]interface{}, error) {
+func (r *KeyResource) buildKeyRequest(ctx context.Context, data *KeyResourceModel) (map[string]interface{}, diag.Diagnostics) {
+	var diagnostics diag.Diagnostics
+	models, modelsState, converted := strictTerraformStringList(ctx, data.Models, path.Root("models"))
+	diagnostics.Append(converted...)
+	allowedRoutes, _, converted := strictTerraformStringList(ctx, data.AllowedRoutes, path.Root("allowed_routes"))
+	diagnostics.Append(converted...)
+	allowedPassthroughRoutes, _, converted := strictTerraformStringList(ctx, data.AllowedPassthroughRoutes, path.Root("allowed_passthrough_routes"))
+	diagnostics.Append(converted...)
+	allowedCacheControls, _, converted := strictTerraformStringList(ctx, data.AllowedCacheControls, path.Root("allowed_cache_controls"))
+	diagnostics.Append(converted...)
+	guardrails, _, converted := strictTerraformStringList(ctx, data.Guardrails, path.Root("guardrails"))
+	diagnostics.Append(converted...)
+	prompts, _, converted := strictTerraformStringList(ctx, data.Prompts, path.Root("prompts"))
+	diagnostics.Append(converted...)
+	enforcedParams, _, converted := strictTerraformStringList(ctx, data.EnforcedParams, path.Root("enforced_params"))
+	diagnostics.Append(converted...)
+	tags, _, converted := strictTerraformStringList(ctx, data.Tags, path.Root("tags"))
+	diagnostics.Append(converted...)
+	metadata, _, converted := strictTerraformStringMap(ctx, data.Metadata, path.Root("metadata"), true)
+	diagnostics.Append(converted...)
+	aliases, _, converted := strictTerraformStringMap(ctx, data.Aliases, path.Root("aliases"), false)
+	diagnostics.Append(converted...)
+	config, _, converted := strictTerraformStringMap(ctx, data.Config, path.Root("config"), false)
+	diagnostics.Append(converted...)
+	permissions, _, converted := strictTerraformStringMap(ctx, data.Permissions, path.Root("permissions"), false)
+	diagnostics.Append(converted...)
+	modelMaxBudget, _, converted := strictTerraformFloat64Map(ctx, data.ModelMaxBudget, path.Root("model_max_budget"))
+	diagnostics.Append(converted...)
+	modelRPMLimit, _, converted := strictTerraformInt64Map(ctx, data.ModelRPMLimit, path.Root("model_rpm_limit"))
+	diagnostics.Append(converted...)
+	modelTPMLimit, _, converted := strictTerraformInt64Map(ctx, data.ModelTPMLimit, path.Root("model_tpm_limit"))
+	diagnostics.Append(converted...)
+	if diagnostics.HasError() {
+		return nil, diagnostics
+	}
+
 	keyReq := make(map[string]interface{})
 
 	// String fields - check IsNull, IsUnknown, and empty string
@@ -736,144 +775,68 @@ func (r *KeyResource) buildKeyRequest(ctx context.Context, data *KeyResourceMode
 		keyReq["blocked"] = data.Blocked.ValueBool()
 	}
 
-	// Models list - special handling for team models
-	if !data.Models.IsNull() && !data.Models.IsUnknown() {
-		var models []string
-		data.Models.ElementsAs(ctx, &models, false)
-		if len(models) == 0 && !data.TeamID.IsNull() && !data.TeamID.IsUnknown() && data.TeamID.ValueString() != "" {
-			models = []string{"all-team-models"}
-		}
-		if len(models) > 0 {
-			keyReq["models"] = models
-		}
-	} else if !data.TeamID.IsNull() && !data.TeamID.IsUnknown() && data.TeamID.ValueString() != "" {
+	// Models list - special handling for team models. A failed conversion has
+	// already returned, so it can never activate the all-team sentinel.
+	teamConfigured := !data.TeamID.IsNull() && !data.TeamID.IsUnknown() && data.TeamID.ValueString() != ""
+	if modelsState == collectionValueEmpty && teamConfigured {
+		models = []string{"all-team-models"}
+	}
+	if len(models) > 0 {
+		keyReq["models"] = models
+	} else if (modelsState == collectionValueNull || modelsState == collectionValueUnknown) && teamConfigured {
 		keyReq["models"] = []string{"all-team-models"}
 	}
 
-	// List fields - check IsNull, IsUnknown, and len > 0
-	if !data.AllowedRoutes.IsNull() && !data.AllowedRoutes.IsUnknown() {
-		var routes []string
-		data.AllowedRoutes.ElementsAs(ctx, &routes, false)
-		if len(routes) > 0 {
-			keyReq["allowed_routes"] = routes
+	for _, item := range []struct {
+		name  string
+		value []string
+	}{
+		{"allowed_routes", allowedRoutes},
+		{"allowed_passthrough_routes", allowedPassthroughRoutes},
+		{"allowed_cache_controls", allowedCacheControls},
+		{"guardrails", guardrails},
+		{"prompts", prompts},
+		{"enforced_params", enforcedParams},
+		{"tags", tags},
+	} {
+		if len(item.value) > 0 {
+			keyReq[item.name] = item.value
 		}
 	}
 
-	if !data.AllowedPassthroughRoutes.IsNull() && !data.AllowedPassthroughRoutes.IsUnknown() {
-		var routes []string
-		data.AllowedPassthroughRoutes.ElementsAs(ctx, &routes, false)
-		if len(routes) > 0 {
-			keyReq["allowed_passthrough_routes"] = routes
+	if len(metadata) > 0 {
+		// Dedicated per-model attributes own these reserved keys.
+		metadataPayload := convertMetadataToNative(metadata)
+		delete(metadataPayload, "model_rpm_limit")
+		delete(metadataPayload, "model_tpm_limit")
+		if len(metadataPayload) > 0 {
+			keyReq["metadata"] = metadataPayload
 		}
 	}
-
-	if !data.AllowedCacheControls.IsNull() && !data.AllowedCacheControls.IsUnknown() {
-		var cacheControls []string
-		data.AllowedCacheControls.ElementsAs(ctx, &cacheControls, false)
-		if len(cacheControls) > 0 {
-			keyReq["allowed_cache_controls"] = cacheControls
-		}
+	if len(aliases) > 0 {
+		keyReq["aliases"] = aliases
 	}
-
-	if !data.Guardrails.IsNull() && !data.Guardrails.IsUnknown() {
-		var guardrails []string
-		data.Guardrails.ElementsAs(ctx, &guardrails, false)
-		if len(guardrails) > 0 {
-			keyReq["guardrails"] = guardrails
-		}
+	if len(config) > 0 {
+		keyReq["config"] = config
 	}
-
-	if !data.Prompts.IsNull() && !data.Prompts.IsUnknown() {
-		var prompts []string
-		data.Prompts.ElementsAs(ctx, &prompts, false)
-		if len(prompts) > 0 {
-			keyReq["prompts"] = prompts
-		}
+	if len(permissions) > 0 {
+		keyReq["permissions"] = permissions
 	}
-
-	if !data.EnforcedParams.IsNull() && !data.EnforcedParams.IsUnknown() {
-		var enforcedParams []string
-		data.EnforcedParams.ElementsAs(ctx, &enforcedParams, false)
-		if len(enforcedParams) > 0 {
-			keyReq["enforced_params"] = enforcedParams
-		}
-	}
-
-	if !data.Tags.IsNull() && !data.Tags.IsUnknown() {
-		var tags []string
-		data.Tags.ElementsAs(ctx, &tags, false)
-		if len(tags) > 0 {
-			keyReq["tags"] = tags
-		}
-	}
-
-	// Map fields - check IsNull, IsUnknown, and len > 0
-	if !data.Metadata.IsNull() && !data.Metadata.IsUnknown() {
-		var metadata map[string]string
-		data.Metadata.ElementsAs(ctx, &metadata, false)
-		if len(metadata) > 0 {
-			// Dedicated per-model attributes own these reserved keys.
-			metadataPayload := convertMetadataToNative(metadata)
-			delete(metadataPayload, "model_rpm_limit")
-			delete(metadataPayload, "model_tpm_limit")
-			if len(metadataPayload) > 0 {
-				keyReq["metadata"] = metadataPayload
-			}
-		}
-	}
-
-	if !data.Aliases.IsNull() && !data.Aliases.IsUnknown() {
-		var aliases map[string]string
-		data.Aliases.ElementsAs(ctx, &aliases, false)
-		if len(aliases) > 0 {
-			keyReq["aliases"] = aliases
-		}
-	}
-
-	if !data.Config.IsNull() && !data.Config.IsUnknown() {
-		var config map[string]string
-		data.Config.ElementsAs(ctx, &config, false)
-		if len(config) > 0 {
-			keyReq["config"] = config
-		}
-	}
-
-	if !data.Permissions.IsNull() && !data.Permissions.IsUnknown() {
-		var permissions map[string]string
-		data.Permissions.ElementsAs(ctx, &permissions, false)
-		if len(permissions) > 0 {
-			keyReq["permissions"] = permissions
-		}
-	}
-
-	if !data.ModelMaxBudget.IsNull() && !data.ModelMaxBudget.IsUnknown() {
-		modelMaxBudget, err := float64RequestMap(data.ModelMaxBudget, "model_max_budget")
-		if err != nil {
-			return nil, err
-		}
+	if mapCollectionState(data.ModelMaxBudget) == collectionValueEmpty || mapCollectionState(data.ModelMaxBudget) == collectionValuePopulated {
 		keyReq["model_max_budget"] = modelMaxBudget
 	}
-
-	if !data.ModelRPMLimit.IsNull() && !data.ModelRPMLimit.IsUnknown() {
-		modelRPMLimit, err := int64RequestMap(data.ModelRPMLimit, "model_rpm_limit")
-		if err != nil {
-			return nil, err
-		}
+	if mapCollectionState(data.ModelRPMLimit) == collectionValueEmpty || mapCollectionState(data.ModelRPMLimit) == collectionValuePopulated {
 		keyReq["model_rpm_limit"] = modelRPMLimit
 	}
-
-	if !data.ModelTPMLimit.IsNull() && !data.ModelTPMLimit.IsUnknown() {
-		modelTPMLimit, err := int64RequestMap(data.ModelTPMLimit, "model_tpm_limit")
-		if err != nil {
-			return nil, err
-		}
+	if mapCollectionState(data.ModelTPMLimit) == collectionValueEmpty || mapCollectionState(data.ModelTPMLimit) == collectionValuePopulated {
 		keyReq["model_tpm_limit"] = modelTPMLimit
 	}
 
 	if !data.RouterSettings.IsNull() && !data.RouterSettings.IsUnknown() {
 		routerSettings, err := keyRouterSettingsPayload(data.RouterSettings)
 		if err != nil {
-			return nil, err
+			diagnostics.AddAttributeError(path.Root("router_settings"), "Invalid Router Settings", "The router settings could not be converted. No request was sent.")
+			return nil, diagnostics
 		}
 		keyReq["router_settings"] = routerSettings
 	}
@@ -892,7 +855,7 @@ func (r *KeyResource) buildKeyRequest(ctx context.Context, data *KeyResourceMode
 		}
 	}
 
-	return keyReq, nil
+	return keyReq, diagnostics
 }
 
 func stringMapMatchesAttrValues(current types.Map, observed map[string]attr.Value) bool {

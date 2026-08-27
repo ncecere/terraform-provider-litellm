@@ -15,6 +15,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework-validators/mapvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -570,6 +571,11 @@ func (r *ModelResource) Create(ctx context.Context, req resource.CreateRequest, 
 	}
 	data.AdditionalModelInfoConfigured = types.BoolValue(!configuredModelInfo.IsNull() && !configuredModelInfo.IsUnknown())
 
+	resp.Diagnostics.Append(validateModelRequestCollections(ctx, data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	// Normalise numeric strings in string-map attributes so that planned values
 	// use the same canonical form as their API read-back values.
 	data.AdditionalLiteLLMParams = normalizeAdditionalParams(ctx, data.AdditionalLiteLLMParams)
@@ -703,6 +709,11 @@ func (r *ModelResource) Update(ctx context.Context, req resource.UpdateRequest, 
 	}
 	data.AdditionalModelInfoConfigured = types.BoolValue(!configuredModelInfo.IsNull() && !configuredModelInfo.IsUnknown())
 
+	resp.Diagnostics.Append(validateModelRequestCollections(ctx, data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	// Normalise numeric strings in string-map attributes so that planned values
 	// use the same canonical form as their API read-back values.
 	data.AdditionalLiteLLMParams = normalizeAdditionalParams(ctx, data.AdditionalLiteLLMParams)
@@ -794,7 +805,38 @@ func (r *ModelResource) ImportState(ctx context.Context, req resource.ImportStat
 	}
 }
 
+type modelRequestCollections struct {
+	accessGroups            []string
+	additionalLiteLLMParams map[string]string
+	additionalModelInfo     map[string]string
+}
+
+func convertModelRequestCollections(ctx context.Context, data ModelResourceModel) (modelRequestCollections, diag.Diagnostics) {
+	var result modelRequestCollections
+	var diagnostics diag.Diagnostics
+	var converted diag.Diagnostics
+	result.accessGroups, _, converted = strictTerraformStringList(ctx, data.AccessGroups, path.Root("access_groups"))
+	diagnostics.Append(converted...)
+	result.additionalLiteLLMParams, _, converted = strictTerraformStringMap(ctx, data.AdditionalLiteLLMParams, path.Root("additional_litellm_params"), false)
+	diagnostics.Append(converted...)
+	result.additionalModelInfo, _, converted = strictTerraformStringMap(ctx, data.AdditionalModelInfo, path.Root("additional_model_info"), false)
+	diagnostics.Append(converted...)
+	if diagnostics.HasError() {
+		return modelRequestCollections{}, diagnostics
+	}
+	return result, diagnostics
+}
+
+func validateModelRequestCollections(ctx context.Context, data ModelResourceModel) diag.Diagnostics {
+	_, diagnostics := convertModelRequestCollections(ctx, data)
+	return diagnostics
+}
+
 func (r *ModelResource) createOrUpdateModel(ctx context.Context, data *ModelResourceModel, modelID string, isUpdate bool) error {
+	collections, diagnostics := convertModelRequestCollections(ctx, *data)
+	if diagnostics.HasError() {
+		return fmt.Errorf("model request collection conversion failed")
+	}
 	customLLMProvider := data.CustomLLMProvider.ValueString()
 	baseModel := data.BaseModel.ValueString()
 	modelName := fmt.Sprintf("%s/%s", customLLMProvider, baseModel)
@@ -894,9 +936,7 @@ func (r *ModelResource) createOrUpdateModel(ctx context.Context, data *ModelReso
 	// Values are strings in Terraform but converted to native types (int, float, bool, JSON)
 	// for the API. This allows users to pass any litellm_params not covered by top-level attributes.
 	if !data.AdditionalLiteLLMParams.IsNull() && !data.AdditionalLiteLLMParams.IsUnknown() {
-		elements := make(map[string]string)
-		data.AdditionalLiteLLMParams.ElementsAs(ctx, &elements, false)
-		for key, value := range elements {
+		for key, value := range collections.additionalLiteLLMParams {
 			litellmParams[key] = convertStringValue(value)
 		}
 	}
@@ -921,19 +961,15 @@ func (r *ModelResource) createOrUpdateModel(ctx context.Context, data *ModelReso
 
 	// Add access_groups to model_info if specified
 	if !data.AccessGroups.IsNull() {
-		var accessGroups []string
-		data.AccessGroups.ElementsAs(ctx, &accessGroups, false)
-		if len(accessGroups) > 0 {
-			modelInfo["access_groups"] = accessGroups
+		if len(collections.accessGroups) > 0 {
+			modelInfo["access_groups"] = collections.accessGroups
 		}
 	}
 
 	// Add additional_model_info to the request. Like additional_litellm_params,
 	// values are strings in Terraform but converted to native types for the API.
 	if !data.AdditionalModelInfo.IsNull() && !data.AdditionalModelInfo.IsUnknown() {
-		elements := make(map[string]string)
-		data.AdditionalModelInfo.ElementsAs(ctx, &elements, false)
-		for key, value := range elements {
+		for key, value := range collections.additionalModelInfo {
 			modelInfo[key] = convertStringValue(value)
 		}
 	}
@@ -1944,6 +1980,10 @@ func setModelPatchCost(target map[string]interface{}, key string, planned, prior
 
 // patchModel uses the PATCH /model/{model_id}/update endpoint for partial updates.
 func (r *ModelResource) patchModel(ctx context.Context, data, prior *ModelResourceModel, topThinkingOwned, priorTopThinkingOwned bool) (map[string]interface{}, error) {
+	collections, diagnostics := convertModelRequestCollections(ctx, *data)
+	if diagnostics.HasError() {
+		return nil, fmt.Errorf("model request collection conversion failed")
+	}
 	modelID := data.ID.ValueString()
 	customLLMProvider := data.CustomLLMProvider.ValueString()
 	baseModel := data.BaseModel.ValueString()
@@ -2011,9 +2051,7 @@ func (r *ModelResource) patchModel(ctx context.Context, data, prior *ModelResour
 	// Parameters removed from config will NOT be removed from the API.
 	// To fully remove a parameter, the model must be recreated (e.g. terraform apply -replace=...).
 	if !data.AdditionalLiteLLMParams.IsNull() && !data.AdditionalLiteLLMParams.IsUnknown() {
-		elements := make(map[string]string)
-		data.AdditionalLiteLLMParams.ElementsAs(ctx, &elements, false)
-		for key, value := range elements {
+		for key, value := range collections.additionalLiteLLMParams {
 			litellmParams[key] = convertStringValue(value)
 		}
 	}
@@ -2034,17 +2072,13 @@ func (r *ModelResource) patchModel(ctx context.Context, data, prior *ModelResour
 
 	// Empty access_groups is the endpoint-supported authorization clear.
 	if !data.AccessGroups.IsNull() && !data.AccessGroups.IsUnknown() {
-		var accessGroups []string
-		data.AccessGroups.ElementsAs(ctx, &accessGroups, false)
-		modelInfo["access_groups"] = accessGroups
+		modelInfo["access_groups"] = collections.accessGroups
 	}
 
 	// Add additional_model_info to the request. Like additional_litellm_params,
 	// values are strings in Terraform but converted to native types for the API.
 	if !data.AdditionalModelInfo.IsNull() && !data.AdditionalModelInfo.IsUnknown() {
-		elements := make(map[string]string)
-		data.AdditionalModelInfo.ElementsAs(ctx, &elements, false)
-		for key, value := range elements {
+		for key, value := range collections.additionalModelInfo {
 			modelInfo[key] = convertStringValue(value)
 		}
 	}
@@ -2218,16 +2252,18 @@ func containsMaskedValue(value interface{}) bool {
 // normalizeAdditionalParams returns a new MapValue where every numeric string
 // has been normalised to decimal notation.
 func normalizeAdditionalParams(ctx context.Context, m types.Map) types.Map {
-	if m.IsNull() || m.IsUnknown() {
+	elements, state, diagnostics := strictTerraformStringMap(ctx, m, path.Root("additional_params"), false)
+	if diagnostics.HasError() || state == collectionValueNull || state == collectionValueUnknown {
 		return m
 	}
-	elements := make(map[string]string)
-	m.ElementsAs(ctx, &elements, false)
 	normalised := make(map[string]attr.Value, len(elements))
 	for k, v := range elements {
 		normalised[k] = types.StringValue(normalizeNumericString(v))
 	}
-	result, _ := types.MapValue(types.StringType, normalised)
+	result, constructorDiagnostics := types.MapValue(types.StringType, normalised)
+	if constructorDiagnostics.HasError() {
+		return m
+	}
 	return result
 }
 

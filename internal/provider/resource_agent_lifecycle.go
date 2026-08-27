@@ -1644,6 +1644,14 @@ func (r *AgentResource) buildAgentUpdateRequest(plan, state, config *AgentResour
 	if err != nil {
 		return nil, err
 	}
+	planCollections, diagnostics := convertAgentRequestCollections(context.Background(), *plan)
+	if diagnostics.HasError() {
+		return nil, fmt.Errorf("agent update collection conversion failed")
+	}
+	wireCollections, diagnostics := convertAgentRequestCollections(context.Background(), wirePlan)
+	if diagnostics.HasError() {
+		return nil, fmt.Errorf("agent update collection conversion failed")
+	}
 	sendCard := config.AgentCard != nil
 	if len(includeCard) > 0 {
 		sendCard = includeCard[0]
@@ -1683,18 +1691,16 @@ func (r *AgentResource) buildAgentUpdateRequest(plan, state, config *AgentResour
 		}
 	}
 	if configured[agentFieldStaticHeaders] {
-		headers := map[string]interface{}{}
-		for key, value := range wirePlan.StaticHeaders.Elements() {
-			if stringValue, ok := value.(types.String); ok {
-				headers[key] = stringValue.ValueString()
-			}
+		headers := make(map[string]interface{}, len(wireCollections.staticHeaders))
+		for key, value := range wireCollections.staticHeaders {
+			headers[key] = value
 		}
 		req["static_headers"] = headers
 	} else if cleared(agentFieldStaticHeaders) {
 		req["static_headers"] = map[string]interface{}{}
 	}
 	if configured[agentFieldExtraHeaders] {
-		req["extra_headers"] = listToStringSlice(plan.ExtraHeaders)
+		req["extra_headers"] = planCollections.extraHeaders
 	} else if cleared(agentFieldExtraHeaders) {
 		req["extra_headers"] = []string{}
 	}
@@ -1702,7 +1708,7 @@ func (r *AgentResource) buildAgentUpdateRequest(plan, state, config *AgentResour
 	permission := map[string]interface{}{}
 	addList := func(field, wire string, value types.List) {
 		if configured[field] {
-			permission[wire] = listToStringSlice(value)
+			permission[wire] = planCollections.permissionLists[wire]
 		} else if cleared(field) {
 			permission[wire] = []string{}
 		}
