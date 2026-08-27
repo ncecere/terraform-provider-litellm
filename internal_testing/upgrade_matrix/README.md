@@ -66,7 +66,7 @@ sh internal_testing/upgrade_matrix/run.sh local
 internal_testing/compose.sh down -v
 ```
 
-The runtime-parity gate retains one digest-bound #210 exception from the reviewed integration bases for exactly the reviewed Agent ownership/lifecycle paths and the fallback retained-presence diagnostic classification paths; a different path or patch byte fails, and the exception is inert once the change is in the event base. Repository-owned non-PR workflow jobs execute this lane against a new local backend with all four pinned CLIs. Pull requests and forks run assembly only. Tag releases run all four full lanes against the exact tagged SHA before GPG import, build, or signing; each gate job has read-only contents permission and a wall timeout. There is no workflow-enabled remote mutation lane; adding one requires a separate future gate and reviewed scenario allowlist.
+The runtime-parity gate retains digest-bound exceptions for the reviewed #210 and #217 provider patches from their exact integration bases and exact path sets; a different path or patch byte fails, and each exception is inert once its change is in the event base. Repository-owned non-PR workflow jobs execute this lane against a new local backend with all four pinned CLIs. Pull requests and forks run assembly only. Tag releases run all four full lanes against the exact tagged SHA before GPG import, build, or signing; each gate job has read-only contents permission and a wall timeout. There is no workflow-enabled remote mutation lane; adding one requires a separate future gate and reviewed scenario allowlist.
 
 ## Import ownership
 
