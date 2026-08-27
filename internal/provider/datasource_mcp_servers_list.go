@@ -142,13 +142,6 @@ func (d *MCPServersListDataSource) Configure(ctx context.Context, req datasource
 }
 
 func (d *MCPServersListDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
-	var data MCPServersListDataSourceModel
-
-	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
 	const endpoint = "/v1/mcp/server"
 	result, err := fetchTopLevelListObjects(ctx, d.client, endpoint, "MCP server item")
 	if err != nil {
@@ -156,74 +149,38 @@ func (d *MCPServersListDataSource) Read(ctx context.Context, req datasource.Read
 		return
 	}
 
-	data.ID = types.StringValue("mcp_servers")
-	data.MCPServers = make([]MCPServerListItem, 0, len(result))
+	data := MCPServersListDataSourceModel{
+		ID:         types.StringValue("mcp_servers"),
+		MCPServers: make([]MCPServerListItem, 0, len(result)),
+	}
+	seen := make(map[string]struct{}, len(result))
 	for _, serverMap := range result {
-		serverID, ok := serverMap["server_id"].(string)
-		if !ok || serverID == "" || validateMCPServerResponse(serverMap, serverID) != nil {
-			resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned a malformed MCP server object.")
+		serverID, identityErr := dataSourceRequiredStringAt(serverMap, "server_id")
+		if identityErr != nil || dataSourceListIdentity(seen, serverID.ValueString(), endpoint, "server_id") != nil {
+			resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned a malformed MCP server list.")
 			return
 		}
-		if err := validateMCPServerOptionalResponseFields(
-			serverMap,
-			[]string{"server_name", "alias", "description", "url", "spec_path", "auth_type", "status", "created_at", "updated_at"},
-			[]string{"allow_all_keys"},
-			nil,
-			nil,
-		); err != nil {
-			resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned malformed optional MCP server fields.")
+		server, projectionErr := projectMCPServerDataSource(serverMap, serverID.ValueString())
+		if projectionErr != nil {
+			resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned a malformed MCP server list.")
 			return
 		}
-
-		item := MCPServerListItem{ServerID: types.StringValue(serverID), MCPInfoJSON: types.StringNull()}
-		mcpInfo, presence, err := mcpInfoDocumentFromResponse(serverMap)
-		if err != nil {
-			resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned a malformed non-object MCP info value.")
-			return
-		}
-		if presence == apiValuePresent {
-			canonical, err := canonicalMCPInfoJSONObject(mcpInfo)
-			if err != nil {
-				resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned MCP info that could not be represented safely.")
-				return
-			}
-			item.MCPInfoJSON = types.StringValue(canonical)
-		}
-		if serverName, ok := serverMap["server_name"].(string); ok {
-			item.ServerName = types.StringValue(serverName)
-		}
-		if alias, ok := serverMap["alias"].(string); ok {
-			item.Alias = types.StringValue(alias)
-		}
-		if desc, ok := serverMap["description"].(string); ok {
-			item.Description = types.StringValue(desc)
-		}
-		if remoteURL, ok := serverMap["url"].(string); ok {
-			item.URL = types.StringValue(remoteURL)
-		}
-		if specPath, ok := serverMap["spec_path"].(string); ok {
-			item.SpecPath = types.StringValue(specPath)
-		}
-		if transport, ok := serverMap["transport"].(string); ok {
-			item.Transport = types.StringValue(transport)
-		}
-		if authType, ok := serverMap["auth_type"].(string); ok {
-			item.AuthType = types.StringValue(authType)
-		}
-		if status, ok := serverMap["status"].(string); ok {
-			item.Status = types.StringValue(status)
-		}
-		if allowAllKeys, ok := serverMap["allow_all_keys"].(bool); ok {
-			item.AllowAllKeys = types.BoolValue(allowAllKeys)
-		}
-		if createdAt, ok := serverMap["created_at"].(string); ok {
-			item.CreatedAt = types.StringValue(createdAt)
-		}
-		if updatedAt, ok := serverMap["updated_at"].(string); ok {
-			item.UpdatedAt = types.StringValue(updatedAt)
-		}
-
-		data.MCPServers = append(data.MCPServers, item)
+		data.MCPServers = append(data.MCPServers, MCPServerListItem{
+			ServerID:     server.ServerID,
+			ServerName:   server.ServerName,
+			Alias:        server.Alias,
+			Description:  server.Description,
+			URL:          server.URL,
+			SpecPath:     server.SpecPath,
+			Transport:    server.Transport,
+			SpecVersion:  server.SpecVersion,
+			AuthType:     server.AuthType,
+			MCPInfoJSON:  server.MCPInfoJSON,
+			Status:       server.Status,
+			AllowAllKeys: server.AllowAllKeys,
+			CreatedAt:    server.CreatedAt,
+			UpdatedAt:    server.UpdatedAt,
+		})
 	}
 	sort.SliceStable(data.MCPServers, func(i, j int) bool {
 		return data.MCPServers[i].ServerID.ValueString() < data.MCPServers[j].ServerID.ValueString()

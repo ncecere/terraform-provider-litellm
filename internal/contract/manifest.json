@@ -16,7 +16,7 @@
   "provider_golden": {
     "operation_count": 108,
     "path": "internal/contractapi/testdata/provider-operations.golden.json",
-    "sha256": "bfe9355a278160b7bf16435de2c15213c5916d94875f56bf72b9af14ad05bd20"
+    "sha256": "030602c10584fdbead80a0124f423484cd7a963de09e17e9ec0f5b1a34381fd0"
   },
   "provider_operations": [
     {
@@ -1124,7 +1124,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_team.go",
-          "line": 486
+          "line": 563
         }
       ],
       "method": "POST",
@@ -1140,7 +1140,7 @@
         },
         {
           "file": "internal/provider/resource_team.go",
-          "line": 754
+          "line": 828
         },
         {
           "file": "internal/provider/resource_team_block.go",
@@ -1244,7 +1244,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_team.go",
-          "line": 372
+          "line": 421
         }
       ],
       "method": "POST",
@@ -1260,7 +1260,7 @@
         },
         {
           "file": "internal/provider/resource_team.go",
-          "line": 983
+          "line": 912
         }
       ],
       "method": "GET",
@@ -1274,7 +1274,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_team.go",
-          "line": 462
+          "line": 534
         }
       ],
       "method": "POST",
@@ -1298,11 +1298,11 @@
       "evidence": [
         {
           "file": "internal/provider/resource_team.go",
-          "line": 443
+          "line": 515
         },
         {
           "file": "internal/provider/resource_team.go",
-          "line": 449
+          "line": 521
         }
       ],
       "method": "POST",
@@ -1579,7 +1579,7 @@
       "evidence": [
         {
           "file": "internal/provider/datasource_mcp_servers_list.go",
-          "line": 147
+          "line": 146
         },
         {
           "file": "internal/provider/resource_mcp_server.go",
@@ -1633,11 +1633,15 @@
       "evidence": [
         {
           "file": "internal/provider/datasource_mcp_server.go",
-          "line": 214
+          "line": 220
         },
         {
           "file": "internal/provider/resource_mcp_server.go",
           "line": 1041
+        },
+        {
+          "file": "internal/provider/resource_mcp_server.go",
+          "line": 1045
         }
       ],
       "method": "GET",
