@@ -469,6 +469,32 @@ func checkedStringListValue(ctx context.Context, elements []attr.Value, valuePat
 	return result, nil
 }
 
+func checkedStringSetValue(ctx context.Context, elements []attr.Value, valuePath path.Path) (types.Set, diag.Diagnostics) {
+	if diagnostics := canceledCollectionDiagnostics(ctx, valuePath); diagnostics.HasError() {
+		return types.SetNull(types.StringType), diagnostics
+	}
+	var diagnostics diag.Diagnostics
+	for _, element := range elements {
+		value, ok := element.(types.String)
+		if !ok || value.IsNull() || value.IsUnknown() {
+			// Set element paths contain values, so keep diagnostics at the
+			// collection root to avoid exposing response content.
+			diagnostics.AddAttributeError(valuePath, invalidAPIStringListSummary, invalidAPIStringListDetail)
+		}
+	}
+	if diagnostics.HasError() {
+		return types.SetNull(types.StringType), diagnostics
+	}
+	result, constructorDiagnostics := types.SetValue(types.StringType, elements)
+	if len(constructorDiagnostics) != 0 {
+		return apiStringSetFailureValue(valuePath)
+	}
+	if diagnostics := canceledCollectionDiagnostics(ctx, valuePath); diagnostics.HasError() {
+		return types.SetNull(types.StringType), diagnostics
+	}
+	return result, nil
+}
+
 func checkedStringMapValue(ctx context.Context, elements map[string]attr.Value, valuePath path.Path, sensitive bool) (types.Map, diag.Diagnostics) {
 	if diagnostics := canceledCollectionDiagnostics(ctx, valuePath); diagnostics.HasError() {
 		return types.MapNull(types.StringType), diagnostics
@@ -587,6 +613,12 @@ func apiStringListFailureValue(valuePath path.Path) (types.List, diag.Diagnostic
 	var diagnostics diag.Diagnostics
 	diagnostics.AddAttributeError(valuePath, invalidAPIStringListSummary, invalidAPIStringListDetail)
 	return types.ListNull(types.StringType), diagnostics
+}
+
+func apiStringSetFailureValue(valuePath path.Path) (types.Set, diag.Diagnostics) {
+	var diagnostics diag.Diagnostics
+	diagnostics.AddAttributeError(valuePath, invalidAPIStringListSummary, invalidAPIStringListDetail)
+	return types.SetNull(types.StringType), diagnostics
 }
 
 func apiStringMapFailure(valuePath path.Path, presence apiValuePresence) (types.Map, apiValuePresence, diag.Diagnostics) {

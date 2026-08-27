@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -178,7 +179,7 @@ func projectTeamInfoResponse(ctx context.Context, prior TeamResourceModel, resul
 		return prior, fmt.Errorf("invalid response field team_member_budget_table.tpm_limit: %w", err)
 	}
 
-	models, modelsPresence, err := teamStringListAt(teamInfo, "models")
+	models, modelsPresence, err := teamStringListAt(ctx, teamInfo, "models", path.Root("models"))
 	if err != nil {
 		return prior, err
 	}
@@ -196,7 +197,7 @@ func projectTeamInfoResponse(ctx context.Context, prior TeamResourceModel, resul
 		var value types.List
 		var fieldPresence apiValuePresence
 		if metadataPresence == apiValuePresent {
-			value, fieldPresence, err = teamStringListAt(metadata, field.name)
+			value, fieldPresence, err = teamStringListAt(ctx, metadata, field.name, path.Root("metadata").AtMapKey(field.name))
 		} else {
 			value, fieldPresence = types.ListNull(types.StringType), metadataPresence
 		}
@@ -206,13 +207,13 @@ func projectTeamInfoResponse(ctx context.Context, prior TeamResourceModel, resul
 		*field.target = projectTeamList(field.prior, value, fieldPresence)
 	}
 
-	metadataState, err := projectTeamMetadata(prior.Metadata, metadata, metadataPresence, imported)
+	metadataState, err := projectTeamMetadata(ctx, prior.Metadata, metadata, metadataPresence, imported)
 	if err != nil {
 		return prior, err
 	}
 	next.Metadata = metadataState
 
-	aliases, aliasesPresence, err := teamModelAliases(modelTable, modelTablePresence)
+	aliases, aliasesPresence, err := teamModelAliases(ctx, modelTable, modelTablePresence)
 	if err != nil {
 		return prior, err
 	}
@@ -232,7 +233,7 @@ func projectTeamInfoResponse(ctx context.Context, prior TeamResourceModel, resul
 		return prior, err
 	}
 	if routerPresence == apiValuePresent {
-		next.RouterSettings, err = parseTeamRouterSettings(routerSettings)
+		next.RouterSettings, err = parseTeamRouterSettings(ctx, routerSettings)
 		if err != nil {
 			return prior, err
 		}
@@ -340,42 +341,22 @@ func updateTeamBool(target *types.Bool, object map[string]interface{}, field str
 	return nil
 }
 
-func teamStringListAt(object map[string]interface{}, field string) (types.List, apiValuePresence, error) {
-	value, presence, err := apiValueAt(object, field)
-	if err != nil || presence != apiValuePresent {
-		return types.ListNull(types.StringType), presence, err
-	}
-	items, ok := value.([]interface{})
-	if !ok {
-		return types.ListNull(types.StringType), presence, fmt.Errorf("expected a list of strings")
-	}
-	values := make([]attr.Value, len(items))
-	for index, item := range items {
-		stringValue, ok := item.(string)
-		if !ok {
-			return types.ListNull(types.StringType), presence, fmt.Errorf("element %d is not a string", index)
-		}
-		values[index] = types.StringValue(stringValue)
-	}
-	list, diagnostics := types.ListValue(types.StringType, values)
+func teamStringListAt(ctx context.Context, object map[string]interface{}, field string, valuePath path.Path) (types.List, apiValuePresence, error) {
+	value, presence, diagnostics := strictAPIStringList(ctx, object, field, valuePath)
 	if diagnostics.HasError() {
-		return types.ListNull(types.StringType), presence, fmt.Errorf("cannot build string list state")
+		return types.ListNull(types.StringType), presence, collectionProjectionError(ctx, diagnostics)
 	}
-	return list, presence, nil
+	return value, presence, nil
 }
 
 func teamStringSetAt(ctx context.Context, object map[string]interface{}, field string) (types.Set, apiValuePresence, error) {
-	list, presence, err := teamStringListAt(object, field)
+	list, presence, err := teamStringListAt(ctx, object, field, path.Root(field))
 	if err != nil || presence != apiValuePresent {
 		return types.SetNull(types.StringType), presence, err
 	}
-	var values []string
-	if diagnostics := list.ElementsAs(ctx, &values, false); diagnostics.HasError() {
-		return types.SetNull(types.StringType), presence, fmt.Errorf("cannot build string set state")
-	}
-	set, diagnostics := types.SetValueFrom(ctx, types.StringType, values)
+	set, diagnostics := checkedStringSetValue(ctx, list.Elements(), path.Root(field))
 	if diagnostics.HasError() {
-		return types.SetNull(types.StringType), presence, fmt.Errorf("cannot build string set state")
+		return types.SetNull(types.StringType), presence, collectionProjectionError(ctx, diagnostics)
 	}
 	return set, presence, nil
 }
@@ -423,7 +404,10 @@ func teamRouterSettingsEmpty(value types.Object) bool {
 	return true
 }
 
-func projectTeamMetadata(prior types.Map, metadata map[string]interface{}, presence apiValuePresence, imported bool) (types.Map, error) {
+func projectTeamMetadata(ctx context.Context, prior types.Map, metadata map[string]interface{}, presence apiValuePresence, imported bool) (types.Map, error) {
+	if diagnostics := canceledCollectionDiagnostics(ctx, path.Root("metadata")); diagnostics.HasError() {
+		return types.MapNull(types.StringType), collectionProjectionError(ctx, diagnostics)
+	}
 	if presence != apiValuePresent {
 		return types.MapNull(types.StringType), nil
 	}
@@ -448,6 +432,9 @@ func projectTeamMetadata(prior types.Map, metadata map[string]interface{}, prese
 
 	projected := make(map[string]attr.Value, len(owned))
 	for key, configured := range owned {
+		if diagnostics := canceledCollectionDiagnostics(ctx, path.Root("metadata")); diagnostics.HasError() {
+			return types.MapNull(types.StringType), collectionProjectionError(ctx, diagnostics)
+		}
 		if _, managed := teamManagedMetadataKeys[key]; managed {
 			continue
 		}
@@ -465,14 +452,14 @@ func projectTeamMetadata(prior types.Map, metadata map[string]interface{}, prese
 		}
 		projected[key] = types.StringValue(metadataValueToStringPreservingMasked(remote, configuredString))
 	}
-	result, diagnostics := types.MapValue(types.StringType, projected)
+	result, diagnostics := checkedStringMapValue(ctx, projected, path.Root("metadata"), true)
 	if diagnostics.HasError() {
-		return types.MapNull(types.StringType), fmt.Errorf("invalid response field %q: cannot build metadata state", "metadata")
+		return types.MapNull(types.StringType), collectionProjectionError(ctx, diagnostics)
 	}
 	return result, nil
 }
 
-func teamModelAliases(modelTable map[string]interface{}, tablePresence apiValuePresence) (types.Map, apiValuePresence, error) {
+func teamModelAliases(ctx context.Context, modelTable map[string]interface{}, tablePresence apiValuePresence) (types.Map, apiValuePresence, error) {
 	if tablePresence != apiValuePresent {
 		return types.MapNull(types.StringType), tablePresence, nil
 	}
@@ -493,22 +480,33 @@ func teamModelAliases(modelTable map[string]interface{}, tablePresence apiValueP
 	}
 	values := make(map[string]attr.Value, len(object))
 	for key, rawValue := range object {
+		if diagnostics := canceledCollectionDiagnostics(ctx, path.Root("model_aliases")); diagnostics.HasError() {
+			return types.MapNull(types.StringType), presence, collectionProjectionError(ctx, diagnostics)
+		}
 		value, ok := rawValue.(string)
 		if !ok {
 			return types.MapNull(types.StringType), presence, fmt.Errorf("invalid response field %q: an alias value is not a string", "litellm_model_table.model_aliases")
 		}
 		values[key] = types.StringValue(value)
 	}
-	result, diagnostics := types.MapValue(types.StringType, values)
+	result, diagnostics := checkedStringMapValue(ctx, values, path.Root("model_aliases"), true)
 	if diagnostics.HasError() {
-		return types.MapNull(types.StringType), presence, fmt.Errorf("invalid response field %q: cannot build alias state", "litellm_model_table.model_aliases")
+		return types.MapNull(types.StringType), presence, collectionProjectionError(ctx, diagnostics)
 	}
 	return result, presence, nil
 }
 
-func parseTeamRouterSettings(object map[string]interface{}) (types.Object, error) {
+func parseTeamRouterSettings(ctx context.Context, object map[string]interface{}) (types.Object, error) {
+	routerPath := path.Root("router_settings")
+	if diagnostics := canceledCollectionDiagnostics(ctx, routerPath); diagnostics.HasError() {
+		return types.ObjectNull(routerSettingsAttrTypes), collectionProjectionError(ctx, diagnostics)
+	}
 	attributes := map[string]attr.Value{}
 	for _, field := range []string{"fallbacks", "context_window_fallbacks"} {
+		fieldPath := routerPath.AtName(field)
+		if diagnostics := canceledCollectionDiagnostics(ctx, fieldPath); diagnostics.HasError() {
+			return types.ObjectNull(routerSettingsAttrTypes), collectionProjectionError(ctx, diagnostics)
+		}
 		value, presence, err := apiValueAt(object, field)
 		if err != nil {
 			return types.ObjectNull(routerSettingsAttrTypes), err
@@ -523,6 +521,10 @@ func parseTeamRouterSettings(object map[string]interface{}) (types.Object, error
 		}
 		entries := make([]attr.Value, 0, len(items))
 		for index, item := range items {
+			itemPath := fieldPath.AtListIndex(index)
+			if diagnostics := canceledCollectionDiagnostics(ctx, itemPath); diagnostics.HasError() {
+				return types.ObjectNull(routerSettingsAttrTypes), collectionProjectionError(ctx, diagnostics)
+			}
 			entry, ok := item.(map[string]interface{})
 			if !ok || len(entry) != 1 {
 				return types.ObjectNull(routerSettingsAttrTypes), fmt.Errorf("invalid response field router_settings.%s: entry %d must be a single-key object", field, index)
@@ -534,6 +536,9 @@ func parseTeamRouterSettings(object map[string]interface{}) (types.Object, error
 				}
 				fallbackValues := make([]attr.Value, len(fallbacks))
 				for fallbackIndex, rawFallback := range fallbacks {
+					if diagnostics := canceledCollectionDiagnostics(ctx, itemPath); diagnostics.HasError() {
+						return types.ObjectNull(routerSettingsAttrTypes), collectionProjectionError(ctx, diagnostics)
+					}
 					fallback, ok := rawFallback.(string)
 					if !ok {
 						return types.ObjectNull(routerSettingsAttrTypes), fmt.Errorf("invalid response field router_settings.%s: entry %d fallback %d is not a string", field, index, fallbackIndex)
@@ -553,11 +558,17 @@ func parseTeamRouterSettings(object map[string]interface{}) (types.Object, error
 				entries = append(entries, entryValue)
 			}
 		}
+		if diagnostics := canceledCollectionDiagnostics(ctx, fieldPath); diagnostics.HasError() {
+			return types.ObjectNull(routerSettingsAttrTypes), collectionProjectionError(ctx, diagnostics)
+		}
 		list, diagnostics := types.ListValue(types.ObjectType{AttrTypes: fallbackEntryAttrTypes}, entries)
 		if diagnostics.HasError() {
 			return types.ObjectNull(routerSettingsAttrTypes), fmt.Errorf("invalid response field router_settings.%s: cannot build list state", field)
 		}
 		attributes[field] = list
+	}
+	if diagnostics := canceledCollectionDiagnostics(ctx, routerPath); diagnostics.HasError() {
+		return types.ObjectNull(routerSettingsAttrTypes), collectionProjectionError(ctx, diagnostics)
 	}
 	result, diagnostics := types.ObjectValue(routerSettingsAttrTypes, attributes)
 	if diagnostics.HasError() {
@@ -566,7 +577,7 @@ func parseTeamRouterSettings(object map[string]interface{}) (types.Object, error
 	return result, nil
 }
 
-func projectTeamPermissions(prior types.List, result map[string]interface{}, expectedTeamID string) (types.List, error) {
+func projectTeamPermissions(ctx context.Context, prior types.List, result map[string]interface{}, expectedTeamID string) (types.List, error) {
 	if result == nil || len(result) == 0 {
 		return prior, fmt.Errorf("invalid team permissions response: expected a nonempty object")
 	}
@@ -574,7 +585,7 @@ func projectTeamPermissions(prior types.List, result map[string]interface{}, exp
 	if err != nil || teamID != expectedTeamID {
 		return prior, fmt.Errorf("invalid team permissions response: identity does not match the requested team")
 	}
-	permissions, presence, err := teamStringListAt(result, "team_member_permissions")
+	permissions, presence, err := teamStringListAt(ctx, result, "team_member_permissions", path.Root("team_member_permissions"))
 	if err != nil {
 		return prior, fmt.Errorf("invalid team permissions response: %w", err)
 	}

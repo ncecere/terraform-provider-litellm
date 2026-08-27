@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -91,7 +91,7 @@ func nullAgentDataProjection(id types.String) AgentDataSourceModel {
 	}
 }
 
-func projectAgentData(item map[string]interface{}, expectedID string) (AgentDataSourceModel, error) {
+func projectAgentData(ctx context.Context, item map[string]interface{}, expectedID string) (AgentDataSourceModel, error) {
 	data := nullAgentDataProjection(types.StringValue(expectedID))
 	if err := validateImportedObjectIdentity(true, "agent", item, "agent_id", expectedID); err != nil {
 		return data, err
@@ -165,32 +165,19 @@ func projectAgentData(item map[string]interface{}, expectedID string) (AgentData
 	if err := updateFloat64FromAPI(&data.Spend, item, true, true, "spend"); err != nil {
 		return data, err
 	}
-	if raw, present := item["static_headers"]; present && raw != nil {
-		headers, ok := raw.(map[string]interface{})
-		if !ok {
-			return data, fmt.Errorf("invalid static_headers")
-		}
-		values := map[string]attr.Value{}
-		for key, rawValue := range headers {
-			value, ok := rawValue.(string)
-			if !ok {
-				return data, fmt.Errorf("invalid static_headers")
-			}
-			values[key] = types.StringValue(value)
-		}
-		data.StaticHeaders = types.MapValueMust(types.StringType, values)
+	staticHeaders, staticPresence, staticDiagnostics := strictAPIStringMap(ctx, item, "static_headers", path.Root("static_headers"), true)
+	if staticDiagnostics.HasError() {
+		return data, collectionProjectionError(ctx, staticDiagnostics)
 	}
-	if raw, present := item["extra_headers"]; present && raw != nil {
-		headers, ok := raw.([]interface{})
-		if !ok {
-			return data, fmt.Errorf("invalid extra_headers")
-		}
-		for _, value := range headers {
-			if _, ok := value.(string); !ok {
-				return data, fmt.Errorf("invalid extra_headers")
-			}
-		}
-		data.ExtraHeaders = interfaceSliceToStringList(headers)
+	if staticPresence == apiValuePresent {
+		data.StaticHeaders = staticHeaders
+	}
+	extraHeaders, extraPresence, extraDiagnostics := strictAPIStringList(ctx, item, "extra_headers", path.Root("extra_headers"))
+	if extraDiagnostics.HasError() {
+		return data, collectionProjectionError(ctx, extraDiagnostics)
+	}
+	if extraPresence == apiValuePresent {
+		data.ExtraHeaders = extraHeaders
 	}
 	for _, field := range []struct {
 		name   string
@@ -221,7 +208,7 @@ func (d *AgentDataSource) Read(ctx context.Context, req datasource.ReadRequest, 
 		resp.Diagnostics.AddError("Client Error", "Unable to read the requested agent authoritatively.")
 		return
 	}
-	data, err := projectAgentData(result, config.ID.ValueString())
+	data, err := projectAgentData(ctx, result, config.ID.ValueString())
 	if err != nil {
 		resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned a malformed or identity-mismatched agent.")
 		return

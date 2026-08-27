@@ -8,6 +8,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -185,7 +186,12 @@ func (d *OrganizationDataSource) Read(ctx context.Context, req datasource.ReadRe
 		return
 	}
 	data.Blocked = types.BoolValue(false)
-	data.Tags = types.ListValueMust(types.StringType, []attr.Value{})
+	tags, diagnostics := checkedStringListValue(ctx, []attr.Value{}, path.Root("tags"))
+	resp.Diagnostics.Append(diagnostics...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	data.Tags = tags
 	if err := updateNullableString(&data.CreatedAt, object, "created_at"); err != nil {
 		resp.Diagnostics.AddError("Invalid API Response", err.Error())
 		return

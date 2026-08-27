@@ -8,6 +8,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -100,19 +101,23 @@ func (d *TagDataSource) Read(ctx context.Context, req datasource.ReadRequest, re
 		resp.Diagnostics.AddError("Invalid API Response", err.Error())
 		return
 	}
+	items := []attr.Value{}
 	if presence == apiValuePresent {
 		modelNames := make([]string, 0, len(models.Elements()))
 		for _, value := range models.Elements() {
 			modelNames = append(modelNames, value.(types.String).ValueString())
 		}
 		sort.Strings(modelNames)
-		items := make([]attr.Value, 0, len(modelNames))
+		items = make([]attr.Value, 0, len(modelNames))
 		for _, model := range modelNames {
 			items = append(items, types.StringValue(model))
 		}
-		data.Models, _ = types.ListValue(types.StringType, items)
-	} else {
-		data.Models, _ = types.ListValue(types.StringType, []attr.Value{})
+	}
+	projectedModels, diagnostics := checkedStringListValue(ctx, items, path.Root("models"))
+	resp.Diagnostics.Append(diagnostics...)
+	data.Models = projectedModels
+	if resp.Diagnostics.HasError() {
+		return
 	}
 	if err := updateTagBudgetState(tagDataSourceBudgetTargets(&data), object, false, true); err != nil {
 		resp.Diagnostics.AddError("Invalid API Response", err.Error())

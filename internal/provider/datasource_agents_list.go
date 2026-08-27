@@ -106,7 +106,7 @@ func (d *AgentsListDataSource) Read(ctx context.Context, req datasource.ReadRequ
 			resp.Diagnostics.AddError("Invalid API Response", "/v1/agents returned a malformed agent object.")
 			return
 		}
-		projected, err := projectAgentData(item, id)
+		projected, err := projectAgentData(ctx, item, id)
 		if err != nil {
 			resp.Diagnostics.AddError("Invalid API Response", "/v1/agents returned a malformed agent object.")
 			return

@@ -195,7 +195,7 @@ func TestAgentDataSourceSchemaParityAndProjection(t *testing.T) {
 		"litellm_params":    map[string]interface{}{"text": "001", "flag": false, "nested": map[string]interface{}{"empty": []interface{}{}}},
 		"object_permission": map[string]interface{}{"mcp_tool_permissions": map[string]interface{}{"server": []interface{}{"a", "a"}}},
 	}
-	projected, err := projectAgentData(item, "agent")
+	projected, err := projectAgentData(context.Background(), item, "agent")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,13 +207,13 @@ func TestAgentDataSourceSchemaParityAndProjection(t *testing.T) {
 	}
 
 	malformed := map[string]interface{}{"agent_id": "agent", "agent_name": "Agent", "agent_card_params": map[string]interface{}{"signatures": []interface{}{map[string]interface{}{"protected": true}}}}
-	if _, err := projectAgentData(malformed, "agent"); err == nil {
+	if _, err := projectAgentData(context.Background(), malformed, "agent"); err == nil {
 		t.Fatal("malformed present signature accepted")
 	}
-	if _, err := projectAgentData(item, "other"); err == nil {
+	if _, err := projectAgentData(context.Background(), item, "other"); err == nil {
 		t.Fatal("identity mismatch accepted")
 	}
-	roleOmitted, err := projectAgentData(map[string]interface{}{
+	roleOmitted, err := projectAgentData(context.Background(), map[string]interface{}{
 		"agent_id": "agent", "agent_name": "Agent",
 		"agent_card_params": map[string]interface{}{"description": "endpoint-observable partial card", "signatures": []interface{}{map[string]interface{}{"header": nil}}},
 	}, "agent")

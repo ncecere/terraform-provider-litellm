@@ -26,34 +26,9 @@ func (v collectionAuditViolation) String() string {
 // enclosing symbol, and violation kind, never by line number. Counts make the
 // inventory exact even when one symbol contains repeated legacy calls. Each
 // migration stage must remove the corresponding entry or lower its count.
-var legacyCollectionConversionAllowlist = map[collectionAuditViolation]int{
-	{File: "datasource_agent.go", Symbol: "projectAgentData", Kind: "production MapValueMust constructor"}:                                      1,
-	{File: "datasource_fallback.go", Symbol: "*FallbackDataSource.readFallback", Kind: "discarded ListValue constructor diagnostics"}:           1,
-	{File: "datasource_key.go", Symbol: "*KeyDataSource.Read", Kind: "discarded ListValue constructor diagnostics"}:                             4,
-	{File: "datasource_key.go", Symbol: "*KeyDataSource.Read", Kind: "discarded MapValue constructor diagnostics"}:                              2,
-	{File: "datasource_mcp_server.go", Symbol: "*MCPServerDataSource.Read", Kind: "discarded ListValue constructor diagnostics"}:                8,
-	{File: "datasource_mcp_server.go", Symbol: "*MCPServerDataSource.Read", Kind: "discarded MapValue constructor diagnostics"}:                 4,
-	{File: "datasource_organization.go", Symbol: "*OrganizationDataSource.Read", Kind: "production ListValueMust constructor"}:                  1,
-	{File: "datasource_tag.go", Symbol: "*TagDataSource.Read", Kind: "discarded ListValue constructor diagnostics"}:                             2,
-	{File: "datasource_tags_list.go", Symbol: "*TagsListDataSource.Read", Kind: "discarded ListValue constructor diagnostics"}:                  2,
-	{File: "datasource_team.go", Symbol: "*TeamDataSource.Read", Kind: "discarded ListValue constructor diagnostics"}:                           5,
-	{File: "datasource_team.go", Symbol: "*TeamDataSource.Read", Kind: "discarded MapValue constructor diagnostics"}:                            2,
-	{File: "datasource_user.go", Symbol: "*UserDataSource.Read", Kind: "discarded ListValue constructor diagnostics"}:                           4,
-	{File: "datasource_user.go", Symbol: "*UserDataSource.Read", Kind: "discarded MapValue constructor diagnostics"}:                            2,
-	{File: "resource_mcp_server.go", Symbol: "*MCPServerResource.buildMCPServerRequest", Kind: "ignored ElementsAs diagnostics"}:                7,
-	{File: "resource_mcp_server.go", Symbol: "*MCPServerResource.readMCPServerProjection", Kind: "discarded ListValue constructor diagnostics"}: 8,
-	{File: "resource_mcp_server.go", Symbol: "*MCPServerResource.readMCPServerProjection", Kind: "discarded MapValue constructor diagnostics"}:  6,
-	{File: "resource_team.go", Symbol: "*TeamResource.Update", Kind: "ignored ElementsAs diagnostics"}:                                          1,
-	{File: "resource_team.go", Symbol: "*TeamResource.buildTeamRequest", Kind: "ignored ElementsAs diagnostics"}:                                8,
-	{File: "resource_team.go", Symbol: "*TeamResource.readTeamWithNumericOwnership", Kind: "discarded ListValue constructor diagnostics"}:       10,
-	{File: "resource_team.go", Symbol: "*TeamResource.readTeamWithNumericOwnership", Kind: "discarded MapValue constructor diagnostics"}:        5,
-	{File: "resource_team.go", Symbol: "*TeamResource.readTeamWithNumericOwnership", Kind: "ignored ElementsAs diagnostics"}:                    1,
-	{File: "resource_team.go", Symbol: "apiFormatToFallbackEntries", Kind: "discarded ListValue constructor diagnostics"}:                       2,
-	{File: "resource_team.go", Symbol: "apiFormatToFallbackEntries", Kind: "discarded ObjectValue constructor diagnostics"}:                     1,
-	{File: "resource_team.go", Symbol: "buildRouterSettingsPayload", Kind: "ignored Object.As diagnostics"}:                                     1,
-	{File: "resource_team.go", Symbol: "fallbackEntriesToAPIFormat", Kind: "ignored ElementsAs diagnostics"}:                                    2,
-	{File: "resource_team.go", Symbol: "parseRouterSettingsFromAPI", Kind: "discarded ObjectValue constructor diagnostics"}:                     1,
-}
+// Every audited production conversion has been migrated. Any new ignored
+// diagnostic or Must constructor therefore fails this inventory immediately.
+var legacyCollectionConversionAllowlist = map[collectionAuditViolation]int{}
 
 func TestCollectionConversionSafetyAudit(t *testing.T) {
 	violations, err := scanCollectionConversionViolations(".")
