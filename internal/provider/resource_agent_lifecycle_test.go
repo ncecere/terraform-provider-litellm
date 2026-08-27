@@ -723,7 +723,7 @@ func TestAgentSkillIdentityValidationRejectsDuplicateAndBlankIDs(t *testing.T) {
 		}
 	}
 	api := map[string]interface{}{"skills": []interface{}{map[string]interface{}{"id": protectedID, "name": "one"}, map[string]interface{}{"id": protectedID, "name": "two"}}}
-	if err := validateAgentCardResponse(api, false); err == nil || strings.Contains(err.Error(), protectedID) {
+	if err := validateAgentCardResponse(context.Background(), api, false); err == nil || strings.Contains(err.Error(), protectedID) {
 		t.Fatalf("duplicate API skill IDs accepted or leaked: %v", err)
 	}
 }

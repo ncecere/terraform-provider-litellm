@@ -107,7 +107,7 @@ func projectAgentData(ctx context.Context, item map[string]interface{}, expected
 		if !ok {
 			return data, fmt.Errorf("invalid agent_card_params")
 		}
-		if err := validateAgentCardResponse(card, false); err != nil {
+		if err := validateAgentCardResponse(ctx, card, false); err != nil {
 			return data, err
 		}
 		legacy, err := agentStringProjection(card, false)

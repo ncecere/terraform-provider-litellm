@@ -792,7 +792,10 @@ func copyAgentField(target *AgentResourceModel, source AgentResourceModel, field
 	}
 }
 
-func validateAgentCardSourceShape(card map[string]interface{}) error {
+func validateAgentCardSourceShape(ctx context.Context, card map[string]interface{}) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	malformed := func() error { return fmt.Errorf("agent read response contains a malformed agent card") }
 	stringValue := func(object map[string]interface{}, field string, nullable bool) bool {
 		value, present := object[field]
@@ -896,7 +899,7 @@ func validateAgentCardSourceShape(card map[string]interface{}) error {
 		if raw == nil {
 			return true
 		}
-		_, err := readAgentSecurity(raw)
+		_, err := readAgentSecurityContext(ctx, raw)
 		return err == nil
 	}
 	if raw, present := card["security"]; present && !validateSecurity(raw) {
@@ -1008,8 +1011,11 @@ func validateAgentCardSourceShape(card map[string]interface{}) error {
 	return nil
 }
 
-func validateAgentCardResponse(card map[string]interface{}, requiredIdentity bool) error {
-	if err := validateAgentCardSourceShape(card); err != nil {
+func validateAgentCardResponse(ctx context.Context, card map[string]interface{}, requiredIdentity bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := validateAgentCardSourceShape(ctx, card); err != nil {
 		return err
 	}
 	if requiredIdentity {
@@ -1138,7 +1144,7 @@ func validateAgentCardResponse(card map[string]interface{}, requiredIdentity boo
 				}
 			}
 			if value, present := skill["security"]; present && value != nil {
-				if _, err := readAgentSecurity(value); err != nil {
+				if _, err := readAgentSecurityContext(ctx, value); err != nil {
 					return fmt.Errorf("agent read response contains a malformed agent card")
 				}
 			}
@@ -1786,7 +1792,7 @@ func (r *AgentResource) confirmAgentMutationWithPreservation(ctx context.Context
 		err := r.readAgentWithOwnershipTransportCapture(ctx, &observed, true, nil, true, &raw)
 		if err == nil {
 			resolveAgentUnknowns(&observed)
-			if validateAgentModelSkillIdentities(observed) == nil && preservation.matches(raw) && len(agentMutationMismatches(ctx, planned, prior, config, imported, observed)) == 0 && !agentResourceHasUnknowns(observed) {
+			if validateAgentModelSkillIdentities(observed) == nil && preservation.matches(ctx, raw) && len(agentMutationMismatches(ctx, planned, prior, config, imported, observed)) == 0 && !agentResourceHasUnknowns(observed) {
 				consecutive++
 				lastConfirmed, err = reconcileConfirmedAgentState(ctx, planned, observed, config, prior, imported)
 				if err != nil {

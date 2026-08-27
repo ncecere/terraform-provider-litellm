@@ -1637,7 +1637,7 @@ func (r *AgentResource) readAgentWithOwnershipTransportCapture(ctx context.Conte
 		if !ok {
 			return fmt.Errorf("agent read response contains a malformed agent card")
 		}
-		if err := validateAgentCardResponse(cardRaw, imported || data.AgentCard != nil); err != nil {
+		if err := validateAgentCardResponse(ctx, cardRaw, imported || data.AgentCard != nil); err != nil {
 			return err
 		}
 		if manageAgentCard && (len(cardRaw) > 0 || data.AgentCard != nil) {

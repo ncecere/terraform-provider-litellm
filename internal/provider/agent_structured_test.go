@@ -248,16 +248,16 @@ func TestAgentAuthoritativeParamsOverlayPreservesUnownedWireValues(t *testing.T)
 		t.Fatalf("lossy parameter overlay: %#v", patch)
 	}
 	evidence := &agentPatchPreservation{paramsBase: base, paramsPatch: patch}
-	if !evidence.matches(map[string]interface{}{"litellm_params": patch}) {
+	if !evidence.matches(context.Background(), map[string]interface{}{"litellm_params": patch}) {
 		t.Fatal("unchanged unowned values did not confirm")
 	}
 	drifted := cloneAgentWireObject(patch)
 	drifted["api_large"] = json.Number("9007199254740992")
-	if evidence.matches(map[string]interface{}{"litellm_params": drifted}) {
+	if evidence.matches(context.Background(), map[string]interface{}{"litellm_params": drifted}) {
 		t.Fatal("changed unowned exact number confirmed")
 	}
 	delete(drifted, "api_null")
-	if evidence.matches(map[string]interface{}{"litellm_params": drifted}) {
+	if evidence.matches(context.Background(), map[string]interface{}{"litellm_params": drifted}) {
 		t.Fatal("changed unowned null presence confirmed")
 	}
 }
@@ -292,19 +292,19 @@ func TestAgentRawCardOverlayPreservesNullAndOmission(t *testing.T) {
 		t.Fatalf("lossy card overlay: %#v", patch)
 	}
 	evidence := &agentPatchPreservation{cardBase: base, cardPatch: patch}
-	if !evidence.matches(map[string]interface{}{"agent_card_params": patch}) {
+	if !evidence.matches(context.Background(), map[string]interface{}{"agent_card_params": patch}) {
 		t.Fatal("preserved card did not confirm")
 	}
 	drifted := cloneAgentWireObject(patch)
 	signatures := drifted["signatures"].([]interface{})
 	delete(signatures[0].(map[string]interface{}), "header")
-	if evidence.matches(map[string]interface{}{"agent_card_params": drifted}) {
+	if evidence.matches(context.Background(), map[string]interface{}{"agent_card_params": drifted}) {
 		t.Fatal("header null-to-omitted drift confirmed")
 	}
 	drifted = cloneAgentWireObject(patch)
 	skills := drifted["skills"].([]interface{})
 	skills[1].(map[string]interface{})["security"] = nil
-	if evidence.matches(map[string]interface{}{"agent_card_params": drifted}) {
+	if evidence.matches(context.Background(), map[string]interface{}{"agent_card_params": drifted}) {
 		t.Fatal("security omitted-to-null drift confirmed")
 	}
 }
@@ -343,12 +343,12 @@ func TestAgentSignatureLeafOverlayPreservesUnownedHeader(t *testing.T) {
 		t.Fatalf("API-owned trailing signature changed: %#v", signatures[1])
 	}
 	evidence := &agentPatchPreservation{cardBase: base, cardPatch: patch}
-	if !evidence.matches(map[string]interface{}{"agent_card_params": patch}) {
+	if !evidence.matches(context.Background(), map[string]interface{}{"agent_card_params": patch}) {
 		t.Fatal("signature leaf preservation did not confirm")
 	}
 	drifted := cloneAgentWireObject(patch)
 	delete(drifted["signatures"].([]interface{})[0].(map[string]interface{}), "header")
-	if evidence.matches(map[string]interface{}{"agent_card_params": drifted}) {
+	if evidence.matches(context.Background(), map[string]interface{}{"agent_card_params": drifted}) {
 		t.Fatal("unowned header omission confirmed")
 	}
 }
@@ -605,11 +605,11 @@ func TestAgentCardStrictPresentShapesAndPartialAbsence(t *testing.T) {
 		{"securitySchemes": map[string]interface{}{"key": map[string]interface{}{"type": "http", "scheme": nil}}},
 	}
 	for _, card := range malformed {
-		if validateAgentCardResponse(card, false) == nil {
+		if validateAgentCardResponse(context.Background(), card, false) == nil {
 			t.Fatalf("malformed present field accepted: %#v", card)
 		}
 	}
-	if err := validateAgentCardResponse(map[string]interface{}{"signatures": []interface{}{map[string]interface{}{"header": nil}}}, false); err != nil {
+	if err := validateAgentCardResponse(context.Background(), map[string]interface{}{"signatures": []interface{}{map[string]interface{}{"header": nil}}}, false); err != nil {
 		t.Fatalf("valid role-partial card rejected: %v", err)
 	}
 }

@@ -177,7 +177,7 @@ func applyAgentBlockProjection(t *testing.T, f agentBlockProjectionFixture, valu
 	if err != nil || accessGroupProtocolDiagnosticsHaveError(applied.Diagnostics) {
 		preserved := false
 		if len(f.api.patches) > 0 {
-			preserved = (&agentPatchPreservation{cardBase: agentBlockProjectionSeed("")["agent_card_params"].(map[string]interface{}), cardPatch: f.api.patches[0]["agent_card_params"].(map[string]interface{})}).matches(f.api.response)
+			preserved = (&agentPatchPreservation{cardBase: agentBlockProjectionSeed("")["agent_card_params"].(map[string]interface{}), cardPatch: f.api.patches[0]["agent_card_params"].(map[string]interface{})}).matches(context.Background(), f.api.response)
 		}
 		t.Fatalf("apply: err=%v diagnostics=%s preservation=%t patches=%#v response=%#v", err, agentProtocolDiagnosticsText(applied.Diagnostics), preserved, f.api.patches, f.api.response)
 	}
