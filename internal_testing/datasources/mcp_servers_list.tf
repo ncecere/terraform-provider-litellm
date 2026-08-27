@@ -7,5 +7,6 @@ data "litellm_mcp_servers" "all" {
 }
 
 output "ds_mcp_servers_list" {
-  value = data.litellm_mcp_servers.all
+  value     = data.litellm_mcp_servers.all
+  sensitive = true
 }
