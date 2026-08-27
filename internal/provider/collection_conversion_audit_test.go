@@ -75,6 +75,10 @@ func ignoredConversions() {
 	object, _ := types.ObjectValue(attributeTypes, attributes)
 	_ = types.SetValueMust(elementType, elements)
 }
+func chainedConversions() {
+	_ = value.ElementsAs(ctx, &items, false).HasError()
+	_ = object.As(ctx, &decoded, options).HasError()
+}
 func propagatedConversions() diagnostics {
 	if diagnostics := value.ElementsAs(ctx, &items, false); diagnostics.HasError() { return diagnostics }
 	list, diagnostics := types.ListValue(elementType, elements)
@@ -170,9 +174,9 @@ func shadowedDestination() diagnostics {
 	counts := countCollectionAuditViolations(violations)
 	want := map[string]int{
 		"ignored ElementsAs diagnostics":                 1,
-		"unchecked ElementsAs diagnostics":               3,
+		"unchecked ElementsAs diagnostics":               4,
 		"ignored Object.As diagnostics":                  1,
-		"unchecked Object.As diagnostics":                3,
+		"unchecked Object.As diagnostics":                4,
 		"discarded ListValue constructor diagnostics":    1,
 		"unchecked ListValue constructor diagnostics":    14,
 		"discarded SetValueFrom constructor diagnostics": 1,
@@ -246,17 +250,22 @@ func scanCollectionConversionFile(filename string, file *ast.File) []collectionA
 		if function.Recv != nil && len(function.Recv.List) > 0 {
 			symbol = receiverTypeName(function.Recv.List[0].Type) + "." + symbol
 		}
+		parents := collectionAuditParentMap(function.Body)
+		handledConversions := map[*ast.CallExpr]bool{}
 		ast.Inspect(function.Body, func(node ast.Node) bool {
 			switch typed := node.(type) {
 			case *ast.ExprStmt:
 				if call, ok := typed.X.(*ast.CallExpr); ok {
 					if kind := ignoredConversionCallKind(call); kind != "" {
+						handledConversions[call] = true
 						violations = append(violations, collectionAuditViolation{File: filename, Symbol: symbol, Kind: kind})
 					}
 				}
 			case *ast.AssignStmt:
+				collectionAuditMarkDirectConversionCalls(typed.Rhs, handledConversions)
 				violations = append(violations, collectionAssignmentViolations(filename, symbol, function.Body, typed.Lhs, typed.Rhs, typed.Pos())...)
 			case *ast.ValueSpec:
+				collectionAuditMarkDirectConversionCalls(typed.Values, handledConversions)
 				targets := make([]ast.Expr, len(typed.Names))
 				for index, name := range typed.Names {
 					targets[index] = name
@@ -267,11 +276,62 @@ func scanCollectionConversionFile(filename string, file *ast.File) []collectionA
 				if must := collectionValueMustName(call); must != "" {
 					violations = append(violations, collectionAuditViolation{File: filename, Symbol: symbol, Kind: "production " + must + " constructor"})
 				}
+				if kind := ignoredConversionCallKind(call); kind != "" && !handledConversions[call] && !collectionAuditCallDirectlyReturned(call, parents) && !collectionAuditNestedConversionPropagated(function.Body, call, parents) {
+					violations = append(violations, collectionAuditViolation{File: filename, Symbol: symbol, Kind: strings.Replace(kind, "ignored ", "unchecked ", 1)})
+					handledConversions[call] = true
+				}
 			}
 			return true
 		})
 	}
 	return violations
+}
+
+func collectionAuditMarkDirectConversionCalls(values []ast.Expr, handled map[*ast.CallExpr]bool) {
+	for _, value := range values {
+		if call, ok := value.(*ast.CallExpr); ok && ignoredConversionCallKind(call) != "" {
+			handled[call] = true
+		}
+	}
+}
+
+func collectionAuditCallDirectlyReturned(call *ast.CallExpr, parents map[ast.Node]ast.Node) bool {
+	for node := ast.Node(call); node != nil; node = parents[node] {
+		switch parents[node].(type) {
+		case *ast.ParenExpr:
+			continue
+		case *ast.ReturnStmt:
+			return true
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+func collectionAuditNestedConversionPropagated(body *ast.BlockStmt, conversion *ast.CallExpr, parents map[ast.Node]ast.Node) bool {
+	selector, selectorOK := parents[conversion].(*ast.SelectorExpr)
+	outer, outerOK := parents[selector].(*ast.CallExpr)
+	if selectorOK && outerOK && outer.Fun == selector && selector.Sel.Name == "HasError" {
+		for node := ast.Node(outer); node != nil; node = parents[node] {
+			if _, ok := node.(*ast.ReturnStmt); ok {
+				return true
+			}
+			switch node.(type) {
+			case *ast.ExprStmt, *ast.AssignStmt:
+				return false
+			}
+		}
+	}
+	appendCall, appendOK := parents[conversion].(*ast.CallExpr)
+	if !appendOK {
+		return false
+	}
+	appendSelector, appendSelectorOK := appendCall.Fun.(*ast.SelectorExpr)
+	if !appendSelectorOK || appendSelector.Sel.Name != "Append" {
+		return false
+	}
+	return collectionAuditAppendedDiagnosticsPropagate(body, appendSelector.X, appendCall.Pos(), nil, conversion.Pos(), parents)
 }
 
 func collectionAssignmentViolations(filename, symbol string, body *ast.BlockStmt, targets, values []ast.Expr, position token.Pos) []collectionAuditViolation {
@@ -424,7 +484,7 @@ func collectionAuditAppendedDiagnosticsPropagate(body *ast.BlockStmt, receiver a
 		}
 		for _, target := range assignment.Lhs {
 			invalidatesSource := false
-			if identifier, ok := target.(*ast.Ident); ok {
+			if identifier, ok := target.(*ast.Ident); ok && source != nil {
 				invalidatesSource = collectionAuditSameBinding(identifier, source)
 			}
 			targetKey := collectionAuditAssignmentRootKey(target)
