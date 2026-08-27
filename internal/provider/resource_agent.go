@@ -774,9 +774,9 @@ func agentMapContainsMaskedValues(value types.Map) bool {
 	return false
 }
 
-func hydrateAgentUpdateMap(planned types.Map, remote map[string]interface{}, excludeSyntheticIsPublic bool) (types.Map, error) {
+func hydrateAgentUpdateMap(ctx context.Context, planned types.Map, remote map[string]interface{}, excludeSyntheticIsPublic bool) (types.Map, error) {
 	if planned.IsNull() || planned.IsUnknown() {
-		return reconcileAgentStringMap(planned, remote, excludeSyntheticIsPublic)
+		return reconcileAgentStringMapContext(ctx, planned, remote, excludeSyntheticIsPublic)
 	}
 	values := make(map[string]attr.Value, len(planned.Elements()))
 	for key, element := range planned.Elements() {
@@ -799,9 +799,9 @@ func hydrateAgentUpdateMap(planned types.Map, remote map[string]interface{}, exc
 		}
 		values[key] = types.StringValue(metadataValueToString(remoteValue))
 	}
-	value, diagnostics := types.MapValue(types.StringType, values)
-	if diagnostics.HasError() {
-		return planned, fmt.Errorf("build hydrated agent map: %v", diagnostics.Errors())
+	value, diagnostics := checkedStringMapValue(ctx, values, path.Root("agent_update_map"), true)
+	if err := collectionProjectionError(ctx, diagnostics); err != nil {
+		return planned, err
 	}
 	return value, nil
 }
@@ -809,7 +809,7 @@ func hydrateAgentUpdateMap(planned types.Map, remote map[string]interface{}, exc
 // hydrateUnmanagedAgentUpdateFields preserves the #181 secret preflight.
 // PATCH omission no longer clears unmanaged fields, but configured masked
 // values still require a PROXY_ADMIN read before mutation.
-func mergeAgentAPIMapLeaves(planned types.Map, remote map[string]interface{}, prefix string, imported agentFieldSet) (types.Map, error) {
+func mergeAgentAPIMapLeaves(ctx context.Context, planned types.Map, remote map[string]interface{}, prefix string, imported agentFieldSet) (types.Map, error) {
 	values := map[string]attr.Value{}
 	if !planned.IsNull() && !planned.IsUnknown() {
 		for key, value := range planned.Elements() {
@@ -828,9 +828,9 @@ func mergeAgentAPIMapLeaves(planned types.Map, remote map[string]interface{}, pr
 		}
 		values[key] = types.StringValue(metadataValueToString(raw))
 	}
-	value, diagnostics := types.MapValue(types.StringType, values)
-	if diagnostics.HasError() {
-		return planned, fmt.Errorf("build preserved agent map")
+	value, diagnostics := checkedStringMapValue(ctx, values, path.Root(prefix), true)
+	if err := collectionProjectionError(ctx, diagnostics); err != nil {
+		return planned, err
 	}
 	return value, nil
 }
@@ -849,6 +849,9 @@ func (r *AgentResource) hydrateAgentUpdateFieldsWithOwnership(ctx context.Contex
 	if !needsParams && !needsHeaders && !needsExtraHeaders {
 		return nil
 	}
+	original := data
+	working := cloneAgentResourceModel(*data)
+	data = &working
 
 	endpoint := endpointWithPathSegment("/v1/agents/", data.ID.ValueString(), "")
 	var result map[string]interface{}
@@ -879,39 +882,61 @@ func (r *AgentResource) hydrateAgentUpdateFieldsWithOwnership(ctx context.Contex
 				return err
 			}
 		}
-		value, err := hydrateAgentUpdateMap(data.LiteLLMParams, params, true)
+		value, err := hydrateAgentUpdateMap(ctx, data.LiteLLMParams, params, true)
 		if err != nil {
 			return err
 		}
 		data.LiteLLMParams = value
 		if !config.LiteLLMParams.IsNull() && !config.LiteLLMParams.IsUnknown() {
-			data.LiteLLMParams, err = mergeAgentAPIMapLeaves(data.LiteLLMParams, params, agentFieldParams, imported)
+			data.LiteLLMParams, err = mergeAgentAPIMapLeaves(ctx, data.LiteLLMParams, params, agentFieldParams, imported)
 			if err != nil {
 				return err
 			}
 		}
 	}
 	if needsHeaders {
-		headers, _ := result["static_headers"].(map[string]interface{})
-		value, err := hydrateAgentUpdateMap(data.StaticHeaders, headers, false)
+		headersValue, presence, diagnostics := strictAPIStringMap(ctx, result, "static_headers", path.Root("static_headers"), true)
+		if err := collectionProjectionError(ctx, diagnostics); err != nil {
+			return err
+		}
+		headers := map[string]interface{}{}
+		if presence == apiValuePresent {
+			converted, _, diagnostics := strictTerraformStringMap(ctx, headersValue, path.Root("static_headers"), true)
+			if err := collectionProjectionError(ctx, diagnostics); err != nil {
+				return err
+			}
+			for key, value := range converted {
+				headers[key] = value
+			}
+		}
+		value, err := hydrateAgentUpdateMap(ctx, data.StaticHeaders, headers, false)
 		if err != nil {
 			return err
 		}
 		data.StaticHeaders = value
 		if !config.StaticHeaders.IsNull() && !config.StaticHeaders.IsUnknown() {
-			data.StaticHeaders, err = mergeAgentAPIMapLeaves(data.StaticHeaders, headers, agentFieldStaticHeaders, imported)
+			data.StaticHeaders, err = mergeAgentAPIMapLeaves(ctx, data.StaticHeaders, headers, agentFieldStaticHeaders, imported)
 			if err != nil {
 				return err
 			}
 		}
 	}
 	if needsExtraHeaders {
-		if headers, ok := result["extra_headers"].([]interface{}); ok {
-			data.ExtraHeaders = interfaceSliceToStringList(headers)
+		headers, presence, diagnostics := strictAPIStringList(ctx, result, "extra_headers", path.Root("extra_headers"))
+		if err := collectionProjectionError(ctx, diagnostics); err != nil {
+			return err
+		}
+		if presence == apiValuePresent {
+			data.ExtraHeaders = headers
 		} else {
-			data.ExtraHeaders = types.ListValueMust(types.StringType, []attr.Value{})
+			empty, diagnostics := checkedStringListValue(ctx, nil, path.Root("extra_headers"))
+			if err := collectionProjectionError(ctx, diagnostics); err != nil {
+				return err
+			}
+			data.ExtraHeaders = empty
 		}
 	}
+	*original = *data
 	return nil
 }
 
@@ -1301,11 +1326,17 @@ func isMaskedAgentAPIValue(key string, rawValue interface{}) bool {
 }
 
 func reconcileAgentStringMap(current types.Map, raw map[string]interface{}, excludeSyntheticIsPublic bool) (types.Map, error) {
+	return reconcileAgentStringMapContext(context.Background(), current, raw, excludeSyntheticIsPublic)
+}
+
+func reconcileAgentStringMapContext(ctx context.Context, current types.Map, raw map[string]interface{}, excludeSyntheticIsPublic bool) (types.Map, error) {
 	managed := !current.IsNull() && !current.IsUnknown()
 	configured := map[string]string{}
 	if managed {
-		if diagnostics := current.ElementsAs(context.Background(), &configured, false); diagnostics.HasError() {
-			return current, fmt.Errorf("decode configured agent map: %v", diagnostics.Errors())
+		var diagnostics diag.Diagnostics
+		configured, _, diagnostics = strictTerraformStringMap(ctx, current, path.Root("agent_map"), true)
+		if err := collectionProjectionError(ctx, diagnostics); err != nil {
+			return current, err
 		}
 	}
 	observed := make(map[string]attr.Value)
@@ -1335,18 +1366,20 @@ func reconcileAgentStringMap(current types.Map, raw map[string]interface{}, excl
 	if stringMapMatchesAttrValues(current, observed) {
 		return current, nil
 	}
-	value, diagnostics := types.MapValue(types.StringType, observed)
-	if diagnostics.HasError() {
-		return current, fmt.Errorf("build agent map state: %v", diagnostics.Errors())
+	value, diagnostics := checkedStringMapValue(ctx, observed, path.Root("agent_map"), true)
+	if err := collectionProjectionError(ctx, diagnostics); err != nil {
+		return current, err
 	}
 	return value, nil
 }
 
-func reconcileAgentStringMapWithOwnership(current types.Map, raw map[string]interface{}, excludeSyntheticIsPublic bool, prefix string, importAll bool, apiOwned agentFieldSet) (types.Map, error) {
+func reconcileAgentStringMapWithOwnership(ctx context.Context, current types.Map, raw map[string]interface{}, excludeSyntheticIsPublic bool, prefix string, importAll bool, apiOwned agentFieldSet) (types.Map, error) {
 	configured := map[string]string{}
 	if !current.IsNull() && !current.IsUnknown() {
-		if diagnostics := current.ElementsAs(context.Background(), &configured, false); diagnostics.HasError() {
-			return current, fmt.Errorf("decode agent map")
+		var diagnostics diag.Diagnostics
+		configured, _, diagnostics = strictTerraformStringMap(ctx, current, path.Root(prefix), true)
+		if err := collectionProjectionError(ctx, diagnostics); err != nil {
+			return current, err
 		}
 	}
 	observed := make(map[string]attr.Value)
@@ -1442,9 +1475,15 @@ func (r *AgentResource) readAgentWithOwnershipTransport(ctx context.Context, dat
 }
 
 func (r *AgentResource) readAgentWithOwnershipTransportCapture(ctx context.Context, data *AgentResourceModel, imported bool, apiOwned agentFieldSet, freshConnection bool, capture *map[string]interface{}) error {
+	originalData := data
+	originalOwned := apiOwned
 	if apiOwned == nil {
 		apiOwned = agentFieldSet{}
+	} else {
+		apiOwned = cloneAgentFieldSet(apiOwned)
 	}
+	working := cloneAgentResourceModel(*data)
+	data = &working
 	agentID := data.ID.ValueString()
 	manageAgentCard := imported || data.AgentCard != nil
 	manageObjectPermission := imported || data.ObjectPermission != nil || apiOwned[agentScopePermission]
@@ -1472,8 +1511,9 @@ func (r *AgentResource) readAgentWithOwnershipTransportCapture(ctx context.Conte
 	if err := requireImportedStringField(true, "agent", result, "agent_name"); err != nil {
 		return err
 	}
+	var captured map[string]interface{}
 	if capture != nil {
-		*capture = cloneAgentWireObject(result)
+		captured = cloneAgentWireObject(result)
 	}
 
 	// Identity is authoritative on every read, not only import. A successful
@@ -1523,7 +1563,7 @@ func (r *AgentResource) readAgentWithOwnershipTransportCapture(ctx context.Conte
 		if !ok {
 			return fmt.Errorf("agent read response contains malformed LiteLLM parameters")
 		}
-		value, err := reconcileAgentStringMapWithOwnership(data.LiteLLMParams, params, true, agentFieldParams, imported, apiOwned)
+		value, err := reconcileAgentStringMapWithOwnership(ctx, data.LiteLLMParams, params, true, agentFieldParams, imported, apiOwned)
 		if err != nil {
 			return err
 		}
@@ -1559,16 +1599,19 @@ func (r *AgentResource) readAgentWithOwnershipTransportCapture(ctx context.Conte
 
 	// Static headers
 	if rawHeaders, present := result["static_headers"]; present && rawHeaders != nil {
-		headers, ok := rawHeaders.(map[string]interface{})
-		if !ok {
-			return fmt.Errorf("agent read response contains malformed static headers")
+		headersValue, _, diagnostics := strictAPIStringMap(ctx, result, "static_headers", path.Root("static_headers"), true)
+		if err := collectionProjectionError(ctx, diagnostics); err != nil {
+			return err
 		}
-		for _, raw := range headers {
-			if _, ok := raw.(string); !ok {
-				return fmt.Errorf("agent read response contains malformed static headers")
-			}
+		headers, _, diagnostics := strictTerraformStringMap(ctx, headersValue, path.Root("static_headers"), true)
+		if err := collectionProjectionError(ctx, diagnostics); err != nil {
+			return err
 		}
-		value, err := reconcileAgentStringMapWithOwnership(data.StaticHeaders, headers, false, agentFieldStaticHeaders, imported, apiOwned)
+		responseHeaders := make(map[string]interface{}, len(headers))
+		for key, value := range headers {
+			responseHeaders[key] = value
+		}
+		value, err := reconcileAgentStringMapWithOwnership(ctx, data.StaticHeaders, responseHeaders, false, agentFieldStaticHeaders, imported, apiOwned)
 		if err != nil {
 			return err
 		}
@@ -1579,16 +1622,11 @@ func (r *AgentResource) readAgentWithOwnershipTransportCapture(ctx context.Conte
 
 	// Extra headers
 	if rawHeaders, present := result["extra_headers"]; present && rawHeaders != nil {
-		headers, ok := rawHeaders.([]interface{})
-		if !ok {
-			return fmt.Errorf("agent read response contains malformed extra headers")
+		headers, _, diagnostics := strictAPIStringList(ctx, result, "extra_headers", path.Root("extra_headers"))
+		if err := collectionProjectionError(ctx, diagnostics); err != nil {
+			return err
 		}
-		for _, raw := range headers {
-			if _, ok := raw.(string); !ok {
-				return fmt.Errorf("agent read response contains malformed extra headers")
-			}
-		}
-		data.ExtraHeaders = interfaceSliceToStringList(headers)
+		data.ExtraHeaders = headers
 	} else if data.ExtraHeaders.IsUnknown() || (!data.ExtraHeaders.IsNull() && len(data.ExtraHeaders.Elements()) > 0) {
 		data.ExtraHeaders = types.ListNull(types.StringType)
 	}
@@ -1604,8 +1642,10 @@ func (r *AgentResource) readAgentWithOwnershipTransportCapture(ctx context.Conte
 		}
 		if manageAgentCard && (len(cardRaw) > 0 || data.AgentCard != nil) {
 			if imported {
-				r.readAgentCard(cardRaw, data)
-			} else if err := r.reconcileAgentCardWithOwnership(cardRaw, data, apiOwned); err != nil {
+				if err := r.readAgentCardContext(ctx, cardRaw, data); err != nil {
+					return err
+				}
+			} else if err := r.reconcileAgentCardWithOwnership(ctx, cardRaw, data, apiOwned); err != nil {
 				return err
 			}
 		}
@@ -1617,7 +1657,7 @@ func (r *AgentResource) readAgentWithOwnershipTransportCapture(ctx context.Conte
 	rawObjectPermission, objectPermissionPresent := result["object_permission"]
 	if permRaw, ok := rawObjectPermission.(map[string]interface{}); ok {
 		if manageObjectPermission {
-			if err := r.readObjectPermissionWithOwnership(permRaw, data, imported, apiOwned); err != nil {
+			if err := r.readObjectPermissionWithOwnershipContext(ctx, permRaw, data, imported, apiOwned); err != nil {
 				return err
 			}
 		} else {
@@ -1625,7 +1665,7 @@ func (r *AgentResource) readAgentWithOwnershipTransportCapture(ctx context.Conte
 			// block into state. This keeps omission/import ownership stable while
 			// still failing closed on malformed permission responses.
 			temporary := emptyKnownAgentResourceModel()
-			if err := r.readObjectPermission(permRaw, &temporary); err != nil {
+			if err := r.readObjectPermissionContext(ctx, permRaw, &temporary); err != nil {
 				return err
 			}
 		}
@@ -1668,10 +1708,29 @@ func (r *AgentResource) readAgentWithOwnershipTransportCapture(ctx context.Conte
 		return invalidAgentMCPToolPermissionsResponseError{}
 	}
 
+	*originalData = *data
+	if originalOwned != nil {
+		for field := range originalOwned {
+			delete(originalOwned, field)
+		}
+		for field := range apiOwned {
+			originalOwned[field] = true
+		}
+	}
+	if capture != nil {
+		*capture = captured
+	}
 	return nil
 }
 
 func (r *AgentResource) readAgentCard(cardRaw map[string]interface{}, data *AgentResourceModel) {
+	_ = r.readAgentCardContext(context.Background(), cardRaw, data)
+}
+
+func (r *AgentResource) readAgentCardContext(ctx context.Context, cardRaw map[string]interface{}, data *AgentResourceModel) error {
+	original := data
+	working := cloneAgentResourceModel(*data)
+	data = &working
 	populateAll := data.AgentCard == nil
 	if data.AgentCard == nil {
 		data.AgentCard = &AgentCardModel{}
@@ -1711,15 +1770,22 @@ func (r *AgentResource) readAgentCard(cardRaw map[string]interface{}, data *Agen
 	}
 
 	// Default modes
-	if modes, ok := cardRaw["defaultInputModes"].([]interface{}); ok && (populateAll || !card.DefaultInputModes.IsNull()) {
-		card.DefaultInputModes = interfaceSliceToStringList(modes)
-	} else if populateAll || card.DefaultInputModes.IsUnknown() || !card.DefaultInputModes.IsNull() {
-		card.DefaultInputModes = types.ListNull(types.StringType)
-	}
-	if modes, ok := cardRaw["defaultOutputModes"].([]interface{}); ok && (populateAll || !card.DefaultOutputModes.IsNull()) {
-		card.DefaultOutputModes = interfaceSliceToStringList(modes)
-	} else if populateAll || card.DefaultOutputModes.IsUnknown() || !card.DefaultOutputModes.IsNull() {
-		card.DefaultOutputModes = types.ListNull(types.StringType)
+	for _, field := range []struct {
+		wire   string
+		target *types.List
+	}{
+		{"defaultInputModes", &card.DefaultInputModes},
+		{"defaultOutputModes", &card.DefaultOutputModes},
+	} {
+		value, presence, diagnostics := strictAPIStringList(ctx, cardRaw, field.wire, path.Root("agent_card").AtName(field.wire))
+		if err := collectionProjectionError(ctx, diagnostics); err != nil {
+			return err
+		}
+		if presence == apiValuePresent && (populateAll || !field.target.IsNull()) {
+			*field.target = value
+		} else if populateAll || field.target.IsUnknown() || !field.target.IsNull() {
+			*field.target = types.ListNull(types.StringType)
+		}
 	}
 
 	// Capabilities are authoritative when the block/field is managed. LiteLLM
@@ -1820,25 +1886,22 @@ func (r *AgentResource) readAgentCard(cardRaw map[string]interface{}, data *Agen
 				if v, ok := s["description"].(string); ok {
 					skill.Description = types.StringValue(v)
 				}
-				if v, ok := s["tags"].([]interface{}); ok {
-					skill.Tags = interfaceSliceToStringList(v)
-				} else {
-					skill.Tags = types.ListNull(types.StringType)
-				}
-				if v, ok := s["examples"].([]interface{}); ok {
-					skill.Examples = interfaceSliceToStringList(v)
-				} else {
-					skill.Examples = types.ListNull(types.StringType)
-				}
-				if v, ok := s["inputModes"].([]interface{}); ok {
-					skill.InputModes = interfaceSliceToStringList(v)
-				} else {
-					skill.InputModes = types.ListNull(types.StringType)
-				}
-				if v, ok := s["outputModes"].([]interface{}); ok {
-					skill.OutputModes = interfaceSliceToStringList(v)
-				} else {
-					skill.OutputModes = types.ListNull(types.StringType)
+				for _, field := range []struct {
+					wire   string
+					target *types.List
+				}{
+					{"tags", &skill.Tags}, {"examples", &skill.Examples},
+					{"inputModes", &skill.InputModes}, {"outputModes", &skill.OutputModes},
+				} {
+					value, presence, diagnostics := strictAPIStringList(ctx, s, field.wire, path.Root("agent_card").AtName("skills").AtName(field.wire))
+					if err := collectionProjectionError(ctx, diagnostics); err != nil {
+						return err
+					}
+					if presence == apiValuePresent {
+						*field.target = value
+					} else {
+						*field.target = types.ListNull(types.StringType)
+					}
 				}
 				skill.Security = types.ListNull(types.MapType{ElemType: types.ListType{ElemType: types.StringType}})
 				skill.SecurityJSON = types.StringNull()
@@ -1846,7 +1909,11 @@ func (r *AgentResource) readAgentCard(cardRaw map[string]interface{}, data *Agen
 					if v == nil {
 						skill.SecurityJSON = types.StringValue("null")
 					} else {
-						skill.Security, _ = readAgentSecurity(v)
+						security, err := readAgentSecurityContext(ctx, v)
+						if err != nil {
+							return err
+						}
+						skill.Security = security
 					}
 				}
 				skills = append(skills, skill)
@@ -1860,11 +1927,15 @@ func (r *AgentResource) readAgentCard(cardRaw map[string]interface{}, data *Agen
 	} else if !populateAll && card.Skills != nil {
 		card.Skills = []AgentSkillModel{}
 	}
+	*original = *data
+	return nil
 }
 
-func (r *AgentResource) reconcileAgentCardWithOwnership(cardRaw map[string]interface{}, data *AgentResourceModel, apiOwned agentFieldSet) error {
+func (r *AgentResource) reconcileAgentCardWithOwnership(ctx context.Context, cardRaw map[string]interface{}, data *AgentResourceModel, apiOwned agentFieldSet) error {
 	observedData := emptyKnownAgentResourceModel()
-	r.readAgentCard(cardRaw, &observedData)
+	if err := r.readAgentCardContext(ctx, cardRaw, &observedData); err != nil {
+		return err
+	}
 	observed := observedData.AgentCard
 	if observed == nil {
 		return nil
@@ -2244,14 +2315,18 @@ func cloneAgentResourceModel(source AgentResourceModel) AgentResourceModel {
 }
 
 func (r *AgentResource) readObjectPermissionWithOwnership(permRaw map[string]interface{}, data *AgentResourceModel, imported bool, apiOwned agentFieldSet) error {
+	return r.readObjectPermissionWithOwnershipContext(context.Background(), permRaw, data, imported, apiOwned)
+}
+
+func (r *AgentResource) readObjectPermissionWithOwnershipContext(ctx context.Context, permRaw map[string]interface{}, data *AgentResourceModel, imported bool, apiOwned agentFieldSet) error {
 	if imported {
-		return r.readObjectPermission(permRaw, data)
+		return r.readObjectPermissionContext(ctx, permRaw, data)
 	}
 	if data.ObjectPermission == nil {
 		if !apiOwned[agentScopePermission] {
 			return nil
 		}
-		if err := r.readObjectPermission(permRaw, data); err != nil {
+		if err := r.readObjectPermissionContext(ctx, permRaw, data); err != nil {
 			return err
 		}
 		for field, wire := range map[string]string{
@@ -2265,7 +2340,7 @@ func (r *AgentResource) readObjectPermissionWithOwnership(permRaw map[string]int
 		return nil
 	}
 	remote := emptyKnownAgentResourceModel()
-	if err := r.readObjectPermission(permRaw, &remote); err != nil {
+	if err := r.readObjectPermissionContext(ctx, permRaw, &remote); err != nil {
 		return err
 	}
 	if remote.ObjectPermission == nil {
@@ -2323,6 +2398,10 @@ func (r *AgentResource) readObjectPermissionWithOwnership(permRaw map[string]int
 }
 
 func (r *AgentResource) readObjectPermission(permRaw map[string]interface{}, data *AgentResourceModel) error {
+	return r.readObjectPermissionContext(context.Background(), permRaw, data)
+}
+
+func (r *AgentResource) readObjectPermissionContext(ctx context.Context, permRaw map[string]interface{}, data *AgentResourceModel) error {
 	populateAll := data.ObjectPermission == nil
 	if data.ObjectPermission == nil {
 		data.ObjectPermission = &AgentObjectPermissionModel{
@@ -2338,16 +2417,11 @@ func (r *AgentResource) readObjectPermission(permRaw map[string]interface{}, dat
 	readPermissionList := func(name string, target *types.List) error {
 		raw, present := permRaw[name]
 		if present && raw != nil {
-			items, ok := raw.([]interface{})
-			if !ok {
-				return fmt.Errorf("agent read response contains a malformed object permission collection")
+			value, _, diagnostics := strictAPIStringList(ctx, permRaw, name, path.Root("object_permission").AtName(name))
+			if err := collectionProjectionError(ctx, diagnostics); err != nil {
+				return err
 			}
-			for _, item := range items {
-				if _, ok := item.(string); !ok {
-					return fmt.Errorf("agent read response contains a malformed object permission collection")
-				}
-			}
-			*target = interfaceSliceToStringList(items)
+			*target = value
 			return nil
 		}
 		// Omission leaves this independently scoped sibling unmanaged. Explicit
@@ -2423,16 +2497,10 @@ func listToStringSlice(l types.List) []string {
 }
 
 func interfaceSliceToStringList(items []interface{}) types.List {
-	vals := make([]attr.Value, 0, len(items))
-	for _, item := range items {
-		if s, ok := item.(string); ok {
-			vals = append(vals, types.StringValue(s))
-		}
+	object := map[string]interface{}{"value": items}
+	value, _, diagnostics := strictAPIStringList(context.Background(), object, "value", path.Root("collection"))
+	if diagnostics.HasError() {
+		return types.ListNull(types.StringType)
 	}
-	if len(vals) == 0 {
-		v, _ := types.ListValue(types.StringType, []attr.Value{})
-		return v
-	}
-	v, _ := types.ListValue(types.StringType, vals)
-	return v
+	return value
 }

@@ -234,6 +234,9 @@ func (r *UnifiedAccessGroupResource) Create(ctx context.Context, req resource.Cr
 	if responseErr == nil {
 		responseErr = validateUnifiedAccessGroupIdentity(result, "", data.AccessGroupName.ValueString())
 	}
+	if responseErr == nil {
+		responseErr = validateUnifiedAccessGroupResponseCollections(ctx, result)
+	}
 	if responseErr != nil {
 		if shouldRecoverUnifiedAccessGroupCreate(accepted, mutationErr) {
 			r.recoverUnifiedAccessGroupCreate(ctx, &data, keyMutation, accepted, mutationErr, responseErr, resp)
@@ -246,7 +249,10 @@ func (r *UnifiedAccessGroupResource) Create(ctx context.Context, req resource.Cr
 	readUnifiedAccessGroupResponse(ctx, result, &data)
 	assigned, synchronizationErr := r.synchronizeUnifiedAccessGroupKeys(ctx, data.AccessGroupID.ValueString(), data.AssignedKeyIDs, types.ListNull(types.StringType), result["assigned_key_ids"], true)
 	data.AssignedKeyIDs = assigned
-	resolveUnifiedAccessGroupUnknowns(&data)
+	if err := resolveUnifiedAccessGroupUnknownsStrict(ctx, &data); err != nil {
+		resp.Diagnostics.AddError("Unified Access Group State Projection Failed", err.Error())
+		return
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 	if keyMutation {
 		addUnifiedAccessGroupCacheWarning(&resp.Diagnostics)
@@ -331,10 +337,17 @@ func (r *UnifiedAccessGroupResource) recoverUnifiedAccessGroupCreate(
 		return
 	}
 
+	if err := validateUnifiedAccessGroupResponseCollections(ctx, candidate); err != nil {
+		resp.Diagnostics.AddError("Ambiguous Unified Access Group Creation", "The recovery candidate contained malformed collections. Terraform did not publish partially converted state.")
+		return
+	}
 	readUnifiedAccessGroupResponse(ctx, candidate, data)
 	assigned, synchronizationErr := r.synchronizeUnifiedAccessGroupKeys(ctx, data.AccessGroupID.ValueString(), data.AssignedKeyIDs, types.ListNull(types.StringType), candidate["assigned_key_ids"], true)
 	data.AssignedKeyIDs = assigned
-	resolveUnifiedAccessGroupUnknowns(data)
+	if err := resolveUnifiedAccessGroupUnknownsStrict(ctx, data); err != nil {
+		resp.Diagnostics.AddError("Unified Access Group State Projection Failed", err.Error())
+		return
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, data)...)
 	if keyMutation {
 		addUnifiedAccessGroupCacheWarning(&resp.Diagnostics)
@@ -509,6 +522,9 @@ func (r *UnifiedAccessGroupResource) Update(ctx context.Context, req resource.Up
 	if responseErr == nil {
 		responseErr = validateUnifiedAccessGroupIdentity(result, accessGroupID, data.AccessGroupName.ValueString())
 	}
+	if responseErr == nil {
+		responseErr = validateUnifiedAccessGroupResponseCollections(ctx, result)
+	}
 	if responseErr != nil {
 		detail := "LiteLLM did not return a usable update response. Terraform retained the resource identity and read back both durable membership rows; retry is safe."
 		if accepted {
@@ -558,7 +574,10 @@ func (r *UnifiedAccessGroupResource) Update(ctx context.Context, req resource.Up
 	readUnifiedAccessGroupResponse(ctx, result, &data)
 	assigned, synchronizationErr := r.synchronizeUnifiedAccessGroupKeys(ctx, accessGroupID, data.AssignedKeyIDs, state.AssignedKeyIDs, result["assigned_key_ids"], true)
 	data.AssignedKeyIDs = assigned
-	resolveUnifiedAccessGroupUnknowns(&data)
+	if err := resolveUnifiedAccessGroupUnknownsStrict(ctx, &data); err != nil {
+		resp.Diagnostics.AddError("Unified Access Group State Projection Failed", err.Error())
+		return
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 	if keyMutation {
 		addUnifiedAccessGroupCacheWarning(&resp.Diagnostics)
@@ -631,13 +650,20 @@ func (r *UnifiedAccessGroupResource) readUnifiedAccessGroup(ctx context.Context,
 	if err := validateUnifiedAccessGroupIdentity(result, id, ""); err != nil {
 		return err
 	}
+	if err := validateUnifiedAccessGroupResponseCollections(ctx, result); err != nil {
+		return err
+	}
 
-	priorAssigned := data.AssignedKeyIDs
-	readUnifiedAccessGroupResponse(ctx, result, data)
-	assigned, err := r.synchronizeUnifiedAccessGroupKeys(ctx, id, types.ListNull(types.StringType), priorAssigned, result["assigned_key_ids"], false)
-	data.AssignedKeyIDs = assigned
-	resolveUnifiedAccessGroupUnknowns(data)
-	return err
+	next := *data
+	priorAssigned := next.AssignedKeyIDs
+	readUnifiedAccessGroupResponse(ctx, result, &next)
+	assigned, synchronizationErr := r.synchronizeUnifiedAccessGroupKeys(ctx, id, types.ListNull(types.StringType), priorAssigned, result["assigned_key_ids"], false)
+	next.AssignedKeyIDs = assigned
+	if err := resolveUnifiedAccessGroupUnknownsStrict(ctx, &next); err != nil {
+		return err
+	}
+	*data = next
+	return synchronizationErr
 }
 
 func buildUnifiedAccessGroupRequest(ctx context.Context, data *UnifiedAccessGroupResourceModel, includeOptionalName bool) (map[string]interface{}, diag.Diagnostics) {
@@ -776,7 +802,11 @@ func unifiedAccessGroupKeyList(representations []string) types.List {
 	for _, representation := range representations {
 		items = append(items, types.StringValue(representation))
 	}
-	return types.ListValueMust(types.StringType, items)
+	value, diagnostics := checkedStringListValue(context.Background(), items, path.Root("assigned_key_ids"))
+	if diagnostics.HasError() {
+		return types.ListNull(types.StringType)
+	}
+	return value
 }
 
 func unifiedAccessGroupKeyMembershipEqual(representations map[string][]string, actual map[string]bool) bool {
@@ -1612,6 +1642,16 @@ func addUnifiedAccessGroupCacheWarning(diagnostics interface {
 	)
 }
 
+func validateUnifiedAccessGroupResponseCollections(ctx context.Context, result map[string]interface{}) error {
+	for _, field := range []string{"access_model_names", "access_mcp_server_ids", "access_agent_ids", "assigned_team_ids"} {
+		_, _, diagnostics := strictAPIStringList(ctx, result, field, path.Root(field))
+		if err := collectionProjectionError(ctx, diagnostics); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func readUnifiedAccessGroupResponse(ctx context.Context, result map[string]interface{}, data *UnifiedAccessGroupResourceModel) {
 	if id, ok := result["access_group_id"].(string); ok {
 		data.AccessGroupID = types.StringValue(id)
@@ -1644,6 +1684,10 @@ func readUnifiedAccessGroupResponse(ctx context.Context, result map[string]inter
 }
 
 func resolveUnifiedAccessGroupUnknowns(data *UnifiedAccessGroupResourceModel) {
+	_ = resolveUnifiedAccessGroupUnknownsStrict(context.Background(), data)
+}
+
+func resolveUnifiedAccessGroupUnknownsStrict(ctx context.Context, data *UnifiedAccessGroupResourceModel) error {
 	for _, value := range []*types.List{
 		&data.AccessModelNames,
 		&data.AccessMCPServerIDs,
@@ -1652,7 +1696,11 @@ func resolveUnifiedAccessGroupUnknowns(data *UnifiedAccessGroupResourceModel) {
 		&data.AssignedKeyIDs,
 	} {
 		if value.IsUnknown() {
-			*value = types.ListValueMust(types.StringType, []attr.Value{})
+			empty, diagnostics := checkedStringListValue(ctx, nil, path.Root("access_group_collections"))
+			if err := collectionProjectionError(ctx, diagnostics); err != nil {
+				return err
+			}
+			*value = empty
 		}
 	}
 	for _, value := range []*types.String{&data.Description, &data.CreatedAt, &data.CreatedBy, &data.UpdatedAt, &data.UpdatedBy} {
@@ -1660,6 +1708,7 @@ func resolveUnifiedAccessGroupUnknowns(data *UnifiedAccessGroupResourceModel) {
 			*value = types.StringNull()
 		}
 	}
+	return nil
 }
 
 func setSafeAssignedKeyListFromResponse(target *types.List, raw interface{}) {
@@ -1698,21 +1747,16 @@ func setSafeAssignedKeyListFromResponse(target *types.List, raw interface{}) {
 }
 
 func setListFromResponse(ctx context.Context, target *types.List, raw interface{}) {
-	if values, ok := raw.([]interface{}); ok {
-		items := make([]attr.Value, 0, len(values))
-		for _, value := range values {
-			if str, ok := value.(string); ok {
-				items = append(items, types.StringValue(str))
-			}
+	object := map[string]interface{}{"value": raw}
+	value, presence, diagnostics := strictAPIStringList(ctx, object, "value", path.Root("access_group_collection"))
+	if !diagnostics.HasError() && presence == apiValuePresent {
+		*target = value
+		return
+	}
+	if !diagnostics.HasError() && target.IsUnknown() {
+		empty, emptyDiagnostics := checkedStringListValue(ctx, nil, path.Root("access_group_collection"))
+		if !emptyDiagnostics.HasError() {
+			*target = empty
 		}
-		*target, _ = types.ListValue(types.StringType, items)
-	} else if values, ok := raw.([]string); ok {
-		items := make([]attr.Value, 0, len(values))
-		for _, value := range values {
-			items = append(items, types.StringValue(value))
-		}
-		*target, _ = types.ListValue(types.StringType, items)
-	} else if target.IsUnknown() {
-		*target, _ = types.ListValue(types.StringType, []attr.Value{})
 	}
 }

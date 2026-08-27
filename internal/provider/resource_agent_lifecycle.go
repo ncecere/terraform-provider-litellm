@@ -592,7 +592,12 @@ func (r *AgentResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanR
 				}
 			}
 		}
-		*target = types.MapValueMust(types.StringType, values)
+		value, diagnostics := checkedStringMapValue(ctx, values, path.Root(prefix), true)
+		resp.Diagnostics.Append(diagnostics...)
+		if diagnostics.HasError() {
+			return false
+		}
+		*target = value
 		return !original.Equal(*target)
 	}
 	paramsMerged := false
@@ -602,6 +607,11 @@ func (r *AgentResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanR
 	headersMerged := false
 	if config.StaticHeaders.IsNull() || config.StaticHeaders.IsUnknown() {
 		headersMerged = mergeAPIMapLeavesIntoPlan(&plan.StaticHeaders, state.StaticHeaders, agentFieldStaticHeaders)
+	}
+	if resp.Diagnostics.HasError() {
+		resp.Private = req.Private
+		resp.Plan.Raw = req.State.Raw
+		return
 	}
 	configured := agentConfiguredFields(config)
 	pending := cloneAgentFieldSet(imported)
@@ -2140,7 +2150,11 @@ func reconcileConfirmedAgentState(planned, observed, config, prior AgentResource
 		if len(values) == 0 {
 			return
 		}
-		*target = types.MapValueMust(types.StringType, values)
+		value, diagnostics := checkedStringMapValue(context.Background(), values, path.Root(prefix), true)
+		if diagnostics.HasError() {
+			return
+		}
+		*target = value
 	}
 	if config.LiteLLMParams.IsNull() || config.LiteLLMParams.IsUnknown() {
 		mergeMap(&result.LiteLLMParams, observed.LiteLLMParams, agentFieldParams)

@@ -496,6 +496,9 @@ func (r *OrganizationResource) readOrganizationWithNumericOwnership(ctx context.
 	if err := requireImportedStringField(imported, "organization", object, "organization_alias"); err != nil {
 		return err
 	}
+	original := data
+	next := *data
+	data = &next
 	table, err := parseBudgetTable(object)
 	if err != nil {
 		return err
@@ -528,8 +531,8 @@ func (r *OrganizationResource) readOrganizationWithNumericOwnership(ctx context.
 	} else if data.CreatedAt.IsUnknown() {
 		data.CreatedAt = types.StringNull()
 	}
-	models, modelsPresence, err := stringListFromAPI(object, "models")
-	if err != nil {
+	models, modelsPresence, diagnostics := strictAPIStringList(ctx, object, "models", path.Root("models"))
+	if err := collectionProjectionError(ctx, diagnostics); err != nil {
 		return err
 	}
 	if modelsPresence == apiValuePresent {
@@ -588,8 +591,13 @@ func (r *OrganizationResource) readOrganizationWithNumericOwnership(ctx context.
 		data.Blocked = types.BoolValue(false)
 	}
 	if data.Tags.IsUnknown() || (imported && data.Tags.IsNull()) {
-		data.Tags = types.ListValueMust(types.StringType, []attr.Value{})
+		empty, diagnostics := checkedStringListValue(ctx, nil, path.Root("tags"))
+		if err := collectionProjectionError(ctx, diagnostics); err != nil {
+			return err
+		}
+		data.Tags = empty
 	}
+	*original = *data
 	return nil
 }
 

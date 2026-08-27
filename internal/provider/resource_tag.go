@@ -276,7 +276,10 @@ func (r *TagResource) Create(ctx context.Context, req resource.CreateRequest, re
 	}
 	if err := r.readTag(ctx, &data); err != nil {
 		resp.Diagnostics.AddError("Tag Create Not Confirmed", fmt.Sprintf("Tag was created but authoritative read-back failed: %s", err))
-		resolveTagCreateUnknowns(&data)
+		if resolveErr := resolveTagCreateUnknowns(ctx, &data); resolveErr != nil {
+			resp.Diagnostics.AddError("Tag State Projection Failed", resolveErr.Error())
+			return
+		}
 		resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 		if resp.Private != nil {
 			resp.Diagnostics.Append(resp.Private.SetKey(ctx, tagBudgetOwnershipInitializedKey, []byte("true"))...)
@@ -640,7 +643,7 @@ func (r *TagResource) readTagWithNumericOwnership(ctx context.Context, data *Tag
 	if err != nil {
 		return err
 	}
-	if err := applyTagObjectToResource(data, result, tagName, imported); err != nil {
+	if err := applyTagObjectToResource(ctx, data, result, tagName, imported); err != nil {
 		return err
 	}
 	return nil
@@ -703,27 +706,34 @@ func selectTagInfoObject(raw interface{}, tagName string, requireKeyed bool) (ma
 	}
 }
 
-func applyTagObjectToResource(data *TagResourceModel, object map[string]interface{}, tagName string, imported bool) error {
+func applyTagObjectToResource(ctx context.Context, data *TagResourceModel, object map[string]interface{}, tagName string, imported bool) error {
 	name, ok := object["name"].(string)
 	if !ok || name == "" || name != tagName {
 		return fmt.Errorf("invalid tag response identity: expected name %q", tagName)
 	}
-	data.Name, data.ID = types.StringValue(name), types.StringValue(name)
-	if err := updateTagDescription(&data.Description, object); err != nil {
+	next := *data
+	next.Name, next.ID = types.StringValue(name), types.StringValue(name)
+	if err := updateTagDescription(&next.Description, object); err != nil {
 		return err
 	}
-	models, presence, err := stringListFromAPI(object, "models")
-	if err != nil {
+	models, presence, diagnostics := strictAPIStringList(ctx, object, "models", path.Root("models"))
+	if err := collectionProjectionError(ctx, diagnostics); err != nil {
 		return err
 	}
 	if presence == apiValuePresent {
-		data.Models = models
-	} else if presence == apiValueNull {
-		data.Models, _ = types.ListValue(types.StringType, []attr.Value{})
-	} else if data.Models.IsUnknown() {
-		data.Models, _ = types.ListValue(types.StringType, []attr.Value{})
+		next.Models = models
+	} else if presence == apiValueNull || next.Models.IsUnknown() {
+		empty, diagnostics := checkedStringListValue(ctx, nil, path.Root("models"))
+		if err := collectionProjectionError(ctx, diagnostics); err != nil {
+			return err
+		}
+		next.Models = empty
 	}
-	return updateTagBudgetState(tagResourceBudgetTargets(data), object, imported, false)
+	if err := updateTagBudgetState(tagResourceBudgetTargets(&next), object, imported, false); err != nil {
+		return err
+	}
+	*data = next
+	return nil
 }
 
 func updateTagDescription(target *types.String, object map[string]interface{}) error {
@@ -896,7 +906,7 @@ func tagBudgetControlsConfigured(data *TagResourceModel) bool {
 	return false
 }
 
-func resolveTagCreateUnknowns(data *TagResourceModel) {
+func resolveTagCreateUnknowns(ctx context.Context, data *TagResourceModel) error {
 	if data.BudgetID.IsUnknown() {
 		data.BudgetID = types.StringNull()
 	}
@@ -922,8 +932,13 @@ func resolveTagCreateUnknowns(data *TagResourceModel) {
 		data.ModelMaxBudget = types.StringNull()
 	}
 	if data.Models.IsUnknown() {
-		data.Models, _ = types.ListValue(types.StringType, []attr.Value{})
+		empty, diagnostics := checkedStringListValue(ctx, nil, path.Root("models"))
+		if err := collectionProjectionError(ctx, diagnostics); err != nil {
+			return err
+		}
+		data.Models = empty
 	}
+	return nil
 }
 
 func seedTagClearOwnership(target, prior *TagResourceModel) {

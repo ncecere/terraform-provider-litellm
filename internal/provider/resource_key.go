@@ -977,6 +977,9 @@ func (r *KeyResource) readKeyWithNumericOwnership(ctx context.Context, data *Key
 		}
 		info = validatedInfo
 	}
+	original := data
+	next := *data
+	data = &next
 
 	// LiteLLM v1.98 stores max_budget on the verification-token row, while
 	// soft_budget belongs to the budget relation. Older responses may expose
@@ -1084,129 +1087,59 @@ func (r *KeyResource) readKeyWithNumericOwnership(ctx context.Context, data *Key
 		}
 	}
 
-	// Handle models list - preserve null when API returns empty and config didn't specify models
-	if models, ok := info["models"].([]interface{}); ok && len(models) > 0 {
-		modelsList := make([]attr.Value, 0, len(models))
-		for _, m := range models {
-			if str, ok := m.(string); ok {
-				modelsList = append(modelsList, types.StringValue(str))
-			}
-		}
-		data.Models, _ = types.ListValue(types.StringType, modelsList)
-	} else if !data.Models.IsNull() {
-		data.Models, _ = types.ListValue(types.StringType, []attr.Value{})
+	// Preserve null for unconfigured lists while validating every present API
+	// element before publishing any part of the refreshed key state.
+	if err := projectKeyStringList(ctx, info, "models", &data.Models); err != nil {
+		return err
 	}
 
-	// Handle allowed_routes list - preserve null when API returns empty and config didn't specify allowed_routes
-	if routes, ok := info["allowed_routes"].([]interface{}); ok && len(routes) > 0 {
-		routesList := make([]attr.Value, 0, len(routes))
-		for _, r := range routes {
-			if str, ok := r.(string); ok {
-				routesList = append(routesList, types.StringValue(str))
-			}
-		}
-		data.AllowedRoutes, _ = types.ListValue(types.StringType, routesList)
-	} else if !data.AllowedRoutes.IsNull() {
-		data.AllowedRoutes, _ = types.ListValue(types.StringType, []attr.Value{})
+	if err := projectKeyStringList(ctx, info, "allowed_routes", &data.AllowedRoutes); err != nil {
+		return err
 	}
 
-	// Handle allowed_passthrough_routes list - preserve null when API returns empty and config didn't specify allowed_passthrough_routes
-	if routes, ok := info["allowed_passthrough_routes"].([]interface{}); ok && len(routes) > 0 {
-		routesList := make([]attr.Value, 0, len(routes))
-		for _, r := range routes {
-			if str, ok := r.(string); ok {
-				routesList = append(routesList, types.StringValue(str))
-			}
-		}
-		data.AllowedPassthroughRoutes, _ = types.ListValue(types.StringType, routesList)
-	} else if !data.AllowedPassthroughRoutes.IsNull() {
-		data.AllowedPassthroughRoutes, _ = types.ListValue(types.StringType, []attr.Value{})
+	if err := projectKeyStringList(ctx, info, "allowed_passthrough_routes", &data.AllowedPassthroughRoutes); err != nil {
+		return err
 	}
 
-	// Handle allowed_cache_controls list - preserve null when API returns empty and config didn't specify allowed_cache_controls
-	if controls, ok := info["allowed_cache_controls"].([]interface{}); ok && len(controls) > 0 {
-		controlsList := make([]attr.Value, 0, len(controls))
-		for _, c := range controls {
-			if str, ok := c.(string); ok {
-				controlsList = append(controlsList, types.StringValue(str))
-			}
-		}
-		data.AllowedCacheControls, _ = types.ListValue(types.StringType, controlsList)
-	} else if !data.AllowedCacheControls.IsNull() {
-		data.AllowedCacheControls, _ = types.ListValue(types.StringType, []attr.Value{})
+	if err := projectKeyStringList(ctx, info, "allowed_cache_controls", &data.AllowedCacheControls); err != nil {
+		return err
 	}
 
-	// Handle guardrails list - preserve null when API returns empty and config didn't specify guardrails
-	if guardrails, ok := info["guardrails"].([]interface{}); ok && len(guardrails) > 0 {
-		guardrailsList := make([]attr.Value, 0, len(guardrails))
-		for _, g := range guardrails {
-			if str, ok := g.(string); ok {
-				guardrailsList = append(guardrailsList, types.StringValue(str))
-			}
-		}
-		data.Guardrails, _ = types.ListValue(types.StringType, guardrailsList)
-	} else if !data.Guardrails.IsNull() {
-		data.Guardrails, _ = types.ListValue(types.StringType, []attr.Value{})
+	if err := projectKeyStringList(ctx, info, "guardrails", &data.Guardrails); err != nil {
+		return err
 	}
 
-	// Handle prompts list - preserve null when API returns empty and config didn't specify prompts
-	if prompts, ok := info["prompts"].([]interface{}); ok && len(prompts) > 0 {
-		promptsList := make([]attr.Value, 0, len(prompts))
-		for _, p := range prompts {
-			if str, ok := p.(string); ok {
-				promptsList = append(promptsList, types.StringValue(str))
-			}
-		}
-		data.Prompts, _ = types.ListValue(types.StringType, promptsList)
-	} else if !data.Prompts.IsNull() {
-		data.Prompts, _ = types.ListValue(types.StringType, []attr.Value{})
+	if err := projectKeyStringList(ctx, info, "prompts", &data.Prompts); err != nil {
+		return err
 	}
 
-	// Handle enforced_params list - preserve null when API returns empty and config didn't specify enforced_params
-	if enforcedParams, ok := info["enforced_params"].([]interface{}); ok && len(enforcedParams) > 0 {
-		paramsList := make([]attr.Value, 0, len(enforcedParams))
-		for _, p := range enforcedParams {
-			if str, ok := p.(string); ok {
-				paramsList = append(paramsList, types.StringValue(str))
-			}
-		}
-		data.EnforcedParams, _ = types.ListValue(types.StringType, paramsList)
-	} else if !data.EnforcedParams.IsNull() {
-		data.EnforcedParams, _ = types.ListValue(types.StringType, []attr.Value{})
+	if err := projectKeyStringList(ctx, info, "enforced_params", &data.EnforcedParams); err != nil {
+		return err
 	}
 
-	// Handle tags list - preserve null when API returns empty and config didn't specify tags.
-	// LiteLLM stores tags inside metadata["tags"] rather than as a top-level field in /key/info,
-	// so we check both locations.
-	var rawTags []interface{}
-	if tags, ok := info["tags"].([]interface{}); ok {
-		rawTags = tags
-	} else if metadata, ok := info["metadata"].(map[string]interface{}); ok {
-		if tags, ok := metadata["tags"].([]interface{}); ok {
-			rawTags = tags
-		}
-	}
-	if len(rawTags) > 0 {
-		tagsList := make([]attr.Value, 0, len(rawTags))
-		for _, t := range rawTags {
-			if str, ok := t.(string); ok {
-				tagsList = append(tagsList, types.StringValue(str))
-			}
-		}
-		data.Tags, _ = types.ListValue(types.StringType, tagsList)
-	} else if !data.Tags.IsNull() {
-		data.Tags, _ = types.ListValue(types.StringType, []attr.Value{})
+	// LiteLLM stores tags inside metadata["tags"] in some responses. A present
+	// top-level value is authoritative; only absence/null falls back to metadata.
+	if err := projectKeyTags(ctx, info, &data.Tags); err != nil {
+		return err
 	}
 
 	// Handle metadata map - preserve null when API returns empty and config didn't specify metadata.
 	// The API may inject internal keys (e.g. tpm_limit_type, rpm_limit_type) into metadata.
 	// Only include keys that were in the user's original config to avoid drift.
-	if metadata, ok := info["metadata"].(map[string]interface{}); ok && len(metadata) > 0 {
+	metadata, metadataPresent, metadataOK := keyResponseObject(info["metadata"])
+	if metadataPresent && !metadataOK {
+		return fmt.Errorf("LiteLLM returned malformed key metadata; response contents were omitted")
+	}
+	if len(metadata) > 0 {
 		// Build set of user-configured metadata keys
 		configuredKeys := make(map[string]bool)
 		currentMeta := make(map[string]string)
 		if !data.Metadata.IsNull() && !data.Metadata.IsUnknown() {
-			data.Metadata.ElementsAs(ctx, &currentMeta, false)
+			var diagnostics diag.Diagnostics
+			currentMeta, _, diagnostics = strictTerraformStringMap(ctx, data.Metadata, path.Root("metadata"), true)
+			if err := collectionProjectionError(ctx, diagnostics); err != nil {
+				return err
+			}
 			for k := range currentMeta {
 				configuredKeys[k] = true
 			}
@@ -1234,52 +1167,35 @@ func (r *KeyResource) readKeyWithNumericOwnership(ctx context.Context, data *Key
 			// semantically identical. Rebuilding the map would discard dynamic
 			// sensitivity marks inherited from sensitive input expressions.
 			if !stringMapMatchesAttrValues(data.Metadata, metaMap) {
-				data.Metadata, _ = types.MapValue(types.StringType, metaMap)
+				value, diagnostics := checkedStringMapValue(ctx, metaMap, path.Root("metadata"), true)
+				if err := collectionProjectionError(ctx, diagnostics); err != nil {
+					return err
+				}
+				data.Metadata = value
 			}
 		} else if data.Metadata.IsUnknown() {
-			data.Metadata, _ = types.MapValue(types.StringType, map[string]attr.Value{})
+			value, diagnostics := checkedStringMapValue(ctx, nil, path.Root("metadata"), true)
+			if err := collectionProjectionError(ctx, diagnostics); err != nil {
+				return err
+			}
+			data.Metadata = value
 		}
 	} else if data.Metadata.IsUnknown() {
-		data.Metadata, _ = types.MapValue(types.StringType, map[string]attr.Value{})
+		value, diagnostics := checkedStringMapValue(ctx, nil, path.Root("metadata"), true)
+		if err := collectionProjectionError(ctx, diagnostics); err != nil {
+			return err
+		}
+		data.Metadata = value
 	}
 
-	// Handle aliases map - preserve null when API returns empty and config didn't specify aliases
-	if aliases, ok := info["aliases"].(map[string]interface{}); ok && len(aliases) > 0 {
-		aliasMap := make(map[string]attr.Value)
-		for k, v := range aliases {
-			if str, ok := v.(string); ok {
-				aliasMap[k] = types.StringValue(str)
-			}
-		}
-		data.Aliases, _ = types.MapValue(types.StringType, aliasMap)
-	} else if !data.Aliases.IsNull() {
-		data.Aliases, _ = types.MapValue(types.StringType, map[string]attr.Value{})
+	if err := projectKeyStringMap(ctx, info, "aliases", &data.Aliases, false); err != nil {
+		return err
 	}
-
-	// Handle config map - preserve null when API returns empty and config didn't specify config
-	if configMapRaw, ok := info["config"].(map[string]interface{}); ok && len(configMapRaw) > 0 {
-		configMap := make(map[string]attr.Value)
-		for k, v := range configMapRaw {
-			if str, ok := v.(string); ok {
-				configMap[k] = types.StringValue(str)
-			}
-		}
-		data.Config, _ = types.MapValue(types.StringType, configMap)
-	} else if !data.Config.IsNull() {
-		data.Config, _ = types.MapValue(types.StringType, map[string]attr.Value{})
+	if err := projectKeyStringMap(ctx, info, "config", &data.Config, false); err != nil {
+		return err
 	}
-
-	// Handle permissions map - preserve null when API returns empty and config didn't specify permissions
-	if permissions, ok := info["permissions"].(map[string]interface{}); ok && len(permissions) > 0 {
-		permMap := make(map[string]attr.Value)
-		for k, v := range permissions {
-			if str, ok := v.(string); ok {
-				permMap[k] = types.StringValue(str)
-			}
-		}
-		data.Permissions, _ = types.MapValue(types.StringType, permMap)
-	} else if !data.Permissions.IsNull() {
-		data.Permissions, _ = types.MapValue(types.StringType, map[string]attr.Value{})
+	if err := projectKeyStringMap(ctx, info, "permissions", &data.Permissions, false); err != nil {
+		return err
 	}
 
 	modelBudgetOwned := imported || (!data.ModelMaxBudget.IsNull() && !data.ModelMaxBudget.IsUnknown())
@@ -1314,5 +1230,97 @@ func (r *KeyResource) readKeyWithNumericOwnership(ctx context.Context, data *Key
 		return err
 	}
 
+	*original = *data
+	return nil
+}
+
+func keyResponseObject(raw interface{}) (map[string]interface{}, bool, bool) {
+	if raw == nil {
+		return nil, false, true
+	}
+	switch typed := raw.(type) {
+	case map[string]interface{}:
+		return typed, true, typed != nil
+	case map[string]string:
+		result := make(map[string]interface{}, len(typed))
+		for key, value := range typed {
+			result[key] = value
+		}
+		return result, true, typed != nil
+	default:
+		return nil, true, false
+	}
+}
+
+func projectKeyStringList(ctx context.Context, object map[string]interface{}, field string, target *types.List) error {
+	value, presence, diagnostics := strictAPIStringList(ctx, object, field, path.Root(field))
+	if err := collectionProjectionError(ctx, diagnostics); err != nil {
+		return err
+	}
+	if presence == apiValuePresent && len(value.Elements()) > 0 {
+		*target = value
+		return nil
+	}
+	if !target.IsNull() {
+		empty, diagnostics := checkedStringListValue(ctx, nil, path.Root(field))
+		if err := collectionProjectionError(ctx, diagnostics); err != nil {
+			return err
+		}
+		*target = empty
+	}
+	return nil
+}
+
+func projectKeyStringMap(ctx context.Context, object map[string]interface{}, field string, target *types.Map, sensitive bool) error {
+	value, presence, diagnostics := strictAPIStringMap(ctx, object, field, path.Root(field), sensitive)
+	if err := collectionProjectionError(ctx, diagnostics); err != nil {
+		return err
+	}
+	if presence == apiValuePresent && len(value.Elements()) > 0 {
+		*target = value
+		return nil
+	}
+	if !target.IsNull() {
+		empty, diagnostics := checkedStringMapValue(ctx, nil, path.Root(field), sensitive)
+		if err := collectionProjectionError(ctx, diagnostics); err != nil {
+			return err
+		}
+		*target = empty
+	}
+	return nil
+}
+
+func projectKeyTags(ctx context.Context, info map[string]interface{}, target *types.List) error {
+	value, presence, diagnostics := strictAPIStringList(ctx, info, "tags", path.Root("tags"))
+	if err := collectionProjectionError(ctx, diagnostics); err != nil {
+		return err
+	}
+	if presence != apiValuePresent {
+		metadata, metadataPresence, err := apiValueAt(info, "metadata")
+		if err != nil {
+			return err
+		}
+		if metadataPresence == apiValuePresent {
+			object, _, ok := keyResponseObject(metadata)
+			if !ok {
+				return fmt.Errorf("LiteLLM returned malformed key metadata; response contents were omitted")
+			}
+			value, presence, diagnostics = strictAPIStringList(ctx, object, "tags", path.Root("tags"))
+			if err := collectionProjectionError(ctx, diagnostics); err != nil {
+				return err
+			}
+		}
+	}
+	if presence == apiValuePresent && len(value.Elements()) > 0 {
+		*target = value
+		return nil
+	}
+	if !target.IsNull() {
+		empty, diagnostics := checkedStringListValue(ctx, nil, path.Root("tags"))
+		if err := collectionProjectionError(ctx, diagnostics); err != nil {
+			return err
+		}
+		*target = empty
+	}
 	return nil
 }

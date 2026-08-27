@@ -520,7 +520,12 @@ func (r *ModelResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanR
 	// A non-imported, previously configured value is owned and omission clears it.
 	if config.AccessGroups.IsNull() && !state.AccessGroups.IsNull() && !state.AccessGroups.IsUnknown() && len(state.AccessGroups.Elements()) > 0 {
 		if _, imported := importedFields["access_groups"]; !imported {
-			plan.AccessGroups = types.ListValueMust(types.StringType, []attr.Value{})
+			empty, diagnostics := checkedStringListValue(ctx, nil, path.Root("access_groups"))
+			resp.Diagnostics.Append(diagnostics...)
+			if resp.Diagnostics.HasError() {
+				return
+			}
+			plan.AccessGroups = empty
 		}
 	}
 
@@ -596,7 +601,10 @@ func (r *ModelResource) Create(ctx context.Context, req resource.CreateRequest, 
 	// request. Additional thinking still wins when both forms are configured.
 	ownership := modelReadOwnership{topThinkingOwned: topThinkingOwned}
 	if err := r.readModelWithRetryOwnership(ctx, &data, 8, ownership); err != nil {
-		finalizeModelComputedDefaults(&data)
+		if finalizeErr := finalizeModelComputedDefaults(ctx, &data); finalizeErr != nil {
+			resp.Diagnostics.AddError("Model State Projection Failed", finalizeErr.Error())
+			return
+		}
 		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Model created but failed to read back: %s", err))
 	}
 	reassertPlannedCosts(&data, &planned)
@@ -1070,6 +1078,9 @@ func (r *ModelResource) readModelWithOwnership(ctx context.Context, data *ModelR
 			return err
 		}
 	}
+	original := data
+	next := *data
+	data = &next
 
 	// Update data from response while preserving sensitive values.
 	// For team-scoped models, LiteLLM rewrites top-level model_name to an internal
@@ -1259,7 +1270,11 @@ func (r *ModelResource) readModelWithOwnership(ctx context.Context, data *ModelR
 		stateKeys := make(map[string]struct{})
 		priorStrings := make(map[string]string)
 		if filterByState {
-			data.AdditionalLiteLLMParams.ElementsAs(ctx, &priorStrings, false)
+			var diagnostics diag.Diagnostics
+			priorStrings, _, diagnostics = strictTerraformStringMap(ctx, data.AdditionalLiteLLMParams, path.Root("additional_litellm_params"), true)
+			if err := collectionProjectionError(ctx, diagnostics); err != nil {
+				return err
+			}
 			for k := range data.AdditionalLiteLLMParams.Elements() {
 				stateKeys[k] = struct{}{}
 			}
@@ -1369,9 +1384,17 @@ func (r *ModelResource) readModelWithOwnership(ctx context.Context, data *ModelR
 
 		// Set additional_litellm_params from API response to detect drift
 		// for keys that the user configured.
-		data.AdditionalLiteLLMParams, _ = types.MapValue(types.StringType, additionalParams)
+		value, diagnostics := checkedStringMapValue(ctx, additionalParams, path.Root("additional_litellm_params"), true)
+		if err := collectionProjectionError(ctx, diagnostics); err != nil {
+			return err
+		}
+		data.AdditionalLiteLLMParams = value
 	} else {
-		data.AdditionalLiteLLMParams, _ = types.MapValue(types.StringType, map[string]attr.Value{})
+		value, diagnostics := checkedStringMapValue(ctx, nil, path.Root("additional_litellm_params"), true)
+		if err := collectionProjectionError(ctx, diagnostics); err != nil {
+			return err
+		}
+		data.AdditionalLiteLLMParams = value
 	}
 
 	if hasModelInfo {
@@ -1395,27 +1418,29 @@ func (r *ModelResource) readModelWithOwnership(ctx context.Context, data *ModelR
 		// The API may not echo back access_groups, so only update if the API
 		// actually returns them. If the API is silent, preserve the current value.
 		_, accessGroupsDurablyCleared := ownership.durablyClearedFields["access_groups"]
-		if accessGroups, ok := modelInfo["access_groups"].([]interface{}); ok && len(accessGroups) > 0 && !accessGroupsDurablyCleared {
-			groupStrings := make([]string, 0, len(accessGroups))
-			for _, g := range accessGroups {
-				if groupStr, ok := g.(string); ok {
-					groupStrings = append(groupStrings, groupStr)
-				}
-			}
-			if len(groupStrings) > 0 && (ownership.imported || (!data.AccessGroups.IsNull() && !data.AccessGroups.IsUnknown())) {
-				listValue, diags := types.ListValueFrom(ctx, types.StringType, groupStrings)
-				if !diags.HasError() {
-					data.AccessGroups = listValue
-				}
+		accessGroups, accessGroupsPresence, diagnostics := strictAPIStringList(ctx, modelInfo, "access_groups", path.Root("access_groups"))
+		if err := collectionProjectionError(ctx, diagnostics); err != nil {
+			return err
+		}
+		if accessGroupsPresence == apiValuePresent && len(accessGroups.Elements()) > 0 && !accessGroupsDurablyCleared {
+			if ownership.imported || (!data.AccessGroups.IsNull() && !data.AccessGroups.IsUnknown()) {
+				data.AccessGroups = accessGroups
 			}
 		} else if data.AccessGroups.IsUnknown() {
-			// Resolve unknown to empty list
-			data.AccessGroups, _ = types.ListValue(types.StringType, []attr.Value{})
+			empty, diagnostics := checkedStringListValue(ctx, nil, path.Root("access_groups"))
+			if err := collectionProjectionError(ctx, diagnostics); err != nil {
+				return err
+			}
+			data.AccessGroups = empty
 		}
 		// If the API didn't return access_groups and we already have a concrete
 		// value (from config/state), leave it as-is.
 	} else if data.AccessGroups.IsUnknown() {
-		data.AccessGroups, _ = types.ListValue(types.StringType, []attr.Value{})
+		empty, diagnostics := checkedStringListValue(ctx, nil, path.Root("access_groups"))
+		if err := collectionProjectionError(ctx, diagnostics); err != nil {
+			return err
+		}
+		data.AccessGroups = empty
 	}
 
 	// Read back additional_model_info. Only keys configured in state are
@@ -1441,9 +1466,17 @@ func (r *ModelResource) readModelWithOwnership(ctx context.Context, data *ModelR
 				infoValues[key] = value
 			}
 		}
-		data.AdditionalModelInfo, _ = types.MapValue(types.StringType, infoValues)
+		value, diagnostics := checkedStringMapValue(ctx, infoValues, path.Root("additional_model_info"), false)
+		if err := collectionProjectionError(ctx, diagnostics); err != nil {
+			return err
+		}
+		data.AdditionalModelInfo = value
 	} else {
-		data.AdditionalModelInfo, _ = types.MapValue(types.StringType, map[string]attr.Value{})
+		value, diagnostics := checkedStringMapValue(ctx, nil, path.Root("additional_model_info"), false)
+		if err := collectionProjectionError(ctx, diagnostics); err != nil {
+			return err
+		}
+		data.AdditionalModelInfo = value
 	}
 
 	// Ensure mode is never Unknown after a Read. Terraform requires all
@@ -1451,7 +1484,9 @@ func (r *ModelResource) readModelWithOwnership(ctx context.Context, data *ModelR
 	// Wildcard routes (e.g. openai/*) may not have a mode set in the API
 	// response, which would leave the attribute Unknown and cause:
 	//   "provider still indicated an unknown value for litellm_model.*.mode"
-	finalizeModelComputedDefaults(data)
+	if err := finalizeModelComputedDefaults(ctx, data); err != nil {
+		return err
+	}
 	if data.ThinkingEnabled.IsNull() || data.ThinkingEnabled.IsUnknown() {
 		data.ThinkingEnabled = types.BoolValue(false)
 	}
@@ -1459,6 +1494,7 @@ func (r *ModelResource) readModelWithOwnership(ctx context.Context, data *ModelR
 		data.ThinkingBudgetTokens = types.Int64Value(1024)
 	}
 
+	*original = *data
 	return nil
 }
 
@@ -1611,7 +1647,7 @@ func modelImportedFieldsFromState(data ModelResourceModel) map[string]struct{} {
 	return fields
 }
 
-func finalizeModelComputedDefaults(data *ModelResourceModel) {
+func finalizeModelComputedDefaults(ctx context.Context, data *ModelResourceModel) error {
 	for _, target := range []*types.String{
 		&data.ModelAPIBase, &data.APIVersion, &data.ReasoningEffort,
 		&data.TeamID, &data.Mode, &data.LiteLLMCredentialName, &data.AWSRegionName,
@@ -1635,14 +1671,27 @@ func finalizeModelComputedDefaults(data *ModelResourceModel) {
 		}
 	}
 	if data.AccessGroups.IsUnknown() {
-		data.AccessGroups, _ = types.ListValue(types.StringType, []attr.Value{})
+		value, diagnostics := checkedStringListValue(ctx, nil, path.Root("access_groups"))
+		if err := collectionProjectionError(ctx, diagnostics); err != nil {
+			return err
+		}
+		data.AccessGroups = value
 	}
 	if data.AdditionalLiteLLMParams.IsUnknown() {
-		data.AdditionalLiteLLMParams, _ = types.MapValue(types.StringType, map[string]attr.Value{})
+		value, diagnostics := checkedStringMapValue(ctx, nil, path.Root("additional_litellm_params"), true)
+		if err := collectionProjectionError(ctx, diagnostics); err != nil {
+			return err
+		}
+		data.AdditionalLiteLLMParams = value
 	}
 	if data.AdditionalModelInfo.IsUnknown() {
-		data.AdditionalModelInfo, _ = types.MapValue(types.StringType, map[string]attr.Value{})
+		value, diagnostics := checkedStringMapValue(ctx, nil, path.Root("additional_model_info"), false)
+		if err := collectionProjectionError(ctx, diagnostics); err != nil {
+			return err
+		}
+		data.AdditionalModelInfo = value
 	}
+	return nil
 }
 
 func (r *ModelResource) readModelWithRetry(ctx context.Context, data *ModelResourceModel, maxRetries int) error {

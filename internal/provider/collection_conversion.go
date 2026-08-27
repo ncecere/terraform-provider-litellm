@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"sort"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -441,6 +442,69 @@ func strictAPIStringMap(ctx context.Context, object map[string]interface{}, fiel
 	return result, presence, nil
 }
 
+// checkedStringListValue and checkedStringMapValue validate all elements before
+// constructing a Terraform value. Constructor diagnostics are replaced with
+// stable, content-free diagnostics so callers can fail without leaking values.
+func checkedStringListValue(ctx context.Context, elements []attr.Value, valuePath path.Path) (types.List, diag.Diagnostics) {
+	if diagnostics := canceledCollectionDiagnostics(ctx, valuePath); diagnostics.HasError() {
+		return types.ListNull(types.StringType), diagnostics
+	}
+	var diagnostics diag.Diagnostics
+	for index, element := range elements {
+		value, ok := element.(types.String)
+		if !ok || value.IsNull() || value.IsUnknown() {
+			diagnostics.AddAttributeError(valuePath.AtListIndex(index), invalidAPIStringListSummary, invalidAPIStringListDetail)
+		}
+	}
+	if diagnostics.HasError() {
+		return types.ListNull(types.StringType), diagnostics
+	}
+	result, constructorDiagnostics := types.ListValue(types.StringType, elements)
+	if len(constructorDiagnostics) != 0 {
+		return apiStringListFailureValue(valuePath)
+	}
+	if diagnostics := canceledCollectionDiagnostics(ctx, valuePath); diagnostics.HasError() {
+		return types.ListNull(types.StringType), diagnostics
+	}
+	return result, nil
+}
+
+func checkedStringMapValue(ctx context.Context, elements map[string]attr.Value, valuePath path.Path, sensitive bool) (types.Map, diag.Diagnostics) {
+	if diagnostics := canceledCollectionDiagnostics(ctx, valuePath); diagnostics.HasError() {
+		return types.MapNull(types.StringType), diagnostics
+	}
+	var diagnostics diag.Diagnostics
+	for _, key := range sortedAttributeKeys(elements) {
+		value, ok := elements[key].(types.String)
+		if !ok || value.IsNull() || value.IsUnknown() {
+			diagnostics.AddAttributeError(safeMapDiagnosticPath(valuePath, key, sensitive), invalidAPIStringMapSummary, invalidAPIStringMapDetail)
+		}
+	}
+	if diagnostics.HasError() {
+		return types.MapNull(types.StringType), diagnostics
+	}
+	result, constructorDiagnostics := types.MapValue(types.StringType, elements)
+	if len(constructorDiagnostics) != 0 {
+		return apiStringMapFailureValue(valuePath)
+	}
+	if diagnostics := canceledCollectionDiagnostics(ctx, valuePath); diagnostics.HasError() {
+		return types.MapNull(types.StringType), diagnostics
+	}
+	return result, nil
+}
+
+// collectionProjectionError intentionally omits response contents. Attribute
+// paths remain available to callers that can append the original diagnostics.
+func collectionProjectionError(ctx context.Context, diagnostics diag.Diagnostics) error {
+	if !diagnostics.HasError() {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return errors.New("LiteLLM returned a malformed collection; response contents were omitted")
+}
+
 func listCollectionState(value types.List) collectionValueState {
 	switch {
 	case value.IsNull():
@@ -515,13 +579,23 @@ func sortedInterfaceKeys(values map[string]interface{}) []string {
 }
 
 func apiStringListFailure(valuePath path.Path, presence apiValuePresence) (types.List, apiValuePresence, diag.Diagnostics) {
+	value, diagnostics := apiStringListFailureValue(valuePath)
+	return value, presence, diagnostics
+}
+
+func apiStringListFailureValue(valuePath path.Path) (types.List, diag.Diagnostics) {
 	var diagnostics diag.Diagnostics
 	diagnostics.AddAttributeError(valuePath, invalidAPIStringListSummary, invalidAPIStringListDetail)
-	return types.ListNull(types.StringType), presence, diagnostics
+	return types.ListNull(types.StringType), diagnostics
 }
 
 func apiStringMapFailure(valuePath path.Path, presence apiValuePresence) (types.Map, apiValuePresence, diag.Diagnostics) {
+	value, diagnostics := apiStringMapFailureValue(valuePath)
+	return value, presence, diagnostics
+}
+
+func apiStringMapFailureValue(valuePath path.Path) (types.Map, diag.Diagnostics) {
 	var diagnostics diag.Diagnostics
 	diagnostics.AddAttributeError(valuePath, invalidAPIStringMapSummary, invalidAPIStringMapDetail)
-	return types.MapNull(types.StringType), presence, diagnostics
+	return types.MapNull(types.StringType), diagnostics
 }

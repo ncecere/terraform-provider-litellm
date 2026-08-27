@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
-	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -438,13 +437,14 @@ func (r *FallbackResource) readFallback(ctx context.Context, data *FallbackResou
 	if err := validateFallbackReadResponse(result, data.Model.ValueString(), data.FallbackType.ValueString()); err != nil {
 		return err
 	}
-	fallbackModels := result["fallback_models"].([]interface{})
-	list := make([]attr.Value, 0, len(fallbackModels))
-	for _, model := range fallbackModels {
-		list = append(list, types.StringValue(model.(string)))
+	models, _, diagnostics := strictAPIStringList(ctx, result, "fallback_models", path.Root("fallback_models"))
+	if err := collectionProjectionError(ctx, diagnostics); err != nil {
+		return err
 	}
-	data.FallbackModels, _ = types.ListValue(types.StringType, list)
-	data.ID = types.StringValue(data.Model.ValueString() + ":" + data.FallbackType.ValueString())
+	next := *data
+	next.FallbackModels = models
+	next.ID = types.StringValue(data.Model.ValueString() + ":" + data.FallbackType.ValueString())
+	*data = next
 	return nil
 }
 

@@ -597,6 +597,9 @@ func (r *UserResource) readUserWithNumericOwnership(ctx context.Context, data *U
 	if err := validateImportedObjectIdentity(imported, "user", userInfo, "user_id", userID); err != nil {
 		return err
 	}
+	original := data
+	next := *data
+	data = &next
 
 	// Update fields from response
 	if userID, ok := userInfo["user_id"].(string); ok {
@@ -636,57 +639,82 @@ func (r *UserResource) readUserWithNumericOwnership(ctx context.Context, data *U
 	// ordering when the API returns the same members in a different order; when
 	// membership truly changes, use a stable canonical order so drift remains
 	// visible without positional churn.
-	if teams, ok := userInfo["teams"].([]interface{}); ok {
-		data.Teams = reconcileUnorderedUserTeams(data.Teams, teams)
+	teams, teamsPresence, diagnostics := strictAPIStringList(ctx, userInfo, "teams", path.Root("teams"))
+	if err := collectionProjectionError(ctx, diagnostics); err != nil {
+		return err
+	}
+	if teamsPresence == apiValuePresent {
+		remoteTeams, _, diagnostics := strictTerraformStringList(ctx, teams, path.Root("teams"))
+		if err := collectionProjectionError(ctx, diagnostics); err != nil {
+			return err
+		}
+		reconciled, err := reconcileUnorderedUserTeamStrings(ctx, data.Teams, remoteTeams)
+		if err != nil {
+			return err
+		}
+		data.Teams = reconciled
 	}
 
-	// Handle models list - preserve null when API returns empty and config didn't specify models
-	if models, ok := userInfo["models"].([]interface{}); ok && len(models) > 0 {
-		modelsList := make([]attr.Value, len(models))
-		for i, m := range models {
-			if str, ok := m.(string); ok {
-				modelsList[i] = types.StringValue(str)
-			}
-		}
-		data.Models, _ = types.ListValue(types.StringType, modelsList)
+	// Handle models list - preserve null when API returns empty and config didn't specify models.
+	models, modelsPresence, diagnostics := strictAPIStringList(ctx, userInfo, "models", path.Root("models"))
+	if err := collectionProjectionError(ctx, diagnostics); err != nil {
+		return err
+	}
+	if modelsPresence == apiValuePresent && len(models.Elements()) > 0 {
+		data.Models = models
 	} else if !data.Models.IsNull() {
-		// User specified models in config but API returned empty — set to empty list
-		data.Models, _ = types.ListValue(types.StringType, []attr.Value{})
-	}
-
-	// Handle metadata map - preserve null when API returns empty and config didn't specify metadata
-	if metadata, ok := userInfo["metadata"].(map[string]interface{}); ok && len(metadata) > 0 {
-		metaMap := make(map[string]attr.Value)
-		for k, v := range metadata {
-			if str, ok := v.(string); ok {
-				metaMap[k] = types.StringValue(str)
-			}
+		empty, diagnostics := checkedStringListValue(ctx, nil, path.Root("models"))
+		if err := collectionProjectionError(ctx, diagnostics); err != nil {
+			return err
 		}
-		data.Metadata, _ = types.MapValue(types.StringType, metaMap)
-	} else if !data.Metadata.IsNull() {
-		// User specified metadata in config but API returned empty — set to empty map
-		data.Metadata, _ = types.MapValue(types.StringType, map[string]attr.Value{})
+		data.Models = empty
 	}
 
+	// Handle metadata map - preserve null when API returns empty and config didn't specify metadata.
+	metadata, metadataPresence, diagnostics := strictAPIStringMap(ctx, userInfo, "metadata", path.Root("metadata"), false)
+	if err := collectionProjectionError(ctx, diagnostics); err != nil {
+		return err
+	}
+	if metadataPresence == apiValuePresent && len(metadata.Elements()) > 0 {
+		data.Metadata = metadata
+	} else if !data.Metadata.IsNull() {
+		empty, diagnostics := checkedStringMapValue(ctx, nil, path.Root("metadata"), false)
+		if err := collectionProjectionError(ctx, diagnostics); err != nil {
+			return err
+		}
+		data.Metadata = empty
+	}
+
+	*original = *data
 	return nil
 }
 
 func reconcileUnorderedUserTeams(current types.List, rawTeams []interface{}) types.List {
 	remoteTeams := make([]string, 0, len(rawTeams))
 	for _, rawTeam := range rawTeams {
-		if team, ok := rawTeam.(string); ok {
-			remoteTeams = append(remoteTeams, team)
-		}
-	}
-
-	if len(remoteTeams) == 0 {
-		if current.IsNull() {
+		team, ok := rawTeam.(string)
+		if !ok {
 			return current
 		}
-		return types.ListValueMust(types.StringType, []attr.Value{})
+		remoteTeams = append(remoteTeams, team)
+	}
+	result, err := reconcileUnorderedUserTeamStrings(context.Background(), current, remoteTeams)
+	if err != nil {
+		return current
+	}
+	return result
+}
+
+func reconcileUnorderedUserTeamStrings(ctx context.Context, current types.List, remoteTeams []string) (types.List, error) {
+	if len(remoteTeams) == 0 {
+		if current.IsNull() {
+			return current, nil
+		}
+		empty, diagnostics := checkedStringListValue(ctx, nil, path.Root("teams"))
+		return empty, collectionProjectionError(ctx, diagnostics)
 	}
 	if userTeamMembershipEqual(current, remoteTeams) {
-		return current
+		return current, nil
 	}
 
 	sort.Strings(remoteTeams)
@@ -694,7 +722,8 @@ func reconcileUnorderedUserTeams(current types.List, rawTeams []interface{}) typ
 	for i, team := range remoteTeams {
 		values[i] = types.StringValue(team)
 	}
-	return types.ListValueMust(types.StringType, values)
+	result, diagnostics := checkedStringListValue(ctx, values, path.Root("teams"))
+	return result, collectionProjectionError(ctx, diagnostics)
 }
 
 func userTeamMembershipEqual(current types.List, remoteTeams []string) bool {
