@@ -200,6 +200,14 @@ REVIEWED_ISSUE224_PATHS = (
 REVIEWED_ISSUE224_RUNTIME_DIFF_SHA256 = (
     "f2136661a605f837a1502520a3fc09d86cf34bf10164d677bb05264dbd422772"
 )
+REVIEWED_ISSUE218_FOUNDATION_BASE = "fcbdad4998d29a733afa5e03ad41494dbd32a6d0"
+REVIEWED_ISSUE218_FOUNDATION_PATHS = (
+    "internal/provider/semantic_dictionary.go",
+    "internal/provider/semantic_dictionary_test.go",
+)
+REVIEWED_ISSUE218_FOUNDATION_RUNTIME_DIFF_SHA256 = (
+    "d34da29f71dbd37f954425152567e1c72ec2129a2c96b3679ecf3df60938d356"
+)
 
 
 def git(*args: str) -> str:
@@ -295,6 +303,12 @@ def main() -> int:
             and digest == REVIEWED_ISSUE224_RUNTIME_DIFF_SHA256
         ):
             reviewed = "issue224"
+        elif (
+            comparison == REVIEWED_ISSUE218_FOUNDATION_BASE
+            and changed_paths == REVIEWED_ISSUE218_FOUNDATION_PATHS
+            and digest == REVIEWED_ISSUE218_FOUNDATION_RUNTIME_DIFF_SHA256
+        ):
+            reviewed = "issue218-foundation"
         if reviewed is not None:
             print(
                 f"Provider runtime parity verified: reviewed={reviewed} "
