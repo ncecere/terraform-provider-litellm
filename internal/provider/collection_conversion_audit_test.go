@@ -52,6 +52,8 @@ func ignoredConversions() {
 	_ = object.As(ctx, &decoded, options)
 	list, _ := types.ListValue(elementType, elements)
 	from, _ := types.SetValueFrom(ctx, elementType, values)
+	named, diagnostics := types.MapValue(elementType, entries)
+	_ = diagnostics
 	set, _ := types.SetValue(elementType, elements)
 	mapped, _ = types.MapValue(elementType, entries)
 	object, _ := types.ObjectValue(attributeTypes, attributes)
@@ -78,6 +80,7 @@ func propagatedConversions() diagnostics {
 		"discarded SetValueFrom constructor diagnostics": 1,
 		"discarded SetValue constructor diagnostics":     1,
 		"discarded MapValue constructor diagnostics":     1,
+		"unchecked MapValue constructor diagnostics":     1,
 		"discarded ObjectValue constructor diagnostics":  1,
 		"production SetValueMust constructor":            1,
 	}
@@ -119,6 +122,7 @@ func scanCollectionConversionFile(filename string, file *ast.File) []collectionA
 		if !ok || function.Body == nil {
 			continue
 		}
+		safeDiagnostics := safelyConsumedDiagnosticIdentifiers(function.Body)
 		symbol := function.Name.Name
 		if function.Recv != nil && len(function.Recv.List) > 0 {
 			symbol = receiverTypeName(function.Recv.List[0].Type) + "." + symbol
@@ -144,9 +148,17 @@ func scanCollectionConversionFile(filename string, file *ast.File) []collectionA
 						violations = append(violations, collectionAuditViolation{File: filename, Symbol: symbol, Kind: kind})
 					}
 				}
-				if len(typed.Lhs) >= 2 && isBlankIdentifier(typed.Lhs[len(typed.Lhs)-1]) {
+				if len(typed.Lhs) >= 2 {
 					if constructor := collectionConstructorName(call); constructor != "" {
-						violations = append(violations, collectionAuditViolation{File: filename, Symbol: symbol, Kind: "discarded " + constructor + " constructor diagnostics"})
+						target, identifier := typed.Lhs[len(typed.Lhs)-1].(*ast.Ident)
+						switch {
+						case !identifier:
+							violations = append(violations, collectionAuditViolation{File: filename, Symbol: symbol, Kind: "unchecked " + constructor + " constructor diagnostics"})
+						case target.Name == "_":
+							violations = append(violations, collectionAuditViolation{File: filename, Symbol: symbol, Kind: "discarded " + constructor + " constructor diagnostics"})
+						case !safeDiagnostics[target.Name]:
+							violations = append(violations, collectionAuditViolation{File: filename, Symbol: symbol, Kind: "unchecked " + constructor + " constructor diagnostics"})
+						}
 					}
 				}
 			}
@@ -159,6 +171,46 @@ func scanCollectionConversionFile(filename string, file *ast.File) []collectionA
 		})
 	}
 	return violations
+}
+
+func safelyConsumedDiagnosticIdentifiers(body *ast.BlockStmt) map[string]bool {
+	consumed := map[string]bool{}
+	ast.Inspect(body, func(node ast.Node) bool {
+		switch typed := node.(type) {
+		case *ast.ReturnStmt:
+			for _, result := range typed.Results {
+				if identifier, ok := result.(*ast.Ident); ok {
+					consumed[identifier.Name] = true
+				}
+			}
+		case *ast.CallExpr:
+			switch function := typed.Fun.(type) {
+			case *ast.SelectorExpr:
+				if function.Sel.Name == "HasError" {
+					if identifier, ok := function.X.(*ast.Ident); ok {
+						consumed[identifier.Name] = true
+					}
+				}
+				if function.Sel.Name == "Append" {
+					for _, argument := range typed.Args {
+						if identifier, ok := argument.(*ast.Ident); ok {
+							consumed[identifier.Name] = true
+						}
+					}
+				}
+			case *ast.Ident:
+				if function.Name == "len" || function.Name == "collectionProjectionError" {
+					for _, argument := range typed.Args {
+						if identifier, ok := argument.(*ast.Ident); ok {
+							consumed[identifier.Name] = true
+						}
+					}
+				}
+			}
+		}
+		return true
+	})
+	return consumed
 }
 
 func ignoredConversionCallKind(call *ast.CallExpr) string {

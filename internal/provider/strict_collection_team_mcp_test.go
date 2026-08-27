@@ -2,12 +2,16 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
 )
 
 func TestStrictTeamAndMCPRequestCollectionsFailAtomically(t *testing.T) {
@@ -149,6 +153,84 @@ func TestMCPCollectionProjectionFailureIsTransactional(t *testing.T) {
 	}
 	if !reflect.DeepEqual(confirmed, mcpInfoLeafSet{"prior-confirmed": true}) || !reflect.DeepEqual(adopted, mcpInfoLeafSet{"prior-adopted": true}) {
 		t.Fatalf("failed MCP projection changed provenance: confirmed=%#v adopted=%#v", confirmed, adopted)
+	}
+}
+
+func TestUnifiedAccessGroupCollectionProjectionIsTransactional(t *testing.T) {
+	t.Parallel()
+	prior := UnifiedAccessGroupResourceModel{
+		ID:                 types.StringValue("group-id"),
+		AccessGroupID:      types.StringValue("group-id"),
+		AccessGroupName:    types.StringValue("prior"),
+		AccessModelNames:   types.ListValueMust(types.StringType, []attr.Value{types.StringValue("prior-model")}),
+		AccessMCPServerIDs: types.ListNull(types.StringType),
+		AccessAgentIDs:     types.ListNull(types.StringType),
+		AssignedTeamIDs:    types.ListNull(types.StringType),
+	}
+	data := prior
+	err := readUnifiedAccessGroupResponse(context.Background(), map[string]interface{}{
+		"access_group_id":       "group-id",
+		"access_group_name":     "changed",
+		"access_model_names":    []interface{}{"valid-prefix"},
+		"access_mcp_server_ids": []interface{}{"valid-prefix", false},
+		"access_agent_ids":      []interface{}{},
+		"assigned_team_ids":     []interface{}{},
+	}, &data)
+	if err == nil {
+		t.Fatal("late malformed unified access-group collection was accepted")
+	}
+	if !reflect.DeepEqual(data, prior) {
+		t.Fatalf("failed unified access-group projection changed state: got=%#v want=%#v", data, prior)
+	}
+}
+
+func TestUnifiedAccessGroupDataSourceMalformedCollectionsPublishNoStateProtocol(t *testing.T) {
+	t.Parallel()
+	validHash := strings.Repeat("a", 64)
+	for name, malformed := range map[string]map[string]interface{}{
+		"late list element": {"access_mcp_server_ids": []interface{}{"valid-prefix", false}},
+		"late assigned key": {"assigned_key_ids": []interface{}{validHash, false}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			response := map[string]interface{}{
+				"access_group_id": "group-id", "access_group_name": "group",
+				"access_model_names": []interface{}{}, "access_mcp_server_ids": []interface{}{},
+				"access_agent_ids": []interface{}{}, "assigned_team_ids": []interface{}{},
+				"assigned_key_ids": []interface{}{},
+			}
+			for field, value := range malformed {
+				response[field] = value
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				writer.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(writer).Encode(response)
+			}))
+			defer server.Close()
+
+			protocolServer, schemas := configuredImportProtocolServer(t, ctx, server.URL)
+			const typeName = "litellm_unified_access_group"
+			schema := schemas.DataSourceSchemas[typeName]
+			config := accessGroupProtocolDynamicValue(t, schema, organizationProjectProtocolValue(t, schema, map[string]interface{}{"access_group_id": "group-id"}))
+			read, err := protocolServer.ReadDataSource(ctx, &tfprotov6.ReadDataSourceRequest{TypeName: typeName, Config: config})
+			if err != nil || !accessGroupProtocolDiagnosticsHaveError(read.Diagnostics) {
+				t.Fatalf("malformed data source response was accepted: err=%v diagnostics=%s", err, agentProtocolDiagnosticsText(read.Diagnostics))
+			}
+			if read.State != nil {
+				attributes := protocolAttributeMap(t, schema, read.State)
+				for field, value := range attributes {
+					if field == "access_group_id" {
+						continue
+					}
+					if !value.IsNull() {
+						t.Fatalf("malformed data source response published response-derived %s state", field)
+					}
+				}
+			}
+			if strings.Contains(agentProtocolDiagnosticsText(read.Diagnostics), validHash) {
+				t.Fatal("malformed data source diagnostic exposed a response value")
+			}
+		})
 	}
 }
 

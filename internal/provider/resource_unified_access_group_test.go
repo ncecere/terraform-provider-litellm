@@ -1652,17 +1652,25 @@ func TestUnifiedAccessGroupPartialSynchronizationAndDataSourceLeakageFiltering(t
 
 	valid := strings.Repeat("d", 64)
 	value := types.ListUnknown(types.StringType)
-	setSafeAssignedKeyListFromResponse(&value, []interface{}{
+	if err := setSafeAssignedKeyListFromResponse(context.Background(), &value, []interface{}{
 		"sha256:" + strings.ToUpper(valid),
 		valid,
 		"sk-never-publish#raw-suffix",
 		"malformed",
 		float64(1),
-	})
-	if got, want := unifiedAccessGroupListStrings(t, value), []string{"sha256:" + strings.ToUpper(valid), valid}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("data-source filtered assignments = %#v, want only hash representations %#v", got, want)
+	}); err == nil {
+		t.Fatal("data-source accepted a malformed late assigned-key value")
 	}
-	if strings.Contains(strings.Join(unifiedAccessGroupListStrings(t, value), ","), "suffix") {
-		t.Fatal("data-source state published a suffix identifier")
+	if !value.IsUnknown() {
+		t.Fatalf("failed assigned-key projection changed state: %#v", value)
+	}
+	if err := setSafeAssignedKeyListFromResponse(context.Background(), &value, []interface{}{
+		"sha256:" + strings.ToUpper(valid),
+		valid,
+	}); err != nil {
+		t.Fatalf("valid hash-only assignments failed: %v", err)
+	}
+	if got, want := unifiedAccessGroupListStrings(t, value), []string{"sha256:" + strings.ToUpper(valid), valid}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("data-source assignments = %#v, want hash representations %#v", got, want)
 	}
 }
