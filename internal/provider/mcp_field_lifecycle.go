@@ -95,12 +95,16 @@ func mcpWireValuesEqual(left, right interface{}) bool {
 	return mcpInfoJSONValuesEqual(normalizeMCPWireValue(left), normalizeMCPWireValue(right))
 }
 
-func mcpAliasIntentCannotConverge(value types.String) bool {
+func mcpAliasCreateIntentCannotConverge(value types.String) bool {
 	return !value.IsNull() && !value.IsUnknown() && (value.ValueString() == "" || strings.Contains(value.ValueString(), " "))
 }
 
+func mcpAliasUpdateIntentCannotConverge(value types.String) bool {
+	return !value.IsNull() && !value.IsUnknown() && strings.Contains(value.ValueString(), " ")
+}
+
 func (r *MCPServerResource) buildMCPServerCreateRequest(ctx context.Context, plan, config *MCPServerResourceModel, resolvedMCPInfo map[string]interface{}, mcpInfoPresent bool) (map[string]interface{}, error) {
-	if mcpAliasIntentCannotConverge(config.Alias) {
+	if mcpAliasCreateIntentCannotConverge(config.Alias) {
 		return nil, fmt.Errorf("configured alias must be non-empty and must not require LiteLLM normalization")
 	}
 	request, err := r.buildMCPServerRequest(ctx, plan, resolvedMCPInfo, mcpInfoPresent)
@@ -279,9 +283,16 @@ func buildMCPFieldDelta(ctx context.Context, _ MCPServerResourceModel, config, s
 		}
 		name := mcpFieldWireName(fieldPath)
 		if fieldPath == mcpFieldCredentialsPath {
-			// Values cannot be compared to API markers. Existing ownership writes
-			// only on a Terraform value change; initial takeover writes once.
-			if !committed.Owned[fieldPath] || !config.Credentials.Equal(state.Credentials) {
+			// Values cannot be compared to API markers. v1.98 merges credential
+			// maps, so an initial empty Update takeover cannot establish exact
+			// emptiness over hidden existing keys. Create remains safe because no
+			// prior row exists.
+			if !committed.Owned[fieldPath] {
+				if credentials, ok := desired.(map[string]string); !ok || len(credentials) == 0 {
+					return nil, fmt.Errorf("empty credentials cannot be adopted safely through LiteLLM's merge-only update")
+				}
+				delta[name] = desired
+			} else if !config.Credentials.Equal(state.Credentials) {
 				delta[name] = desired
 			}
 			continue
@@ -506,9 +517,9 @@ func (r *MCPServerResource) Update(ctx context.Context, req resource.UpdateReque
 		resp.State, resp.Private = req.State, req.Private
 		return
 	}
-	if mcpAliasIntentCannotConverge(config.Alias) {
+	if mcpAliasUpdateIntentCannotConverge(config.Alias) {
 		resp.State, resp.Private = req.State, req.Private
-		resp.Diagnostics.AddError("Invalid MCP Alias Configuration", "Configured alias must be non-empty and must not require LiteLLM normalization. No update was attempted; prior public and private state was retained.")
+		resp.Diagnostics.AddError("Invalid MCP Alias Configuration", "Configured alias must not require LiteLLM normalization. No update was attempted; prior public and private state was retained.")
 		return
 	}
 	plan.ID, plan.ServerID = state.ID, state.ServerID
@@ -581,10 +592,10 @@ func (r *MCPServerResource) Update(ctx context.Context, req resource.UpdateReque
 		}
 	}
 	urlChanged := false
-	if desired, sent := delta["url"]; sent {
-		// v1.98 treats null→value and value→null as URL changes too. If the
-		// previous endpoint is unknown, assume a change and run every implicit-
-		// clear preflight before allowing the PUT.
+	if desired, sent := delta["url"]; sent && desired != nil {
+		// v1.98 treats only a supplied non-null URL as a URL-change trigger.
+		// Null→value is therefore a change, while value→null preserves existing
+		// auth-flow fields. If the previous endpoint is unknown, assume a change.
 		urlChanged = !remoteURLKnown || !mcpWireValuesEqual(desired, remoteURL)
 	}
 	remoteAuth, remoteAuthPresent := mcpKnownRawString(hydration, "auth_type")

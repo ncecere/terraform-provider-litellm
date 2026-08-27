@@ -315,7 +315,7 @@ func TestMCPServerMaskedEmptyCollectionsRequireEstablishingPUTProtocol(t *testin
 	}
 }
 
-func TestMCPServerEmptyAliasRejectedBeforeMutationProtocol(t *testing.T) {
+func TestMCPServerEmptyAliasCreateRejectedAndUpdateConvergesProtocol(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	var requests atomic.Int64
@@ -351,29 +351,28 @@ func TestMCPServerEmptyAliasRejectedBeforeMutationProtocol(t *testing.T) {
 	})
 
 	t.Run("update", func(t *testing.T) {
-		state := accessGroupProtocolDynamicValue(t, schema, organizationProjectProtocolValue(t, schema, map[string]interface{}{
+		state := map[string]interface{}{
 			"id": "empty-alias-update", "server_id": "empty-alias-update", "server_name": "empty-alias-update", "alias": "old",
 			"transport": "http", "auth_type": "none", "url": "https://alias.invalid/mcp", "spec_version": "2024-11-05",
-		}))
-		config := accessGroupProtocolDynamicValue(t, schema, organizationProjectProtocolValue(t, schema, map[string]interface{}{
+		}
+		config := map[string]interface{}{
 			"server_name": "empty-alias-update", "alias": "", "transport": "http", "url": "https://alias.invalid/mcp",
-		}))
-		proposed := organizationProjectProtocolReplace(t, schema, state, map[string]interface{}{"alias": ""})
+		}
+		before := map[string]interface{}{
+			"server_id": "empty-alias-update", "server_name": "empty-alias-update", "alias": "old", "transport": "http",
+			"auth_type": "none", "url": "https://alias.invalid/mcp", "mcp_info": map[string]interface{}{},
+		}
+		after := map[string]interface{}{
+			"server_id": "empty-alias-update", "server_name": "empty-alias-update", "alias": "", "transport": "http",
+			"auth_type": "none", "url": "https://alias.invalid/mcp", "mcp_info": map[string]interface{}{},
+		}
 		private := protocolMCPFieldPrivate(t, mcpFieldOwnership{Owned: map[string]bool{mcpFieldAliasPath: true}, Removals: map[string]bool{}, Generation: 1, Versioned: true})
-		planned, err := protocolServer.PlanResourceChange(ctx, &tfprotov6.PlanResourceChangeRequest{TypeName: "litellm_mcp_server", Config: config, PriorState: state, ProposedNewState: proposed, PriorPrivate: private})
-		if err != nil || accessGroupProtocolDiagnosticsHaveError(planned.Diagnostics) {
-			t.Fatalf("empty update alias plan: err=%v diagnostics=%v", err, planned.Diagnostics)
+		result := runMCPUpdateCompletionProtocol(t, state, config, map[string]interface{}{"alias": ""}, before, after, private)
+		if accessGroupProtocolDiagnosticsHaveError(result.applied.Diagnostics) || result.puts != 1 || result.body["alias"] != "" {
+			t.Fatalf("empty update alias did not converge: puts=%d body=%#v diagnostics=%v", result.puts, result.body, result.applied.Diagnostics)
 		}
-		applied, err := protocolServer.ApplyResourceChange(ctx, &tfprotov6.ApplyResourceChangeRequest{TypeName: "litellm_mcp_server", Config: config, PriorState: state, PlannedState: planned.PlannedState, PlannedPrivate: planned.PlannedPrivate})
-		if err != nil || !accessGroupProtocolDiagnosticsHaveError(applied.Diagnostics) || requests.Load() != 0 {
-			t.Fatalf("empty update alias: err=%v diagnostics=%v requests=%d", err, applied.Diagnostics, requests.Load())
-		}
-		assertMCPServerFailedUpdateRetainsPriorState(t, schema, state, applied.NewState)
-		if !bytes.Equal(applied.Private, planned.PlannedPrivate) {
-			t.Fatal("alias preflight changed provider-private state")
-		}
-		if got := protocolCommittedMCPFieldOwnership(t, applied.Private); got.Generation != 1 || !got.Owned[mcpFieldAliasPath] {
-			t.Fatalf("failed alias preflight changed committed private ownership: %#v", got)
+		if got := protocolCommittedMCPFieldOwnership(t, result.applied.Private); got.Generation != 1 || !got.Owned[mcpFieldAliasPath] {
+			t.Fatalf("empty update alias changed ownership unexpectedly: %#v", got)
 		}
 	})
 }

@@ -164,6 +164,26 @@ func TestMCPServerNameAndAliasRemovalHasZeroPUTProtocol(t *testing.T) {
 	}
 }
 
+func TestMCPServerInitialEmptyCredentialsTakeoverHasZeroPUTProtocol(t *testing.T) {
+	state := map[string]interface{}{
+		"id": "empty-credentials", "server_id": "empty-credentials", "server_name": "empty-credentials",
+		"transport": "http", "url": "https://known.invalid/mcp", "auth_type": "none", "spec_version": "2024-11-05",
+	}
+	emptyCredentials := map[string]tftypes.Value{}
+	config := map[string]interface{}{
+		"server_name": "empty-credentials", "transport": "http", "url": "https://known.invalid/mcp", "credentials": emptyCredentials,
+	}
+	before := map[string]interface{}{
+		"server_id": "empty-credentials", "server_name": "empty-credentials", "transport": "http",
+		"url": "https://known.invalid/mcp", "auth_type": "none", "credentials": nil, "mcp_info": map[string]interface{}{},
+	}
+	result := runMCPUpdateCompletionProtocol(t, state, config, map[string]interface{}{"credentials": emptyCredentials}, before, before, protocolMCPFieldPrivate(t, emptyMCPFieldOwnership()))
+	if !accessGroupProtocolDiagnosticsHaveError(result.applied.Diagnostics) || result.puts != 0 {
+		t.Fatalf("empty merge-only credential takeover was not rejected: puts=%d diagnostics=%v", result.puts, result.applied.Diagnostics)
+	}
+	assertMCPServerFailedUpdateRetainsPriorState(t, result.schema, result.state, result.applied.NewState)
+}
+
 func TestMCPServerNullToValueURLRunsImplicitClearPreflightProtocol(t *testing.T) {
 	private := protocolMCPFieldPrivate(t, emptyMCPFieldOwnership())
 	state := map[string]interface{}{
@@ -182,6 +202,43 @@ func TestMCPServerNullToValueURLRunsImplicitClearPreflightProtocol(t *testing.T)
 		t.Fatalf("null-to-value URL bypassed implicit-clear preflight: puts=%d diagnostics=%v", result.puts, result.applied.Diagnostics)
 	}
 	assertMCPServerFailedUpdateRetainsPriorState(t, result.schema, result.state, result.applied.NewState)
+}
+
+func TestMCPServerURLClearPreservesOAuthFieldsProtocol(t *testing.T) {
+	state := map[string]interface{}{
+		"id": "url-clear", "server_id": "url-clear", "server_name": "url-clear", "transport": "http",
+		"url": "https://old.invalid/mcp", "spec_path": "/known/spec.json", "auth_type": "oauth2", "spec_version": "2024-11-05",
+		"authorization_url": "https://auth.invalid/authorize", "token_url": "https://auth.invalid/token", "registration_url": "https://auth.invalid/register",
+	}
+	config := map[string]interface{}{
+		"server_name": "url-clear", "transport": "http", "spec_path": "/known/spec.json", "auth_type": "oauth2",
+		"authorization_url": "https://auth.invalid/authorize", "token_url": "https://auth.invalid/token", "registration_url": "https://auth.invalid/register",
+	}
+	before := map[string]interface{}{
+		"server_id": "url-clear", "server_name": "url-clear", "transport": "http", "url": "https://old.invalid/mcp",
+		"spec_path": "/known/spec.json", "auth_type": "oauth2", "authorization_url": "https://auth.invalid/authorize",
+		"token_url": "https://auth.invalid/token", "registration_url": "https://auth.invalid/register", "mcp_info": map[string]interface{}{},
+	}
+	after := map[string]interface{}{
+		"server_id": "url-clear", "server_name": "url-clear", "transport": "http", "url": nil,
+		"spec_path": "/known/spec.json", "auth_type": "oauth2", "authorization_url": "https://auth.invalid/authorize",
+		"token_url": "https://auth.invalid/token", "registration_url": "https://auth.invalid/register", "mcp_info": map[string]interface{}{},
+	}
+	owned := mcpFieldOwnership{Owned: map[string]bool{
+		mcpFieldAuthorizationURLPath: true, mcpFieldTokenURLPath: true, mcpFieldRegistrationURLPath: true,
+	}, Removals: map[string]bool{}, Generation: 1, Versioned: true}
+	result := runMCPUpdateCompletionProtocol(t, state, config, map[string]interface{}{"url": nil}, before, after, protocolMCPFieldPrivate(t, owned))
+	if accessGroupProtocolDiagnosticsHaveError(result.applied.Diagnostics) || result.puts != 1 {
+		t.Fatalf("URL clear was incorrectly blocked: puts=%d diagnostics=%v", result.puts, result.applied.Diagnostics)
+	}
+	if value, present := result.body["url"]; !present || value != nil {
+		t.Fatalf("URL clear sentinel missing from PUT: %#v", result.body)
+	}
+	for _, name := range []string{"authorization_url", "token_url", "registration_url"} {
+		if _, sent := result.body[name]; sent {
+			t.Fatalf("unchanged OAuth field %s was needlessly sent: %#v", name, result.body)
+		}
+	}
 }
 
 func TestMCPServerTransportUpdateCompletesEndpointPayloadProtocol(t *testing.T) {
