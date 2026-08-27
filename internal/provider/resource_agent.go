@@ -565,7 +565,7 @@ func (r *AgentResource) Update(ctx context.Context, req resource.UpdateRequest, 
 		resp.Diagnostics.AddError("Invalid Agent Skill Identity", err.Error())
 		return
 	}
-	if err := validateAgentUpdateClears(planned, state, config, importedFields); err != nil {
+	if err := validateAgentUpdateClears(ctx, planned, state, config, importedFields); err != nil {
 		resp.Private = req.Private
 		resp.State = req.State
 		resp.Diagnostics.AddError("Unsupported Agent Clear", err.Error())
@@ -608,7 +608,7 @@ func (r *AgentResource) Update(ctx context.Context, req resource.UpdateRequest, 
 		resp.Diagnostics.AddError("Agent Update Preflight Failed", "The provider could not safely preserve masked or unmanaged agent configuration before mutation. The agent was not changed.")
 		return
 	}
-	cardTouched := agentCardUpdateTouched(planned, state, config, importedFields)
+	cardTouched := agentCardUpdateTouched(ctx, planned, state, config, importedFields)
 	paramsTouched := agentParamsUpdateTouched(planned, state, config, importedFields)
 	var preservation agentPatchPreservation
 	if paramsTouched || cardTouched {
@@ -1932,6 +1932,9 @@ func (r *AgentResource) readAgentCardContext(ctx context.Context, cardRaw map[st
 }
 
 func (r *AgentResource) reconcileAgentCardWithOwnership(ctx context.Context, cardRaw map[string]interface{}, data *AgentResourceModel, apiOwned agentFieldSet) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	observedData := emptyKnownAgentResourceModel()
 	if err := r.readAgentCardContext(ctx, cardRaw, &observedData); err != nil {
 		return err
@@ -1982,7 +1985,7 @@ func (r *AgentResource) reconcileAgentCardWithOwnership(ctx context.Context, car
 		}
 		equal := old.Equal(remote)
 		if setLike {
-			equal = agentStringListSetEqual(old, remote)
+			equal = agentStringListSetEqual(ctx, old, remote)
 		}
 		if !apiOwned[field] && equal {
 			return
@@ -2154,7 +2157,7 @@ func (r *AgentResource) reconcileAgentCardWithOwnership(ctx context.Context, car
 		out.Skills = skills
 	}
 	data.AgentCard = out
-	return nil
+	return ctx.Err()
 }
 
 func agentCapabilityValue(capabilities map[string]interface{}, key string) bool {

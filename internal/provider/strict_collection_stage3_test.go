@@ -139,6 +139,12 @@ func TestStage3RequestCollectionPreflightsHonorCancellation(t *testing.T) {
 	if request, err := (&AgentResource{}).buildAgentUpdateRequest(ctx, &agent, &AgentResourceModel{}, &agent, agentFieldSet{}); err == nil || request != nil {
 		t.Fatalf("canceled agent update request: request=%#v err=%v", request, err)
 	}
+	if agentStringListSetEqual(ctx, value, value) {
+		t.Fatal("canceled agent list comparison reported equality")
+	}
+	if confirmed, err := reconcileConfirmedAgentState(ctx, agent, agent, agent, AgentResourceModel{}, agentFieldSet{}); err == nil || !confirmed.ID.IsNull() {
+		t.Fatalf("canceled agent confirmation: confirmed=%#v err=%v", confirmed, err)
+	}
 }
 
 func TestStage3ValidAgentCollectionPayloadPreservesOrderAndDuplicates(t *testing.T) {

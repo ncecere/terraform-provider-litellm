@@ -183,7 +183,7 @@ func TestValidateAgentUpdateClearsRejectsV198PhantomClears(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			plan := cloneAgentResourceModel(base)
 			test.mutate(&plan)
-			if err := validateAgentUpdateClears(plan, base, plan, agentFieldSet{}); err == nil {
+			if err := validateAgentUpdateClears(context.Background(), plan, base, plan, agentFieldSet{}); err == nil {
 				t.Fatal("unsafe v1.98 clear was accepted")
 			}
 		})
@@ -397,14 +397,14 @@ func TestValidateAgentUpdateClearsUnknownAndUnchangedEmptyBlocks(t *testing.T) {
 	state := AgentResourceModel{AgentCard: &AgentCardModel{Name: types.StringValue("Agent"), URL: types.StringValue("https://agent.invalid"), Version: types.StringValue("1"), Provider: &AgentProviderModel{Organization: types.StringNull(), URL: types.StringNull()}, Capabilities: &AgentCapabilitiesModel{Streaming: types.BoolNull(), PushNotifications: types.BoolNull(), StateTransitionHistory: types.BoolNull()}}}
 	plan := cloneAgentResourceModel(state)
 	config := cloneAgentResourceModel(state)
-	if err := validateAgentUpdateClears(plan, state, config, nil); err != nil {
+	if err := validateAgentUpdateClears(context.Background(), plan, state, config, nil); err != nil {
 		t.Fatalf("unchanged empty blocks rejected: %v", err)
 	}
 	plan.AgentCard.Version = types.StringUnknown()
 	config.AgentCard.Version = types.StringUnknown()
 	plan.AgentCard.Provider.Organization = types.StringUnknown()
 	config.AgentCard.Provider.Organization = types.StringUnknown()
-	if err := validateAgentUpdateClears(plan, state, config, nil); err != nil {
+	if err := validateAgentUpdateClears(context.Background(), plan, state, config, nil); err != nil {
 		t.Fatalf("unknown values treated as removals: %v", err)
 	}
 }
@@ -445,7 +445,7 @@ func TestAgentCardWireUsesFreshPreflightAndExactLeafOwnership(t *testing.T) {
 	fresh.AgentCard.Provider.Organization = types.StringValue("direct-api")
 	fresh.AgentCard.Skills[0].Description = types.StringValue("direct-api")
 	imported := agentFieldSet{agentFieldCardProviderOrg: true, agentSkillLeaf("skill", "description"): true}
-	if !agentCardUpdateTouched(plan, state, config, imported) {
+	if !agentCardUpdateTouched(context.Background(), plan, state, config, imported) {
 		t.Fatal("card change not detected")
 	}
 	wire := overlayAgentCardWire(fresh, plan, state, config, imported)
@@ -635,11 +635,11 @@ func TestAgentSkillRemovalOwnershipAndPayload(t *testing.T) {
 	plan := cloneAgentResourceModel(state)
 	plan.AgentCard.Skills = []AgentSkillModel{skill("keep")}
 	config := cloneAgentResourceModel(plan)
-	if err := validateAgentUpdateClears(plan, state, config, agentFieldSet{agentSkillLeaf("remove", "name"): true}); err != nil {
+	if err := validateAgentUpdateClears(context.Background(), plan, state, config, agentFieldSet{agentSkillLeaf("remove", "name"): true}); err != nil {
 		t.Fatalf("API-owned skill preservation was rejected: %v", err)
 	}
 	structuralScope := agentFieldSet{agentScopeCardSkills: true}
-	if err := validateAgentUpdateClears(plan, state, config, structuralScope); err != nil {
+	if err := validateAgentUpdateClears(context.Background(), plan, state, config, structuralScope); err != nil {
 		t.Fatalf("Terraform-owned skill removal rejected with retained import scope: %v", err)
 	}
 	fresh := cloneAgentResourceModel(state)
@@ -654,7 +654,7 @@ func TestAgentSkillRemovalOwnershipAndPayload(t *testing.T) {
 		t.Fatalf("removal payload retained omitted skill: %#v", skills)
 	}
 	observed := cloneAgentResourceModel(plan)
-	if !agentSkillsMutationMatch(plan.AgentCard.Skills, state.AgentCard, config.AgentCard.Skills, observed.AgentCard.Skills, structuralScope) {
+	if !agentSkillsMutationMatch(context.Background(), plan.AgentCard.Skills, state.AgentCard, config.AgentCard.Skills, observed.AgentCard.Skills, structuralScope) {
 		t.Fatal("confirmed Terraform-owned skill absence did not match")
 	}
 }

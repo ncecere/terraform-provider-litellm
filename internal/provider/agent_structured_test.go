@@ -444,12 +444,15 @@ func TestAgentRemoveOwnedSkillsPreservesAPISiblings(t *testing.T) {
 	observedSkills := agentWireModelsForSkillsForTest(byID)
 	unconfirmed := append(append([]AgentSkillModel(nil), observedSkills...), AgentSkillModel{ID: types.StringValue("owned"), Name: types.StringValue("Owned")})
 	ownership := agentFieldSet{agentScopeCardSkills: true, agentSkillLeaf("imported", "id"): true}
-	if agentSkillsMutationMatch(nil, prior.AgentCard, nil, unconfirmed, ownership) {
+	if agentSkillsMutationMatch(context.Background(), nil, prior.AgentCard, nil, unconfirmed, ownership) {
 		t.Fatal("unconfirmed owned skill removal accepted")
 	}
 	observed := cloneAgentResourceModel(plan)
 	observed.AgentCard.Skills = observedSkills
-	confirmed := reconcileConfirmedAgentState(plan, observed, config, prior, ownership)
+	confirmed, err := reconcileConfirmedAgentState(context.Background(), plan, observed, config, prior, ownership)
+	if err != nil {
+		t.Fatal(err)
+	}
 	confirmedByID := map[string]bool{}
 	for _, skill := range confirmed.AgentCard.Skills {
 		confirmedByID[skill.ID.ValueString()] = true
