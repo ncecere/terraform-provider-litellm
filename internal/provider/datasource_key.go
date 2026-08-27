@@ -10,7 +10,6 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/datasourcevalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
-	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -207,6 +206,7 @@ func (d *KeyDataSource) Read(ctx context.Context, req datasource.ReadRequest, re
 		resp.Diagnostics.AddError("Invalid Key Lookup", err.Error())
 		return
 	}
+
 	query := url.Values{"key": []string{lookupValue}}
 	endpoint := endpointWithQuery("/key/info", query)
 
@@ -216,131 +216,155 @@ func (d *KeyDataSource) Read(ctx context.Context, req datasource.ReadRequest, re
 		return
 	}
 
-	// The /key/info endpoint may return key data nested inside "info"
+	actualKey, err := dataSourceRequiredStringAt(result, "key")
+	if err != nil || actualKey.ValueString() != lookupValue {
+		resp.Diagnostics.AddError("Invalid API Response", "Key response identity did not match the requested key.")
+		return
+	}
 	info := result
-	if nested, ok := result["info"].(map[string]interface{}); ok {
-		info = nested
-	}
-
-	// Never copy the sensitive raw key into the non-sensitive data source ID.
-	data.ID = types.StringValue(managementID)
-
-	// Update fields from response
-	if keyAlias, ok := info["key_alias"].(string); ok {
-		data.KeyAlias = types.StringValue(keyAlias)
-	}
-	if userID, ok := info["user_id"].(string); ok {
-		data.UserID = types.StringValue(userID)
-	}
-	if teamID, ok := info["team_id"].(string); ok {
-		data.TeamID = types.StringValue(teamID)
-	}
-	if projectID, ok := info["project_id"].(string); ok {
-		data.ProjectID = types.StringValue(projectID)
-	}
-	if budgetDuration, ok := info["budget_duration"].(string); ok {
-		data.BudgetDuration = types.StringValue(budgetDuration)
-	}
-
-	// max_budget belongs to the v1.98 verification-token row; soft_budget
-	// belongs to the budget relation. Retain the opposite locations only as
-	// historical compatibility fallbacks.
-	if err := updateFloat64FromAPIPaths(&data.MaxBudget, info, true, true,
-		[]string{"max_budget"},
-		[]string{"litellm_budget_table", "max_budget"},
-	); err != nil {
-		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+	if raw, presence, infoErr := apiValueAt(result, "info"); infoErr != nil {
+		resp.Diagnostics.AddError("Invalid API Response", infoErr.Error())
 		return
-	}
-	if err := updateFloat64FromAPIPaths(&data.SoftBudget, info, true, true,
-		[]string{"litellm_budget_table", "soft_budget"},
-		[]string{"soft_budget"},
-	); err != nil {
-		resp.Diagnostics.AddError("Invalid API Response", err.Error())
-		return
-	}
-	if err := updateFloat64FromAPI(&data.Spend, info, true, true, "spend"); err != nil {
-		resp.Diagnostics.AddError("Invalid API Response", err.Error())
-		return
-	}
-	for _, field := range []struct {
-		name   string
-		target *types.Int64
-	}{
-		{"max_parallel_requests", &data.MaxParallelRequests},
-		{"tpm_limit", &data.TPMLimit},
-		{"rpm_limit", &data.RPMLimit},
-	} {
-		if err := updateInt64FromAPI(field.target, info, true, true, field.name); err != nil {
-			resp.Diagnostics.AddError("Invalid API Response", err.Error())
+	} else if presence == apiValuePresent {
+		var ok bool
+		info, ok = raw.(map[string]interface{})
+		if !ok {
+			resp.Diagnostics.AddError("Invalid API Response", dataSourceShapeError([]string{"info"}, "an object or null").Error())
 			return
 		}
 	}
 
-	// Boolean fields
-	if blocked, ok := info["blocked"].(bool); ok {
-		data.Blocked = types.BoolValue(blocked)
-	} else {
-		data.Blocked = types.BoolValue(false)
+	complete := KeyDataSourceModel{
+		ID:      types.StringValue(managementID),
+		Key:     data.Key,
+		KeyHash: data.KeyHash,
 	}
-
-	// Handle models list
-	if models, ok := info["models"].([]interface{}); ok {
-		modelsList := make([]attr.Value, len(models))
-		for i, m := range models {
-			if str, ok := m.(string); ok {
-				modelsList[i] = types.StringValue(str)
-			}
-		}
-		data.Models, _ = types.ListValue(types.StringType, modelsList)
-	} else {
-		data.Models, _ = types.ListValue(types.StringType, []attr.Value{})
+	if complete.KeyAlias, err = dataSourceRoleRedactedNullableStringAt(info, "key_alias"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
 	}
-
-	// Handle tags list.
-	// LiteLLM stores tags inside metadata["tags"] rather than as a top-level field in /key/info,
-	// so we check both locations.
-	var rawTags []interface{}
-	if tags, ok := info["tags"].([]interface{}); ok {
-		rawTags = tags
-	} else if metadata, ok := info["metadata"].(map[string]interface{}); ok {
-		if tags, ok := metadata["tags"].([]interface{}); ok {
-			rawTags = tags
-		}
+	if complete.UserID, err = dataSourceRoleRedactedNullableStringAt(info, "user_id"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
 	}
-	if len(rawTags) > 0 {
-		tagsList := make([]attr.Value, 0, len(rawTags))
-		for _, t := range rawTags {
-			if str, ok := t.(string); ok {
-				tagsList = append(tagsList, types.StringValue(str))
-			}
-		}
-		data.Tags, _ = types.ListValue(types.StringType, tagsList)
-	} else {
-		data.Tags, _ = types.ListValue(types.StringType, []attr.Value{})
+	if complete.TeamID, err = dataSourceRoleRedactedNullableStringAt(info, "team_id"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
 	}
-
-	if routerSettings, present, err := keyRouterSettingsFromAPI(info["router_settings"], types.ObjectNull(keyRouterSettingsAttrTypes)); err != nil {
+	if complete.ProjectID, err = dataSourceRoleRedactedNullableStringAt(info, "project_id"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+	if complete.BudgetDuration, err = dataSourceRoleRedactedNullableStringAt(info, "budget_duration"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+	if complete.Models, err = dataSourceRoleRedactedNullableStringListAt(info, "models"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+	if complete.MaxBudget, err = keyDataSourceNullableFloat64AtPaths(info,
+		[]string{"max_budget"}, []string{"litellm_budget_table", "max_budget"}); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+	if complete.SoftBudget, err = keyDataSourceNullableFloat64AtPaths(info,
+		[]string{"litellm_budget_table", "soft_budget"}, []string{"soft_budget"}); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+	if complete.Spend, err = dataSourceRoleRedactedNullableFloat64At(info, "spend"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+	if complete.MaxParallelRequests, err = dataSourceRoleRedactedNullableInt64At(info, "max_parallel_requests"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+	if complete.TPMLimit, err = dataSourceRoleRedactedNullableInt64At(info, "tpm_limit"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+	if complete.RPMLimit, err = dataSourceRoleRedactedNullableInt64At(info, "rpm_limit"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+	if complete.Blocked, err = dataSourceRoleRedactedNullableBoolAt(info, "blocked"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+	if complete.Tags, complete.Metadata, err = keyDataSourceCollections(info); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+	if complete.RouterSettings, _, err = keyRouterSettingsFromAPI(info["router_settings"], types.ObjectNull(keyRouterSettingsAttrTypes)); err != nil {
 		resp.Diagnostics.AddError("Router Settings Read Error", err.Error())
 		return
-	} else if present {
-		data.RouterSettings = routerSettings
-	} else {
-		data.RouterSettings = types.ObjectNull(keyRouterSettingsAttrTypes)
 	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, &complete)...)
+}
 
-	// Handle metadata map
-	if metadata, ok := info["metadata"].(map[string]interface{}); ok {
-		metaMap := make(map[string]attr.Value)
-		for k, v := range metadata {
-			if str, ok := v.(string); ok {
-				metaMap[k] = types.StringValue(str)
-			}
+func keyDataSourceNullableFloat64AtPaths(object map[string]interface{}, paths ...[]string) (types.Float64, error) {
+	selected, err := firstAPIFieldPath(object, paths...)
+	if err != nil {
+		return types.Float64Null(), err
+	}
+	if selected == nil {
+		return types.Float64Null(), nil
+	}
+	return dataSourceNullableFloat64At(object, selected...)
+}
+
+func keyDataSourceCollections(info map[string]interface{}) (types.List, types.Map, error) {
+	metadataRaw, metadataPresence, err := apiValueAt(info, "metadata")
+	if err != nil {
+		return types.ListNull(types.StringType), types.MapNull(types.StringType), err
+	}
+	var metadataObject map[string]interface{}
+	if metadataPresence == apiValuePresent {
+		var ok bool
+		metadataObject, ok = metadataRaw.(map[string]interface{})
+		if !ok {
+			return types.ListNull(types.StringType), types.MapNull(types.StringType), dataSourceShapeError([]string{"metadata"}, "an object of strings or null")
 		}
-		data.Metadata, _ = types.MapValue(types.StringType, metaMap)
-	} else {
-		data.Metadata, _ = types.MapValue(types.StringType, map[string]attr.Value{})
 	}
 
-	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	// LiteLLM stores tags in metadata while historical versions also projected
+	// them at the top level. Validate both locations before applying the
+	// top-level compatibility precedence.
+	metadataTags := types.ListNull(types.StringType)
+	if metadataPresence == apiValuePresent {
+		metadataTags, err = dataSourceNullableStringListAt(info, "metadata", "tags")
+		if err != nil {
+			return types.ListNull(types.StringType), types.MapNull(types.StringType), err
+		}
+	}
+	_, topTagsPresence, err := apiValueAt(info, "tags")
+	if err != nil {
+		return types.ListNull(types.StringType), types.MapNull(types.StringType), err
+	}
+	tags := metadataTags
+	if topTagsPresence != apiValueAbsent {
+		tags, err = dataSourceNullableStringListAt(info, "tags")
+		if err != nil {
+			return types.ListNull(types.StringType), types.MapNull(types.StringType), err
+		}
+	}
+
+	if metadataPresence != apiValuePresent {
+		metadata, mapErr := dataSourceNullableStringMapAt(info, "metadata")
+		return tags, metadata, mapErr
+	}
+	projected := make(map[string]interface{}, len(metadataObject))
+	for key, value := range metadataObject {
+		if key != "tags" {
+			projected[key] = value
+		}
+	}
+	wrapper := map[string]interface{}{"metadata": projected}
+	metadata, err := dataSourceNullableStringMapAt(wrapper, "metadata")
+	if err != nil {
+		return types.ListNull(types.StringType), types.MapNull(types.StringType), err
+	}
+	return tags, metadata, nil
 }

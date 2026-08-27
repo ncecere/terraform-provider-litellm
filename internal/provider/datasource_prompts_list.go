@@ -9,6 +9,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
@@ -137,6 +138,9 @@ func (d *PromptsListDataSource) Configure(ctx context.Context, req datasource.Co
 
 func promptListItemFromAPI(raw map[string]interface{}, expectedEnvironment string) (PromptListItemModel, error) {
 	var item PromptListItemModel
+	if version, present := raw["version"]; present && version != nil && !dataSourceAPIJSONNumber(version) {
+		return item, dataSourceShapeError([]string{"version"}, "an exact integral JSON number or null")
+	}
 	observed, err := promptObject(raw, false, "", expectedEnvironment)
 	if err != nil {
 		return item, err
@@ -202,9 +206,14 @@ func fetchPromptListItems(ctx context.Context, client *Client, environment strin
 			return nil, err
 		}
 		items := make([]PromptListItemModel, 0, len(results))
+		seen := make(map[string]struct{}, len(results))
 		for _, result := range results {
 			item, err := promptListItemFromAPI(result, "")
 			if err != nil {
+				return nil, err
+			}
+			identity := promptListIdentity(item)
+			if err := dataSourceListIdentity(seen, identity, "/prompts/list", "prompt identity"); err != nil {
 				return nil, err
 			}
 			items = append(items, item)
@@ -222,26 +231,28 @@ func fetchPromptListItems(ctx context.Context, client *Client, environment strin
 		if err != nil {
 			return nil, err
 		}
+		seen := make(map[string]struct{}, len(results))
 		for _, result := range results {
-			promptID, ok := result["prompt_id"].(string)
-			if !ok || promptID == "" {
+			promptID, identityErr := dataSourceRequiredStringAt(result, "prompt_id")
+			if identityErr != nil {
 				return nil, fmt.Errorf("prompt list response omitted a non-empty prompt_id")
 			}
-			candidates[promptID] = struct{}{}
+			if err := dataSourceListIdentity(seen, promptID.ValueString(), endpoint, "prompt_id"); err != nil {
+				return nil, err
+			}
+			candidates[promptID.ValueString()] = struct{}{}
 		}
 	}
 	if len(candidates) > 200 {
 		return nil, fmt.Errorf("prompt inventory exceeded the bounded environment-enrichment limit")
 	}
 	items := make([]PromptListItemModel, 0, len(candidates))
+	seen := make(map[string]struct{}, len(candidates))
 	for promptID := range candidates {
 		var raw map[string]interface{}
 		err := client.DoRequestWithResponse(ctx, "GET", promptEndpoint(promptID, environment, nil), nil, &raw)
 		if err != nil {
-			if isPromptAbsentError(err) {
-				continue
-			}
-			return nil, err
+			return nil, fmt.Errorf("prompt inventory enrichment failed")
 		}
 		spec, ok := raw["prompt_spec"].(map[string]interface{})
 		if !ok {
@@ -254,20 +265,35 @@ func fetchPromptListItems(ctx context.Context, client *Client, environment strin
 		if item.PromptID.ValueString() != promptID {
 			return nil, fmt.Errorf("prompt info response identity did not match the requested prompt")
 		}
+		if err := dataSourceListIdentity(seen, promptListIdentity(item), "/prompts/info", "prompt identity"); err != nil {
+			return nil, err
+		}
 		items = append(items, item)
 	}
 	return items, nil
 }
 
+func promptListIdentity(item PromptListItemModel) string {
+	version := "null"
+	if !item.Version.IsNull() {
+		version = fmt.Sprintf("%d", item.Version.ValueInt64())
+	}
+	return item.Environment.ValueString() + "\x00" + item.PromptID.ValueString() + "\x00" + version
+}
+
 func (d *PromptsListDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
 	var data PromptsListDataSourceModel
 
-	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("environment"), &data.Environment)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	if err := validateOptionalStringFilter("environment", data.Environment); err != nil {
+		resp.Diagnostics.AddError("Invalid Prompt List Filter", err.Error())
+		return
+	}
 
-	environmentConfigured := !data.Environment.IsNull() && !data.Environment.IsUnknown()
+	environmentConfigured := !data.Environment.IsNull()
 	environment := data.Environment.ValueString()
 	prompts, err := fetchPromptListItems(ctx, d.client, environment, environmentConfigured)
 	if err != nil {

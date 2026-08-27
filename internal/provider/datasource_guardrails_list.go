@@ -165,9 +165,13 @@ func fetchGuardrailListItems(ctx context.Context, client *Client) ([]GuardrailLi
 		return nil, err
 	}
 	guardrails := make([]GuardrailListItemModel, 0, len(results))
+	seen := make(map[string]struct{}, len(results))
 	for _, result := range results {
 		guardrail, err := guardrailListItemFromAPI(result)
 		if err != nil {
+			return nil, err
+		}
+		if err := dataSourceListIdentity(seen, guardrail.GuardrailID.ValueString(), endpoint, "guardrail_id"); err != nil {
 			return nil, err
 		}
 		guardrails = append(guardrails, guardrail)
@@ -177,11 +181,6 @@ func fetchGuardrailListItems(ctx context.Context, client *Client) ([]GuardrailLi
 
 func (d *GuardrailsListDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
 	var data GuardrailsListDataSourceModel
-
-	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
 
 	guardrails, err := fetchGuardrailListItems(ctx, d.client)
 	if err != nil {

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -206,193 +205,141 @@ func (d *MCPServerDataSource) Configure(ctx context.Context, req datasource.Conf
 }
 
 func (d *MCPServerDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
-	var data MCPServerDataSourceModel
-
-	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
+	var config MCPServerDataSourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	if config.ServerID.IsNull() || config.ServerID.IsUnknown() || config.ServerID.ValueString() == "" {
+		resp.Diagnostics.AddError("Invalid Data Source Configuration", "The MCP server lookup requires a known nonempty server_id.")
+		return
+	}
 
-	serverID := data.ServerID.ValueString()
-	endpoint := mcpServerEndpoint(serverID)
-
+	serverID := config.ServerID.ValueString()
 	var result map[string]interface{}
-	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
+	if err := d.client.DoRequestWithResponse(ctx, "GET", mcpServerEndpoint(serverID), nil, &result); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read MCP server: %s", err))
 		return
 	}
-	if err := validateMCPServerResponse(result, serverID); err != nil {
+
+	data, err := projectMCPServerDataSource(result, serverID)
+	if err != nil {
 		resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned a malformed MCP server response.")
 		return
 	}
-	mcpInfo, mcpInfoPresence, err := mcpInfoDocumentFromResponse(result)
-	if err != nil {
-		resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned a malformed non-object MCP info value.")
-		return
-	}
-	if mcpInfoPresence == apiValuePresent {
-		canonical, err := canonicalMCPInfoJSONObject(mcpInfo)
-		if err != nil {
-			resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned MCP info that could not be represented safely.")
-			return
-		}
-		data.MCPInfoJSON = types.StringValue(canonical)
-	} else {
-		data.MCPInfoJSON = types.StringNull()
-	}
-	if err := validateMCPServerOptionalResponseFields(
-		result,
-		[]string{"server_name", "alias", "description", "url", "spec_path", "auth_type", "command", "created_at", "created_by", "updated_at", "updated_by", "status", "last_health_check", "health_check_error", "authorization_url", "token_url", "registration_url"},
-		[]string{"allow_all_keys"},
-		[]string{"mcp_access_groups", "args", "allowed_tools", "extra_headers"},
-		[]string{"env", "static_headers"},
-	); err != nil {
-		resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned malformed optional MCP server fields.")
-		return
-	}
-
-	// Update fields from response
-	if sid, ok := result["server_id"].(string); ok {
-		data.ServerID = types.StringValue(sid)
-		data.ID = types.StringValue(sid)
-	}
-	if serverName, ok := result["server_name"].(string); ok {
-		data.ServerName = types.StringValue(serverName)
-	}
-	if alias, ok := result["alias"].(string); ok {
-		data.Alias = types.StringValue(alias)
-	}
-	if desc, ok := result["description"].(string); ok {
-		data.Description = types.StringValue(desc)
-	}
-	if remoteURL, ok := result["url"].(string); ok {
-		data.URL = types.StringValue(remoteURL)
-	}
-	if specPath, ok := result["spec_path"].(string); ok {
-		data.SpecPath = types.StringValue(specPath)
-	}
-	if transport, ok := result["transport"].(string); ok {
-		data.Transport = types.StringValue(transport)
-	}
-	if authType, ok := result["auth_type"].(string); ok {
-		data.AuthType = types.StringValue(authType)
-	}
-	if command, ok := result["command"].(string); ok {
-		data.Command = types.StringValue(command)
-	}
-	if createdAt, ok := result["created_at"].(string); ok {
-		data.CreatedAt = types.StringValue(createdAt)
-	}
-	if createdBy, ok := result["created_by"].(string); ok {
-		data.CreatedBy = types.StringValue(createdBy)
-	}
-	if updatedAt, ok := result["updated_at"].(string); ok {
-		data.UpdatedAt = types.StringValue(updatedAt)
-	}
-	if updatedBy, ok := result["updated_by"].(string); ok {
-		data.UpdatedBy = types.StringValue(updatedBy)
-	}
-	if status, ok := result["status"].(string); ok {
-		data.Status = types.StringValue(status)
-	}
-	if lastHealthCheck, ok := result["last_health_check"].(string); ok {
-		data.LastHealthCheck = types.StringValue(lastHealthCheck)
-	}
-	if healthCheckError, ok := result["health_check_error"].(string); ok {
-		data.HealthCheckError = types.StringValue(healthCheckError)
-	}
-
-	// Handle access groups
-	if accessGroups, ok := result["mcp_access_groups"].([]interface{}); ok {
-		groups := make([]attr.Value, len(accessGroups))
-		for i, g := range accessGroups {
-			if str, ok := g.(string); ok {
-				groups[i] = types.StringValue(str)
-			}
-		}
-		data.MCPAccessGroups, _ = types.ListValue(types.StringType, groups)
-	} else {
-		data.MCPAccessGroups, _ = types.ListValue(types.StringType, []attr.Value{})
-	}
-
-	// Handle args
-	if args, ok := result["args"].([]interface{}); ok {
-		argsList := make([]attr.Value, len(args))
-		for i, a := range args {
-			if str, ok := a.(string); ok {
-				argsList[i] = types.StringValue(str)
-			}
-		}
-		data.Args, _ = types.ListValue(types.StringType, argsList)
-	} else {
-		data.Args, _ = types.ListValue(types.StringType, []attr.Value{})
-	}
-
-	// Handle env
-	if env, ok := result["env"].(map[string]interface{}); ok {
-		envMap := make(map[string]attr.Value)
-		for k, v := range env {
-			if str, ok := v.(string); ok {
-				envMap[k] = types.StringValue(str)
-			}
-		}
-		data.Env, _ = types.MapValue(types.StringType, envMap)
-	} else {
-		data.Env, _ = types.MapValue(types.StringType, map[string]attr.Value{})
-	}
-
-	// Handle allowed_tools
-	if allowedTools, ok := result["allowed_tools"].([]interface{}); ok {
-		tools := make([]attr.Value, len(allowedTools))
-		for i, t := range allowedTools {
-			if str, ok := t.(string); ok {
-				tools[i] = types.StringValue(str)
-			}
-		}
-		data.AllowedTools, _ = types.ListValue(types.StringType, tools)
-	} else {
-		data.AllowedTools, _ = types.ListValue(types.StringType, []attr.Value{})
-	}
-
-	// Handle extra_headers
-	if extraHeaders, ok := result["extra_headers"].([]interface{}); ok {
-		headers := make([]attr.Value, 0, len(extraHeaders))
-		for _, v := range extraHeaders {
-			if str, ok := v.(string); ok {
-				headers = append(headers, types.StringValue(str))
-			}
-		}
-		data.ExtraHeaders, _ = types.ListValue(types.StringType, headers)
-	} else {
-		data.ExtraHeaders, _ = types.ListValue(types.StringType, []attr.Value{})
-	}
-
-	// Handle static_headers
-	if staticHeaders, ok := result["static_headers"].(map[string]interface{}); ok {
-		headersMap := make(map[string]attr.Value)
-		for k, v := range staticHeaders {
-			if str, ok := v.(string); ok {
-				headersMap[k] = types.StringValue(str)
-			}
-		}
-		data.StaticHeaders, _ = types.MapValue(types.StringType, headersMap)
-	} else {
-		data.StaticHeaders, _ = types.MapValue(types.StringType, map[string]attr.Value{})
-	}
-
-	// Handle OAuth URLs
-	if authURL, ok := result["authorization_url"].(string); ok {
-		data.AuthorizationURL = types.StringValue(authURL)
-	}
-	if tokenURL, ok := result["token_url"].(string); ok {
-		data.TokenURL = types.StringValue(tokenURL)
-	}
-	if regURL, ok := result["registration_url"].(string); ok {
-		data.RegistrationURL = types.StringValue(regURL)
-	}
-	if allowAllKeys, ok := result["allow_all_keys"].(bool); ok {
-		data.AllowAllKeys = types.BoolValue(allowAllKeys)
-	}
-
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+}
+
+func projectMCPServerDataSource(result map[string]interface{}, expectedServerID string) (MCPServerDataSourceModel, error) {
+	var data MCPServerDataSourceModel
+	serverID, err := dataSourceRequiredStringAt(result, "server_id")
+	if err != nil || serverID.ValueString() != expectedServerID {
+		return data, fmt.Errorf("MCP server response identity mismatch")
+	}
+	transport, err := dataSourceRequiredStringAt(result, "transport")
+	if err != nil || !mcpDataSourceTransportValid(transport.ValueString()) {
+		return data, fmt.Errorf("MCP server response transport is invalid")
+	}
+
+	data.ID = serverID
+	data.ServerID = serverID
+	data.Transport = transport
+	data.SpecVersion = types.StringNull()
+	if data.ServerName, err = dataSourceNullableStringAt(result, "server_name"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.Alias, err = dataSourceNullableStringAt(result, "alias"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.Description, err = dataSourceNullableStringAt(result, "description"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.URL, err = dataSourceNullableStringAt(result, "url"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.SpecPath, err = dataSourceNullableStringAt(result, "spec_path"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.AuthType, err = dataSourceNullableStringAt(result, "auth_type"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.MCPAccessGroups, err = dataSourceNullableStringListAt(result, "mcp_access_groups"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.MCPInfoJSON, err = mcpInfoDataSourceValue(result); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.Command, err = dataSourceNullableStringAt(result, "command"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.Args, err = dataSourceNullableStringListAt(result, "args"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.Env, err = dataSourceNullableStringMapAt(result, "env"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.AllowedTools, err = dataSourceNullableStringListAt(result, "allowed_tools"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.ExtraHeaders, err = dataSourceNullableStringListAt(result, "extra_headers"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.StaticHeaders, err = dataSourceNullableStringMapAt(result, "static_headers"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.AuthorizationURL, err = dataSourceNullableStringAt(result, "authorization_url"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.TokenURL, err = dataSourceNullableStringAt(result, "token_url"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.RegistrationURL, err = dataSourceNullableStringAt(result, "registration_url"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.AllowAllKeys, err = dataSourceNullableBoolAt(result, "allow_all_keys"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.CreatedAt, err = dataSourceNullableStringAt(result, "created_at"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.CreatedBy, err = dataSourceNullableStringAt(result, "created_by"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.UpdatedAt, err = dataSourceNullableStringAt(result, "updated_at"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.UpdatedBy, err = dataSourceNullableStringAt(result, "updated_by"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.Status, err = dataSourceNullableStringAt(result, "status"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.LastHealthCheck, err = dataSourceNullableStringAt(result, "last_health_check"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.HealthCheckError, err = dataSourceNullableStringAt(result, "health_check_error"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	return data, nil
+}
+
+func mcpInfoDataSourceValue(result map[string]interface{}) (types.String, error) {
+	document, presence, err := mcpInfoDocumentFromResponse(result)
+	if err != nil || presence != apiValuePresent {
+		return types.StringNull(), err
+	}
+	canonical, err := canonicalMCPInfoJSONObject(document)
+	if err != nil {
+		return types.StringNull(), err
+	}
+	return types.StringValue(canonical), nil
+}
+
+func mcpDataSourceTransportValid(transport string) bool {
+	for _, allowed := range mcpTransportsV198 {
+		if transport == allowed {
+			return true
+		}
+	}
+	return false
 }

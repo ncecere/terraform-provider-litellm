@@ -190,6 +190,20 @@ func safeListDiagnostic(err error, filters url.Values) string {
 	return sanitizeDiagnosticString(err.Error(), secrets)
 }
 
+func validateOptionalStringFilter(name string, value interface {
+	IsNull() bool
+	IsUnknown() bool
+	ValueString() string
+}) error {
+	if value.IsUnknown() {
+		return fmt.Errorf("optional filter %s must be known before reading", name)
+	}
+	if !value.IsNull() && value.ValueString() == "" {
+		return fmt.Errorf("optional filter %s must be nonempty when configured", name)
+	}
+	return nil
+}
+
 func addKnownStringFilter(values url.Values, name string, value interface {
 	IsNull() bool
 	IsUnknown() bool

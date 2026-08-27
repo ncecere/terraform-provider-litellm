@@ -9,6 +9,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -81,8 +82,12 @@ func (d *OrganizationsListDataSource) Configure(_ context.Context, req datasourc
 
 func (d *OrganizationsListDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
 	var data OrganizationsListDataSourceModel
-	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("org_alias"), &data.OrgAlias)...)
 	if resp.Diagnostics.HasError() {
+		return
+	}
+	if err := validateOptionalStringFilter("org_alias", data.OrgAlias); err != nil {
+		resp.Diagnostics.AddError("Invalid Organization List Filter", err.Error())
 		return
 	}
 	filters := organizationListFilters(data.OrgAlias)
@@ -99,25 +104,41 @@ func (d *OrganizationsListDataSource) Read(ctx context.Context, req datasource.R
 	}
 	data.ID = types.StringValue("organizations")
 	data.Organizations = make([]OrganizationListItem, 0, len(items))
+	seen := make(map[string]struct{}, len(items))
 	for _, raw := range items {
 		object, err := decodeListObject(raw, "/organization/list", "organization item")
 		if err != nil {
 			resp.Diagnostics.AddError("Invalid API Response", err.Error())
 			return
 		}
-		organizationID, ok := object["organization_id"].(string)
-		if !ok || organizationID == "" {
-			resp.Diagnostics.AddError("Invalid API Response", "/organization/list returned an organization object without organization_id")
+		identity, err := dataSourceRequiredStringAt(object, "organization_id")
+		if err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", "/organization/list returned an organization object without a canonical organization_id")
+			return
+		}
+		organizationID := identity.ValueString()
+		if err := dataSourceListIdentity(seen, organizationID, "/organization/list", "organization_id"); err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", err.Error())
 			return
 		}
 		table, err := parseBudgetTable(object)
+		if err == nil {
+			err = validateDataSourceBudgetTableNumbers(table)
+		}
 		if err != nil {
 			resp.Diagnostics.AddError("Invalid API Response", err.Error())
 			return
 		}
-		item := OrganizationListItem{OrganizationID: types.StringValue(organizationID), Blocked: types.BoolValue(false)}
-		if alias, ok := object["organization_alias"].(string); ok {
-			item.OrganizationAlias = types.StringValue(alias)
+		item := OrganizationListItem{OrganizationID: identity, Blocked: types.BoolNull()}
+		item.OrganizationAlias, err = dataSourceNullableStringAt(object, "organization_alias")
+		if err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", err.Error())
+			return
+		}
+		item.Blocked, err = dataSourceNullableBoolAt(object, "blocked")
+		if err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", err.Error())
+			return
 		}
 		budgetID, presence, err := budgetTableID(object, table)
 		if err != nil {
@@ -140,7 +161,8 @@ func (d *OrganizationsListDataSource) Read(ctx context.Context, req datasource.R
 				return
 			}
 		}
-		if err := updateFloat64FromAPI(&item.Spend, object, true, true, "spend"); err != nil {
+		item.Spend, err = dataSourceNullableFloat64At(object, "spend")
+		if err != nil {
 			resp.Diagnostics.AddError("Invalid API Response", err.Error())
 			return
 		}
@@ -159,11 +181,13 @@ func (d *OrganizationsListDataSource) Read(ctx context.Context, req datasource.R
 			resp.Diagnostics.AddError("Invalid API Response", err.Error())
 			return
 		}
-		if err := updateInt64MapFromAPI(&item.ModelRPMLimit, object, true, true, "metadata", "model_rpm_limit"); err != nil {
+		item.ModelRPMLimit, err = dataSourceNullableInt64MapAt(object, "metadata", "model_rpm_limit")
+		if err != nil {
 			resp.Diagnostics.AddError("Invalid API Response", err.Error())
 			return
 		}
-		if err := updateInt64MapFromAPI(&item.ModelTPMLimit, object, true, true, "metadata", "model_tpm_limit"); err != nil {
+		item.ModelTPMLimit, err = dataSourceNullableInt64MapAt(object, "metadata", "model_tpm_limit")
+		if err != nil {
 			resp.Diagnostics.AddError("Invalid API Response", err.Error())
 			return
 		}

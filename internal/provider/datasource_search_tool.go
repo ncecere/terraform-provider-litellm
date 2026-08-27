@@ -92,59 +92,63 @@ func (d *SearchToolDataSource) Configure(ctx context.Context, req datasource.Con
 }
 
 func (d *SearchToolDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
-	var data SearchToolDataSourceModel
-
-	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
+	var config SearchToolDataSourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
-	searchToolID := data.SearchToolID.ValueString()
+	searchToolID := config.SearchToolID.ValueString()
+	if searchToolDataSourceLookupInvalid(resp, searchToolID) {
+		return
+	}
 	endpoint := endpointWithPathSegment("/search_tools/", searchToolID, "")
-
 	var result map[string]interface{}
 	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read search tool: %s", err))
 		return
 	}
-
 	if err := validateSearchToolAPIObject(result, searchToolID); err != nil {
 		resp.Diagnostics.AddError("Invalid API Response", err.Error())
 		return
 	}
 
-	// Update fields from response
-	if stID, ok := result["search_tool_id"].(string); ok {
-		data.SearchToolID = types.StringValue(stID)
-		data.ID = types.StringValue(stID)
+	actualID, err := dataSourceRequiredStringAt(result, "search_tool_id")
+	if err != nil || actualID.ValueString() != searchToolID {
+		resp.Diagnostics.AddError("Invalid API Response", "Search tool response identity did not match the requested search tool.")
+		return
 	}
-
-	if searchToolName, ok := result["search_tool_name"].(string); ok {
-		data.SearchToolName = types.StringValue(searchToolName)
-	}
-
-	// Handle litellm_params
-	if litellmParams, ok := result["litellm_params"].(map[string]interface{}); ok {
-		if searchProvider, ok := litellmParams["search_provider"].(string); ok {
-			data.SearchProvider = types.StringValue(searchProvider)
-		}
-		if apiBase, ok := litellmParams["api_base"].(string); ok {
-			data.APIBase = types.StringValue(apiBase)
-		}
-		if err := updateFloat64FromAPI(&data.Timeout, litellmParams, true, true, "timeout"); err != nil {
-			resp.Diagnostics.AddError("Invalid API Response", err.Error())
-			return
-		}
-		if err := updateInt64FromAPI(&data.MaxRetries, litellmParams, true, true, "max_retries"); err != nil {
-			resp.Diagnostics.AddError("Invalid API Response", err.Error())
-			return
-		}
-	}
-
-	if err := updateJSONObjectStringState(&data.SearchToolInfo, result, "search_tool_info", true); err != nil {
+	data := SearchToolDataSourceModel{ID: actualID, SearchToolID: config.SearchToolID}
+	if data.SearchToolName, err = dataSourceRequiredStringAt(result, "search_tool_name"); err != nil {
 		resp.Diagnostics.AddError("Invalid API Response", err.Error())
 		return
 	}
-
+	if data.SearchProvider, err = dataSourceRequiredStringAt(result, "litellm_params", "search_provider"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+	if data.APIBase, err = dataSourceNullableStringAt(result, "litellm_params", "api_base"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+	if data.Timeout, err = dataSourceNullableFloat64At(result, "litellm_params", "timeout"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+	if data.MaxRetries, err = dataSourceNullableInt64At(result, "litellm_params", "max_retries"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+	if data.SearchToolInfo, err = dataSourceNullableCanonicalJSONObjectAt(result, "search_tool_info"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+}
+
+func searchToolDataSourceLookupInvalid(resp *datasource.ReadResponse, searchToolID string) bool {
+	if searchToolID != "" {
+		return false
+	}
+	resp.Diagnostics.AddError("Invalid Search Tool Lookup", "search_tool_id must be known and nonempty")
+	return true
 }

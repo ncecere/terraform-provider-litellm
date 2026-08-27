@@ -102,26 +102,25 @@ func (d *BudgetDataSource) Configure(ctx context.Context, req datasource.Configu
 }
 
 func (d *BudgetDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
-	var data BudgetDataSourceModel
-
-	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
+	var config BudgetDataSourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
-	budgetID := data.BudgetID.ValueString()
-
-	// /budget/info expects POST with budgets array
-	infoReq := map[string]interface{}{
-		"budgets": []string{budgetID},
+	budgetID := config.BudgetID.ValueString()
+	if config.BudgetID.IsNull() || config.BudgetID.IsUnknown() || budgetID == "" {
+		resp.Diagnostics.AddError("Invalid Budget Lookup", "budget_id must be known and nonempty")
+		return
 	}
+
+	// /budget/info expects POST with a budgets array.
+	infoReq := map[string]interface{}{"budgets": []string{budgetID}}
 
 	var results []map[string]interface{}
 	if err := d.client.DoRequestWithResponse(ctx, "POST", "/budget/info", infoReq, &results); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read budget: %s", err))
 		return
 	}
-
 	if len(results) != 1 {
 		if len(results) == 0 {
 			resp.Diagnostics.AddError("Not Found", fmt.Sprintf("Budget not found: %s", budgetID))
@@ -130,52 +129,45 @@ func (d *BudgetDataSource) Read(ctx context.Context, req datasource.ReadRequest,
 		}
 		return
 	}
-
 	result := results[0]
-	actualBudgetID, ok := result["budget_id"].(string)
-	if !ok || actualBudgetID == "" || actualBudgetID != budgetID {
+	actualBudgetID, err := dataSourceRequiredStringAt(result, "budget_id")
+	if err != nil || actualBudgetID.ValueString() != budgetID {
 		resp.Diagnostics.AddError("Invalid API Response", "Budget response identity did not match the requested budget.")
 		return
 	}
 
-	// Populate the data model
-	data.ID = types.StringValue(actualBudgetID)
-
-	for _, field := range []struct {
-		name   string
-		target *types.Float64
-	}{
-		{"max_budget", &data.MaxBudget},
-		{"soft_budget", &data.SoftBudget},
-	} {
-		if err := updateFloat64FromAPI(field.target, result, true, true, field.name); err != nil {
-			resp.Diagnostics.AddError("Invalid API Response", err.Error())
-			return
-		}
-	}
-	for _, field := range []struct {
-		name   string
-		target *types.Int64
-	}{
-		{"max_parallel_requests", &data.MaxParallelRequests},
-		{"tpm_limit", &data.TPMLimit},
-		{"rpm_limit", &data.RPMLimit},
-	} {
-		if err := updateInt64FromAPI(field.target, result, true, true, field.name); err != nil {
-			resp.Diagnostics.AddError("Invalid API Response", err.Error())
-			return
-		}
-	}
-	if budgetDuration, ok := result["budget_duration"].(string); ok {
-		data.BudgetDuration = types.StringValue(budgetDuration)
-	}
-	if budgetResetAt, ok := result["budget_reset_at"].(string); ok {
-		data.BudgetResetAt = types.StringValue(budgetResetAt)
-	}
-	if err := updateModelBudgetStringState(&data.ModelMaxBudget, result, "model_max_budget", true); err != nil {
+	data := BudgetDataSourceModel{ID: actualBudgetID, BudgetID: config.BudgetID}
+	if data.MaxBudget, err = dataSourceNullableFloat64At(result, "max_budget"); err != nil {
 		resp.Diagnostics.AddError("Invalid API Response", err.Error())
 		return
 	}
-
+	if data.SoftBudget, err = dataSourceNullableFloat64At(result, "soft_budget"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+	if data.MaxParallelRequests, err = dataSourceNullableInt64At(result, "max_parallel_requests"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+	if data.TPMLimit, err = dataSourceNullableInt64At(result, "tpm_limit"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+	if data.RPMLimit, err = dataSourceNullableInt64At(result, "rpm_limit"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+	if data.BudgetDuration, err = dataSourceNullableStringAt(result, "budget_duration"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+	if data.BudgetResetAt, err = dataSourceNullableStringAt(result, "budget_reset_at"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+	if data.ModelMaxBudget, err = dataSourceNullableCanonicalJSONObjectAt(result, "model_max_budget"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }

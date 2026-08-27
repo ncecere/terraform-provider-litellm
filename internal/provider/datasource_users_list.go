@@ -9,6 +9,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -123,8 +124,12 @@ func (d *UsersListDataSource) Configure(ctx context.Context, req datasource.Conf
 func (d *UsersListDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
 	var data UsersListDataSourceModel
 
-	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("user_role"), &data.UserRole)...)
 	if resp.Diagnostics.HasError() {
+		return
+	}
+	if err := validateOptionalStringFilter("user_role", data.UserRole); err != nil {
+		resp.Diagnostics.AddError("Invalid User List Filter", err.Error())
 		return
 	}
 
@@ -216,14 +221,14 @@ func decodeUserListItem(rawItem json.RawMessage) (UserListItem, error) {
 		return UserListItem{}, fmt.Errorf("/user/list returned a user object without user_id")
 	}
 	item := UserListItem{UserID: types.StringValue(userID)}
-	if alias, ok := userMap["user_alias"].(string); ok {
-		item.UserAlias = types.StringValue(alias)
+	if item.UserAlias, err = dataSourceNullableStringAt(userMap, "user_alias"); err != nil {
+		return UserListItem{}, err
 	}
-	if email, ok := userMap["user_email"].(string); ok {
-		item.UserEmail = types.StringValue(email)
+	if item.UserEmail, err = dataSourceNullableStringAt(userMap, "user_email"); err != nil {
+		return UserListItem{}, err
 	}
-	if role, ok := userMap["user_role"].(string); ok {
-		item.UserRole = types.StringValue(role)
+	if item.UserRole, err = dataSourceNullableStringAt(userMap, "user_role"); err != nil {
+		return UserListItem{}, err
 	}
 	for _, field := range []struct {
 		name   string
@@ -232,9 +237,11 @@ func decodeUserListItem(rawItem json.RawMessage) (UserListItem, error) {
 		{"max_budget", &item.MaxBudget},
 		{"spend", &item.Spend},
 	} {
-		if err := updateFloat64FromAPI(field.target, userMap, true, true, field.name); err != nil {
-			return UserListItem{}, err
+		value, fieldErr := dataSourceNullableFloat64At(userMap, field.name)
+		if fieldErr != nil {
+			return UserListItem{}, fieldErr
 		}
+		*field.target = value
 	}
 	for _, field := range []struct {
 		name   string
@@ -243,9 +250,11 @@ func decodeUserListItem(rawItem json.RawMessage) (UserListItem, error) {
 		{"tpm_limit", &item.TPMLimit},
 		{"rpm_limit", &item.RPMLimit},
 	} {
-		if err := updateInt64FromAPI(field.target, userMap, true, true, field.name); err != nil {
-			return UserListItem{}, err
+		value, fieldErr := dataSourceNullableInt64At(userMap, field.name)
+		if fieldErr != nil {
+			return UserListItem{}, fieldErr
 		}
+		*field.target = value
 	}
 	return item, nil
 }

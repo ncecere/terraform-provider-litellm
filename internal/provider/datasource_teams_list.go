@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/url"
 	"sort"
@@ -34,9 +33,9 @@ type TeamListItem struct {
 }
 
 type TeamsListDataSourceModel struct {
-	ID             types.String   `tfsdk:"id"`
-	OrganizationID types.String   `tfsdk:"organization_id"`
-	Teams          []TeamListItem `tfsdk:"teams"`
+	ID             types.String `tfsdk:"id"`
+	OrganizationID types.String `tfsdk:"organization_id"`
+	Teams          types.List   `tfsdk:"teams"`
 }
 
 func (d *TeamsListDataSource) Metadata(ctx context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
@@ -117,46 +116,77 @@ func (d *TeamsListDataSource) Configure(ctx context.Context, req datasource.Conf
 }
 
 func (d *TeamsListDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
-	var data TeamsListDataSourceModel
-
-	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
+	var config TeamsListDataSourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	if config.OrganizationID.IsUnknown() {
+		resp.Diagnostics.AddError("Invalid Team List Filter", "organization_id must be known or null")
+		return
+	}
 
-	filters := teamListFilters(data.OrganizationID)
-	endpoint := endpointWithQuery("/team/list", filters)
-
-	var rawResult json.RawMessage
-	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &rawResult); err != nil {
+	filters := teamListFilters(config.OrganizationID)
+	// Preserve the v1 organization_id query contract.
+	results, err := fetchTopLevelListObjects(ctx, d.client, endpointWithQuery("/team/list", filters), "team item")
+	if err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to list teams: %s", safeListDiagnostic(err, filters)))
 		return
 	}
-	teamsData, err := decodeTopLevelList(rawResult, "/team/list")
+	teams, err := projectTeamsListDataSource(results)
 	if err != nil {
 		resp.Diagnostics.AddError("Invalid API Response", err.Error())
 		return
 	}
 
-	data.ID = types.StringValue("teams")
-	data.Teams = make([]TeamListItem, 0, len(teamsData))
-	for _, rawTeam := range teamsData {
-		teamMap, err := decodeListObject(rawTeam, "/team/list", "team item")
+	// Keep the established public ID and configured filter while publishing the
+	// complete validated inventory exactly once.
+	next := struct {
+		ID             types.String   `tfsdk:"id"`
+		OrganizationID types.String   `tfsdk:"organization_id"`
+		Teams          []TeamListItem `tfsdk:"teams"`
+	}{
+		ID:             types.StringValue("teams"),
+		OrganizationID: config.OrganizationID,
+		Teams:          teams,
+	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, &next)...)
+}
+
+func projectTeamsListDataSource(results []map[string]interface{}) ([]TeamListItem, error) {
+	teams := make([]TeamListItem, 0, len(results))
+	seen := make(map[string]struct{}, len(results))
+	for _, result := range results {
+		item := TeamListItem{
+			TeamAlias:      types.StringNull(),
+			OrganizationID: types.StringNull(),
+			MaxBudget:      types.Float64Null(),
+			Spend:          types.Float64Null(),
+			TPMLimit:       types.Int64Null(),
+			RPMLimit:       types.Int64Null(),
+			Blocked:        types.BoolNull(),
+		}
+
+		var err error
+		item.TeamID, err = dataSourceRequiredStringAt(result, "team_id")
 		if err != nil {
-			resp.Diagnostics.AddError("Invalid API Response", err.Error())
-			return
+			return nil, fmt.Errorf("/team/list returned a team object without a canonical team_id")
 		}
-
-		item := TeamListItem{}
-
-		if teamID, ok := teamMap["team_id"].(string); ok {
-			item.TeamID = types.StringValue(teamID)
+		if err := dataSourceListIdentity(seen, item.TeamID.ValueString(), "/team/list", "team_id"); err != nil {
+			return nil, err
 		}
-		if teamAlias, ok := teamMap["team_alias"].(string); ok {
-			item.TeamAlias = types.StringValue(teamAlias)
-		}
-		if orgID, ok := teamMap["organization_id"].(string); ok {
-			item.OrganizationID = types.StringValue(orgID)
+		for _, field := range []struct {
+			name   string
+			target *types.String
+		}{
+			{"team_alias", &item.TeamAlias},
+			{"organization_id", &item.OrganizationID},
+		} {
+			value, fieldErr := dataSourceNullableStringAt(result, field.name)
+			if fieldErr != nil {
+				return nil, fieldErr
+			}
+			*field.target = value
 		}
 		for _, field := range []struct {
 			name   string
@@ -165,10 +195,11 @@ func (d *TeamsListDataSource) Read(ctx context.Context, req datasource.ReadReque
 			{"max_budget", &item.MaxBudget},
 			{"spend", &item.Spend},
 		} {
-			if err := updateFloat64FromAPI(field.target, teamMap, true, true, field.name); err != nil {
-				resp.Diagnostics.AddError("Invalid API Response", err.Error())
-				return
+			value, fieldErr := dataSourceNullableFloat64At(result, field.name)
+			if fieldErr != nil {
+				return nil, fieldErr
 			}
+			*field.target = value
 		}
 		for _, field := range []struct {
 			name   string
@@ -177,28 +208,23 @@ func (d *TeamsListDataSource) Read(ctx context.Context, req datasource.ReadReque
 			{"tpm_limit", &item.TPMLimit},
 			{"rpm_limit", &item.RPMLimit},
 		} {
-			if err := updateInt64FromAPI(field.target, teamMap, true, true, field.name); err != nil {
-				resp.Diagnostics.AddError("Invalid API Response", err.Error())
-				return
+			value, fieldErr := dataSourceNullableInt64At(result, field.name)
+			if fieldErr != nil {
+				return nil, fieldErr
 			}
+			*field.target = value
 		}
-		if blocked, ok := teamMap["blocked"].(bool); ok {
-			item.Blocked = types.BoolValue(blocked)
-		} else {
-			item.Blocked = types.BoolValue(false)
+		item.Blocked, err = dataSourceNullableBoolAt(result, "blocked")
+		if err != nil {
+			return nil, err
 		}
-
-		if item.TeamID.ValueString() == "" {
-			resp.Diagnostics.AddError("Invalid API Response", "/team/list returned a team object without team_id")
-			return
-		}
-		data.Teams = append(data.Teams, item)
+		teams = append(teams, item)
 	}
-	sort.SliceStable(data.Teams, func(i, j int) bool {
-		return data.Teams[i].TeamID.ValueString() < data.Teams[j].TeamID.ValueString()
-	})
 
-	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	sort.SliceStable(teams, func(i, j int) bool {
+		return teams[i].TeamID.ValueString() < teams[j].TeamID.ValueString()
+	})
+	return teams, nil
 }
 
 func teamListFilters(organizationID types.String) url.Values {

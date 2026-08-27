@@ -79,34 +79,35 @@ func (d *TagsListDataSource) Configure(_ context.Context, req datasource.Configu
 
 func (d *TagsListDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
 	var data TagsListDataSourceModel
-	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
 	results, err := fetchTopLevelListObjects(ctx, d.client, "/tag/list", "tag item")
 	if err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to list tags: %s", err))
 		return
 	}
 	tags := make([]TagListItemModel, 0, len(results))
+	seen := make(map[string]struct{}, len(results))
 	for _, object := range results {
 		var tag TagListItemModel
-		name, ok := object["name"].(string)
-		if !ok || name == "" {
-			resp.Diagnostics.AddError("Invalid API Response", "/tag/list returned a tag object without a nonempty name")
+		tag.Name, err = dataSourceRequiredStringAt(object, "name")
+		if err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", "/tag/list returned a tag object without a nonempty canonical name")
 			return
 		}
-		tag.Name = types.StringValue(name)
+		if err := dataSourceListIdentity(seen, tag.Name.ValueString(), "/tag/list", "name"); err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", err.Error())
+			return
+		}
 		if err := updateTagDescription(&tag.Description, object); err != nil {
 			resp.Diagnostics.AddError("Invalid API Response", err.Error())
 			return
 		}
-		models, presence, err := stringListFromAPI(object, "models")
+		models, err := dataSourceNullableStringListAt(object, "models")
 		if err != nil {
 			resp.Diagnostics.AddError("Invalid API Response", err.Error())
 			return
 		}
-		if presence == apiValuePresent {
+		tag.Models = models
+		if !models.IsNull() {
 			modelNames := make([]string, 0, len(models.Elements()))
 			for _, value := range models.Elements() {
 				modelNames = append(modelNames, value.(types.String).ValueString())
@@ -117,11 +118,16 @@ func (d *TagsListDataSource) Read(ctx context.Context, req datasource.ReadReques
 				items = append(items, types.StringValue(model))
 			}
 			tag.Models, _ = types.ListValue(types.StringType, items)
-		} else {
-			tag.Models, _ = types.ListValue(types.StringType, []attr.Value{})
 		}
-		if err := updateTagBudgetState(tagListBudgetTargets(&tag), object, false, true); err != nil {
-			resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		table, budgetErr := parseBudgetTable(object)
+		if budgetErr == nil {
+			budgetErr = validateDataSourceBudgetTableNumbers(table)
+		}
+		if budgetErr == nil {
+			budgetErr = updateTagBudgetState(tagListBudgetTargets(&tag), object, false, true)
+		}
+		if budgetErr != nil {
+			resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned malformed tag budget data.")
 			return
 		}
 		tags = append(tags, tag)

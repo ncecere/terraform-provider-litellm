@@ -12,6 +12,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -138,9 +139,16 @@ func (d *KeysListDataSource) Configure(ctx context.Context, req datasource.Confi
 func (d *KeysListDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
 	var data KeysListDataSourceModel
 
-	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("team_id"), &data.TeamID)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("user_id"), &data.UserID)...)
 	if resp.Diagnostics.HasError() {
 		return
+	}
+	for name, value := range map[string]types.String{"team_id": data.TeamID, "user_id": data.UserID} {
+		if err := validateOptionalStringFilter(name, value); err != nil {
+			resp.Diagnostics.AddError("Invalid Key List Filter", err.Error())
+			return
+		}
 	}
 
 	filters := keyListFilters(data.TeamID, data.UserID)
@@ -236,14 +244,14 @@ func decodeKeyListItem(raw json.RawMessage) (KeyListItem, error) {
 		if !ok {
 			return KeyListItem{}, fmt.Errorf("/key/list returned a key string without a valid SHA256 management hash")
 		}
-		return KeyListItem{KeyName: types.StringValue(canonicalHash), Blocked: types.BoolValue(false)}, nil
+		return KeyListItem{KeyName: types.StringValue(canonicalHash), Blocked: types.BoolNull()}, nil
 	}
 
 	keyMap, err := decodeListObject(trimmed, "/key/list", "key item")
 	if err != nil {
 		return KeyListItem{}, err
 	}
-	item := KeyListItem{Blocked: types.BoolValue(false)}
+	item := KeyListItem{Blocked: types.BoolNull()}
 	token, ok := keyMap["token"].(string)
 	canonicalHash, validHash := canonicalSHA256ManagementHash(token)
 	if !ok || !validHash {
@@ -252,22 +260,24 @@ func decodeKeyListItem(raw json.RawMessage) (KeyListItem, error) {
 	// LiteLLM v1.98 key_name includes a raw-token suffix. Never read it into
 	// Terraform state; token is the endpoint's hash-only management identity.
 	item.KeyName = types.StringValue(canonicalHash)
-	if keyAlias, ok := keyMap["key_alias"].(string); ok {
-		item.KeyAlias = types.StringValue(keyAlias)
-	}
-	if userID, ok := keyMap["user_id"].(string); ok {
-		item.UserID = types.StringValue(userID)
-	}
-	if teamID, ok := keyMap["team_id"].(string); ok {
-		item.TeamID = types.StringValue(teamID)
-	}
-	if err := updateFloat64FromAPIPaths(&item.MaxBudget, keyMap, true, true,
-		[]string{"max_budget"},
-		[]string{"litellm_budget_table", "max_budget"},
-	); err != nil {
+	if item.KeyAlias, err = dataSourceNullableStringAt(keyMap, "key_alias"); err != nil {
 		return KeyListItem{}, err
 	}
-	if err := updateFloat64FromAPI(&item.Spend, keyMap, true, true, "spend"); err != nil {
+	if item.UserID, err = dataSourceNullableStringAt(keyMap, "user_id"); err != nil {
+		return KeyListItem{}, err
+	}
+	if item.TeamID, err = dataSourceNullableStringAt(keyMap, "team_id"); err != nil {
+		return KeyListItem{}, err
+	}
+	item.MaxBudget, err = dataSourceNullableFloat64AtPaths(keyMap,
+		[]string{"max_budget"},
+		[]string{"litellm_budget_table", "max_budget"},
+	)
+	if err != nil {
+		return KeyListItem{}, err
+	}
+	item.Spend, err = dataSourceNullableFloat64At(keyMap, "spend")
+	if err != nil {
 		return KeyListItem{}, err
 	}
 	for _, field := range []struct {
@@ -277,12 +287,22 @@ func decodeKeyListItem(raw json.RawMessage) (KeyListItem, error) {
 		{"tpm_limit", &item.TPMLimit},
 		{"rpm_limit", &item.RPMLimit},
 	} {
-		if err := updateInt64FromAPI(field.target, keyMap, true, true, field.name); err != nil {
-			return KeyListItem{}, err
+		value, fieldErr := dataSourceNullableInt64At(keyMap, field.name)
+		if fieldErr != nil {
+			return KeyListItem{}, fieldErr
 		}
+		*field.target = value
 	}
-	if blocked, ok := keyMap["blocked"].(bool); ok {
-		item.Blocked = types.BoolValue(blocked)
+	if rawBlocked, exists := keyMap["blocked"]; exists {
+		if rawBlocked == nil {
+			item.Blocked = types.BoolNull()
+		} else {
+			blocked, ok := rawBlocked.(bool)
+			if !ok {
+				return KeyListItem{}, dataSourceShapeError([]string{"blocked"}, "a boolean or null")
+			}
+			item.Blocked = types.BoolValue(blocked)
+		}
 	}
 	return item, nil
 }

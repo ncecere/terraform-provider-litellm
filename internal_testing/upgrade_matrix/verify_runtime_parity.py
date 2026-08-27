@@ -66,6 +66,47 @@ REVIEWED_ISSUE213_PATHS = (
 REVIEWED_ISSUE213_RUNTIME_DIFF_SHA256 = (
     "e921feaf70385ea8ee2d3928f052a80b439139cb31bf72a5e2bba48026935819"
 )
+REVIEWED_ISSUE222_BASE = "6296b878bd183d62a9b2b12cde8f1109eff5f37c"
+REVIEWED_ISSUE222_PATHS = (
+    "internal/provider/datasource_access_group.go",
+    "internal/provider/datasource_access_groups_list.go",
+    "internal/provider/datasource_agents_list.go",
+    "internal/provider/datasource_budget.go",
+    "internal/provider/datasource_budgets_list.go",
+    "internal/provider/datasource_completion_protocol_test.go",
+    "internal/provider/datasource_guardrails_list.go",
+    "internal/provider/datasource_key.go",
+    "internal/provider/datasource_keys_list.go",
+    "internal/provider/datasource_list_presence_protocol_test.go",
+    "internal/provider/datasource_mcp_presence_protocol_test.go",
+    "internal/provider/datasource_mcp_presence_test.go",
+    "internal/provider/datasource_mcp_server.go",
+    "internal/provider/datasource_mcp_servers_list.go",
+    "internal/provider/datasource_model.go",
+    "internal/provider/datasource_models_list.go",
+    "internal/provider/datasource_organizations_list.go",
+    "internal/provider/datasource_presence.go",
+    "internal/provider/datasource_presence_review_regression_test.go",
+    "internal/provider/datasource_presence_test.go",
+    "internal/provider/datasource_projects_list.go",
+    "internal/provider/datasource_prompts_list.go",
+    "internal/provider/datasource_search_tool.go",
+    "internal/provider/datasource_search_tools_list.go",
+    "internal/provider/datasource_singular_presence_protocol_test.go",
+    "internal/provider/datasource_tags_list.go",
+    "internal/provider/datasource_team.go",
+    "internal/provider/datasource_team_presence_protocol_test.go",
+    "internal/provider/datasource_team_presence_test.go",
+    "internal/provider/datasource_teams_list.go",
+    "internal/provider/datasource_unified_access_groups_list.go",
+    "internal/provider/datasource_user.go",
+    "internal/provider/datasource_users_list.go",
+    "internal/provider/jwt_key_mapping_api.go",
+    "internal/provider/list_helpers.go",
+)
+REVIEWED_ISSUE222_RUNTIME_DIFF_SHA256 = (
+    "4842dbb53f7277f4e20a09a35e2f12d5c419c6bdd7d177af5eb623649c6db34c"
+)
 
 
 def git(*args: str) -> str:
@@ -131,6 +172,12 @@ def main() -> int:
             and digest == REVIEWED_ISSUE213_RUNTIME_DIFF_SHA256
         ):
             reviewed = "issue213"
+        elif (
+            comparison == REVIEWED_ISSUE222_BASE
+            and changed_paths == REVIEWED_ISSUE222_PATHS
+            and digest == REVIEWED_ISSUE222_RUNTIME_DIFF_SHA256
+        ):
+            reviewed = "issue222"
         if reviewed is not None:
             print(
                 f"Provider runtime parity verified: reviewed={reviewed} "
