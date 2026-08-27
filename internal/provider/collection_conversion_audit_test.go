@@ -79,6 +79,27 @@ func lengthOnly() {
 	list, diagnostics := types.ListValue(elementType, elements)
 	_ = len(diagnostics)
 }
+func invertedHasError() {
+	list, diagnostics := types.ListValue(elementType, elements)
+	if !diagnostics.HasError() { return }
+}
+func zeroLengthReturn() {
+	list, diagnostics := types.ListValue(elementType, elements)
+	if len(diagnostics) == 0 { return }
+}
+func invertedProjectionError() {
+	list, diagnostics := types.ListValue(elementType, elements)
+	if err := collectionProjectionError(ctx, diagnostics); err == nil { return }
+}
+func appendWithoutPropagation() {
+	list, diagnostics := types.ListValue(elementType, elements)
+	output.Append(diagnostics...)
+}
+func appendAndReturn() diagnostics {
+	list, diagnostics := types.ListValue(elementType, elements)
+	output.Append(diagnostics...)
+	return output
+}
 `
 	if err := os.WriteFile(filepath.Join(directory, "fixture.go"), []byte(source), 0o600); err != nil {
 		t.Fatal(err)
@@ -92,7 +113,7 @@ func lengthOnly() {
 		"ignored ElementsAs diagnostics":                 1,
 		"ignored Object.As diagnostics":                  1,
 		"discarded ListValue constructor diagnostics":    1,
-		"unchecked ListValue constructor diagnostics":    2,
+		"unchecked ListValue constructor diagnostics":    6,
 		"discarded SetValueFrom constructor diagnostics": 1,
 		"discarded SetValue constructor diagnostics":     1,
 		"discarded MapValue constructor diagnostics":     1,
@@ -224,7 +245,7 @@ func diagnosticAssignmentSafelyConsumed(body *ast.BlockStmt, name string, assign
 				if function.Sel.Name == "Append" {
 					for _, argument := range typed.Args {
 						if identifier, ok := argument.(*ast.Ident); ok && identifier.Name == name {
-							safe = true
+							safe = collectionAuditAppendedDiagnosticsPropagate(body, function.X, typed.Pos(), name, assignment, parents)
 						}
 					}
 				}
@@ -237,7 +258,7 @@ func diagnosticAssignmentSafelyConsumed(body *ast.BlockStmt, name string, assign
 					}
 				}
 			}
-			if safe && (!requiresControlFlow || collectionDiagnosticCallControlsExit(typed, parents)) {
+			if safe && (!requiresControlFlow || collectionDiagnosticCallControlsFailureExit(typed, parents)) {
 				safeUses = append(safeUses, typed.Pos())
 			}
 		}
@@ -268,23 +289,201 @@ func collectionAuditParentMap(root ast.Node) map[ast.Node]ast.Node {
 	return parents
 }
 
-func collectionDiagnosticCallControlsExit(call *ast.CallExpr, parents map[ast.Node]ast.Node) bool {
+func collectionAuditAppendedDiagnosticsPropagate(body *ast.BlockStmt, receiver ast.Expr, appendPosition token.Pos, sourceName string, sourceAssignment token.Pos, parents map[ast.Node]ast.Node) bool {
+	receiverKey := collectionAuditExpressionKey(receiver)
+	if receiverKey == "" {
+		return false
+	}
+	boundary := token.NoPos
+	ast.Inspect(body, func(node ast.Node) bool {
+		assignment, ok := node.(*ast.AssignStmt)
+		if !ok || assignment.Pos() <= sourceAssignment {
+			return true
+		}
+		for _, target := range assignment.Lhs {
+			if identifier, ok := target.(*ast.Ident); ok && identifier.Name == sourceName {
+				if boundary == token.NoPos || assignment.Pos() < boundary {
+					boundary = assignment.Pos()
+				}
+			}
+		}
+		return true
+	})
+
+	propagated := false
+	ast.Inspect(body, func(node ast.Node) bool {
+		if propagated || node == nil || node.Pos() <= appendPosition || (boundary != token.NoPos && node.Pos() >= boundary) {
+			return !propagated
+		}
+		switch typed := node.(type) {
+		case *ast.ReturnStmt:
+			for _, result := range typed.Results {
+				if collectionAuditExpressionKey(result) == receiverKey {
+					propagated = true
+				}
+			}
+		case *ast.CallExpr:
+			selector, ok := typed.Fun.(*ast.SelectorExpr)
+			if ok && selector.Sel.Name == "HasError" && collectionAuditExpressionKey(selector.X) == receiverKey && collectionDiagnosticCallControlsFailureExit(typed, parents) {
+				propagated = true
+			}
+		}
+		return !propagated
+	})
+	return propagated
+}
+
+func collectionAuditExpressionKey(expression ast.Expr) string {
+	switch typed := expression.(type) {
+	case *ast.Ident:
+		return typed.Name
+	case *ast.SelectorExpr:
+		prefix := collectionAuditExpressionKey(typed.X)
+		if prefix == "" {
+			return ""
+		}
+		return prefix + "." + typed.Sel.Name
+	case *ast.ParenExpr:
+		return collectionAuditExpressionKey(typed.X)
+	default:
+		return ""
+	}
+}
+
+func collectionDiagnosticCallControlsFailureExit(call *ast.CallExpr, parents map[ast.Node]ast.Node) bool {
+	var conditional *ast.IfStmt
 	for node := ast.Node(call); node != nil; node = parents[node] {
 		switch typed := node.(type) {
 		case *ast.ReturnStmt:
 			return true
 		case *ast.IfStmt:
-			for _, statement := range typed.Body.List {
-				if _, ok := statement.(*ast.ReturnStmt); ok {
-					return true
-				}
-			}
-			return false
+			conditional = typed
+			node = nil
 		case *ast.ExprStmt:
 			return false
 		}
+		if conditional != nil {
+			break
+		}
+	}
+	if conditional == nil || !collectionAuditBlockReturns(conditional.Body) {
+		return false
+	}
+
+	switch function := call.Fun.(type) {
+	case *ast.SelectorExpr:
+		if function.Sel.Name == "HasError" {
+			return collectionAuditPositiveBoolCheck(conditional.Cond, call)
+		}
+	case *ast.Ident:
+		switch function.Name {
+		case "len":
+			return collectionAuditPositiveLengthCheck(conditional.Cond, call)
+		case "collectionProjectionError":
+			assignment, ok := conditional.Init.(*ast.AssignStmt)
+			if !ok || len(assignment.Lhs) == 0 || len(assignment.Rhs) != 1 || assignment.Rhs[0] != call {
+				return false
+			}
+			identifier, ok := assignment.Lhs[len(assignment.Lhs)-1].(*ast.Ident)
+			return ok && collectionAuditNonNilCheck(conditional.Cond, identifier.Name)
+		}
 	}
 	return false
+}
+
+func collectionAuditBlockReturns(block *ast.BlockStmt) bool {
+	for _, statement := range block.List {
+		if _, ok := statement.(*ast.ReturnStmt); ok {
+			return true
+		}
+	}
+	return false
+}
+
+func collectionAuditPositiveBoolCheck(expression ast.Expr, target *ast.CallExpr) bool {
+	switch typed := expression.(type) {
+	case *ast.ParenExpr:
+		return collectionAuditPositiveBoolCheck(typed.X, target)
+	case *ast.CallExpr:
+		return typed == target
+	case *ast.BinaryExpr:
+		if typed.Op == token.LOR {
+			return collectionAuditPositiveBoolCheck(typed.X, target) || collectionAuditPositiveBoolCheck(typed.Y, target)
+		}
+		if typed.Op == token.EQL || typed.Op == token.NEQ {
+			if typed.X == target {
+				if value, ok := collectionAuditBoolLiteral(typed.Y); ok {
+					return (typed.Op == token.EQL && value) || (typed.Op == token.NEQ && !value)
+				}
+			}
+			if typed.Y == target {
+				if value, ok := collectionAuditBoolLiteral(typed.X); ok {
+					return (typed.Op == token.EQL && value) || (typed.Op == token.NEQ && !value)
+				}
+			}
+		}
+	}
+	return false
+}
+
+func collectionAuditPositiveLengthCheck(expression ast.Expr, target *ast.CallExpr) bool {
+	typed, ok := expression.(*ast.BinaryExpr)
+	if !ok {
+		if parenthesized, parenthesizedOK := expression.(*ast.ParenExpr); parenthesizedOK {
+			return collectionAuditPositiveLengthCheck(parenthesized.X, target)
+		}
+		return false
+	}
+	if typed.Op == token.LOR {
+		return collectionAuditPositiveLengthCheck(typed.X, target) || collectionAuditPositiveLengthCheck(typed.Y, target)
+	}
+	if typed.X == target && collectionAuditIntegerLiteralIsZero(typed.Y) {
+		return typed.Op == token.NEQ || typed.Op == token.GTR
+	}
+	if typed.Y == target && collectionAuditIntegerLiteralIsZero(typed.X) {
+		return typed.Op == token.NEQ || typed.Op == token.LSS
+	}
+	return false
+}
+
+func collectionAuditNonNilCheck(expression ast.Expr, name string) bool {
+	typed, ok := expression.(*ast.BinaryExpr)
+	if !ok {
+		if parenthesized, parenthesizedOK := expression.(*ast.ParenExpr); parenthesizedOK {
+			return collectionAuditNonNilCheck(parenthesized.X, name)
+		}
+		return false
+	}
+	if typed.Op == token.LOR {
+		return collectionAuditNonNilCheck(typed.X, name) || collectionAuditNonNilCheck(typed.Y, name)
+	}
+	if typed.Op != token.NEQ {
+		return false
+	}
+	left, leftOK := typed.X.(*ast.Ident)
+	right, rightOK := typed.Y.(*ast.Ident)
+	return (leftOK && left.Name == name && rightOK && right.Name == "nil") ||
+		(rightOK && right.Name == name && leftOK && left.Name == "nil")
+}
+
+func collectionAuditBoolLiteral(expression ast.Expr) (bool, bool) {
+	identifier, ok := expression.(*ast.Ident)
+	if !ok {
+		return false, false
+	}
+	switch identifier.Name {
+	case "true":
+		return true, true
+	case "false":
+		return false, true
+	default:
+		return false, false
+	}
+}
+
+func collectionAuditIntegerLiteralIsZero(expression ast.Expr) bool {
+	literal, ok := expression.(*ast.BasicLit)
+	return ok && literal.Kind == token.INT && literal.Value == "0"
 }
 
 func ignoredConversionCallKind(call *ast.CallExpr) string {
