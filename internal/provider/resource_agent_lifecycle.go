@@ -1232,7 +1232,7 @@ func (r *AgentResource) recoverCreatedAgent(ctx context.Context, planned, config
 		return "", fmt.Errorf("agent create recovery was inconclusive")
 	}
 	resolveAgentUnknowns(&observed)
-	if validateAgentModelSkillIdentities(candidatePlan, config, observed) != nil || len(agentMutationMismatches(candidatePlan, AgentResourceModel{}, config, nil, observed)) != 0 || agentResourceHasUnknowns(observed) {
+	if validateAgentModelSkillIdentities(candidatePlan, config, observed) != nil || len(agentMutationMismatches(ctx, candidatePlan, AgentResourceModel{}, config, nil, observed)) != 0 || agentResourceHasUnknowns(observed) {
 		return "", fmt.Errorf("agent create recovery was inconclusive")
 	}
 	return id, nil
@@ -1774,7 +1774,7 @@ func (r *AgentResource) confirmAgentMutationWithPreservation(ctx context.Context
 		err := r.readAgentWithOwnershipTransportCapture(ctx, &observed, true, nil, true, &raw)
 		if err == nil {
 			resolveAgentUnknowns(&observed)
-			if validateAgentModelSkillIdentities(observed) == nil && preservation.matches(raw) && len(agentMutationMismatches(planned, prior, config, imported, observed)) == 0 && !agentResourceHasUnknowns(observed) {
+			if validateAgentModelSkillIdentities(observed) == nil && preservation.matches(raw) && len(agentMutationMismatches(ctx, planned, prior, config, imported, observed)) == 0 && !agentResourceHasUnknowns(observed) {
 				consecutive++
 				lastConfirmed = reconcileConfirmedAgentState(planned, observed, config, prior, imported)
 				if preservation != nil {
@@ -1809,10 +1809,17 @@ func (r *AgentResource) confirmAgentMutationWithPreservation(ctx context.Context
 	return AgentResourceModel{}, fmt.Errorf("agent mutation did not converge")
 }
 
-func agentMapMutationMatches(planned, prior, config, observed types.Map, imported agentFieldSet, prefix string) bool {
+func agentMapMutationMatches(ctx context.Context, planned, prior, config, observed types.Map, imported agentFieldSet, prefix string) bool {
 	plannedValues, priorValues, configValues, observedValues := map[string]string{}, map[string]string{}, map[string]string{}, map[string]string{}
 	decode := func(value types.Map, target *map[string]string) bool {
-		return value.IsNull() || value.IsUnknown() || !value.ElementsAs(context.Background(), target, false).HasError()
+		converted, _, diagnostics := strictTerraformStringMap(ctx, value, path.Root(prefix), true)
+		if diagnostics.HasError() {
+			return false
+		}
+		if converted != nil {
+			*target = converted
+		}
+		return true
 	}
 	if !decode(planned, &plannedValues) || !decode(prior, &priorValues) || !decode(config, &configValues) || !decode(observed, &observedValues) {
 		return false
@@ -1834,7 +1841,7 @@ func agentMapMutationMatches(planned, prior, config, observed types.Map, importe
 	return true
 }
 
-func agentMutationMismatches(planned, prior, config AgentResourceModel, imported agentFieldSet, observed AgentResourceModel) []string {
+func agentMutationMismatches(ctx context.Context, planned, prior, config AgentResourceModel, imported agentFieldSet, observed AgentResourceModel) []string {
 	mismatches := []string{}
 	configured := agentConfiguredFields(config)
 	priorFields := agentConfiguredFields(prior)
@@ -1845,7 +1852,7 @@ func agentMutationMismatches(planned, prior, config AgentResourceModel, imported
 		}
 	}
 	check("agent_name", planned.AgentName.Equal(observed.AgentName), false)
-	if !agentMapMutationMatches(planned.LiteLLMParams, prior.LiteLLMParams, config.LiteLLMParams, observed.LiteLLMParams, imported, agentFieldParams) {
+	if !agentMapMutationMatches(ctx, planned.LiteLLMParams, prior.LiteLLMParams, config.LiteLLMParams, observed.LiteLLMParams, imported, agentFieldParams) {
 		mismatches = append(mismatches, agentFieldParams)
 	}
 	if configured[agentFieldParamsJSON] {
@@ -1874,7 +1881,7 @@ func agentMutationMismatches(planned, prior, config AgentResourceModel, imported
 	check(agentFieldSessionRPM, planned.SessionRPMLimit.Equal(observed.SessionRPMLimit), observed.SessionRPMLimit.IsNull())
 	staticClear := observed.StaticHeaders.IsNull() || len(observed.StaticHeaders.Elements()) == 0
 	plannedStaticClear := planned.StaticHeaders.IsNull() || (!planned.StaticHeaders.IsUnknown() && len(planned.StaticHeaders.Elements()) == 0)
-	if !(plannedStaticClear && staticClear) && !agentMapMutationMatches(planned.StaticHeaders, prior.StaticHeaders, config.StaticHeaders, observed.StaticHeaders, imported, agentFieldStaticHeaders) {
+	if !(plannedStaticClear && staticClear) && !agentMapMutationMatches(ctx, planned.StaticHeaders, prior.StaticHeaders, config.StaticHeaders, observed.StaticHeaders, imported, agentFieldStaticHeaders) {
 		mismatches = append(mismatches, agentFieldStaticHeaders)
 	}
 	extraClear := observed.ExtraHeaders.IsNull() || len(observed.ExtraHeaders.Elements()) == 0
