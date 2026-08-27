@@ -78,6 +78,8 @@ func ignoredConversions() {
 func chainedConversions() {
 	_ = value.ElementsAs(ctx, &items, false).HasError()
 	_ = object.As(ctx, &decoded, options).HasError()
+	types.ListValue(elementType, elements)
+	consume(types.MapValue(elementType, entries))
 }
 func propagatedConversions() diagnostics {
 	if diagnostics := value.ElementsAs(ctx, &items, false); diagnostics.HasError() { return diagnostics }
@@ -178,11 +180,11 @@ func shadowedDestination() diagnostics {
 		"ignored Object.As diagnostics":                  1,
 		"unchecked Object.As diagnostics":                4,
 		"discarded ListValue constructor diagnostics":    1,
-		"unchecked ListValue constructor diagnostics":    14,
+		"unchecked ListValue constructor diagnostics":    15,
 		"discarded SetValueFrom constructor diagnostics": 1,
 		"discarded SetValue constructor diagnostics":     1,
 		"discarded MapValue constructor diagnostics":     1,
-		"unchecked MapValue constructor diagnostics":     2,
+		"unchecked MapValue constructor diagnostics":     3,
 		"discarded ObjectValue constructor diagnostics":  1,
 		"production SetValueMust constructor":            2,
 	}
@@ -280,6 +282,10 @@ func scanCollectionConversionFile(filename string, file *ast.File) []collectionA
 					violations = append(violations, collectionAuditViolation{File: filename, Symbol: symbol, Kind: strings.Replace(kind, "ignored ", "unchecked ", 1)})
 					handledConversions[call] = true
 				}
+				if constructor := collectionConstructorName(call); constructor != "" && !handledConversions[call] && !collectionAuditCallDirectlyReturned(call, parents) {
+					violations = append(violations, collectionAuditViolation{File: filename, Symbol: symbol, Kind: "unchecked " + constructor + " constructor diagnostics"})
+					handledConversions[call] = true
+				}
 			}
 			return true
 		})
@@ -289,7 +295,7 @@ func scanCollectionConversionFile(filename string, file *ast.File) []collectionA
 
 func collectionAuditMarkDirectConversionCalls(values []ast.Expr, handled map[*ast.CallExpr]bool) {
 	for _, value := range values {
-		if call, ok := value.(*ast.CallExpr); ok && ignoredConversionCallKind(call) != "" {
+		if call, ok := value.(*ast.CallExpr); ok && (ignoredConversionCallKind(call) != "" || collectionConstructorName(call) != "") {
 			handled[call] = true
 		}
 	}
