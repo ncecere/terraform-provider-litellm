@@ -77,7 +77,7 @@ func TestImportedLegacyProjectionNeverBecomesWireType(t *testing.T) {
 	config := emptyKnownAgentResourceModel()
 	config.AgentName = types.StringValue("Agent")
 	config.LiteLLMParams = stringMapValue(map[string]string{"text": "configured"})
-	request, err := resource.buildAgentUpdateRequest(&plan, &state, &config, agentFieldSet{
+	request, err := resource.buildAgentUpdateRequest(context.Background(), &plan, &state, &config, agentFieldSet{
 		agentFieldParamsJSON:                  true,
 		agentLeaf(agentFieldParams, "number"): true,
 		agentLeaf(agentFieldParams, "flag"):   true,
@@ -147,7 +147,7 @@ func TestAgentSkillSecurityAndSignaturesWirePreserveOrderDuplicates(t *testing.T
 			{Protected: types.StringValue("p"), Signature: types.StringValue("s"), Header: types.StringNull()},
 		},
 	}
-	request, err := resource.buildAgentRequest(&model)
+	request, err := resource.buildAgentRequest(context.Background(), &model)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,7 +284,7 @@ func TestAgentRawCardOverlayPreservesNullAndOmission(t *testing.T) {
 	for id, raw := range agentSkillRawByID(base) {
 		markAgentSkillWireLeaves(imported, id, raw)
 	}
-	patch, err := overlayAgentCardRaw(base, plan, prior, config, imported)
+	patch, err := overlayAgentCardRaw(context.Background(), base, plan, prior, config, imported)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -328,7 +328,7 @@ func TestAgentSignatureLeafOverlayPreservesUnownedHeader(t *testing.T) {
 		agentSignatureLeaf(1, "protected"): true, agentSignatureLeaf(1, "signature"): true,
 		agentScopeCardSignatures: true,
 	}
-	patch, err := overlayAgentCardRaw(base, plan, prior, config, imported)
+	patch, err := overlayAgentCardRaw(context.Background(), base, plan, prior, config, imported)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -361,7 +361,7 @@ func TestAgentExplicitNullJSONBridges(t *testing.T) {
 		Signatures: []AgentCardSignatureModel{{Protected: types.StringValue("p"), Signature: types.StringValue("s"), Header: types.StringNull(), HeaderJSON: types.StringValue("null")}},
 		Skills:     []AgentSkillModel{{ID: types.StringValue("skill"), Name: types.StringValue("Skill"), Security: types.ListNull(types.MapType{ElemType: types.ListType{ElemType: types.StringType}}), SecurityJSON: types.StringValue("null")}},
 	}
-	request, err := (&AgentResource{}).buildAgentRequest(&model)
+	request, err := (&AgentResource{}).buildAgentRequest(context.Background(), &model)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -373,12 +373,12 @@ func TestAgentExplicitNullJSONBridges(t *testing.T) {
 		t.Fatal("explicit null security was not emitted")
 	}
 	model.AgentCard.Signatures[0].Header = types.StringValue(`{}`)
-	if _, err := (&AgentResource{}).buildAgentRequest(&model); err == nil {
+	if _, err := (&AgentResource{}).buildAgentRequest(context.Background(), &model); err == nil {
 		t.Fatal("header/header_json conflict accepted")
 	}
 	model.AgentCard.Signatures[0].Header = types.StringNull()
 	model.AgentCard.Skills[0].SecurityJSON = types.StringValue(`[{"oauth":[1]}]`)
-	if _, err := (&AgentResource{}).buildAgentRequest(&model); err == nil {
+	if _, err := (&AgentResource{}).buildAgentRequest(context.Background(), &model); err == nil {
 		t.Fatal("malformed security_json accepted")
 	}
 }
@@ -411,7 +411,7 @@ func TestAgentConfiguredChildrenDoNotClaimFreshHeaderOrSecurity(t *testing.T) {
 	}
 	plan, config := cloneAgentResourceModel(prior), cloneAgentResourceModel(prior)
 	plan.AgentCard.Description, config.AgentCard.Description = types.StringValue("changed"), types.StringValue("changed")
-	patch, err := overlayAgentCardRaw(base, plan, prior, config, agentFieldSet{})
+	patch, err := overlayAgentCardRaw(context.Background(), base, plan, prior, config, agentFieldSet{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -433,7 +433,7 @@ func TestAgentRemoveOwnedSkillsPreservesAPISiblings(t *testing.T) {
 	}}
 	plan, config := cloneAgentResourceModel(prior), cloneAgentResourceModel(prior)
 	plan.AgentCard.Skills, config.AgentCard.Skills = nil, nil
-	patch, err := overlayAgentCardRaw(base, plan, prior, config, agentFieldSet{agentScopeCardSkills: true, agentSkillLeaf("imported", "id"): true})
+	patch, err := overlayAgentCardRaw(context.Background(), base, plan, prior, config, agentFieldSet{agentScopeCardSkills: true, agentSkillLeaf("imported", "id"): true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -522,7 +522,7 @@ func TestAgentMergedLifecycleFixtureClearOverlay(t *testing.T) {
 		},
 		"security": []interface{}{}, "securitySchemes": map[string]interface{}{}, "supportedInterfaces": []interface{}{},
 	}
-	patch, err := overlayAgentCardRaw(base, plan, prior, config, agentFieldSet{})
+	patch, err := overlayAgentCardRaw(context.Background(), base, plan, prior, config, agentFieldSet{})
 	if err != nil {
 		t.Fatal(err)
 	}

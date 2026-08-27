@@ -59,7 +59,7 @@ func TestBuildAgentRequest_BedrockAgentCore(t *testing.T) {
 		}),
 	}
 
-	request, err := (&AgentResource{}).buildAgentRequest(data)
+	request, err := (&AgentResource{}).buildAgentRequest(context.Background(), data)
 	if err != nil {
 		t.Fatalf("build AgentCore request: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestHydrateUnmanagedAgentUpdateFieldsPreservesRemoteSecrets(t *testing.T) {
 	if got := data.StaticHeaders.Elements()["is_public"].(types.String).ValueString(); got != "legitimate-header-value" {
 		t.Fatalf("legitimate static header is_public = %q", got)
 	}
-	request, err := resource.buildAgentRequest(&data)
+	request, err := resource.buildAgentRequest(context.Background(), &data)
 	if err != nil {
 		t.Fatalf("build hydrated request: %v", err)
 	}
@@ -221,7 +221,7 @@ func TestHydrateMaskedPlannedAgentValuesPreservesRealChanges(t *testing.T) {
 	if got := params["model"].(types.String).ValueString(); got != "planned-new-model" {
 		t.Fatalf("genuine planned model update was overwritten: %q", got)
 	}
-	request, err := resource.buildAgentRequest(&data)
+	request, err := resource.buildAgentRequest(context.Background(), &data)
 	if err != nil {
 		t.Fatalf("build masked request: %v", err)
 	}
@@ -273,7 +273,7 @@ func TestBuildAgentRequest_Minimal(t *testing.T) {
 		},
 	}
 
-	req, err := r.buildAgentRequest(data)
+	req, err := r.buildAgentRequest(context.Background(), data)
 	if err != nil {
 		t.Fatalf("build minimal request: %v", err)
 	}
@@ -364,7 +364,7 @@ func TestBuildAgentRequest_Full(t *testing.T) {
 		ExtraHeaders: stringListValue("Authorization"),
 	}
 
-	req, err := r.buildAgentRequest(data)
+	req, err := r.buildAgentRequest(context.Background(), data)
 	if err != nil {
 		t.Fatalf("build full request: %v", err)
 	}

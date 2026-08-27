@@ -66,7 +66,7 @@ func TestBuildAgentUpdateRequestExplicitClears(t *testing.T) {
 	plan.ObjectPermission = nil
 
 	config := cloneAgentResourceModel(plan)
-	request, err := resource.buildAgentUpdateRequest(&plan, &state, &config, agentFieldSet{})
+	request, err := resource.buildAgentUpdateRequest(context.Background(), &plan, &state, &config, agentFieldSet{})
 	if err != nil {
 		t.Fatalf("build update: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestBuildAgentUpdateRequestPreservesImportedUnownedFields(t *testing.T) {
 	imported := agentImportedFieldsFromState(state)
 	wire := cloneAgentResourceModel(plan)
 	wire.AgentCard = overlayAgentCardWire(state, plan, state, config, imported)
-	request, err := resource.buildAgentUpdateRequest(&wire, &state, &config, imported, true)
+	request, err := resource.buildAgentUpdateRequest(context.Background(), &wire, &state, &config, imported, true)
 	if err != nil {
 		t.Fatalf("build imported update: %v", err)
 	}
@@ -645,7 +645,7 @@ func TestAgentSkillRemovalOwnershipAndPayload(t *testing.T) {
 	fresh := cloneAgentResourceModel(state)
 	wire := cloneAgentResourceModel(plan)
 	wire.AgentCard = overlayAgentCardWire(fresh, plan, state, config, structuralScope)
-	request, err := (&AgentResource{}).buildAgentUpdateRequest(&wire, &state, &config, structuralScope, true)
+	request, err := (&AgentResource{}).buildAgentUpdateRequest(context.Background(), &wire, &state, &config, structuralScope, true)
 	if err != nil {
 		t.Fatal(err)
 	}

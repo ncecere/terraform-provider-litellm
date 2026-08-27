@@ -319,7 +319,7 @@ func agentImportedFieldsFromWire(data AgentResourceModel, raw map[string]interfa
 	return fields
 }
 
-func overlayAgentCardRaw(base map[string]interface{}, plan, prior, config AgentResourceModel, imported agentFieldSet) (map[string]interface{}, error) {
+func overlayAgentCardRaw(ctx context.Context, base map[string]interface{}, plan, prior, config AgentResourceModel, imported agentFieldSet) (map[string]interface{}, error) {
 	patch := cloneAgentWireObject(base)
 	if plan.AgentCard == nil || config.AgentCard == nil {
 		return patch, nil
@@ -328,7 +328,7 @@ func overlayAgentCardRaw(base map[string]interface{}, plan, prior, config AgentR
 	model := cloneAgentResourceModel(plan)
 	model.LiteLLMParams = types.MapNull(types.StringType)
 	model.LiteLLMParamsJSON = types.StringNull()
-	built, err := builder.buildAgentRequest(&model)
+	built, err := builder.buildAgentRequest(ctx, &model)
 	if err != nil {
 		return nil, err
 	}

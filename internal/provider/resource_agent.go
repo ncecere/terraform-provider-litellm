@@ -402,7 +402,7 @@ func (r *AgentResource) Create(ctx context.Context, req resource.CreateRequest, 
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	agentReq, err := r.buildAgentRequest(&planned)
+	agentReq, err := r.buildAgentRequest(ctx, &planned)
 	if err != nil {
 		resp.Diagnostics.AddError("Invalid Agent Request", "The agent request could not be converted to the LiteLLM v1.98 wire shape.")
 		return
@@ -634,7 +634,7 @@ func (r *AgentResource) Update(ctx context.Context, req resource.UpdateRequest, 
 		}
 		if cardTouched {
 			preservation.cardBase = cardBase
-			preservation.cardPatch, err = overlayAgentCardRaw(cardBase, planned, state, config, importedFields)
+			preservation.cardPatch, err = overlayAgentCardRaw(ctx, cardBase, planned, state, config, importedFields)
 			if err == nil {
 				err = validateAgentCardV198RoundTrip(preservation.cardPatch)
 			}
@@ -647,7 +647,7 @@ func (r *AgentResource) Update(ctx context.Context, req resource.UpdateRequest, 
 		}
 	}
 
-	agentReq, err := r.buildAgentUpdateRequest(&wirePlanned, &state, &config, importedFields, false)
+	agentReq, err := r.buildAgentUpdateRequest(ctx, &wirePlanned, &state, &config, importedFields, false)
 	if err != nil {
 		resp.Private = req.Private
 		resp.State = req.State
@@ -1074,8 +1074,8 @@ func validateAgentRequestCollections(ctx context.Context, data AgentResourceMode
 	return diagnostics
 }
 
-func (r *AgentResource) buildAgentRequest(data *AgentResourceModel) (map[string]interface{}, error) {
-	collections, diagnostics := convertAgentRequestCollections(context.Background(), *data)
+func (r *AgentResource) buildAgentRequest(ctx context.Context, data *AgentResourceModel) (map[string]interface{}, error) {
+	collections, diagnostics := convertAgentRequestCollections(ctx, *data)
 	if diagnostics.HasError() {
 		return nil, fmt.Errorf("agent request collection conversion failed")
 	}

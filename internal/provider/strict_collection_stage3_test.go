@@ -81,7 +81,7 @@ func TestStage3AgentNestedRequestCollectionsRejectAtomically(t *testing.T) {
 			}),
 		},
 	}
-	request, err := (&AgentResource{}).buildAgentRequest(&data)
+	request, err := (&AgentResource{}).buildAgentRequest(context.Background(), &data)
 	if err == nil || request != nil {
 		t.Fatalf("invalid nested agent collections were not rejected atomically: request=%#v err=%v", request, err)
 	}
@@ -129,8 +129,15 @@ func TestStage3RequestCollectionPreflightsHonorCancellation(t *testing.T) {
 	if diagnostics := validateModelRequestCollections(ctx, ModelResourceModel{AccessGroups: value}); !diagnostics.HasError() {
 		t.Fatal("canceled model conversion did not return an error diagnostic")
 	}
-	if diagnostics := validateAgentRequestCollections(ctx, AgentResourceModel{ExtraHeaders: value}); !diagnostics.HasError() {
+	agent := AgentResourceModel{AgentName: types.StringValue("agent"), ExtraHeaders: value}
+	if diagnostics := validateAgentRequestCollections(ctx, agent); !diagnostics.HasError() {
 		t.Fatal("canceled agent conversion did not return an error diagnostic")
+	}
+	if request, err := (&AgentResource{}).buildAgentRequest(ctx, &agent); err == nil || request != nil {
+		t.Fatalf("canceled agent create request: request=%#v err=%v", request, err)
+	}
+	if request, err := (&AgentResource{}).buildAgentUpdateRequest(ctx, &agent, &AgentResourceModel{}, &agent, agentFieldSet{}); err == nil || request != nil {
+		t.Fatalf("canceled agent update request: request=%#v err=%v", request, err)
 	}
 }
 
@@ -140,7 +147,7 @@ func TestStage3ValidAgentCollectionPayloadPreservesOrderAndDuplicates(t *testing
 	values := types.ListValueMust(types.StringType, []attr.Value{
 		types.StringValue("second"), types.StringValue("first"), types.StringValue("second"),
 	})
-	request, err := (&AgentResource{}).buildAgentRequest(&AgentResourceModel{
+	request, err := (&AgentResource{}).buildAgentRequest(context.Background(), &AgentResourceModel{
 		AgentName:    types.StringValue("agent"),
 		ExtraHeaders: values,
 		ObjectPermission: &AgentObjectPermissionModel{

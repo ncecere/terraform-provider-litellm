@@ -1609,7 +1609,7 @@ func overlayAgentCardWire(fresh, plan, state, config AgentResourceModel, importe
 	return wire
 }
 
-func (r *AgentResource) buildAgentUpdateRequest(plan, state, config *AgentResourceModel, imported agentFieldSet, includeCard ...bool) (map[string]interface{}, error) {
+func (r *AgentResource) buildAgentUpdateRequest(ctx context.Context, plan, state, config *AgentResourceModel, imported agentFieldSet, includeCard ...bool) (map[string]interface{}, error) {
 	req := map[string]interface{}{"agent_name": plan.AgentName.ValueString()}
 	configured := agentConfiguredFields(*config)
 	stateFields := agentConfiguredFields(*state)
@@ -1656,15 +1656,15 @@ func (r *AgentResource) buildAgentUpdateRequest(plan, state, config *AgentResour
 		wirePlan.LiteLLMParams = types.MapNull(types.StringType)
 		wirePlan.LiteLLMParamsJSON = types.StringValue(encoded)
 	}
-	full, err := r.buildAgentRequest(&wirePlan)
+	full, err := r.buildAgentRequest(ctx, &wirePlan)
 	if err != nil {
 		return nil, err
 	}
-	planCollections, diagnostics := convertAgentRequestCollections(context.Background(), *plan)
+	planCollections, diagnostics := convertAgentRequestCollections(ctx, *plan)
 	if diagnostics.HasError() {
 		return nil, fmt.Errorf("agent update collection conversion failed")
 	}
-	wireCollections, diagnostics := convertAgentRequestCollections(context.Background(), wirePlan)
+	wireCollections, diagnostics := convertAgentRequestCollections(ctx, wirePlan)
 	if diagnostics.HasError() {
 		return nil, fmt.Errorf("agent update collection conversion failed")
 	}
