@@ -31,7 +31,10 @@ func TestVectorStoreUpdateRequestUsesOnlyV198UpdateFieldsAndClearSentinels(t *te
 	planned.VectorStoreName = types.StringValue("after")
 	planned.VectorStoreDescription = types.StringNull()
 	planned.VectorStoreMetadata = types.MapNull(types.StringType)
-	request := resource.buildVectorStoreUpdateRequest(context.Background(), &planned, &prior)
+	request, diagnostics := resource.buildVectorStoreUpdateRequest(context.Background(), &planned, &prior)
+	if diagnostics.HasError() {
+		t.Fatalf("build vector store update request: %v", diagnostics)
+	}
 	if request["vector_store_description"] != "" {
 		t.Fatalf("description clear sentinel = %#v", request["vector_store_description"])
 	}

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -202,9 +203,9 @@ func (r *UnifiedAccessGroupResource) Create(ctx context.Context, req resource.Cr
 		return
 	}
 
-	createRequest, err := buildUnifiedAccessGroupRequest(ctx, &data, false)
-	if err != nil {
-		resp.Diagnostics.AddError("Invalid Assigned Key Identifiers", "The assigned key identifiers could not be normalized safely.")
+	createRequest, conversionDiagnostics := buildUnifiedAccessGroupRequest(ctx, &data, false)
+	resp.Diagnostics.Append(conversionDiagnostics...)
+	if resp.Diagnostics.HasError() {
 		return
 	}
 
@@ -393,9 +394,9 @@ func (r *UnifiedAccessGroupResource) Update(ctx context.Context, req resource.Up
 	data.ID = state.ID
 	data.AccessGroupID = state.AccessGroupID
 
-	updateRequest, err := buildUnifiedAccessGroupRequest(ctx, &data, true)
-	if err != nil {
-		resp.Diagnostics.AddError("Invalid Assigned Key Identifiers", "The assigned key identifiers could not be normalized safely.")
+	updateRequest, conversionDiagnostics := buildUnifiedAccessGroupRequest(ctx, &data, true)
+	resp.Diagnostics.Append(conversionDiagnostics...)
+	if resp.Diagnostics.HasError() {
 		return
 	}
 	managesKeys := isKnownUnifiedAccessGroupKeyList(data.AssignedKeyIDs)
@@ -417,11 +418,12 @@ func (r *UnifiedAccessGroupResource) Update(ctx context.Context, req resource.Up
 			r.recoverUnifiedAccessGroupUpdate(ctx, state, keyMutation, resp, "Terraform could not establish the current two-sided key membership before mutation. The access group was not changed.")
 			return
 		}
-		snapshot, err = r.inspectUnifiedAccessGroupMembership(ctx, accessGroupID, current["assigned_key_ids"], data.AssignedKeyIDs, state.AssignedKeyIDs)
+		inspected, err := r.inspectUnifiedAccessGroupMembership(ctx, accessGroupID, current["assigned_key_ids"], data.AssignedKeyIDs, state.AssignedKeyIDs)
 		if err != nil {
 			r.recoverUnifiedAccessGroupUpdate(ctx, state, keyMutation, resp, "Terraform could not establish a complete two-sided membership snapshot before mutation. The access group was not changed.")
 			return
 		}
+		snapshot = inspected
 		keyMutation = keyMutation || len(snapshot.groupOnly) > 0 || len(snapshot.keyOnly) > 0
 
 		// LiteLLM v1.98 computes key changes from the access-group row delta.
@@ -638,7 +640,7 @@ func (r *UnifiedAccessGroupResource) readUnifiedAccessGroup(ctx context.Context,
 	return err
 }
 
-func buildUnifiedAccessGroupRequest(ctx context.Context, data *UnifiedAccessGroupResourceModel, includeOptionalName bool) (map[string]interface{}, error) {
+func buildUnifiedAccessGroupRequest(ctx context.Context, data *UnifiedAccessGroupResourceModel, includeOptionalName bool) (map[string]interface{}, diag.Diagnostics) {
 	req := map[string]interface{}{}
 	if !data.AccessGroupName.IsNull() && !data.AccessGroupName.IsUnknown() && (includeOptionalName || data.AccessGroupName.ValueString() != "") {
 		req["access_group_name"] = data.AccessGroupName.ValueString()
@@ -646,35 +648,60 @@ func buildUnifiedAccessGroupRequest(ctx context.Context, data *UnifiedAccessGrou
 	if !data.Description.IsNull() && !data.Description.IsUnknown() {
 		req["description"] = data.Description.ValueString()
 	}
-	addStringListToRequest(ctx, req, "access_model_names", data.AccessModelNames)
-	addStringListToRequest(ctx, req, "access_mcp_server_ids", data.AccessMCPServerIDs)
-	addStringListToRequest(ctx, req, "access_agent_ids", data.AccessAgentIDs)
-	addStringListToRequest(ctx, req, "assigned_team_ids", data.AssignedTeamIDs)
-	if err := addAssignedKeyListToRequest(req, data.AssignedKeyIDs); err != nil {
-		return nil, err
+
+	var diagnostics diag.Diagnostics
+	for _, field := range []struct {
+		name  string
+		value types.List
+	}{
+		{name: "access_model_names", value: data.AccessModelNames},
+		{name: "access_mcp_server_ids", value: data.AccessMCPServerIDs},
+		{name: "access_agent_ids", value: data.AccessAgentIDs},
+		{name: "assigned_team_ids", value: data.AssignedTeamIDs},
+	} {
+		diagnostics.Append(addStringListToRequest(ctx, req, field.name, field.value)...)
+	}
+	diagnostics.Append(addAssignedKeyListToRequest(ctx, req, data.AssignedKeyIDs)...)
+	if diagnostics.HasError() {
+		return nil, diagnostics
 	}
 	return req, nil
 }
 
-func addStringListToRequest(ctx context.Context, req map[string]interface{}, key string, value types.List) {
-	if value.IsNull() || value.IsUnknown() {
-		return
-	}
-	var values []string
-	value.ElementsAs(ctx, &values, false)
-	req[key] = values
-}
-
-func addAssignedKeyListToRequest(req map[string]interface{}, value types.List) error {
+func addStringListToRequest(ctx context.Context, req map[string]interface{}, key string, value types.List) diag.Diagnostics {
 	if value.IsNull() || value.IsUnknown() {
 		return nil
 	}
-	representations, err := unifiedAccessGroupKeyRepresentations(value)
-	if err != nil {
-		return err
+	values, _, diagnostics := strictTerraformStringList(ctx, value, path.Root(key))
+	if diagnostics.HasError() {
+		return diagnostics
 	}
-	hashes := sortedUnifiedAccessGroupKeyHashes(representations)
-	req["assigned_key_ids"] = hashes
+	req[key] = values
+	return nil
+}
+
+func addAssignedKeyListToRequest(ctx context.Context, req map[string]interface{}, value types.List) diag.Diagnostics {
+	if value.IsNull() || value.IsUnknown() {
+		return nil
+	}
+	values, _, diagnostics := strictTerraformStringList(ctx, value, path.Root("assigned_key_ids"))
+	if diagnostics.HasError() {
+		return diagnostics
+	}
+	representations := make(map[string][]string)
+	for _, representation := range values {
+		hash, err := unifiedAccessGroupKeyHash(representation)
+		if err != nil {
+			diagnostics.AddAttributeError(
+				path.Root("assigned_key_ids"),
+				"Invalid Assigned Key Identifiers",
+				"The assigned key identifiers could not be normalized safely. No collection value was converted.",
+			)
+			return diagnostics
+		}
+		representations[hash] = append(representations[hash], representation)
+	}
+	req["assigned_key_ids"] = sortedUnifiedAccessGroupKeyHashes(representations)
 	return nil
 }
 

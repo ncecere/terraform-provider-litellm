@@ -11,6 +11,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -189,7 +190,11 @@ func (r *UserResource) Create(ctx context.Context, req resource.CreateRequest, r
 		return
 	}
 
-	userReq := r.buildUserRequest(ctx, &data)
+	userReq, conversionDiagnostics := r.buildUserRequest(ctx, &data)
+	resp.Diagnostics.Append(conversionDiagnostics...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	if err := addSendInviteEmailToCreateRequest(userReq, sendInviteEmail); err != nil {
 		resp.Diagnostics.AddError("Invalid User Invitation", err.Error())
 		return
@@ -284,7 +289,11 @@ func (r *UserResource) Update(ctx context.Context, req resource.UpdateRequest, r
 	data.UserID = state.UserID
 	data.Key = state.Key
 
-	userReq := r.buildUserRequest(ctx, &data)
+	userReq, conversionDiagnostics := r.buildUserRequest(ctx, &data)
+	resp.Diagnostics.Append(conversionDiagnostics...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	userReq["user_id"] = data.UserID.ValueString()
 	// LiteLLM v1.98 accepts teams on /user/update but does not reconcile team
 	// membership there. Manage membership through the dedicated team endpoints.
@@ -452,7 +461,10 @@ func (r *UserResource) adoptExistingUser(ctx context.Context, data *UserResource
 	}
 	prepareRecoverableState(false)
 
-	updateRequest := r.buildUserRequest(ctx, &planned)
+	updateRequest, conversionDiagnostics := r.buildUserRequest(ctx, &planned)
+	if conversionDiagnostics.HasError() {
+		return false, fmt.Errorf("configured user collections could not be converted safely")
+	}
 	updateRequest["user_id"] = userID
 	delete(updateRequest, "teams")
 	// auto_create_key is a Create action. Do not generate an inaccessible new
@@ -484,7 +496,7 @@ func (r *UserResource) adoptExistingUser(ctx context.Context, data *UserResource
 	return true, nil
 }
 
-func (r *UserResource) buildUserRequest(ctx context.Context, data *UserResourceModel) map[string]interface{} {
+func (r *UserResource) buildUserRequest(ctx context.Context, data *UserResourceModel) (map[string]interface{}, diag.Diagnostics) {
 	userReq := map[string]interface{}{}
 
 	// String fields - check IsNull, IsUnknown, and empty string
@@ -520,30 +532,36 @@ func (r *UserResource) buildUserRequest(ctx context.Context, data *UserResourceM
 		userReq["auto_create_key"] = data.AutoCreateKey.ValueBool()
 	}
 
-	// List fields - check IsNull, IsUnknown, and len > 0
+	// Collection fields retain their historical whole-value and empty behavior.
 	if !data.Teams.IsNull() && !data.Teams.IsUnknown() {
-		var teams []string
-		data.Teams.ElementsAs(ctx, &teams, false)
+		teams, _, diagnostics := strictTerraformStringList(ctx, data.Teams, path.Root("teams"))
+		if diagnostics.HasError() {
+			return nil, diagnostics
+		}
 		if len(teams) > 0 {
 			userReq["teams"] = teams
 		}
 	}
 
 	if !data.Models.IsNull() && !data.Models.IsUnknown() {
-		var models []string
-		data.Models.ElementsAs(ctx, &models, false)
+		models, _, diagnostics := strictTerraformStringList(ctx, data.Models, path.Root("models"))
+		if diagnostics.HasError() {
+			return nil, diagnostics
+		}
 		userReq["models"] = models
 	}
 
 	// Send explicitly configured empty metadata so existing values can be
 	// cleared during Update or adoption.
 	if !data.Metadata.IsNull() && !data.Metadata.IsUnknown() {
-		var metadata map[string]string
-		data.Metadata.ElementsAs(ctx, &metadata, false)
+		metadata, _, diagnostics := strictTerraformStringMap(ctx, data.Metadata, path.Root("metadata"), false)
+		if diagnostics.HasError() {
+			return nil, diagnostics
+		}
 		userReq["metadata"] = metadata
 	}
 
-	return userReq
+	return userReq, nil
 }
 
 func (r *UserResource) readUser(ctx context.Context, data *UserResourceModel) error {

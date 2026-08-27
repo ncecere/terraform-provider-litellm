@@ -343,7 +343,10 @@ func TestBuildUserRequestIncludesExplicitEmptyCollections(t *testing.T) {
 		Models:   stringListValue(),
 		Metadata: types.MapValueMust(types.StringType, map[string]attr.Value{}),
 	}
-	request := resource.buildUserRequest(context.Background(), &data)
+	request, diagnostics := resource.buildUserRequest(context.Background(), &data)
+	if diagnostics.HasError() {
+		t.Fatalf("build user request: %v", diagnostics)
+	}
 	models, modelsOK := request["models"].([]string)
 	metadata, metadataOK := request["metadata"].(map[string]string)
 	if !modelsOK || len(models) != 0 || !metadataOK || len(metadata) != 0 {

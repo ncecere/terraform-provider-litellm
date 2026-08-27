@@ -405,7 +405,10 @@ func TestBuildUserRequest(t *testing.T) {
 		Metadata:      stringMapValue(map[string]string{"dept": "eng"}),
 	}
 
-	req := r.buildUserRequest(context.Background(), data)
+	req, diagnostics := r.buildUserRequest(context.Background(), data)
+	if diagnostics.HasError() {
+		t.Fatalf("build user request: %v", diagnostics)
+	}
 
 	if req["user_id"] != "user-1" {
 		t.Errorf("user_id = %v", req["user_id"])
@@ -438,7 +441,10 @@ func TestBuildVectorStoreRequest(t *testing.T) {
 		LiteLLMParams:          types.MapNull(types.StringType),
 	}
 
-	req := r.buildVectorStoreRequest(context.Background(), data)
+	req, diagnostics := r.buildVectorStoreRequest(context.Background(), data)
+	if diagnostics.HasError() {
+		t.Fatalf("build vector store request: %v", diagnostics)
+	}
 
 	if req["vector_store_name"] != "kb" {
 		t.Errorf("vector_store_name = %v", req["vector_store_name"])

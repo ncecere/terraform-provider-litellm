@@ -235,8 +235,8 @@ func TestUnifiedAccessGroupNormalizesRequestsAndPreservesEquivalentListRepresent
 	b := strings.Repeat("b", 64)
 	configured := unifiedAccessGroupStringList("SHA256:"+strings.ToUpper(b), "sha256:"+a, a, "sha256:"+a)
 	request := map[string]interface{}{}
-	if err := addAssignedKeyListToRequest(request, configured); err != nil {
-		t.Fatalf("normalize request: %v", err)
+	if diagnostics := addAssignedKeyListToRequest(context.Background(), request, configured); diagnostics.HasError() {
+		t.Fatalf("normalize request: %v", diagnostics)
 	}
 	if got, want := request["assigned_key_ids"], []string{a, b}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("request hashes = %#v, want sorted deduplicated bare hashes %#v", got, want)
@@ -260,8 +260,8 @@ func TestUnifiedAccessGroupAcceptsGeneratedStatefulAndWriteOnlyKeyIDs(t *testing
 		hashKeyForID("sk-write-only-predefined-key"),
 	}
 	request := map[string]interface{}{}
-	if err := addAssignedKeyListToRequest(request, unifiedAccessGroupStringList(managementIDs...)); err != nil {
-		t.Fatalf("normalize current litellm_key IDs: %v", err)
+	if diagnostics := addAssignedKeyListToRequest(context.Background(), request, unifiedAccessGroupStringList(managementIDs...)); diagnostics.HasError() {
+		t.Fatalf("normalize current litellm_key IDs: %v", diagnostics)
 	}
 	got := request["assigned_key_ids"].([]string)
 	want := make([]string, 0, len(managementIDs))

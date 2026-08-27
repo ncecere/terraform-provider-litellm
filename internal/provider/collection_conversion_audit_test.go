@@ -46,7 +46,6 @@ var legacyCollectionConversionAllowlist = map[collectionAuditViolation]int{
 	{File: "resource_agent.go", Symbol: "interfaceSliceToStringList", Kind: "discarded ListValue constructor diagnostics"}:                                 2,
 	{File: "resource_agent_lifecycle.go", Symbol: "*AgentResource.ModifyPlan", Kind: "production MapValueMust constructor"}:                                1,
 	{File: "resource_agent_lifecycle.go", Symbol: "reconcileConfirmedAgentState", Kind: "production MapValueMust constructor"}:                             1,
-	{File: "resource_fallback.go", Symbol: "*FallbackResource.buildFallbackRequest", Kind: "ignored ElementsAs diagnostics"}:                               1,
 	{File: "resource_fallback.go", Symbol: "*FallbackResource.readFallback", Kind: "discarded ListValue constructor diagnostics"}:                          1,
 	{File: "resource_key.go", Symbol: "*KeyResource.buildKeyRequest", Kind: "ignored ElementsAs diagnostics"}:                                              12,
 	{File: "resource_key.go", Symbol: "*KeyResource.readKeyWithNumericOwnership", Kind: "discarded ListValue constructor diagnostics"}:                     16,
@@ -78,17 +77,12 @@ var legacyCollectionConversionAllowlist = map[collectionAuditViolation]int{
 	{File: "resource_team.go", Symbol: "buildRouterSettingsPayload", Kind: "ignored Object.As diagnostics"}:                                                1,
 	{File: "resource_team.go", Symbol: "fallbackEntriesToAPIFormat", Kind: "ignored ElementsAs diagnostics"}:                                               2,
 	{File: "resource_team.go", Symbol: "parseRouterSettingsFromAPI", Kind: "discarded ObjectValue constructor diagnostics"}:                                1,
-	{File: "resource_unified_access_group.go", Symbol: "addStringListToRequest", Kind: "ignored ElementsAs diagnostics"}:                                   1,
 	{File: "resource_unified_access_group.go", Symbol: "resolveUnifiedAccessGroupUnknowns", Kind: "production ListValueMust constructor"}:                  1,
 	{File: "resource_unified_access_group.go", Symbol: "setListFromResponse", Kind: "discarded ListValue constructor diagnostics"}:                         3,
 	{File: "resource_unified_access_group.go", Symbol: "unifiedAccessGroupKeyList", Kind: "production ListValueMust constructor"}:                          1,
-	{File: "resource_user.go", Symbol: "*UserResource.buildUserRequest", Kind: "ignored ElementsAs diagnostics"}:                                           3,
 	{File: "resource_user.go", Symbol: "*UserResource.readUserWithNumericOwnership", Kind: "discarded ListValue constructor diagnostics"}:                  2,
 	{File: "resource_user.go", Symbol: "*UserResource.readUserWithNumericOwnership", Kind: "discarded MapValue constructor diagnostics"}:                   2,
 	{File: "resource_user.go", Symbol: "reconcileUnorderedUserTeams", Kind: "production ListValueMust constructor"}:                                        2,
-	{File: "resource_vector_store.go", Symbol: "*VectorStoreResource.buildVectorStoreRequest", Kind: "ignored ElementsAs diagnostics"}:                     2,
-	{File: "resource_vector_store.go", Symbol: "*VectorStoreResource.buildVectorStoreUpdateRequest", Kind: "ignored ElementsAs diagnostics"}:               1,
-	{File: "vector_store_helpers.go", Symbol: "vectorStoreStringMap", Kind: "production MapValueMust constructor"}:                                         1,
 }
 
 func TestCollectionConversionSafetyAudit(t *testing.T) {

@@ -462,9 +462,12 @@ func TestLimitAndRoleRequestBuildersPreserveValidatedLiterals(t *testing.T) {
 		t.Errorf("team rpm_limit_type = %#v, want guaranteed_throughput", got)
 	}
 
-	userRequest := (&UserResource{}).buildUserRequest(ctx, &UserResourceModel{
+	userRequest, diagnostics := (&UserResource{}).buildUserRequest(ctx, &UserResourceModel{
 		UserRole: types.StringValue("internal_user_viewer"),
 	})
+	if diagnostics.HasError() {
+		t.Fatalf("build user request: %v", diagnostics)
+	}
 	if got := userRequest["user_role"]; got != "internal_user_viewer" {
 		t.Errorf("user_role = %#v, want internal_user_viewer", got)
 	}

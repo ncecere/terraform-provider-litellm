@@ -201,9 +201,12 @@ func TestUpdateRequestBuildersNeverIncludeSendInviteEmail(t *testing.T) {
 		t.Fatalf("key update-capable request builder included create-only action: %#v", keyRequest)
 	}
 
-	userRequest := (&UserResource{}).buildUserRequest(context.Background(), &UserResourceModel{
+	userRequest, diagnostics := (&UserResource{}).buildUserRequest(context.Background(), &UserResourceModel{
 		SendInviteEmail: types.BoolValue(true),
 	})
+	if diagnostics.HasError() {
+		t.Fatalf("build user request: %v", diagnostics)
+	}
 	if _, present := userRequest["send_invite_email"]; present {
 		t.Fatalf("user update-capable request builder included create-only action: %#v", userRequest)
 	}
