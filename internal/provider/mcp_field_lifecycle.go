@@ -418,7 +418,24 @@ func buildMCPFieldDelta(ctx context.Context, plan MCPServerResourceModel, config
 				if !validCredentials {
 					return nil, fmt.Errorf("configured credentials are invalid")
 				}
-				writeCredentials := !config.Credentials.Equal(state.Credentials) || mcpCredentialClassWillReplace(plan, state, hydration)
+				replacesCredentialClass := mcpCredentialClassWillReplace(plan, state, hydration)
+				if replacesCredentialClass {
+					priorCredentials, err := mcpFieldStringMap(ctx, state.Credentials)
+					if err != nil {
+						return nil, fmt.Errorf("credential-class replacement requires known prior credential state")
+					}
+					// v1.98 clears omitted auth-flow columns on a class change. Make
+					// every previously Terraform-owned lifted-key deletion explicit
+					// so preflight and readback can distinguish it from unowned loss.
+					for _, liftedName := range mcpCredentialLiftedColumnNames {
+						if _, previouslyOwned := priorCredentials[liftedName]; previouslyOwned {
+							if _, retained := credentials[liftedName]; !retained {
+								delta[liftedName] = nil
+							}
+						}
+					}
+				}
+				writeCredentials := !config.Credentials.Equal(state.Credentials) || replacesCredentialClass
 				for _, liftedName := range mcpCredentialLiftedColumnNames {
 					if liftedValue, configured := credentials[liftedName]; configured {
 						remote, present := hydration[liftedName]

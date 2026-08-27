@@ -380,10 +380,11 @@ func TestMCPServerInitialEmptyCredentialsClassReplacementProtocol(t *testing.T) 
 
 func TestMCPServerOwnedCredentialsClassReplacementProtocol(t *testing.T) {
 	for _, test := range []struct {
-		name     string
-		prior    map[string]tftypes.Value
-		desired  map[string]tftypes.Value
-		expected map[string]string
+		name          string
+		prior         map[string]tftypes.Value
+		desired       map[string]tftypes.Value
+		expected      map[string]string
+		clearedLifted string
 	}{
 		{
 			name: "replacement may remove old keys",
@@ -392,6 +393,15 @@ func TestMCPServerOwnedCredentialsClassReplacementProtocol(t *testing.T) {
 			},
 			desired:  map[string]tftypes.Value{"auth_value": tftypes.NewValue(tftypes.String, "replacement")},
 			expected: map[string]string{"auth_value": "replacement"},
+		},
+		{
+			name: "replacement clears omitted owned lifted key",
+			prior: map[string]tftypes.Value{
+				"client_secret": tftypes.NewValue(tftypes.String, "secret"), "audience": tftypes.NewValue(tftypes.String, "old-audience"),
+			},
+			desired:       map[string]tftypes.Value{"auth_value": tftypes.NewValue(tftypes.String, "replacement")},
+			expected:      map[string]string{"auth_value": "replacement"},
+			clearedLifted: "audience",
 		},
 		{
 			name:     "unchanged map is still supplied",
@@ -417,6 +427,10 @@ func TestMCPServerOwnedCredentialsClassReplacementProtocol(t *testing.T) {
 				"server_id": "replace-owned-credentials", "server_name": "replace-owned-credentials", "transport": "http",
 				"url": "https://known.invalid/mcp", "auth_type": "api_key", "credentials": nil, "mcp_info": map[string]interface{}{},
 			}
+			if test.clearedLifted != "" {
+				before[test.clearedLifted] = "old-audience"
+				after[test.clearedLifted] = nil
+			}
 			owned := mcpFieldOwnership{Owned: map[string]bool{mcpFieldCredentialsPath: true}, Removals: map[string]bool{}, Generation: 1, Versioned: true}
 			result := runMCPUpdateCompletionProtocol(t, state, config, map[string]interface{}{"auth_type": "api_key", "credentials": test.desired}, before, after, protocolMCPFieldPrivate(t, owned))
 			if accessGroupProtocolDiagnosticsHaveError(result.applied.Diagnostics) || result.puts != 1 {
@@ -424,6 +438,11 @@ func TestMCPServerOwnedCredentialsClassReplacementProtocol(t *testing.T) {
 			}
 			if value, present := result.body["credentials"]; !present || !mcpWireValuesEqual(value, test.expected) {
 				t.Fatalf("complete replacement credentials missing from PUT: %#v", result.body)
+			}
+			if test.clearedLifted != "" {
+				if value, present := result.body[test.clearedLifted]; !present || value != nil {
+					t.Fatalf("owned lifted replacement clear missing from PUT: %#v", result.body)
+				}
 			}
 		})
 	}
