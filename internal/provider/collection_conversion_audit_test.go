@@ -120,6 +120,12 @@ func appendThenErase() diagnostics {
 	output = nil
 	return output
 }
+func appendThenOverwriteElement() diagnostics {
+	list, diagnostics := types.ListValue(elementType, elements)
+	output.Append(diagnostics...)
+	output[0] = nil
+	return output
+}
 `
 	if err := os.WriteFile(filepath.Join(directory, "fixture.go"), []byte(source), 0o600); err != nil {
 		t.Fatal(err)
@@ -133,7 +139,7 @@ func appendThenErase() diagnostics {
 		"ignored ElementsAs diagnostics":                 1,
 		"ignored Object.As diagnostics":                  1,
 		"discarded ListValue constructor diagnostics":    1,
-		"unchecked ListValue constructor diagnostics":    9,
+		"unchecked ListValue constructor diagnostics":    10,
 		"discarded SetValueFrom constructor diagnostics": 1,
 		"discarded SetValue constructor diagnostics":     1,
 		"discarded MapValue constructor diagnostics":     1,
@@ -325,7 +331,7 @@ func collectionAuditAppendedDiagnosticsPropagate(body *ast.BlockStmt, receiver a
 			if identifier, ok := target.(*ast.Ident); ok {
 				invalidatesSource = identifier.Name == sourceName
 			}
-			targetKey := collectionAuditExpressionKey(target)
+			targetKey := collectionAuditAssignmentRootKey(target)
 			invalidatesDestination := assignment.Pos() > appendPosition &&
 				(targetKey == receiverKey || (targetKey != "" && strings.HasPrefix(receiverKey, targetKey+".")))
 			if invalidatesSource || invalidatesDestination {
@@ -374,6 +380,17 @@ func collectionAuditExpressionKey(expression ast.Expr) string {
 		return collectionAuditExpressionKey(typed.X)
 	default:
 		return ""
+	}
+}
+
+func collectionAuditAssignmentRootKey(expression ast.Expr) string {
+	switch typed := expression.(type) {
+	case *ast.IndexExpr:
+		return collectionAuditAssignmentRootKey(typed.X)
+	case *ast.StarExpr:
+		return collectionAuditAssignmentRootKey(typed.X)
+	default:
+		return collectionAuditExpressionKey(expression)
 	}
 }
 
