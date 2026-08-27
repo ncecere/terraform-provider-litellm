@@ -385,9 +385,34 @@ func decodeBatchState(t *testing.T, state tfsdk.State) TeamMemberAddResourceMode
 	return model
 }
 
+func TestBatchMembersFromSetCancellationAndDiagnosticsAreSafe(t *testing.T) {
+	t.Parallel()
+	sensitiveEmail := "sensitive-member@example.invalid"
+	members := teamMemberSet(t, MemberModel{
+		UserID: types.StringNull(), UserEmail: types.StringValue(sensitiveEmail), Role: types.StringNull(),
+	})
+	converted, diagnostics := batchMembersFromSet(context.Background(), members, true)
+	if !diagnostics.HasError() || converted != nil {
+		t.Fatalf("unknown role conversion = %#v, diagnostics=%v; want atomic failure", converted, diagnostics)
+	}
+	if rendered := fmt.Sprint(diagnostics); strings.Contains(rendered, sensitiveEmail) || !strings.Contains(rendered, "member") {
+		t.Fatalf("unsafe member diagnostics: %s", rendered)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	converted, diagnostics = batchMembersFromSet(ctx, members, false)
+	if !diagnostics.HasError() || converted != nil {
+		t.Fatalf("canceled conversion = %#v, diagnostics=%v; want atomic cancellation", converted, diagnostics)
+	}
+	if rendered := fmt.Sprint(diagnostics); strings.Contains(rendered, sensitiveEmail) || !strings.Contains(rendered, collectionConversionCanceled) {
+		t.Fatalf("unsafe cancellation diagnostics: %s", rendered)
+	}
+}
+
 func batchStateMembers(t *testing.T, model TeamMemberAddResourceModel) []batchMember {
 	t.Helper()
-	members, diagnostics := batchMembersFromSet(model.Members, false)
+	members, diagnostics := batchMembersFromSet(context.Background(), model.Members, false)
 	if diagnostics.HasError() {
 		t.Fatalf("decode members: %v", diagnostics)
 	}
