@@ -11,21 +11,33 @@ import (
 )
 
 func mcpFieldDesiredValue(ctx context.Context, data MCPServerResourceModel, fieldPath string) (interface{}, error) {
+	stringValue := func(value types.String) (interface{}, error) {
+		if value.IsNull() || value.IsUnknown() {
+			return nil, fmt.Errorf("unknown or null MCP string field")
+		}
+		return value.ValueString(), nil
+	}
+	boolValue := func(value types.Bool) (interface{}, error) {
+		if value.IsNull() || value.IsUnknown() {
+			return nil, fmt.Errorf("unknown or null MCP boolean field")
+		}
+		return value.ValueBool(), nil
+	}
 	switch fieldPath {
 	case mcpFieldAliasPath:
-		return data.Alias.ValueString(), nil
+		return stringValue(data.Alias)
 	case mcpFieldDescriptionPath:
-		return data.Description.ValueString(), nil
+		return stringValue(data.Description)
 	case mcpFieldCommandPath:
-		return data.Command.ValueString(), nil
+		return stringValue(data.Command)
 	case mcpFieldAuthorizationURLPath:
-		return data.AuthorizationURL.ValueString(), nil
+		return stringValue(data.AuthorizationURL)
 	case mcpFieldTokenURLPath:
-		return data.TokenURL.ValueString(), nil
+		return stringValue(data.TokenURL)
 	case mcpFieldRegistrationURLPath:
-		return data.RegistrationURL.ValueString(), nil
+		return stringValue(data.RegistrationURL)
 	case mcpFieldAllowAllKeysPath:
-		return data.AllowAllKeys.ValueBool(), nil
+		return boolValue(data.AllowAllKeys)
 	case mcpFieldAccessGroupsPath:
 		return mcpFieldStringList(ctx, data.MCPAccessGroups)
 	case mcpFieldArgsPath:
@@ -82,7 +94,14 @@ func mcpWireValuesEqual(left, right interface{}) bool {
 	return mcpInfoJSONValuesEqual(normalizeMCPWireValue(left), normalizeMCPWireValue(right))
 }
 
+func mcpAliasIsKnownEmpty(value types.String) bool {
+	return !value.IsNull() && !value.IsUnknown() && value.ValueString() == ""
+}
+
 func (r *MCPServerResource) buildMCPServerCreateRequest(ctx context.Context, plan, config *MCPServerResourceModel, resolvedMCPInfo map[string]interface{}, mcpInfoPresent bool) (map[string]interface{}, error) {
+	if mcpAliasIsKnownEmpty(config.Alias) {
+		return nil, fmt.Errorf("configured alias must be non-empty")
+	}
 	request, err := r.buildMCPServerRequest(ctx, plan, resolvedMCPInfo, mcpInfoPresent)
 	if err != nil {
 		return nil, err
@@ -136,25 +155,40 @@ func mcpKnownRawString(result map[string]interface{}, name string) (string, bool
 	return resultValue, ok
 }
 
-func validateMCPImplicitClearSafety(config MCPServerResourceModel, planned mcpFieldOwnership, hydration map[string]interface{}, delta map[string]interface{}, urlChanged, authClassChanged bool) error {
+func validateMCPImplicitClearSafety(config, state MCPServerResourceModel, planned mcpFieldOwnership, hydration map[string]interface{}, delta map[string]interface{}, urlChanged, authClassChanged bool) error {
 	if !urlChanged && !authClassChanged {
 		return nil
 	}
 	presence := mcpFieldConfigPresence(config)
-	for _, fieldPath := range []string{mcpFieldAuthorizationURLPath, mcpFieldTokenURLPath, mcpFieldRegistrationURLPath} {
-		name := mcpFieldWireName(fieldPath)
+	for _, item := range []struct {
+		fieldPath string
+		prior     types.String
+	}{
+		{fieldPath: mcpFieldAuthorizationURLPath, prior: state.AuthorizationURL},
+		{fieldPath: mcpFieldTokenURLPath, prior: state.TokenURL},
+		{fieldPath: mcpFieldRegistrationURLPath, prior: state.RegistrationURL},
+	} {
+		name := mcpFieldWireName(item.fieldPath)
 		raw, present := hydration[name]
-		// The v1.98 response model omits null optional columns. Omission is an
-		// authoritative null here; malformed present values were rejected by
-		// direct hydration before this preflight.
+		if (!present || raw == nil) && !item.prior.IsNull() && !item.prior.IsUnknown() {
+			raw, present = item.prior.ValueString(), true
+		}
 		if !present || raw == nil {
 			continue
 		}
 		desired, supplied := delta[name]
-		explicitRemoval := planned.Removals[fieldPath] && supplied && desired == nil
-		explicitChange := planned.Owned[fieldPath] && presence[fieldPath] == 1 && supplied && !mcpWireValuesEqual(desired, raw)
+		explicitRemoval := planned.Removals[item.fieldPath] && supplied && desired == nil
+		explicitChange := planned.Owned[item.fieldPath] && presence[item.fieldPath] == 1 && supplied && !mcpWireValuesEqual(desired, raw)
 		if !explicitRemoval && !explicitChange {
 			return fmt.Errorf("an unowned or unchanged OAuth endpoint would be cleared implicitly")
+		}
+	}
+	for _, name := range []string{
+		"issuer", "oauth2_flow", "dcr_bridge", "token_exchange_endpoint",
+		"audience", "subject_token_type", "token_exchange_profile",
+	} {
+		if raw, present := hydration[name]; present && raw != nil {
+			return fmt.Errorf("a hidden authentication-flow value would be cleared implicitly")
 		}
 	}
 	if authClassChanged {
@@ -188,19 +222,7 @@ func validateMCPFieldCredentialMerge(ctx context.Context, state, config MCPServe
 	return nil
 }
 
-func mcpFieldChangedInTerraform(ctx context.Context, state, desired MCPServerResourceModel, fieldPath string) bool {
-	if mcpFieldConfigPresence(state)[fieldPath] != mcpFieldConfigPresence(desired)[fieldPath] {
-		return true
-	}
-	prior, priorErr := mcpFieldDesiredValue(ctx, state, fieldPath)
-	want, wantErr := mcpFieldDesiredValue(ctx, desired, fieldPath)
-	if priorErr != nil || wantErr != nil {
-		return priorErr != wantErr
-	}
-	return !mcpWireValuesEqual(prior, want)
-}
-
-func buildMCPFieldDelta(ctx context.Context, plan, config, state MCPServerResourceModel, committed, candidate mcpFieldOwnership, hydration map[string]interface{}) (map[string]interface{}, error) {
+func buildMCPFieldDelta(ctx context.Context, _ MCPServerResourceModel, config, state MCPServerResourceModel, committed, candidate mcpFieldOwnership, hydration map[string]interface{}) (map[string]interface{}, error) {
 	if err := validateMCPFieldCredentialMerge(ctx, state, config, committed); err != nil {
 		return nil, err
 	}
@@ -213,16 +235,13 @@ func buildMCPFieldDelta(ctx context.Context, plan, config, state MCPServerResour
 		if candidate.Removals[fieldPath] {
 			continue
 		}
-		var source MCPServerResourceModel
-		switch presence[fieldPath] {
-		case 1:
-			source = config
-		case 2:
-			source = plan
-		default:
+		// Unknown configuration is not mutation intent. It retains candidate
+		// ownership, but neither proposed-state placeholders nor scalar zero
+		// values may reach the wire.
+		if presence[fieldPath] != 1 {
 			continue
 		}
-		desired, err := mcpFieldDesiredValue(ctx, source, fieldPath)
+		desired, err := mcpFieldDesiredValue(ctx, config, fieldPath)
 		if err != nil {
 			return nil, err
 		}
@@ -236,7 +255,9 @@ func buildMCPFieldDelta(ctx context.Context, plan, config, state MCPServerResour
 			continue
 		}
 		remote, present := hydration[name]
-		if mcpFieldChangedInTerraform(ctx, state, source, fieldPath) || !present || !mcpWireValuesEqual(desired, remote) {
+		// An authoritative equal remote value is sufficient for an ownership
+		// takeover even when Terraform's prior public value differs.
+		if !present || !mcpWireValuesEqual(desired, remote) {
 			delta[name] = desired
 		}
 	}
@@ -268,7 +289,7 @@ func addMCPBaseDelta(delta map[string]interface{}, plan, state MCPServerResource
 			desired = item.value.ValueString()
 		}
 		remote, present := hydration[item.name]
-		if !present {
+		if !present || (item.nullable && remote == nil) {
 			switch item.name {
 			case "server_name":
 				if !state.ServerName.IsNull() && !state.ServerName.IsUnknown() {
@@ -310,6 +331,17 @@ func addMCPBaseDelta(delta map[string]interface{}, plan, state MCPServerResource
 			delta["spec_path"] = plan.SpecPath.ValueString()
 		}
 	}
+}
+
+func verifyMCPCreateEndpointReadback(planned MCPServerResourceModel, observed map[string]interface{}) error {
+	intent := map[string]interface{}{"transport": planned.Transport.ValueString()}
+	if !planned.URL.IsNull() && !planned.URL.IsUnknown() {
+		intent["url"] = planned.URL.ValueString()
+	}
+	if !planned.SpecPath.IsNull() && !planned.SpecPath.IsUnknown() {
+		intent["spec_path"] = planned.SpecPath.ValueString()
+	}
+	return verifyMCPBaseDeltaReadback(intent, observed)
 }
 
 func verifyMCPBaseDeltaReadback(delta, observed map[string]interface{}) error {
@@ -383,6 +415,11 @@ func (r *MCPServerResource) Update(ctx context.Context, req resource.UpdateReque
 		resp.State, resp.Private = req.State, req.Private
 		return
 	}
+	if mcpAliasIsKnownEmpty(config.Alias) {
+		resp.State, resp.Private = req.State, req.Private
+		resp.Diagnostics.AddError("Invalid MCP Alias Configuration", "Configured alias must be non-empty. No update was attempted; prior public and private state was retained.")
+		return
+	}
 	plan.ID, plan.ServerID = state.ID, state.ServerID
 
 	hydrated := state
@@ -437,8 +474,11 @@ func (r *MCPServerResource) Update(ctx context.Context, req resource.UpdateReque
 	delta["server_id"] = plan.ServerID.ValueString()
 
 	remoteURL, remoteURLPresent := mcpKnownRawString(hydration, "url")
+	if !remoteURLPresent && !state.URL.IsNull() && !state.URL.IsUnknown() {
+		remoteURL, remoteURLPresent = state.URL.ValueString(), true
+	}
 	urlChanged := false
-	if desired, sent := delta["url"].(string); sent && remoteURLPresent && desired != remoteURL {
+	if desired, sent := delta["url"]; sent && remoteURLPresent && !mcpWireValuesEqual(desired, remoteURL) {
 		urlChanged = true
 	}
 	remoteAuth, remoteAuthPresent := mcpKnownRawString(hydration, "auth_type")
@@ -447,7 +487,7 @@ func (r *MCPServerResource) Update(ctx context.Context, req resource.UpdateReque
 	}
 	desiredAuth, authSent := delta["auth_type"].(string)
 	authClassChanged := authSent && mcpAuthCredentialClass(remoteAuth) != mcpAuthCredentialClass(desiredAuth)
-	if err := validateMCPImplicitClearSafety(config, plannedFields, hydration, delta, urlChanged, authClassChanged); err != nil {
+	if err := validateMCPImplicitClearSafety(config, state, plannedFields, hydration, delta, urlChanged, authClassChanged); err != nil {
 		resp.State, resp.Private = req.State, req.Private
 		resp.Diagnostics.AddError("Unsafe MCP URL or Authentication Update", "LiteLLM v1.98 would implicitly clear an unowned, unknown, or unchanged OAuth/credential value ("+err.Error()+"). Configure every affected value with a genuinely changed or cleared complete intent in one apply. No PUT was attempted; restorative PUTs are never used.")
 		return

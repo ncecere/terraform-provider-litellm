@@ -749,7 +749,7 @@ func (r *MCPServerResource) Create(ctx context.Context, req resource.CreateReque
 		resp.Diagnostics.AddError("MCP Server Readback Not Confirmed", "LiteLLM accepted the create, but direct readback did not return a valid MCP info object. Only the confirmed identity was retained for recovery.")
 		return
 	}
-	if mcpOwnedEndpointReadbackMismatch(&planned, &data, nil) || verifyMCPFieldCreateReadback(ctx, config, readback, plannedFields) != nil {
+	if mcpOwnedEndpointReadbackMismatch(&planned, &data, nil) || verifyMCPCreateEndpointReadback(planned, readback) != nil || verifyMCPFieldCreateReadback(ctx, config, readback, plannedFields) != nil {
 		partial := partialMCPServerState(serverID)
 		resp.Diagnostics.Append(resp.State.Set(ctx, &partial)...)
 		resp.Diagnostics.AddError("Inconsistent MCP Endpoint Readback", "LiteLLM accepted the create but did not persist the requested endpoint or transport. Only the confirmed identity was retained for recovery.")
@@ -1589,21 +1589,26 @@ func (r *MCPServerResource) readMCPServerResultProjection(_ context.Context, dat
 	}
 	projectString(mcpFieldAliasPath, "alias", &data.Alias)
 	projectString(mcpFieldDescriptionPath, "description", &data.Description)
+	projectNullableSensitiveString := func(name string, current *types.String) {
+		raw, present := result[name]
+		if !present || raw == nil {
+			// LiteLLM v1.98 role sanitization masks these values as null or by
+			// omission. Preserve a known prior value; a configured clear and an
+			// import without prior state are already null.
+			if current.IsUnknown() {
+				*current = types.StringNull()
+			}
+			return
+		}
+		*current = types.StringValue(raw.(string))
+	}
 	urlOwned := imported || !data.URL.IsNull()
 	if urlOwned {
-		if remoteURL, ok := result["url"].(string); ok {
-			data.URL = types.StringValue(remoteURL)
-		} else {
-			data.URL = types.StringNull()
-		}
+		projectNullableSensitiveString("url", &data.URL)
 	}
 	specPathOwned := imported || !data.SpecPath.IsNull()
 	if specPathOwned {
-		if specPath, ok := result["spec_path"].(string); ok {
-			data.SpecPath = types.StringValue(specPath)
-		} else {
-			data.SpecPath = types.StringNull()
-		}
+		projectNullableSensitiveString("spec_path", &data.SpecPath)
 	}
 	if transport, ok := result["transport"].(string); ok {
 		data.Transport = types.StringValue(transport)
@@ -1615,8 +1620,8 @@ func (r *MCPServerResource) readMCPServerResultProjection(_ context.Context, dat
 		if command, ok := result["command"].(string); ok {
 			data.Command = types.StringValue(command)
 		}
-	} else {
-		projectString(mcpFieldCommandPath, "command", &data.Command)
+	} else if fieldOwnership.Owned[mcpFieldCommandPath] || (!data.Command.IsNull() && !data.Command.IsUnknown()) {
+		projectNullableSensitiveString("command", &data.Command)
 	}
 	if createdAt, ok := result["created_at"].(string); ok {
 		data.CreatedAt = types.StringValue(createdAt)
@@ -1669,9 +1674,19 @@ func (r *MCPServerResource) readMCPServerResultProjection(_ context.Context, dat
 		data.Credentials = types.MapNull(types.StringType)
 	}
 
-	projectString(mcpFieldAuthorizationURLPath, "authorization_url", &data.AuthorizationURL)
-	projectString(mcpFieldTokenURLPath, "token_url", &data.TokenURL)
-	projectString(mcpFieldRegistrationURLPath, "registration_url", &data.RegistrationURL)
+	for _, item := range []struct {
+		fieldPath string
+		name      string
+		current   *types.String
+	}{
+		{fieldPath: mcpFieldAuthorizationURLPath, name: "authorization_url", current: &data.AuthorizationURL},
+		{fieldPath: mcpFieldTokenURLPath, name: "token_url", current: &data.TokenURL},
+		{fieldPath: mcpFieldRegistrationURLPath, name: "registration_url", current: &data.RegistrationURL},
+	} {
+		if fieldOwnership.Owned[item.fieldPath] || (!item.current.IsNull() && !item.current.IsUnknown()) {
+			projectNullableSensitiveString(item.name, item.current)
+		}
+	}
 	if fieldOwnership.Owned[mcpFieldAllowAllKeysPath] || (!data.AllowAllKeys.IsNull() && !data.AllowAllKeys.IsUnknown()) {
 		if allowAllKeys, present := result["allow_all_keys"].(bool); present {
 			data.AllowAllKeys = types.BoolValue(allowAllKeys)

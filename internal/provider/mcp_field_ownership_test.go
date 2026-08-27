@@ -144,7 +144,7 @@ func TestMCPServerCreateSendsConfiguredEmptyAndFalseFields(t *testing.T) {
 	emptyMap := types.MapValueMust(types.StringType, nil)
 	config := MCPServerResourceModel{
 		ServerName: types.StringValue("server"), Transport: types.StringValue("http"), AuthType: types.StringValue("none"), URL: types.StringValue("https://example.invalid"),
-		Alias: types.StringValue(""), Description: types.StringValue(""), MCPAccessGroups: emptyList, Command: types.StringValue(""), Args: emptyList, Env: emptyMap,
+		Alias: types.StringValue("alias"), Description: types.StringValue(""), MCPAccessGroups: emptyList, Command: types.StringValue(""), Args: emptyList, Env: emptyMap,
 		Credentials: emptyMap, AllowedTools: emptyList, ExtraHeaders: emptyList, StaticHeaders: emptyMap,
 		AuthorizationURL: types.StringValue(""), TokenURL: types.StringValue(""), RegistrationURL: types.StringValue(""), AllowAllKeys: types.BoolValue(false),
 	}
@@ -193,13 +193,13 @@ func TestMCPImplicitClearPreflightRejectsUnchangedAndAllowsCompleteClear(t *test
 	owned := map[string]bool{mcpFieldAuthorizationURLPath: true, mcpFieldTokenURLPath: true, mcpFieldRegistrationURLPath: true}
 	planned := mcpFieldOwnership{Owned: cloneMCPFieldSet(owned), Removals: map[string]bool{}, Versioned: true}
 	config := MCPServerResourceModel{AuthorizationURL: types.StringValue("https://auth.example/authorize"), TokenURL: types.StringValue("https://auth.example/token"), RegistrationURL: types.StringValue("https://auth.example/register")}
-	if err := validateMCPImplicitClearSafety(config, planned, hydration, map[string]interface{}{}, true, false); err == nil {
+	if err := validateMCPImplicitClearSafety(config, MCPServerResourceModel{}, planned, hydration, map[string]interface{}{}, true, false); err == nil {
 		t.Fatal("URL change accepted unchanged OAuth endpoints that v1.98 would clear")
 	}
 	planned.Owned = map[string]bool{}
 	planned.Removals = cloneMCPFieldSet(owned)
 	delta := map[string]interface{}{"authorization_url": nil, "token_url": nil, "registration_url": nil}
-	if err := validateMCPImplicitClearSafety(MCPServerResourceModel{}, planned, hydration, delta, true, false); err != nil {
+	if err := validateMCPImplicitClearSafety(MCPServerResourceModel{}, MCPServerResourceModel{}, planned, hydration, delta, true, false); err != nil {
 		t.Fatalf("complete explicit OAuth clear rejected: %v", err)
 	}
 }
