@@ -672,9 +672,7 @@ func (r *MCPServerResource) ModifyPlan(ctx context.Context, req resource.ModifyP
 			}
 		}
 	}
-	if !config.Alias.IsNull() && !config.Alias.IsUnknown() && config.Alias.ValueString() != "" {
-		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("alias"), types.StringValue(mcpNormalizeAliasV198(config.Alias.ValueString())))...)
-	} else if !hasState && config.Alias.IsNull() {
+	if !hasState && config.Alias.IsNull() {
 		if !config.ServerName.IsNull() && !config.ServerName.IsUnknown() {
 			resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("alias"), types.StringValue(mcpNormalizeAliasV198(config.ServerName.ValueString())))...)
 		} else {
@@ -1689,7 +1687,25 @@ func (r *MCPServerResource) readMCPServerResultProjection(ctx context.Context, d
 			data.ServerName = types.StringValue(raw.(string))
 		}
 	}
-	projectString(mcpFieldAliasPath, "alias", &data.Alias)
+	projectAlias := func() {
+		raw, present := result["alias"]
+		if !present {
+			return
+		}
+		if fieldOwnership.Owned[mcpFieldAliasPath] && !data.Alias.IsNull() && !data.Alias.IsUnknown() && raw != nil {
+			if observed, ok := raw.(string); ok && observed == mcpNormalizeAliasV198(data.Alias.ValueString()) {
+				// Preserve configured spelling while the normalized wire value is
+				// semantically equal. Terraform cannot rewrite a known config value.
+				return
+			}
+		}
+		if raw == nil {
+			data.Alias = types.StringNull()
+			return
+		}
+		data.Alias = types.StringValue(raw.(string))
+	}
+	projectAlias()
 	projectString(mcpFieldDescriptionPath, "description", &data.Description)
 	projectNullableSensitiveString := func(name string, current *types.String) {
 		raw, present := result[name]

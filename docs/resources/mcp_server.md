@@ -2,7 +2,7 @@
 
 Manages MCP (Model Context Protocol) server configurations in LiteLLM. MCP servers allow LLM models to access external tools and data sources through a standardized protocol.
 
-> **Note:** Server names and canonical aliases use 1–128 ASCII letters, digits, underscores, or periods. They cannot contain LiteLLM v1.98's default tool-prefix separator (`-`). Non-empty aliases may contain ASCII spaces in configuration; LiteLLM and the provider normalize each space to an underscore in plans and state.
+> **Note:** Server names and canonical aliases use 1–128 ASCII letters, digits, underscores, or periods. They cannot contain LiteLLM v1.98's default tool-prefix separator (`-`). Non-empty aliases may contain ASCII spaces in configuration; the provider sends LiteLLM's space-to-underscore normalization while preserving the configured spelling in Terraform state.
 >
 > Ordinary refresh can fall back to LiteLLM's MCP server collection endpoint if the individual read returns an unexpected error. Create and Update verification use only the direct singular endpoint as mutation authority. A committed create without confirmed readback retains only the server identity; a failed Update or readback retains the complete prior state.
 
@@ -29,7 +29,7 @@ resource "litellm_mcp_server" "custom_identity" {
 }
 ```
 
-The planned and stored alias is `inventory_tools`. Omitting both `server_name` and `alias` is also supported; LiteLLM then uses `server_id` as the effective MCP tool prefix.
+LiteLLM stores `inventory_tools`, while Terraform preserves the configured `inventory tools` spelling and compares it semantically to the normalized API value. Omitting both `server_name` and `alias` is also supported; LiteLLM then uses `server_id` as the effective MCP tool prefix.
 
 ### Full Configuration
 
@@ -160,7 +160,7 @@ The following arguments are supported:
 
 - `server_id` - (String, Computed, Forces Replacement) A create-only server identity. It must be a non-empty manageable path segment and cannot be `.`/`..` or LiteLLM's reserved `all-team-mcpservers`/`all-proxy-mcpservers` identities. When omitted, the provider selects a stable generated identity. Adding or changing a configured value replaces the resource; existing generated-ID configurations and imports can continue omitting it without replacement.
 - `server_name` - (String) An optional 1–128 character MCP tool-prefix name. When omitted, LiteLLM uses `alias`, then `server_id`, as the effective prefix fallback. Removing a configured name sends an explicit null.
-- `alias` - (String, Computed) An optional server alias. Non-empty configured aliases normalize ASCII spaces to underscores. When alias is omitted on Create and `server_name` is set, LiteLLM defaults alias from the name; when both are omitted, `server_id` is the fallback.
+- `alias` - (String, Computed) An optional server alias. Non-empty configured aliases are sent with ASCII spaces normalized to underscores, while state preserves configured spelling when the API value is semantically equal. When alias is omitted on Create and `server_name` is set, LiteLLM defaults alias from the name; when both are omitted, `server_id` is the fallback.
 - `description` - (String) A human-readable description of the MCP server.
 - `url` - (String) The MCP server URL. HTTP and SSE require at least one of `url` or `spec_path`; stdio does not require a URL.
 - `spec_path` - (String) A LiteLLM-local path or HTTP(S) URL for an OpenAPI specification. It can satisfy the HTTP/SSE endpoint requirement without `url`; if both are set, LiteLLM uses `url` as the OpenAPI base URL.

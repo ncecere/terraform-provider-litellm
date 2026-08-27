@@ -264,7 +264,7 @@ func TestMCPServerNameClearAndAliasNormalizationUpdateProtocol(t *testing.T) {
 			t.Fatalf("alias normalization: puts=%d body=%#v diagnostics=%v", result.puts, result.body, result.applied.Diagnostics)
 		}
 		attributes := protocolAttributeMap(t, result.schema, result.applied.NewState)
-		if got := protocolString(t, attributes["alias"]); got != "new_alias" {
+		if got := protocolString(t, attributes["alias"]); got != "new alias" {
 			t.Fatalf("normalized alias state = %q", got)
 		}
 	})
