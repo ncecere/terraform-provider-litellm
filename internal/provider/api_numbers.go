@@ -13,10 +13,24 @@ import (
 	"strings"
 )
 
+const (
+	jsonDecodeMaxInputBytes    = 64 << 20
+	jsonDecodeMaxDepth         = 256
+	jsonDecodeMaxObjectMembers = 1_000_000
+)
+
 var (
 	apiJSONNumberPattern = regexp.MustCompile(`^(-?)(0|[1-9][0-9]*)(?:\.([0-9]+))?(?:[eE]([+-]?[0-9]+))?$`)
 	errInvalidAPIInteger = errors.New("expected an exact integral JSON number in the int64 range")
 	errInvalidAPINumber  = errors.New("expected a finite JSON number")
+
+	errJSONMalformed       = errors.New("malformed JSON")
+	errJSONMultipleValues  = errors.New("JSON must contain exactly one value")
+	errJSONDuplicateMember = errors.New("JSON contains a duplicate object member")
+	errJSONInputLimit      = errors.New("JSON input exceeds the size limit")
+	errJSONDepthLimit      = errors.New("JSON input exceeds the nesting limit")
+	errJSONMemberLimit     = errors.New("JSON input exceeds the object member limit")
+	errJSONDestination     = errors.New("JSON value is incompatible with the destination")
 )
 
 type apiValuePresence uint8
@@ -121,21 +135,104 @@ func apiFloat64MapAt(object map[string]interface{}, path ...string) (map[string]
 
 // decodeJSONUseNumber is the single response-decoding path for the provider
 // client. UseNumber affects interface-backed fields while typed DTO numeric
-// fields continue to use encoding/json's normal checked decoding.
+// fields continue to use encoding/json's normal checked decoding. A token pass
+// runs first because encoding/json otherwise silently keeps the last occurrence
+// of a duplicate object member. All errors are deliberately content-free.
 func decodeJSONUseNumber(data []byte, result interface{}) error {
+	if len(data) > jsonDecodeMaxInputBytes {
+		return errJSONInputLimit
+	}
+	if err := validateJSONStructure(data); err != nil {
+		return err
+	}
+
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
 	if err := decoder.Decode(result); err != nil {
-		return err
+		return errJSONDestination
 	}
 	var trailing interface{}
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		if err == nil {
-			return errors.New("multiple JSON values")
+			return errJSONMultipleValues
 		}
-		return err
+		return errJSONMalformed
 	}
 	return nil
+}
+
+func validateJSONStructure(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	members := 0
+	if err := validateJSONValue(decoder, 1, &members); err != nil {
+		return err
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errJSONMultipleValues
+		}
+		return errJSONMalformed
+	}
+	return nil
+}
+
+func validateJSONValue(decoder *json.Decoder, depth int, members *int) error {
+	if depth > jsonDecodeMaxDepth {
+		return errJSONDepthLimit
+	}
+	token, err := decoder.Token()
+	if err != nil {
+		return errJSONMalformed
+	}
+	delimiter, container := token.(json.Delim)
+	if !container {
+		return nil
+	}
+
+	switch delimiter {
+	case '{':
+		seen := make(map[string]struct{})
+		for decoder.More() {
+			nameToken, tokenErr := decoder.Token()
+			if tokenErr != nil {
+				return errJSONMalformed
+			}
+			name, ok := nameToken.(string)
+			if !ok {
+				return errJSONMalformed
+			}
+			*members++
+			if *members > jsonDecodeMaxObjectMembers {
+				return errJSONMemberLimit
+			}
+			if _, duplicate := seen[name]; duplicate {
+				return errJSONDuplicateMember
+			}
+			seen[name] = struct{}{}
+			if valueErr := validateJSONValue(decoder, depth+1, members); valueErr != nil {
+				return valueErr
+			}
+		}
+		closing, closingErr := decoder.Token()
+		if closingErr != nil || closing != json.Delim('}') {
+			return errJSONMalformed
+		}
+		return nil
+	case '[':
+		for decoder.More() {
+			if valueErr := validateJSONValue(decoder, depth+1, members); valueErr != nil {
+				return valueErr
+			}
+		}
+		closing, closingErr := decoder.Token()
+		if closingErr != nil || closing != json.Delim(']') {
+			return errJSONMalformed
+		}
+		return nil
+	default:
+		return errJSONMalformed
+	}
 }
 
 // canonicalJSONNumberString returns an exact, formatting-independent decimal

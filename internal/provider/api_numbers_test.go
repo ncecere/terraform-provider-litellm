@@ -1,8 +1,12 @@
 package provider
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -146,6 +150,93 @@ func TestDecodeJSONUseNumberRejectsTrailingValues(t *testing.T) {
 	var decoded interface{}
 	if err := decodeJSONUseNumber([]byte(`{"ok":true} {"also":true}`), &decoded); err == nil {
 		t.Fatal("expected multiple JSON values to fail")
+	}
+}
+
+func TestDecodeJSONUseNumberRejectsDuplicateMembersBeforeDecode(t *testing.T) {
+	t.Parallel()
+
+	for _, input := range []string{
+		`{"same":1,"same":2}`,
+		`{"outer":{"same":1,"same":2}}`,
+		`[{"same":1,"same":2}]`,
+		`{"key":1,"k\u0065y":2}`,
+		`{"\/":1,"/":2}`,
+	} {
+		input := input
+		t.Run(input, func(t *testing.T) {
+			t.Parallel()
+			result := map[string]interface{}{"retained": true}
+			err := decodeJSONUseNumber([]byte(input), &result)
+			if !errors.Is(err, errJSONDuplicateMember) {
+				t.Fatalf("duplicate member error = %v", err)
+			}
+			if len(result) != 1 || result["retained"] != true {
+				t.Fatalf("destination was changed before duplicate rejection: %#v", result)
+			}
+		})
+	}
+}
+
+func TestClientResponseDecodeRejectsDuplicateMembers(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = writer.Write([]byte(`{"outer":{"response-secret":1,"response-secret":2}}`))
+	}))
+	t.Cleanup(server.Close)
+	client := &Client{APIBase: server.URL, APIKey: "admin", HTTPClient: server.Client()}
+	result := map[string]interface{}{"retained": true}
+	err := client.DoRequestWithResponse(context.Background(), http.MethodGet, "/mcp/info", nil, &result)
+	if err == nil || !strings.Contains(err.Error(), "failed to decode") || strings.Contains(err.Error(), "response-secret") {
+		t.Fatalf("client duplicate response error = %v", err)
+	}
+	if len(result) != 1 || result["retained"] != true {
+		t.Fatalf("client changed destination before rejecting duplicate: %#v", result)
+	}
+}
+
+func TestDecodeJSONUseNumberErrorsNeverContainInput(t *testing.T) {
+	t.Parallel()
+
+	secrets := []string{"duplicate-secret", "value-secret", "trailing-secret"}
+	inputs := []string{
+		`{"duplicate-secret":1,"duplicate-secret":2}`,
+		`{"field":"value-secret"`,
+		`{"ok":true} "trailing-secret"`,
+	}
+	for index, input := range inputs {
+		var decoded interface{}
+		err := decodeJSONUseNumber([]byte(input), &decoded)
+		if err == nil {
+			t.Fatalf("input %d unexpectedly decoded", index)
+		}
+		for _, secret := range secrets {
+			if strings.Contains(err.Error(), secret) {
+				t.Fatalf("error exposed JSON content: %v", err)
+			}
+		}
+	}
+}
+
+func TestDecodeJSONUseNumberEnforcesStructuralLimits(t *testing.T) {
+	t.Parallel()
+
+	tooLarge := make([]byte, jsonDecodeMaxInputBytes+1)
+	var decoded interface{}
+	if err := decodeJSONUseNumber(tooLarge, &decoded); !errors.Is(err, errJSONInputLimit) {
+		t.Fatalf("input limit error = %v", err)
+	}
+
+	deep := strings.Repeat("[", jsonDecodeMaxDepth) + "0" + strings.Repeat("]", jsonDecodeMaxDepth)
+	if err := decodeJSONUseNumber([]byte(deep), &decoded); !errors.Is(err, errJSONDepthLimit) {
+		t.Fatalf("depth limit error = %v", err)
+	}
+
+	decoder := json.NewDecoder(strings.NewReader(`{"member":true}`))
+	members := jsonDecodeMaxObjectMembers
+	if err := validateJSONValue(decoder, 1, &members); !errors.Is(err, errJSONMemberLimit) {
+		t.Fatalf("member limit error = %v", err)
 	}
 }
 
