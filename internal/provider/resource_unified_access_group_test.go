@@ -242,10 +242,10 @@ func TestUnifiedAccessGroupNormalizesRequestsAndPreservesEquivalentListRepresent
 		t.Fatalf("request hashes = %#v, want sorted deduplicated bare hashes %#v", got, want)
 	}
 	actual := map[string]bool{a: true, b: true}
-	if reconciled := reconcileUnifiedAccessGroupKeyMembership(configured, types.ListNull(types.StringType), actual); !reconciled.Equal(configured) {
+	if reconciled := reconcileUnifiedAccessGroupKeyMembership(context.Background(), configured, types.ListNull(types.StringType), actual); !reconciled.Equal(configured) {
 		t.Fatalf("equivalent membership changed list order, duplicates, or representation: %#v", reconciled)
 	}
-	drifted := reconcileUnifiedAccessGroupKeyMembership(configured, types.ListNull(types.StringType), map[string]bool{b: true})
+	drifted := reconcileUnifiedAccessGroupKeyMembership(context.Background(), configured, types.ListNull(types.StringType), map[string]bool{b: true})
 	if got, want := unifiedAccessGroupListStrings(t, drifted), []string{b}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("real membership drift = %#v, want deterministic bare hashes %#v", got, want)
 	}

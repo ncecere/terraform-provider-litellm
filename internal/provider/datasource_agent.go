@@ -143,7 +143,7 @@ func projectAgentData(ctx context.Context, item map[string]interface{}, expected
 			return data, fmt.Errorf("invalid object_permission")
 		}
 		temporary := emptyKnownAgentResourceModel()
-		if err := (&AgentResource{}).readObjectPermission(permission, &temporary); err != nil {
+		if err := (&AgentResource{}).readObjectPermissionContext(ctx, permission, &temporary); err != nil {
 			return data, err
 		}
 		encoded, err := canonicalAgentJSON(permission)

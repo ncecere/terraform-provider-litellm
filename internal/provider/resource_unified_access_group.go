@@ -388,7 +388,10 @@ func (r *UnifiedAccessGroupResource) Read(ctx context.Context, req resource.Read
 		}
 		var synchronizationErr *unifiedAccessGroupSynchronizationError
 		if errors.As(err, &synchronizationErr) {
-			resolveUnifiedAccessGroupUnknowns(&data)
+			if projectionErr := resolveUnifiedAccessGroupUnknownsStrict(ctx, &data); projectionErr != nil {
+				resp.Diagnostics.AddError("Collection Projection Failed", projectionErr.Error())
+				return
+			}
 			resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 			resp.Diagnostics.AddError("Assigned Key Synchronization Partial", synchronizationErr.Error())
 			return
@@ -610,9 +613,17 @@ func (r *UnifiedAccessGroupResource) recoverUnifiedAccessGroupUpdate(
 	if readErr != nil && !partialRead {
 		// Membership that cannot be proven from both rows must not survive an
 		// ambiguous multi-step outcome merely because it was in prior state.
-		observed.AssignedKeyIDs = unifiedAccessGroupKeyList(nil)
+		empty, diagnostics := checkedStringListValue(ctx, nil, path.Root("assigned_key_ids"))
+		if projectionErr := collectionProjectionError(ctx, diagnostics); projectionErr != nil {
+			resp.Diagnostics.AddError("Collection Projection Failed", projectionErr.Error())
+			return
+		}
+		observed.AssignedKeyIDs = empty
 	}
-	resolveUnifiedAccessGroupUnknowns(&observed)
+	if projectionErr := resolveUnifiedAccessGroupUnknownsStrict(ctx, &observed); projectionErr != nil {
+		resp.Diagnostics.AddError("Collection Projection Failed", projectionErr.Error())
+		return
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &observed)...)
 	if keyMutation {
 		addUnifiedAccessGroupCacheWarning(&resp.Diagnostics)
@@ -808,12 +819,12 @@ func sortedUnifiedAccessGroupKeyHashes(representations map[string][]string) []st
 	return hashes
 }
 
-func unifiedAccessGroupKeyList(representations []string) types.List {
+func unifiedAccessGroupKeyList(ctx context.Context, representations []string) types.List {
 	items := make([]attr.Value, 0, len(representations))
 	for _, representation := range representations {
 		items = append(items, types.StringValue(representation))
 	}
-	value, diagnostics := checkedStringListValue(context.Background(), items, path.Root("assigned_key_ids"))
+	value, diagnostics := checkedStringListValue(ctx, items, path.Root("assigned_key_ids"))
 	if diagnostics.HasError() {
 		return types.ListNull(types.StringType)
 	}
@@ -832,7 +843,7 @@ func unifiedAccessGroupKeyMembershipEqual(representations map[string][]string, a
 	return true
 }
 
-func reconcileUnifiedAccessGroupKeyMembership(primary, secondary types.List, actual map[string]bool) types.List {
+func reconcileUnifiedAccessGroupKeyMembership(ctx context.Context, primary, secondary types.List, actual map[string]bool) types.List {
 	if primaryRepresentations, invalid := unifiedAccessGroupValidKeyRepresentations(primary); isKnownUnifiedAccessGroupKeyList(primary) && invalid == 0 && unifiedAccessGroupKeyMembershipEqual(primaryRepresentations, actual) {
 		return primary
 	}
@@ -846,7 +857,7 @@ func reconcileUnifiedAccessGroupKeyMembership(primary, secondary types.List, act
 		}
 	}
 	sort.Strings(hashes)
-	return unifiedAccessGroupKeyList(hashes)
+	return unifiedAccessGroupKeyList(ctx, hashes)
 }
 
 func isKnownUnifiedAccessGroupKeyList(value types.List) bool {
@@ -1365,7 +1376,7 @@ func (r *UnifiedAccessGroupResource) synchronizeUnifiedAccessGroupKeys(
 	globalHashes, globalErr := r.listUnifiedAccessGroupKeysWithRetry(ctx, accessGroupID)
 	if globalErr != nil {
 		if ctx.Err() != nil {
-			return reconcileUnifiedAccessGroupKeyMembership(desired, prior, map[string]bool{}), ctx.Err()
+			return reconcileUnifiedAccessGroupKeyMembership(ctx, desired, prior, map[string]bool{}), ctx.Err()
 		}
 		synchronizationErr.discovery++
 	}
@@ -1413,7 +1424,7 @@ func (r *UnifiedAccessGroupResource) synchronizeUnifiedAccessGroupKeys(
 			}
 		}
 		if ctx.Err() != nil {
-			return reconcileUnifiedAccessGroupKeyMembership(desired, prior, actual), ctx.Err()
+			return reconcileUnifiedAccessGroupKeyMembership(ctx, desired, prior, actual), ctx.Err()
 		}
 		if err != nil {
 			switch {
@@ -1461,7 +1472,10 @@ func (r *UnifiedAccessGroupResource) synchronizeUnifiedAccessGroupKeys(
 		}
 	}
 
-	result := reconcileUnifiedAccessGroupKeyMembership(desired, prior, actual)
+	result := reconcileUnifiedAccessGroupKeyMembership(ctx, desired, prior, actual)
+	if err := ctx.Err(); err != nil {
+		return result, err
+	}
 	if synchronizationErr.hasError() {
 		return result, synchronizationErr
 	}
@@ -1714,10 +1728,6 @@ func readUnifiedAccessGroupResponse(ctx context.Context, result map[string]inter
 	}
 	*data = next
 	return nil
-}
-
-func resolveUnifiedAccessGroupUnknowns(data *UnifiedAccessGroupResourceModel) {
-	_ = resolveUnifiedAccessGroupUnknownsStrict(context.Background(), data)
 }
 
 func resolveUnifiedAccessGroupUnknownsStrict(ctx context.Context, data *UnifiedAccessGroupResourceModel) error {
