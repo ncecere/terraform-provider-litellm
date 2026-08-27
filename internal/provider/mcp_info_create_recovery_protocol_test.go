@@ -38,7 +38,7 @@ func TestMCPAcceptedCreateCredentialRecoveryReappliesOpaqueValuesProtocol(t *tes
 				return
 			}
 			_ = json.NewEncoder(writer).Encode(map[string]interface{}{
-				"server_id": requestedID.Load().(string), "server_name": "credential-recovery", "transport": "http",
+				"server_id": requestedID.Load().(string), "server_name": "credential_recovery", "transport": "http",
 				"url": "https://mcp.example.test", "auth_type": "api_key", "credentials": nil, "mcp_info": map[string]interface{}{},
 			})
 		}
@@ -47,7 +47,7 @@ func TestMCPAcceptedCreateCredentialRecoveryReappliesOpaqueValuesProtocol(t *tes
 	protocolServer, schemas := configuredImportProtocolServer(t, ctx, server.URL)
 	schema := schemas.ResourceSchemas["litellm_mcp_server"]
 	configValues := map[string]interface{}{
-		"server_name": "credential-recovery", "url": "https://mcp.example.test", "transport": "http", "auth_type": "api_key",
+		"server_name": "credential_recovery", "url": "https://mcp.example.test", "transport": "http", "auth_type": "api_key",
 		"credentials": map[string]tftypes.Value{"auth_value": tftypes.NewValue(tftypes.String, "old-secret")},
 	}
 	config, nullState, createPlan := mcpServerProtocolCreatePlan(t, protocolServer, schema, configValues)
@@ -66,7 +66,7 @@ func TestMCPAcceptedCreateCredentialRecoveryReappliesOpaqueValuesProtocol(t *tes
 		t.Fatalf("recovery refresh: err=%v diagnostics=%v", err, refreshed.Diagnostics)
 	}
 	recoveryConfigValues := map[string]interface{}{
-		"server_name": "credential-recovery", "url": "https://mcp.example.test", "transport": "http", "auth_type": "api_key",
+		"server_name": "credential_recovery", "url": "https://mcp.example.test", "transport": "http", "auth_type": "api_key",
 		"credentials": map[string]tftypes.Value{"auth_value": tftypes.NewValue(tftypes.String, "new-secret")},
 	}
 	recoveryConfig := accessGroupProtocolDynamicValue(t, schema, organizationProjectProtocolValue(t, schema, recoveryConfigValues))

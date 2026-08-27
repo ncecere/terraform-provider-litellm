@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -51,7 +50,11 @@ func mcpFieldDesiredValue(ctx context.Context, data MCPServerResourceModel, fiel
 	}
 	switch fieldPath {
 	case mcpFieldAliasPath:
-		return stringValue(data.Alias)
+		value, err := stringValue(data.Alias)
+		if err != nil {
+			return nil, err
+		}
+		return mcpNormalizeAliasV198(value.(string)), nil
 	case mcpFieldDescriptionPath:
 		return stringValue(data.Description)
 	case mcpFieldCommandPath:
@@ -135,19 +138,19 @@ func mcpWireValuesEqual(left, right interface{}) bool {
 }
 
 func mcpAliasCreateIntentCannotConverge(value types.String) bool {
-	return !value.IsNull() && !value.IsUnknown() && (value.ValueString() == "" || strings.Contains(value.ValueString(), " "))
+	return !value.IsNull() && !value.IsUnknown() && value.ValueString() == ""
 }
 
 func mcpAliasUpdateIntentCannotConverge(value types.String) bool {
 	// Pinned v1.98 preserves an explicit empty alias on a partial Update when
-	// server_name is omitted. Spaces are always normalized and cannot converge;
-	// completeMCPUpdateDelta separately rejects empty alias plus server_name.
-	return !value.IsNull() && !value.IsUnknown() && strings.Contains(value.ValueString(), " ")
+	// server_name is omitted. Non-empty aliases are normalized before planning
+	// and request construction.
+	return false
 }
 
 func (r *MCPServerResource) buildMCPServerCreateRequest(ctx context.Context, plan, config *MCPServerResourceModel, resolvedMCPInfo map[string]interface{}, mcpInfoPresent bool) (map[string]interface{}, error) {
 	if mcpAliasCreateIntentCannotConverge(config.Alias) {
-		return nil, fmt.Errorf("configured alias must be non-empty and must not require LiteLLM normalization")
+		return nil, fmt.Errorf("configured alias must be non-empty on create")
 	}
 	request, err := r.buildMCPServerRequest(ctx, plan, resolvedMCPInfo, mcpInfoPresent)
 	if err != nil {
@@ -487,7 +490,7 @@ func addMCPBaseDelta(delta map[string]interface{}, plan, state MCPServerResource
 		priorValue types.String
 		nullable   bool
 	}{
-		{name: "server_name", value: plan.ServerName, priorValue: state.ServerName},
+		{name: "server_name", value: plan.ServerName, priorValue: state.ServerName, nullable: true},
 		{name: "transport", value: plan.Transport, priorValue: state.Transport},
 		{name: "auth_type", value: plan.AuthType, priorValue: state.AuthType},
 		{name: "url", value: plan.URL, priorValue: state.URL, nullable: true},
@@ -507,10 +510,6 @@ func addMCPBaseDelta(delta map[string]interface{}, plan, state MCPServerResource
 		remote, present := hydration[item.name]
 		if !present || (item.nullable && remote == nil) {
 			switch item.name {
-			case "server_name":
-				if !state.ServerName.IsNull() && !state.ServerName.IsUnknown() {
-					remote, present = state.ServerName.ValueString(), true
-				}
 			case "auth_type":
 				if !state.AuthType.IsNull() && !state.AuthType.IsUnknown() {
 					remote, present = state.AuthType.ValueString(), true
@@ -550,18 +549,31 @@ func addMCPBaseDelta(delta map[string]interface{}, plan, state MCPServerResource
 }
 
 func completeMCPUpdateDelta(ctx context.Context, delta map[string]interface{}, plan MCPServerResourceModel, hydration map[string]interface{}) error {
-	if _, serverNameSent := delta["server_name"]; serverNameSent {
-		if alias, aliasSent := delta["alias"]; aliasSent {
+	if serverName, serverNameSent := delta["server_name"]; serverNameSent {
+		if serverName == nil {
+			// Clearing both values is valid: LiteLLM falls back to server_id.
+			if alias, aliasSent := delta["alias"]; aliasSent && alias != nil {
+				aliasString, ok := alias.(string)
+				if !ok || !mcpToolPrefixValidV198(aliasString) {
+					return fmt.Errorf("alias intent cannot converge with a server name clear")
+				}
+			}
+		} else if alias, aliasSent := delta["alias"]; aliasSent {
 			aliasString, ok := alias.(string)
-			if !ok || aliasString == "" || strings.Contains(aliasString, " ") {
+			if !ok || aliasString == "" || !mcpToolPrefixValidV198(aliasString) {
 				return fmt.Errorf("alias intent cannot converge with a server name change")
 			}
-		} else {
-			alias, ok := hydration["alias"].(string)
-			if !ok || alias == "" || strings.Contains(alias, " ") {
-				return fmt.Errorf("a stable authoritative alias is required for a server name change")
+		} else if alias, ok := hydration["alias"].(string); ok && alias != "" {
+			if !mcpToolPrefixValidV198(alias) {
+				return fmt.Errorf("authoritative alias is invalid for a server name change")
 			}
 			delta["alias"] = alias
+		} else {
+			name, ok := serverName.(string)
+			if !ok || !mcpToolPrefixValidV198(name) {
+				return fmt.Errorf("server name intent cannot provide an alias fallback")
+			}
+			delta["alias"] = mcpNormalizeAliasV198(name)
 		}
 	}
 
@@ -609,6 +621,9 @@ func completeMCPUpdateDelta(ctx context.Context, delta map[string]interface{}, p
 
 func verifyMCPCreateEndpointReadback(planned MCPServerResourceModel, observed map[string]interface{}) error {
 	intent := map[string]interface{}{"transport": planned.Transport.ValueString()}
+	if !planned.ServerName.IsNull() && !planned.ServerName.IsUnknown() {
+		intent["server_name"] = planned.ServerName.ValueString()
+	}
 	if !planned.URL.IsNull() && !planned.URL.IsUnknown() {
 		intent["url"] = planned.URL.ValueString()
 	}
@@ -726,7 +741,7 @@ func (r *MCPServerResource) Update(ctx context.Context, req resource.UpdateReque
 	}
 	if mcpAliasUpdateIntentCannotConverge(config.Alias) {
 		resp.State, resp.Private = req.State, req.Private
-		resp.Diagnostics.AddError("Invalid MCP Alias Configuration", "Configured alias must not require LiteLLM normalization. No update was attempted; prior public and private state was retained.")
+		resp.Diagnostics.AddError("Invalid MCP Alias Configuration", "Configured alias cannot converge safely. No update was attempted; prior public and private state was retained.")
 		return
 	}
 	plan.ID, plan.ServerID = state.ID, state.ServerID
@@ -816,6 +831,11 @@ func (r *MCPServerResource) Update(ctx context.Context, req resource.UpdateReque
 		resp.State, resp.Private = req.State, req.Private
 		resp.Diagnostics.AddError("Unsafe MCP URL or Authentication Update", "LiteLLM v1.98 would implicitly clear an unowned, unknown, or unchanged OAuth/credential value ("+err.Error()+"). Configure every affected value with a genuinely changed or cleared complete intent in one apply. No PUT was attempted; restorative PUTs are never used.")
 		return
+	}
+	if config.Alias.IsNull() {
+		if canonicalAlias, ok := delta["alias"].(string); ok {
+			plan.Alias = types.StringValue(canonicalAlias)
+		}
 	}
 
 	desiredPlan := plan

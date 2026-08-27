@@ -166,7 +166,7 @@ else
   emit_controlled_record data_source litellm_jwt_key_mappings skipped cli-version-below-1.11
 fi
 run_case key_block resources key_minimal.tf,key_block_minimal.tf,key_block_hash.tf
-run_case mcp_server resources mcp_server_minimal.tf,mcp_server_json_info.tf datasources mcp_server.tf,mcp_servers_list.tf
+run_case mcp_server resources mcp_server_minimal.tf,mcp_server_identity.tf,mcp_server_json_info.tf datasources mcp_server.tf,mcp_servers_list.tf
 run_mcp_clear_lifecycle_case
 mcp_evidence="$SMOKE_PRIVATE_ROOT/.smoke-logs/mcp-immediate-import-evidence.json"
 rm -f "$mcp_evidence"

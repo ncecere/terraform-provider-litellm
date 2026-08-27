@@ -32,14 +32,14 @@ resource "litellm_team" "automation" {
 
 # Minimal HTTP server
 resource "litellm_mcp_server" "simple_http" {
-  server_name = "simple-api"
+  server_name = "simple_api"
   url         = "https://api.example.com/mcp"
   transport   = "http"
 }
 
 # Full HTTP server with authentication
 resource "litellm_mcp_server" "github" {
-  server_name = "github-integration"
+  server_name = "github_integration"
   alias       = "github"
   description = "GitHub API integration for repository operations"
   url         = "https://api.github.com/mcp"
@@ -84,7 +84,7 @@ resource "litellm_mcp_server" "github" {
 
 # Zapier integration with SSE
 resource "litellm_mcp_server" "zapier" {
-  server_name = "zapier-automation"
+  server_name = "zapier_automation"
   alias       = "zapier"
   description = "Zapier workflow automation"
   url         = "https://actions.zapier.com/mcp/sse"
@@ -118,7 +118,7 @@ resource "litellm_mcp_server" "zapier" {
 # =============================================================================
 
 resource "litellm_mcp_server" "oauth_protected" {
-  server_name = "enterprise-api"
+  server_name = "enterprise_api"
   alias       = "enterprise"
   description = "Enterprise API with OAuth authentication"
   url         = "https://api.enterprise.com/mcp"
@@ -159,8 +159,8 @@ resource "litellm_mcp_server" "inventory_openapi" {
 # =============================================================================
 
 resource "litellm_mcp_server" "local_python" {
-  server_name = "local-python-tools"
-  alias       = "python-tools"
+  server_name = "local_python_tools"
+  alias       = "python_tools"
   description = "Local Python development tools"
   transport   = "stdio"
   auth_type   = "none"
@@ -185,8 +185,8 @@ resource "litellm_mcp_server" "local_python" {
 }
 
 resource "litellm_mcp_server" "local_nodejs" {
-  server_name = "local-nodejs-tools"
-  alias       = "nodejs-tools"
+  server_name = "local_nodejs_tools"
+  alias       = "nodejs_tools"
   description = "Local Node.js development tools"
   transport   = "stdio"
   auth_type   = "none"

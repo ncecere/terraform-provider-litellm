@@ -78,23 +78,23 @@ func runMCPUpdateCompletionProtocol(t *testing.T, stateValues, configValues, pro
 func TestMCPServerNameUpdatePreservesUnownedAliasProtocol(t *testing.T) {
 	private := protocolMCPFieldPrivate(t, emptyMCPFieldOwnership())
 	state := map[string]interface{}{
-		"id": "alias-preserve", "server_id": "alias-preserve", "server_name": "old-name", "alias": "remote_alias",
+		"id": "alias-preserve", "server_id": "alias-preserve", "server_name": "old_name", "alias": "remote_alias",
 		"transport": "http", "url": "https://alias.invalid/mcp", "auth_type": "none", "spec_version": "2024-11-05",
 	}
 	config := map[string]interface{}{
-		"server_name": "new-name", "transport": "http", "url": "https://alias.invalid/mcp",
+		"server_name": "new_name", "transport": "http", "url": "https://alias.invalid/mcp",
 	}
 	before := map[string]interface{}{
-		"server_id": "alias-preserve", "server_name": "old-name", "alias": "remote_alias", "transport": "http",
+		"server_id": "alias-preserve", "server_name": "old_name", "alias": "remote_alias", "transport": "http",
 		"url": "https://alias.invalid/mcp", "auth_type": "none", "mcp_info": map[string]interface{}{},
 	}
 
 	t.Run("exact readback", func(t *testing.T) {
 		after := map[string]interface{}{
-			"server_id": "alias-preserve", "server_name": "new-name", "alias": "remote_alias", "transport": "http",
+			"server_id": "alias-preserve", "server_name": "new_name", "alias": "remote_alias", "transport": "http",
 			"url": "https://alias.invalid/mcp", "auth_type": "none", "mcp_info": map[string]interface{}{},
 		}
-		result := runMCPUpdateCompletionProtocol(t, state, config, map[string]interface{}{"server_name": "new-name", "alias": nil}, before, after, private)
+		result := runMCPUpdateCompletionProtocol(t, state, config, map[string]interface{}{"server_name": "new_name", "alias": nil}, before, after, private)
 		if accessGroupProtocolDiagnosticsHaveError(result.applied.Diagnostics) {
 			t.Fatalf("apply: diagnostics=%v", result.applied.Diagnostics)
 		}
@@ -109,10 +109,10 @@ func TestMCPServerNameUpdatePreservesUnownedAliasProtocol(t *testing.T) {
 
 	t.Run("mismatched readback", func(t *testing.T) {
 		after := map[string]interface{}{
-			"server_id": "alias-preserve", "server_name": "new-name", "alias": "regenerated", "transport": "http",
+			"server_id": "alias-preserve", "server_name": "new_name", "alias": "regenerated", "transport": "http",
 			"url": "https://alias.invalid/mcp", "auth_type": "none", "mcp_info": map[string]interface{}{},
 		}
-		result := runMCPUpdateCompletionProtocol(t, state, config, map[string]interface{}{"server_name": "new-name", "alias": nil}, before, after, private)
+		result := runMCPUpdateCompletionProtocol(t, state, config, map[string]interface{}{"server_name": "new_name", "alias": nil}, before, after, private)
 		if !accessGroupProtocolDiagnosticsHaveError(result.applied.Diagnostics) || result.puts != 1 {
 			t.Fatalf("alias mismatch was not surfaced: puts=%d diagnostics=%v", result.puts, result.applied.Diagnostics)
 		}
@@ -124,29 +124,53 @@ func TestMCPServerNameUpdatePreservesUnownedAliasProtocol(t *testing.T) {
 	})
 }
 
-func TestMCPServerNameUpdateAliasAmbiguityHasZeroPUTProtocol(t *testing.T) {
-	for name, alias := range map[string]interface{}{"null alias": nil, "empty alias": "", "normalizing alias": "remote alias"} {
+func TestMCPServerNameUpdateAliasFallbackAndAmbiguityProtocol(t *testing.T) {
+	for name, alias := range map[string]interface{}{"null alias": nil, "empty alias": ""} {
 		t.Run(name, func(t *testing.T) {
 			private := protocolMCPFieldPrivate(t, emptyMCPFieldOwnership())
 			state := map[string]interface{}{
-				"id": "alias-ambiguous", "server_id": "alias-ambiguous", "server_name": "old-name", "alias": alias,
+				"id": "alias-ambiguous", "server_id": "alias-ambiguous", "server_name": "old_name", "alias": alias,
 				"transport": "http", "url": "https://alias.invalid/mcp", "auth_type": "none", "spec_version": "2024-11-05",
 			}
-			config := map[string]interface{}{"server_name": "new-name", "transport": "http", "url": "https://alias.invalid/mcp"}
+			config := map[string]interface{}{"server_name": "new_name", "transport": "http", "url": "https://alias.invalid/mcp"}
 			before := map[string]interface{}{
-				"server_id": "alias-ambiguous", "server_name": "old-name", "alias": alias, "transport": "http",
+				"server_id": "alias-ambiguous", "server_name": "old_name", "alias": alias, "transport": "http",
 				"url": "https://alias.invalid/mcp", "auth_type": "none", "mcp_info": map[string]interface{}{},
 			}
-			result := runMCPUpdateCompletionProtocol(t, state, config, map[string]interface{}{"server_name": "new-name", "alias": nil}, before, before, private)
-			if !accessGroupProtocolDiagnosticsHaveError(result.applied.Diagnostics) || result.puts != 0 {
-				t.Fatalf("ambiguous alias was not rejected before PUT: puts=%d diagnostics=%v", result.puts, result.applied.Diagnostics)
+			after := map[string]interface{}{
+				"server_id": "alias-ambiguous", "server_name": "new_name", "alias": "new_name", "transport": "http",
+				"url": "https://alias.invalid/mcp", "auth_type": "none", "mcp_info": map[string]interface{}{},
 			}
-			assertMCPServerFailedUpdateRetainsPriorState(t, result.schema, result.state, result.applied.NewState)
-			if strings.Contains(fmtDiagnostics(result.applied.Diagnostics), "new-name") {
-				t.Fatal("alias preflight diagnostic exposed configured content")
+			result := runMCPUpdateCompletionProtocol(t, state, config, map[string]interface{}{"server_name": "new_name", "alias": alias}, before, after, private)
+			if accessGroupProtocolDiagnosticsHaveError(result.applied.Diagnostics) || result.puts != 1 || result.body["alias"] != "new_name" {
+				t.Fatalf("alias fallback did not converge: puts=%d body=%#v diagnostics=%v", result.puts, result.body, result.applied.Diagnostics)
+			}
+			if got := protocolString(t, protocolAttributeMap(t, result.schema, result.applied.NewState)["alias"]); got != "new_name" {
+				t.Fatalf("alias fallback state = %q", got)
 			}
 		})
 	}
+
+	t.Run("invalid historical alias", func(t *testing.T) {
+		private := protocolMCPFieldPrivate(t, emptyMCPFieldOwnership())
+		state := map[string]interface{}{
+			"id": "alias-ambiguous", "server_id": "alias-ambiguous", "server_name": "old_name", "alias": "remote alias",
+			"transport": "http", "url": "https://alias.invalid/mcp", "auth_type": "none", "spec_version": "2024-11-05",
+		}
+		config := map[string]interface{}{"server_name": "new_name", "transport": "http", "url": "https://alias.invalid/mcp"}
+		before := map[string]interface{}{
+			"server_id": "alias-ambiguous", "server_name": "old_name", "alias": "remote alias", "transport": "http",
+			"url": "https://alias.invalid/mcp", "auth_type": "none", "mcp_info": map[string]interface{}{},
+		}
+		result := runMCPUpdateCompletionProtocol(t, state, config, map[string]interface{}{"server_name": "new_name", "alias": "remote alias"}, before, before, private)
+		if !accessGroupProtocolDiagnosticsHaveError(result.applied.Diagnostics) || result.puts != 0 {
+			t.Fatalf("invalid historical alias was not rejected before PUT: puts=%d diagnostics=%v", result.puts, result.applied.Diagnostics)
+		}
+		assertMCPServerFailedUpdateRetainsPriorState(t, result.schema, result.state, result.applied.NewState)
+		if strings.Contains(fmtDiagnostics(result.applied.Diagnostics), "new_name") {
+			t.Fatal("alias preflight diagnostic exposed configured content")
+		}
+	})
 }
 
 func TestMCPServerNameAndAliasRemovalHasZeroPUTProtocol(t *testing.T) {
@@ -154,15 +178,15 @@ func TestMCPServerNameAndAliasRemovalHasZeroPUTProtocol(t *testing.T) {
 		Owned: map[string]bool{mcpFieldAliasPath: true}, Removals: map[string]bool{}, Generation: 2, Versioned: true,
 	})
 	state := map[string]interface{}{
-		"id": "alias-remove", "server_id": "alias-remove", "server_name": "old-name", "alias": "managed",
+		"id": "alias-remove", "server_id": "alias-remove", "server_name": "old_name", "alias": "managed",
 		"transport": "http", "url": "https://alias.invalid/mcp", "auth_type": "none", "spec_version": "2024-11-05",
 	}
-	config := map[string]interface{}{"server_name": "new-name", "transport": "http", "url": "https://alias.invalid/mcp"}
+	config := map[string]interface{}{"server_name": "new_name", "transport": "http", "url": "https://alias.invalid/mcp"}
 	before := map[string]interface{}{
-		"server_id": "alias-remove", "server_name": "old-name", "alias": "managed", "transport": "http",
+		"server_id": "alias-remove", "server_name": "old_name", "alias": "managed", "transport": "http",
 		"url": "https://alias.invalid/mcp", "auth_type": "none", "mcp_info": map[string]interface{}{},
 	}
-	result := runMCPUpdateCompletionProtocol(t, state, config, map[string]interface{}{"server_name": "new-name", "alias": nil}, before, before, private)
+	result := runMCPUpdateCompletionProtocol(t, state, config, map[string]interface{}{"server_name": "new_name", "alias": nil}, before, before, private)
 	if !accessGroupProtocolDiagnosticsHaveError(result.applied.Diagnostics) || result.puts != 0 {
 		t.Fatalf("simultaneous alias removal was not rejected before PUT: puts=%d diagnostics=%v", result.puts, result.applied.Diagnostics)
 	}
