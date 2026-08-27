@@ -107,6 +107,9 @@ func mcpAliasCreateIntentCannotConverge(value types.String) bool {
 }
 
 func mcpAliasUpdateIntentCannotConverge(value types.String) bool {
+	// Pinned v1.98 preserves an explicit empty alias on a partial Update when
+	// server_name is omitted. Spaces are always normalized and cannot converge;
+	// completeMCPUpdateDelta separately rejects empty alias plus server_name.
 	return !value.IsNull() && !value.IsUnknown() && strings.Contains(value.ValueString(), " ")
 }
 
@@ -218,8 +221,17 @@ func validateMCPImplicitClearSafety(config, state MCPServerResourceModel, planne
 	return nil
 }
 
-func validateMCPFieldCredentialMerge(ctx context.Context, state, config MCPServerResourceModel, committed mcpFieldOwnership) error {
-	if !committed.Owned[mcpFieldCredentialsPath] || config.Credentials.IsNull() || config.Credentials.IsUnknown() || state.Credentials.IsNull() || state.Credentials.IsUnknown() {
+func mcpCredentialClassWillReplace(plan, state MCPServerResourceModel, hydration map[string]interface{}) bool {
+	priorAuth, priorAuthKnown := mcpKnownRawString(hydration, "auth_type")
+	if !priorAuthKnown && !state.AuthType.IsNull() && !state.AuthType.IsUnknown() {
+		priorAuth, priorAuthKnown = state.AuthType.ValueString(), true
+	}
+	return priorAuthKnown && !plan.AuthType.IsNull() && !plan.AuthType.IsUnknown() &&
+		mcpAuthCredentialClass(priorAuth) != mcpAuthCredentialClass(plan.AuthType.ValueString())
+}
+
+func validateMCPFieldCredentialMerge(ctx context.Context, plan, state, config MCPServerResourceModel, hydration map[string]interface{}, committed mcpFieldOwnership) error {
+	if !committed.Owned[mcpFieldCredentialsPath] || mcpCredentialClassWillReplace(plan, state, hydration) || config.Credentials.IsNull() || config.Credentials.IsUnknown() || state.Credentials.IsNull() || state.Credentials.IsUnknown() {
 		return nil
 	}
 	prior, err := mcpFieldStringMap(ctx, state.Credentials)
@@ -270,7 +282,7 @@ func mcpAmbiguousEmptyCollectionNeedsWrite(ctx context.Context, fieldPath string
 }
 
 func buildMCPFieldDelta(ctx context.Context, plan MCPServerResourceModel, config, state MCPServerResourceModel, committed, candidate mcpFieldOwnership, hydration map[string]interface{}) (map[string]interface{}, error) {
-	if err := validateMCPFieldCredentialMerge(ctx, state, config, committed); err != nil {
+	if err := validateMCPFieldCredentialMerge(ctx, plan, state, config, hydration, committed); err != nil {
 		return nil, err
 	}
 	delta := map[string]interface{}{}
@@ -321,24 +333,28 @@ func buildMCPFieldDelta(ctx context.Context, plan MCPServerResourceModel, config
 			// prior row exists.
 			if !committed.Owned[fieldPath] {
 				credentials, validCredentials := desired.(map[string]string)
-				priorAuth, priorAuthKnown := mcpKnownRawString(hydration, "auth_type")
-				if !priorAuthKnown && !state.AuthType.IsNull() && !state.AuthType.IsUnknown() {
-					priorAuth, priorAuthKnown = state.AuthType.ValueString(), true
-				}
-				replacesCredentialClass := priorAuthKnown && !plan.AuthType.IsNull() && !plan.AuthType.IsUnknown() &&
-					mcpAuthCredentialClass(priorAuth) != mcpAuthCredentialClass(plan.AuthType.ValueString())
+				replacesCredentialClass := mcpCredentialClassWillReplace(plan, state, hydration)
 				if !validCredentials || (len(credentials) == 0 && !replacesCredentialClass) {
 					return nil, fmt.Errorf("empty credentials cannot be adopted safely through LiteLLM's merge-only update")
 				}
 				delta[name] = desired
 				addLiftedCredentialIntent(credentials)
-			} else if !config.Credentials.Equal(state.Credentials) {
+			} else {
 				credentials, validCredentials := desired.(map[string]string)
 				if !validCredentials {
 					return nil, fmt.Errorf("configured credentials are invalid")
 				}
-				delta[name] = desired
-				addLiftedCredentialIntent(credentials)
+				writeCredentials := !config.Credentials.Equal(state.Credentials) || mcpCredentialClassWillReplace(plan, state, hydration)
+				for _, liftedName := range mcpCredentialLiftedColumnNames {
+					if liftedValue, configured := credentials[liftedName]; configured {
+						remote, present := hydration[liftedName]
+						writeCredentials = writeCredentials || !present || !mcpWireValuesEqual(liftedValue, remote)
+					}
+				}
+				if writeCredentials {
+					delta[name] = desired
+					addLiftedCredentialIntent(credentials)
+				}
 			}
 			continue
 		}

@@ -206,18 +206,18 @@ func TestMCPImplicitClearPreflightRejectsUnchangedAndAllowsCompleteClear(t *test
 
 func TestMCPConfiguredCredentialKeyDeletionRejected(t *testing.T) {
 	ctx := context.Background()
-	state := MCPServerResourceModel{Credentials: types.MapValueMust(types.StringType, map[string]attr.Value{
+	state := MCPServerResourceModel{AuthType: types.StringValue("oauth2"), Credentials: types.MapValueMust(types.StringType, map[string]attr.Value{
 		"client_id": types.StringValue("id"), "client_secret": types.StringValue("secret"),
 	})}
 	config := MCPServerResourceModel{Credentials: types.MapValueMust(types.StringType, map[string]attr.Value{
 		"client_id": types.StringValue("id"),
 	})}
 	ownership := mcpFieldOwnership{Owned: map[string]bool{mcpFieldCredentialsPath: true}, Removals: map[string]bool{}, Versioned: true}
-	if err := validateMCPFieldCredentialMerge(ctx, state, config, ownership); err == nil {
+	if err := validateMCPFieldCredentialMerge(ctx, state, state, config, nil, ownership); err == nil {
 		t.Fatal("configured credential key deletion was accepted despite v1.98 merge semantics")
 	}
 	config.Credentials = types.MapNull(types.StringType)
-	if err := validateMCPFieldCredentialMerge(ctx, state, config, ownership); err != nil {
+	if err := validateMCPFieldCredentialMerge(ctx, state, state, config, nil, ownership); err != nil {
 		t.Fatalf("whole credential clear was rejected: %v", err)
 	}
 }
