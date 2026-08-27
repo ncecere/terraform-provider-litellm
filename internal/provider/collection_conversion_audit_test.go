@@ -50,6 +50,10 @@ import "github.com/hashicorp/terraform-plugin-framework/types"
 func ignoredConversions() {
 	value.ElementsAs(ctx, &items, false)
 	_ = object.As(ctx, &decoded, options)
+	elementDiagnostics := value.ElementsAs(ctx, &items, false)
+	_ = elementDiagnostics
+	objectDiagnostics := object.As(ctx, &decoded, options)
+	_ = objectDiagnostics
 	list, _ := types.ListValue(elementType, elements)
 	from, _ := types.SetValueFrom(ctx, elementType, values)
 	named, diagnostics := types.MapValue(elementType, entries)
@@ -154,7 +158,9 @@ func shadowedDestination() diagnostics {
 	counts := countCollectionAuditViolations(violations)
 	want := map[string]int{
 		"ignored ElementsAs diagnostics":                 1,
+		"unchecked ElementsAs diagnostics":               1,
 		"ignored Object.As diagnostics":                  1,
+		"unchecked Object.As diagnostics":                1,
 		"discarded ListValue constructor diagnostics":    1,
 		"unchecked ListValue constructor diagnostics":    12,
 		"discarded SetValueFrom constructor diagnostics": 1,
@@ -222,9 +228,17 @@ func scanCollectionConversionFile(filename string, file *ast.File) []collectionA
 				if !ok {
 					break
 				}
-				if len(typed.Lhs) == 1 && isBlankIdentifier(typed.Lhs[0]) {
+				if len(typed.Lhs) == 1 {
 					if kind := ignoredConversionCallKind(call); kind != "" {
-						violations = append(violations, collectionAuditViolation{File: filename, Symbol: symbol, Kind: kind})
+						target, identifier := typed.Lhs[0].(*ast.Ident)
+						switch {
+						case !identifier:
+							violations = append(violations, collectionAuditViolation{File: filename, Symbol: symbol, Kind: strings.Replace(kind, "ignored ", "unchecked ", 1)})
+						case target.Name == "_":
+							violations = append(violations, collectionAuditViolation{File: filename, Symbol: symbol, Kind: kind})
+						case !diagnosticAssignmentSafelyConsumed(function.Body, target, typed.Pos()):
+							violations = append(violations, collectionAuditViolation{File: filename, Symbol: symbol, Kind: strings.Replace(kind, "ignored ", "unchecked ", 1)})
+						}
 					}
 				}
 				if len(typed.Lhs) >= 2 {
