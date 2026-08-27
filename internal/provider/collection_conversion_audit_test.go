@@ -100,6 +100,15 @@ func appendAndReturn() diagnostics {
 	output.Append(diagnostics...)
 	return output
 }
+func bareHasErrorReturn() {
+	list, diagnostics := types.ListValue(elementType, elements)
+	if diagnostics.HasError() { return }
+}
+func responseDiagnosticsReturn() {
+	list, diagnostics := types.ListValue(elementType, elements)
+	resp.Diagnostics.Append(diagnostics...)
+	if resp.Diagnostics.HasError() { return }
+}
 `
 	if err := os.WriteFile(filepath.Join(directory, "fixture.go"), []byte(source), 0o600); err != nil {
 		t.Fatal(err)
@@ -113,7 +122,7 @@ func appendAndReturn() diagnostics {
 		"ignored ElementsAs diagnostics":                 1,
 		"ignored Object.As diagnostics":                  1,
 		"discarded ListValue constructor diagnostics":    1,
-		"unchecked ListValue constructor diagnostics":    6,
+		"unchecked ListValue constructor diagnostics":    7,
 		"discarded SetValueFrom constructor diagnostics": 1,
 		"discarded SetValue constructor diagnostics":     1,
 		"discarded MapValue constructor diagnostics":     1,
@@ -366,34 +375,39 @@ func collectionDiagnosticCallControlsFailureExit(call *ast.CallExpr, parents map
 			break
 		}
 	}
-	if conditional == nil || !collectionAuditBlockReturns(conditional.Body) {
+	if conditional == nil {
 		return false
 	}
 
 	switch function := call.Fun.(type) {
 	case *ast.SelectorExpr:
 		if function.Sel.Name == "HasError" {
-			return collectionAuditPositiveBoolCheck(conditional.Cond, call)
+			return collectionAuditPositiveBoolCheck(conditional.Cond, call) &&
+				collectionAuditBlockPropagatesFailure(conditional.Body, collectionAuditExpressionKey(function.X))
 		}
 	case *ast.Ident:
 		switch function.Name {
 		case "len":
-			return collectionAuditPositiveLengthCheck(conditional.Cond, call)
+			return collectionAuditPositiveLengthCheck(conditional.Cond, call) && collectionAuditBlockPropagatesFailure(conditional.Body, "")
 		case "collectionProjectionError":
 			assignment, ok := conditional.Init.(*ast.AssignStmt)
 			if !ok || len(assignment.Lhs) == 0 || len(assignment.Rhs) != 1 || assignment.Rhs[0] != call {
 				return false
 			}
 			identifier, ok := assignment.Lhs[len(assignment.Lhs)-1].(*ast.Ident)
-			return ok && collectionAuditNonNilCheck(conditional.Cond, identifier.Name)
+			return ok && collectionAuditNonNilCheck(conditional.Cond, identifier.Name) && collectionAuditBlockPropagatesFailure(conditional.Body, "")
 		}
 	}
 	return false
 }
 
-func collectionAuditBlockReturns(block *ast.BlockStmt) bool {
+func collectionAuditBlockPropagatesFailure(block *ast.BlockStmt, checkedContainer string) bool {
 	for _, statement := range block.List {
-		if _, ok := statement.(*ast.ReturnStmt); ok {
+		returned, ok := statement.(*ast.ReturnStmt)
+		if !ok {
+			continue
+		}
+		if len(returned.Results) > 0 || strings.HasSuffix(checkedContainer, ".Diagnostics") {
 			return true
 		}
 	}
