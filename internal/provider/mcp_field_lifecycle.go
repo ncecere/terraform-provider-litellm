@@ -258,7 +258,7 @@ func mcpAmbiguousEmptyCollectionNeedsWrite(ctx context.Context, fieldPath string
 	return err != nil || !mcpWireValuesEqual(desired, prior)
 }
 
-func buildMCPFieldDelta(ctx context.Context, _ MCPServerResourceModel, config, state MCPServerResourceModel, committed, candidate mcpFieldOwnership, hydration map[string]interface{}) (map[string]interface{}, error) {
+func buildMCPFieldDelta(ctx context.Context, plan MCPServerResourceModel, config, state MCPServerResourceModel, committed, candidate mcpFieldOwnership, hydration map[string]interface{}) (map[string]interface{}, error) {
 	if err := validateMCPFieldCredentialMerge(ctx, state, config, committed); err != nil {
 		return nil, err
 	}
@@ -288,7 +288,14 @@ func buildMCPFieldDelta(ctx context.Context, _ MCPServerResourceModel, config, s
 			// emptiness over hidden existing keys. Create remains safe because no
 			// prior row exists.
 			if !committed.Owned[fieldPath] {
-				if credentials, ok := desired.(map[string]string); !ok || len(credentials) == 0 {
+				credentials, validCredentials := desired.(map[string]string)
+				priorAuth, priorAuthKnown := mcpKnownRawString(hydration, "auth_type")
+				if !priorAuthKnown && !state.AuthType.IsNull() && !state.AuthType.IsUnknown() {
+					priorAuth, priorAuthKnown = state.AuthType.ValueString(), true
+				}
+				replacesCredentialClass := priorAuthKnown && !plan.AuthType.IsNull() && !plan.AuthType.IsUnknown() &&
+					mcpAuthCredentialClass(priorAuth) != mcpAuthCredentialClass(plan.AuthType.ValueString())
+				if !validCredentials || (len(credentials) == 0 && !replacesCredentialClass) {
 					return nil, fmt.Errorf("empty credentials cannot be adopted safely through LiteLLM's merge-only update")
 				}
 				delta[name] = desired

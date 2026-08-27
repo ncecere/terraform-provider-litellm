@@ -184,6 +184,35 @@ func TestMCPServerInitialEmptyCredentialsTakeoverHasZeroPUTProtocol(t *testing.T
 	assertMCPServerFailedUpdateRetainsPriorState(t, result.schema, result.state, result.applied.NewState)
 }
 
+func TestMCPServerInitialEmptyCredentialsClassReplacementProtocol(t *testing.T) {
+	state := map[string]interface{}{
+		"id": "replace-empty-credentials", "server_id": "replace-empty-credentials", "server_name": "replace-empty-credentials",
+		"transport": "http", "url": "https://known.invalid/mcp", "auth_type": "none", "spec_version": "2024-11-05",
+	}
+	emptyCredentials := map[string]tftypes.Value{}
+	config := map[string]interface{}{
+		"server_name": "replace-empty-credentials", "transport": "http", "url": "https://known.invalid/mcp", "auth_type": "api_key", "credentials": emptyCredentials,
+	}
+	before := map[string]interface{}{
+		"server_id": "replace-empty-credentials", "server_name": "replace-empty-credentials", "transport": "http",
+		"url": "https://known.invalid/mcp", "auth_type": "none", "credentials": nil, "mcp_info": map[string]interface{}{},
+	}
+	after := map[string]interface{}{
+		"server_id": "replace-empty-credentials", "server_name": "replace-empty-credentials", "transport": "http",
+		"url": "https://known.invalid/mcp", "auth_type": "api_key", "credentials": nil, "mcp_info": map[string]interface{}{},
+	}
+	result := runMCPUpdateCompletionProtocol(t, state, config, map[string]interface{}{"auth_type": "api_key", "credentials": emptyCredentials}, before, after, protocolMCPFieldPrivate(t, emptyMCPFieldOwnership()))
+	if accessGroupProtocolDiagnosticsHaveError(result.applied.Diagnostics) || result.puts != 1 {
+		t.Fatalf("credential-class replacement was rejected: puts=%d diagnostics=%v", result.puts, result.applied.Diagnostics)
+	}
+	if value, present := result.body["credentials"]; !present || !mcpWireValuesEqual(value, map[string]string{}) {
+		t.Fatalf("empty replacement credentials missing from PUT: %#v", result.body)
+	}
+	if ownership := protocolCommittedMCPFieldOwnership(t, result.applied.Private); !ownership.Owned[mcpFieldCredentialsPath] {
+		t.Fatalf("replacement credential ownership was not committed: %#v", ownership)
+	}
+}
+
 func TestMCPServerNullToValueURLRunsImplicitClearPreflightProtocol(t *testing.T) {
 	private := protocolMCPFieldPrivate(t, emptyMCPFieldOwnership())
 	state := map[string]interface{}{
