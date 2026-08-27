@@ -662,7 +662,7 @@
     "evidence": [
       {
         "file": "internal/provider/datasource_organization.go",
-        "line": 95
+        "line": 96
       },
       {
         "file": "internal/provider/resource_organization.go",
@@ -1040,7 +1040,7 @@
     "evidence": [
       {
         "file": "internal/provider/datasource_tag.go",
-        "line": 79
+        "line": 80
       },
       {
         "file": "internal/provider/resource_tag.go",
@@ -1056,7 +1056,7 @@
     "evidence": [
       {
         "file": "internal/provider/datasource_tags_list.go",
-        "line": 82
+        "line": 83
       },
       {
         "file": "internal/provider/resource_tag.go",
@@ -1108,7 +1108,7 @@
     "evidence": [
       {
         "file": "internal/provider/resource_team.go",
-        "line": 563
+        "line": 573
       }
     ]
   },
@@ -1126,7 +1126,7 @@
       },
       {
         "file": "internal/provider/resource_team.go",
-        "line": 828
+        "line": 887
       },
       {
         "file": "internal/provider/resource_team_block.go",
@@ -1228,7 +1228,7 @@
     "evidence": [
       {
         "file": "internal/provider/resource_team.go",
-        "line": 421
+        "line": 422
       }
     ]
   },
@@ -1246,7 +1246,7 @@
       },
       {
         "file": "internal/provider/resource_team.go",
-        "line": 912
+        "line": 971
       }
     ]
   },
@@ -1258,7 +1258,7 @@
     "evidence": [
       {
         "file": "internal/provider/resource_team.go",
-        "line": 534
+        "line": 544
       }
     ]
   },
@@ -1282,11 +1282,11 @@
     "evidence": [
       {
         "file": "internal/provider/resource_team.go",
-        "line": 515
+        "line": 526
       },
       {
         "file": "internal/provider/resource_team.go",
-        "line": 521
+        "line": 532
       }
     ]
   },
@@ -1525,7 +1525,7 @@
       },
       {
         "file": "internal/provider/datasource_agent.go",
-        "line": 220
+        "line": 207
       },
       {
         "file": "internal/provider/resource_agent.go",
@@ -1567,7 +1567,7 @@
       },
       {
         "file": "internal/provider/resource_mcp_server.go",
-        "line": 1528
+        "line": 1553
       }
     ]
   },
@@ -1623,11 +1623,11 @@
       },
       {
         "file": "internal/provider/resource_mcp_server.go",
-        "line": 1509
+        "line": 1534
       },
       {
         "file": "internal/provider/resource_mcp_server.go",
-        "line": 1518
+        "line": 1543
       }
     ]
   },
