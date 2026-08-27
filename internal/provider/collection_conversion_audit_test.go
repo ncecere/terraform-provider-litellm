@@ -49,6 +49,8 @@ func TestCollectionConversionSafetyAuditRecognizesNewViolations(t *testing.T) {
 import "github.com/hashicorp/terraform-plugin-framework/types"
 var packageList, packageListDiagnostics = types.ListValue(elementType, elements)
 var packageMust = types.SetValueMust(elementType, elements)
+var packageChained = value.ElementsAs(ctx, &items, false).HasError()
+var packageNested = consume(types.ObjectValue(attributeTypes, attributes))
 func ignoredConversions() {
 	value.ElementsAs(ctx, &items, false)
 	_ = object.As(ctx, &decoded, options)
@@ -176,7 +178,7 @@ func shadowedDestination() diagnostics {
 	counts := countCollectionAuditViolations(violations)
 	want := map[string]int{
 		"ignored ElementsAs diagnostics":                 1,
-		"unchecked ElementsAs diagnostics":               4,
+		"unchecked ElementsAs diagnostics":               5,
 		"ignored Object.As diagnostics":                  1,
 		"unchecked Object.As diagnostics":                4,
 		"discarded ListValue constructor diagnostics":    1,
@@ -186,6 +188,7 @@ func shadowedDestination() diagnostics {
 		"discarded MapValue constructor diagnostics":     1,
 		"unchecked MapValue constructor diagnostics":     3,
 		"discarded ObjectValue constructor diagnostics":  1,
+		"unchecked ObjectValue constructor diagnostics":  1,
 		"production SetValueMust constructor":            2,
 	}
 	got := make(map[string]int)
@@ -232,11 +235,21 @@ func scanCollectionConversionFile(filename string, file *ast.File) []collectionA
 				for index, name := range value.Names {
 					targets[index] = name
 				}
+				handled := map[*ast.CallExpr]bool{}
+				collectionAuditMarkDirectConversionCalls(value.Values, handled)
 				violations = append(violations, collectionAssignmentViolations(filename, "<package>", &ast.BlockStmt{}, targets, value.Values, value.Pos())...)
 				ast.Inspect(value, func(node ast.Node) bool {
 					if nested, ok := node.(*ast.CallExpr); ok {
 						if must := collectionValueMustName(nested); must != "" {
 							violations = append(violations, collectionAuditViolation{File: filename, Symbol: "<package>", Kind: "production " + must + " constructor"})
+						}
+						if kind := ignoredConversionCallKind(nested); kind != "" && !handled[nested] {
+							violations = append(violations, collectionAuditViolation{File: filename, Symbol: "<package>", Kind: strings.Replace(kind, "ignored ", "unchecked ", 1)})
+							handled[nested] = true
+						}
+						if constructor := collectionConstructorName(nested); constructor != "" && !handled[nested] {
+							violations = append(violations, collectionAuditViolation{File: filename, Symbol: "<package>", Kind: "unchecked " + constructor + " constructor diagnostics"})
+							handled[nested] = true
 						}
 					}
 					return true
