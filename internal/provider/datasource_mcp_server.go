@@ -32,6 +32,7 @@ type MCPServerDataSourceModel struct {
 	SpecVersion      types.String `tfsdk:"spec_version"`
 	AuthType         types.String `tfsdk:"auth_type"`
 	MCPAccessGroups  types.List   `tfsdk:"mcp_access_groups"`
+	MCPInfoJSON      types.String `tfsdk:"mcp_info_json"`
 	Command          types.String `tfsdk:"command"`
 	Args             types.List   `tfsdk:"args"`
 	Env              types.Map    `tfsdk:"env"`
@@ -99,6 +100,11 @@ func (d *MCPServerDataSource) Schema(ctx context.Context, req datasource.SchemaR
 			"auth_type": schema.StringAttribute{
 				Description: "Authentication type reported by LiteLLM.",
 				Computed:    true,
+			},
+			"mcp_info_json": schema.StringAttribute{
+				Description: "Sensitive canonical complete MCP info JSON object, or null when LiteLLM masks or omits it.",
+				Computed:    true,
+				Sensitive:   true,
 			},
 			"mcp_access_groups": schema.ListAttribute{
 				Description: "List of access groups for the MCP server.",
@@ -218,6 +224,21 @@ func (d *MCPServerDataSource) Read(ctx context.Context, req datasource.ReadReque
 	if err := validateMCPServerResponse(result, serverID); err != nil {
 		resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned a malformed MCP server response.")
 		return
+	}
+	mcpInfo, mcpInfoPresence, err := mcpInfoDocumentFromResponse(result)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned a malformed non-object MCP info value.")
+		return
+	}
+	if mcpInfoPresence == apiValuePresent {
+		canonical, err := canonicalMCPInfoJSONObject(mcpInfo)
+		if err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned MCP info that could not be represented safely.")
+			return
+		}
+		data.MCPInfoJSON = types.StringValue(canonical)
+	} else {
+		data.MCPInfoJSON = types.StringNull()
 	}
 	if err := validateMCPServerOptionalResponseFields(
 		result,

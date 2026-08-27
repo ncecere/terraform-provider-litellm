@@ -245,7 +245,7 @@ func mcpInfoPointerSetsConflict(sets ...mcpInfoPointerSet) bool {
 }
 
 var mcpInfoAllPrivateKeys = []string{
-	mcpInfoOwnershipVersionKey, mcpInfoTerraformOwnedPrivateKey, mcpInfoAPIOwnedPrivateKey, mcpInfoPendingTerraformKey, mcpInfoPendingAPIKey,
+	mcpInfoOwnershipVersionKey, mcpInfoDocumentAuthoritativePrivateKey, mcpInfoTerraformOwnedPrivateKey, mcpInfoAPIOwnedPrivateKey, mcpInfoPendingTerraformKey, mcpInfoPendingAPIKey,
 	mcpInfoGenerationPrivateKey, mcpInfoModePrivateKey, mcpInfoFixedOwnedPrivateKey, mcpInfoOverrideOwnedPrivateKey, mcpInfoClearOwnedPrivateKey, mcpInfoAPIOwnedV2PrivateKey,
 	mcpInfoPendingVersionV2PrivateKey, mcpInfoPendingGenerationPrivateKey, mcpInfoPendingModePrivateKey, mcpInfoPendingFixedPrivateKey, mcpInfoPendingOverridePrivateKey, mcpInfoPendingClearPrivateKey, mcpInfoPendingAPIV2PrivateKey,
 }
@@ -471,6 +471,36 @@ func readMCPInfoProvenance(ctx context.Context, private mcpInfoPrivateReader) (m
 	}
 	return committed, diagnostics
 }
+func mcpInfoPrivateDocumentAuthoritative(ctx context.Context, private mcpInfoPrivateReader) (bool, diag.Diagnostics) {
+	var diagnostics diag.Diagnostics
+	if private == nil {
+		return false, diagnostics
+	}
+	raw, keyDiags := private.GetKey(ctx, mcpInfoDocumentAuthoritativePrivateKey)
+	diagnostics.Append(keyDiags...)
+	if diagnostics.HasError() || raw == nil {
+		return false, diagnostics
+	}
+	if string(raw) != "true" {
+		mcpInfoPrivateError(&diagnostics, "Invalid MCP Document State")
+		return false, diagnostics
+	}
+	return true, diagnostics
+}
+
+func writeMCPInfoPrivateDocumentAuthoritative(ctx context.Context, private mcpInfoPrivateWriter, authoritative bool) diag.Diagnostics {
+	var diagnostics diag.Diagnostics
+	if private == nil {
+		return diagnostics
+	}
+	var value []byte
+	if authoritative {
+		value = []byte("true")
+	}
+	diagnostics.Append(private.SetKey(ctx, mcpInfoDocumentAuthoritativePrivateKey, value)...)
+	return diagnostics
+}
+
 func mcpInfoPrivateHasPending(ctx context.Context, private mcpInfoPrivateReader) (bool, diag.Diagnostics) {
 	values, diagnostics := readMCPInfoPrivateKeys(ctx, private)
 	if diagnostics.HasError() {

@@ -54,6 +54,7 @@ The following attributes are exported:
 * `transport` - Transport type (http, sse, stdio).
 * `spec_version` - Deprecated compatibility field; LiteLLM v1.98 does not return it.
 * `auth_type` - Authentication type.
+* `mcp_info_json` - Sensitive canonical complete MCP info JSON object. It is null when LiteLLM omits or masks the parent. A present non-object response is rejected.
 * `mcp_access_groups` - List of access groups.
 * `command` - Command for stdio transport.
 * `args` - Command arguments.

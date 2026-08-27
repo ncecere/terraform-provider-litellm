@@ -1563,7 +1563,7 @@
     "evidence": [
       {
         "file": "internal/provider/datasource_mcp_servers_list.go",
-        "line": 147
+        "line": 153
       },
       {
         "file": "internal/provider/resource_mcp_server.go",
@@ -1619,11 +1619,15 @@
     "evidence": [
       {
         "file": "internal/provider/datasource_mcp_server.go",
-        "line": 214
+        "line": 220
       },
       {
         "file": "internal/provider/resource_mcp_server.go",
         "line": 1041
+      },
+      {
+        "file": "internal/provider/resource_mcp_server.go",
+        "line": 1045
       }
     ]
   },

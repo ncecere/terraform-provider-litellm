@@ -344,8 +344,6 @@ func TestMCPServerMalformedInfoPreservesImportMarkerAndStateProtocol(t *testing.
 	prior := imported.ImportedResources[0]
 	for _, malformed := range []string{
 		`{"server_id":"mcp-malformed","server_name":"top-level","url":"https://mcp.example.test","transport":"http","mcp_info":"malformed"}`,
-		`{"server_id":"mcp-malformed","server_name":"top-level","url":"https://mcp.example.test","transport":"http","mcp_info":{"server_name":42}}`,
-		`{"server_id":"mcp-malformed","server_name":"top-level","url":"https://mcp.example.test","transport":"http","mcp_info":{"mcp_server_cost_info":[]}}`,
 	} {
 		payload.Store(malformed)
 		failed, err := protocolServer.ReadResource(ctx, &tfprotov6.ReadResourceRequest{TypeName: typeName, CurrentState: prior.State, Private: prior.Private})
@@ -452,9 +450,13 @@ func TestMCPServerLegacyUnconfiguredStringNeverBecomesOwnedProtocol(t *testing.T
 	if err != nil || accessGroupProtocolDiagnosticsHaveError(read.Diagnostics) {
 		t.Fatalf("legacy read: err=%v diagnostics=%v", err, read.Diagnostics)
 	}
-	got := protocolString(t, protocolNestedAttribute(t, protocolAttributeMap(t, schema, read.NewState)["mcp_info"], "server_name"))
-	if got != "legacy-imported" {
-		t.Fatalf("legacy unconfigured string followed API change: %q", got)
+	attributes := protocolAttributeMap(t, schema, read.NewState)
+	if !attributes["mcp_info"].IsNull() {
+		t.Fatal("legacy public value without exact provenance was retained as a fixed projection")
+	}
+	var document string
+	if err := attributes["mcp_info_json"].As(&document); err != nil || document != `{"server_name":"remote-changed"}` {
+		t.Fatalf("complete JSON projection = %q, %v", document, err)
 	}
 	if protocolPrivateHasKey(t, read.Private, mcpInfoOwnershipVersionKey) {
 		t.Fatal("configuration-blind read fabricated legacy string provenance")
@@ -564,11 +566,11 @@ func TestMCPServerHCLRemovalRelinquishesExactOwnershipProtocol(t *testing.T) {
 			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
 				t.Error(err)
 			}
-			if _, present := body["mcp_info"]; present {
-				t.Fatalf("HCL removal sent a stale mcp_info value: %#v", body)
+			if _, present := body["mcp_info"]; !present {
+				t.Fatalf("an MCP update must carry the complete hydrated document: %#v", body)
 			}
 		}
-		_, _ = writer.Write([]byte(`{"server_id":"remove-owned","server_name":"top-level","url":"https://mcp.example.test","transport":"http"}`))
+		_, _ = writer.Write([]byte(`{"server_id":"remove-owned","server_name":"top-level","url":"https://mcp.example.test","transport":"http","mcp_info":{"description":"managed"}}`))
 	}))
 	defer server.Close()
 	protocolServer, schemas := configuredImportProtocolServer(t, ctx, server.URL)
@@ -594,8 +596,9 @@ func TestMCPServerHCLRemovalRelinquishesExactOwnershipProtocol(t *testing.T) {
 	if !protocolAttributeMap(t, schema, applied.NewState)["mcp_info"].IsNull() {
 		t.Fatal("HCL removal retained a public mcp_info shell without API-owned costs")
 	}
-	if len(protocolPrivateMCPLeafSet(t, applied.Private, mcpInfoTerraformOwnedPrivateKey, mcpInfoAllLeaves)) != 0 {
-		t.Fatal("HCL removal retained Terraform ownership")
+	provenance, diagnostics := readMCPInfoProvenance(ctx, protocolPrivateMapFromBytes(t, applied.Private))
+	if diagnostics.HasError() || len(provenance.Fixed) != 0 {
+		t.Fatalf("HCL removal retained Terraform ownership: %#v %v", provenance, diagnostics)
 	}
 }
 

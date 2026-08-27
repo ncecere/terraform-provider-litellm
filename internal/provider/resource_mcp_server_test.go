@@ -31,7 +31,7 @@ func TestBuildMCPServerRequestOmitsUnsupportedPhantomFields(t *testing.T) {
 		SkipURLValidation: types.BoolValue(false),
 	}
 
-	req, err := r.buildMCPServerRequest(context.Background(), data)
+	req, err := r.buildMCPServerRequest(context.Background(), data, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func TestBuildMCPServerRequestOmitsSkipURLValidationWhenUnconfigured(t *testing.
 		SkipURLValidation: types.BoolNull(),
 	}
 
-	req, err := r.buildMCPServerRequest(context.Background(), data)
+	req, err := r.buildMCPServerRequest(context.Background(), data, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -403,7 +403,7 @@ func TestBuildMCPServerRequestTransportAlternatives(t *testing.T) {
 		Command:     types.StringValue("python3"),
 		Args:        stringListValue("/srv/a:b/server.py"),
 		SpecVersion: types.StringValue("2024-11-05"),
-	})
+	}, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -420,7 +420,7 @@ func TestBuildMCPServerRequestTransportAlternatives(t *testing.T) {
 		Transport:  types.StringValue("http"),
 		AuthType:   types.StringValue("none"),
 		SpecPath:   types.StringValue(specialSpecPath),
-	})
+	}, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -443,7 +443,7 @@ func TestBuildMCPServerRequestExtraHeadersList(t *testing.T) {
 		ExtraHeaders: stringListValue("header-one", "header-two"),
 	}
 
-	req, err := r.buildMCPServerRequest(context.Background(), data)
+	req, err := r.buildMCPServerRequest(context.Background(), data, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -601,7 +601,9 @@ func TestReadMCPServerPreservesUnknownNestedToolCostMapOnAPIOmission(t *testing.
 		},
 	}
 
-	if err := r.readMCPServer(context.Background(), &data); err != nil {
+	ownership := emptyMCPInfoProvenance()
+	ownership.API[mcpInfoToolCostsLeaf] = true
+	if _, _, err := r.readMCPServerWithProvenance(context.Background(), &data, ownership, false); err != nil {
 		t.Fatalf("readMCPServer returned error: %v", err)
 	}
 
