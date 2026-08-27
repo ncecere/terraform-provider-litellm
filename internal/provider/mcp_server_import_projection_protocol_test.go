@@ -60,9 +60,33 @@ func protocolPrivateValue(t *testing.T, private []byte, key string) []byte {
 
 func protocolPrivateMCPLeafSet(t *testing.T, private []byte, key string, allowed []string) mcpInfoLeafSet {
 	t.Helper()
-	fields, err := decodeMCPInfoLeafSet(protocolPrivateValue(t, private, key), allowed)
+	raw := protocolPrivateValue(t, private, key)
+	if raw != nil {
+		fields, err := decodeMCPInfoLeafSet(raw, allowed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fields
+	}
+	v2Key := mcpInfoFixedOwnedPrivateKey
+	v2Allowed := mcpInfoFixedPointers
+	switch key {
+	case mcpInfoAPIOwnedPrivateKey:
+		v2Key = mcpInfoAPIOwnedV2PrivateKey
+		v2Allowed = mcpInfoAPICostPointers
+	case mcpInfoPendingTerraformKey:
+		v2Key = mcpInfoPendingFixedPrivateKey
+	case mcpInfoPendingAPIKey:
+		v2Key = mcpInfoPendingAPIV2PrivateKey
+		v2Allowed = mcpInfoAPICostPointers
+	}
+	pointers, err := decodeMCPInfoPointerSet(protocolPrivateValue(t, private, v2Key), v2Allowed, false)
 	if err != nil {
 		t.Fatal(err)
+	}
+	fields := mcpInfoLeafSet{}
+	for pointer := range pointers {
+		fields[mcpInfoPointerToLeaf[pointer]] = true
 	}
 	return fields
 }

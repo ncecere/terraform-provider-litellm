@@ -111,21 +111,25 @@ type MCPInfoModel struct {
 }
 
 type MCPServerResourceModel struct {
-	ID              types.String  `tfsdk:"id"`
-	ServerID        types.String  `tfsdk:"server_id"`
-	ServerName      types.String  `tfsdk:"server_name"`
-	Alias           types.String  `tfsdk:"alias"`
-	Description     types.String  `tfsdk:"description"`
-	URL             types.String  `tfsdk:"url"`
-	SpecPath        types.String  `tfsdk:"spec_path"`
-	Transport       types.String  `tfsdk:"transport"`
-	SpecVersion     types.String  `tfsdk:"spec_version"`
-	AuthType        types.String  `tfsdk:"auth_type"`
-	MCPAccessGroups types.List    `tfsdk:"mcp_access_groups"`
-	Command         types.String  `tfsdk:"command"`
-	Args            types.List    `tfsdk:"args"`
-	Env             types.Map     `tfsdk:"env"`
-	MCPInfo         *MCPInfoModel `tfsdk:"mcp_info"`
+	ID                         types.String  `tfsdk:"id"`
+	ServerID                   types.String  `tfsdk:"server_id"`
+	ServerName                 types.String  `tfsdk:"server_name"`
+	Alias                      types.String  `tfsdk:"alias"`
+	Description                types.String  `tfsdk:"description"`
+	URL                        types.String  `tfsdk:"url"`
+	SpecPath                   types.String  `tfsdk:"spec_path"`
+	Transport                  types.String  `tfsdk:"transport"`
+	SpecVersion                types.String  `tfsdk:"spec_version"`
+	AuthType                   types.String  `tfsdk:"auth_type"`
+	MCPAccessGroups            types.List    `tfsdk:"mcp_access_groups"`
+	Command                    types.String  `tfsdk:"command"`
+	Args                       types.List    `tfsdk:"args"`
+	Env                        types.Map     `tfsdk:"env"`
+	MCPInfo                    *MCPInfoModel `tfsdk:"mcp_info"`
+	MCPInfoJSON                types.String  `tfsdk:"mcp_info_json"`
+	MCPInfoOverridesJSON       types.String  `tfsdk:"mcp_info_overrides_json"`
+	MCPInfoClearPaths          types.List    `tfsdk:"mcp_info_clear_paths"`
+	MCPInfoOwnershipGeneration types.Int64   `tfsdk:"mcp_info_ownership_generation"`
 	// New fields for expanded API support
 	Credentials       types.Map    `tfsdk:"credentials"`
 	AllowedTools      types.List   `tfsdk:"allowed_tools"`
@@ -148,8 +152,29 @@ func (r *MCPServerResource) Metadata(ctx context.Context, req resource.MetadataR
 func (r *MCPServerResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		Description: "Manages a LiteLLM MCP (Model Context Protocol) server.",
-		Version:     1,
+		Version:     2,
 		Attributes: map[string]schema.Attribute{
+			"mcp_info_json": schema.StringAttribute{
+				Description: "Sensitive complete MCP info JSON object. This stage establishes schema, planning, and ownership semantics; live JSON mutation is completed in a later lifecycle stage. The root must be a non-null object; {} explicitly owns and clears the whole document.",
+				Optional:    true,
+				Computed:    true,
+				Sensitive:   true,
+			},
+			"mcp_info_overrides_json": schema.StringAttribute{
+				Description: "Sensitive recursive selective MCP info JSON object. Nested null is data and a nested empty object atomically replaces that member.",
+				Optional:    true,
+				Sensitive:   true,
+			},
+			"mcp_info_clear_paths": schema.ListAttribute{
+				Description: "Sensitive list of canonical RFC 6901 object-member pointers to clear. Root and array traversal are not supported.",
+				Optional:    true,
+				Sensitive:   true,
+				ElementType: types.StringType,
+			},
+			"mcp_info_ownership_generation": schema.Int64Attribute{
+				Description: "Internal non-sensitive generation of MCP info ownership intent.",
+				Computed:    true,
+			},
 			"id": schema.StringAttribute{
 				Description: "The unique identifier for this MCP server (same as server_id).",
 				Computed:    true,
@@ -346,6 +371,7 @@ func (r *MCPServerResource) ValidateConfig(ctx context.Context, req resource.Val
 			)
 		}
 	}
+	validateMCPInfoJSONConfig(data, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() || data.Transport.IsNull() || data.Transport.IsUnknown() {
 		return
 	}
@@ -422,6 +448,13 @@ func (r *MCPServerResource) ModifyPlan(ctx context.Context, req resource.ModifyP
 			return
 		}
 	}
+	// Re-run ownership validation from Config at resource plan time. This is
+	// intentionally not based on ProposedNewState, where Optional+Computed
+	// values can contain prior state.
+	validateMCPInfoJSONConfig(config, &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 
 	unsupportedSpecVersion := !plan.SpecVersion.IsNull() && !plan.SpecVersion.IsUnknown() && plan.SpecVersion.ValueString() != "2024-11-05"
 	unchangedSpecVersion := hasState && !state.SpecVersion.IsUnknown() && state.SpecVersion.Equal(plan.SpecVersion)
@@ -446,7 +479,29 @@ func (r *MCPServerResource) ModifyPlan(ctx context.Context, req resource.ModifyP
 		return
 	}
 
-	candidate := deriveMCPInfoPlanProvenance(prior, config, state)
+	candidate, ownershipDiags := deriveMCPInfoJSONPlanProvenance(ctx, prior, config, state)
+	resp.Diagnostics.Append(ownershipDiags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	effectiveJSON, setEffectiveJSON, effectiveDiags := planEffectiveMCPInfoJSON(ctx, hasState, state, config)
+	resp.Diagnostics.Append(effectiveDiags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if setEffectiveJSON {
+		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("mcp_info_json"), effectiveJSON)...)
+	}
+	plannedGeneration := types.Int64Value(candidate.Generation)
+	if hasState && state.MCPInfoOwnershipGeneration.IsNull() && mcpInfoOwnershipEqual(prior, candidate) {
+		// Direct protocol callers may bypass state upgrading. Preserve their
+		// historical typed null on a true ownership no-op.
+		plannedGeneration = types.Int64Null()
+	}
+	resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("mcp_info_ownership_generation"), plannedGeneration)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 
 	// Preserve each imported API-owned cost leaf while that exact HCL leaf is
 	// omitted. A configured parent, string sibling, or other cost sibling must
@@ -504,24 +559,12 @@ func (r *MCPServerResource) ModifyPlan(ctx context.Context, req resource.ModifyP
 			}
 		}
 	}
-	if resp.Private != nil {
-		if !prior.Versioned {
-			// A plan may stage pending ownership only after establishing a complete
-			// canonical committed pair. Legacy public strings are not evidence;
-			// only omitted visible legacy costs receive the conservative baseline.
-			baseline := deriveMCPInfoPlanProvenance(prior, MCPServerResourceModel{}, state)
-			resp.Diagnostics.Append(writeMCPInfoProvenance(ctx, resp.Private, baseline)...)
-		}
-		if !resp.Diagnostics.HasError() {
-			resp.Diagnostics.Append(writePendingMCPInfoProvenance(ctx, resp.Private, candidate)...)
-		}
+	if resp.Private != nil && !resp.Diagnostics.HasError() {
+		resp.Diagnostics.Append(writePendingMCPInfoProvenance(ctx, resp.Private, candidate)...)
 	}
 
-	// Provenance changes, including equal-value takeover and removal after an API
-	// null, must pass through Apply so they are committed only after confirmation.
-	if hasState && (!mcpInfoLeafSetsEqual(prior.Terraform, candidate.Terraform) || !mcpInfoLeafSetsEqual(prior.API, candidate.API)) {
-		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("id"), types.StringUnknown())...)
-	}
+	// The public generation, rather than identity churn, forces Apply for
+	// ownership-only changes such as equal-value takeover.
 }
 
 func validateMCPServerOptionalResponseFields(result map[string]interface{}, stringFields, boolFields, stringListFields, stringMapFields []string) error {
@@ -608,7 +651,8 @@ func (r *MCPServerResource) Create(ctx context.Context, req resource.CreateReque
 
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
 	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
-	plannedOwnership := deriveMCPInfoPlanProvenance(mcpInfoProvenance{Terraform: mcpInfoLeafSet{}, API: mcpInfoLeafSet{}}, config, MCPServerResourceModel{})
+	plannedOwnership, ownershipDiags := deriveMCPInfoJSONPlanProvenance(ctx, emptyMCPInfoProvenance(), config, MCPServerResourceModel{})
+	resp.Diagnostics.Append(ownershipDiags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -674,6 +718,8 @@ func (r *MCPServerResource) Read(ctx context.Context, req resource.ReadRequest, 
 	resp.Diagnostics.Append(privateDiags...)
 	ownership, ownershipDiags := readMCPInfoProvenance(ctx, req.Private)
 	resp.Diagnostics.Append(ownershipDiags...)
+	hasPendingOwnership, pendingOwnershipDiags := mcpInfoPrivateHasPending(ctx, req.Private)
+	resp.Diagnostics.Append(pendingOwnershipDiags...)
 	if resp.Diagnostics.HasError() {
 		resp.State = req.State
 		resp.Private = req.Private
@@ -694,7 +740,7 @@ func (r *MCPServerResource) Read(ctx context.Context, req resource.ReadRequest, 
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
-	if !resp.Diagnostics.HasError() && resp.Private != nil && imported {
+	if !resp.Diagnostics.HasError() && resp.Private != nil && imported && !hasPendingOwnership {
 		ownership.API = adoptedAPI
 		ownership.Versioned = true
 		resp.Diagnostics.Append(writeMCPInfoProvenance(ctx, resp.Private, ownership)...)
@@ -836,36 +882,27 @@ func (r *MCPServerResource) ImportState(ctx context.Context, req resource.Import
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("server_id"), req.ID)...)
 	if resp.Private != nil {
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, []byte("true"))...)
-		resp.Diagnostics.Append(writeMCPInfoProvenance(ctx, resp.Private, mcpInfoProvenance{Terraform: mcpInfoLeafSet{}, API: mcpInfoLeafSet{}, Versioned: true})...)
+		resp.Diagnostics.Append(writeMCPInfoProvenance(ctx, resp.Private, emptyMCPInfoProvenance())...)
 	}
 }
 
-// UpgradeState handles state migrations from older schema versions.
-// Version 0 → 1: extra_headers changed from map(string) to list(string)
-// to match the LiteLLM API/OpenAPI schema. Existing map keys become the
-// list of header names.
+// UpgradeState handles both historical shapes directly so Terraform 1.1 does
+// not need to understand an intermediate schema. Version 0 also converts the
+// old extra_headers map; versions 0 and 1 receive the complete version 2 JSON
+// control shape without changing any pre-existing value or nested block.
 func (r *MCPServerResource) UpgradeState(ctx context.Context) map[int64]resource.StateUpgrader {
-	return map[int64]resource.StateUpgrader{
-		0: {
-			PriorSchema: nil,
-			StateUpgrader: func(ctx context.Context, req resource.UpgradeStateRequest, resp *resource.UpgradeStateResponse) {
-				if req.RawState == nil {
-					resp.Diagnostics.AddError(
-						"Unable to Upgrade State",
-						"RawState is nil. This is a bug in the provider.",
-					)
-					return
-				}
-
-				var priorState map[string]json.RawMessage
-				if err := json.Unmarshal(req.RawState.JSON, &priorState); err != nil {
-					resp.Diagnostics.AddError(
-						"Unable to Upgrade State",
-						fmt.Sprintf("Failed to unmarshal prior state JSON: %s", err),
-					)
-					return
-				}
-
+	upgrade := func(convertExtraHeaders bool) resource.StateUpgrader {
+		return resource.StateUpgrader{PriorSchema: nil, StateUpgrader: func(ctx context.Context, req resource.UpgradeStateRequest, resp *resource.UpgradeStateResponse) {
+			if req.RawState == nil {
+				resp.Diagnostics.AddError("Unable to Upgrade State", "RawState is nil. This is a bug in the provider.")
+				return
+			}
+			var priorState map[string]json.RawMessage
+			if err := json.Unmarshal(req.RawState.JSON, &priorState); err != nil {
+				resp.Diagnostics.AddError("Unable to Upgrade State", fmt.Sprintf("Failed to unmarshal prior state JSON: %s", err))
+				return
+			}
+			if convertExtraHeaders {
 				if raw, ok := priorState["extra_headers"]; ok && string(raw) != "null" {
 					var oldMap map[string]string
 					if err := json.Unmarshal(raw, &oldMap); err != nil {
@@ -879,28 +916,25 @@ func (r *MCPServerResource) UpgradeState(ctx context.Context) map[int64]resource
 					sort.Strings(headers)
 					converted, err := json.Marshal(headers)
 					if err != nil {
-						resp.Diagnostics.AddError(
-							"Unable to Upgrade State",
-							fmt.Sprintf("Failed to marshal upgraded extra_headers: %s", err),
-						)
+						resp.Diagnostics.AddError("Unable to Upgrade State", "Failed to encode upgraded extra_headers.")
 						return
 					}
 					priorState["extra_headers"] = converted
 				}
-
-				upgradedJSON, err := json.Marshal(priorState)
-				if err != nil {
-					resp.Diagnostics.AddError(
-						"Unable to Upgrade State",
-						fmt.Sprintf("Failed to marshal upgraded state: %s", err),
-					)
-					return
-				}
-
-				resp.DynamicValue = &tfprotov6.DynamicValue{JSON: upgradedJSON}
-			},
-		},
+			}
+			priorState["mcp_info_json"] = json.RawMessage("null")
+			priorState["mcp_info_overrides_json"] = json.RawMessage("null")
+			priorState["mcp_info_clear_paths"] = json.RawMessage("null")
+			priorState["mcp_info_ownership_generation"] = json.RawMessage("0")
+			upgradedJSON, err := json.Marshal(priorState)
+			if err != nil {
+				resp.Diagnostics.AddError("Unable to Upgrade State", "Failed to marshal upgraded state.")
+				return
+			}
+			resp.DynamicValue = &tfprotov6.DynamicValue{JSON: upgradedJSON}
+		}}
 	}
+	return map[int64]resource.StateUpgrader{0: upgrade(true), 1: upgrade(false)}
 }
 
 func (r *MCPServerResource) buildMCPServerRequest(ctx context.Context, data *MCPServerResourceModel) (map[string]interface{}, error) {
@@ -1100,15 +1134,19 @@ func mcpInfoReadbackMismatch(planned, observed MCPServerResourceModel, ownership
 
 func partialMCPServerState(serverID string) MCPServerResourceModel {
 	return MCPServerResourceModel{
-		ID:              types.StringValue(serverID),
-		ServerID:        types.StringValue(serverID),
-		MCPAccessGroups: types.ListNull(types.StringType),
-		Args:            types.ListNull(types.StringType),
-		Env:             types.MapNull(types.StringType),
-		Credentials:     types.MapNull(types.StringType),
-		AllowedTools:    types.ListNull(types.StringType),
-		ExtraHeaders:    types.ListNull(types.StringType),
-		StaticHeaders:   types.MapNull(types.StringType),
+		ID:                         types.StringValue(serverID),
+		ServerID:                   types.StringValue(serverID),
+		MCPAccessGroups:            types.ListNull(types.StringType),
+		Args:                       types.ListNull(types.StringType),
+		Env:                        types.MapNull(types.StringType),
+		Credentials:                types.MapNull(types.StringType),
+		AllowedTools:               types.ListNull(types.StringType),
+		ExtraHeaders:               types.ListNull(types.StringType),
+		StaticHeaders:              types.MapNull(types.StringType),
+		MCPInfoJSON:                types.StringNull(),
+		MCPInfoOverridesJSON:       types.StringNull(),
+		MCPInfoClearPaths:          types.ListNull(types.StringType),
+		MCPInfoOwnershipGeneration: types.Int64Value(0),
 	}
 }
 
@@ -1180,6 +1218,16 @@ func resolveUnknownMCPServerState(data *MCPServerResourceModel, previous *MCPSer
 	data.Env = resolveStringMap(data.Env, prior.Env)
 	data.Credentials = resolveStringMap(data.Credentials, prior.Credentials)
 	data.StaticHeaders = resolveStringMap(data.StaticHeaders, prior.StaticHeaders)
+	data.MCPInfoJSON = resolveString(data.MCPInfoJSON, prior.MCPInfoJSON)
+	data.MCPInfoOverridesJSON = resolveString(data.MCPInfoOverridesJSON, prior.MCPInfoOverridesJSON)
+	data.MCPInfoClearPaths = resolveList(data.MCPInfoClearPaths, prior.MCPInfoClearPaths)
+	if data.MCPInfoOwnershipGeneration.IsUnknown() {
+		if previous != nil && !prior.MCPInfoOwnershipGeneration.IsUnknown() {
+			data.MCPInfoOwnershipGeneration = prior.MCPInfoOwnershipGeneration
+		} else {
+			data.MCPInfoOwnershipGeneration = types.Int64Value(0)
+		}
+	}
 
 	if data.MCPInfo != nil {
 		var priorInfo MCPInfoModel

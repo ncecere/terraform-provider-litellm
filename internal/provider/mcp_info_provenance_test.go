@@ -13,6 +13,15 @@ func (p mcpInfoMapPrivate) GetKey(_ context.Context, key string) ([]byte, diag.D
 	return p[key], nil
 }
 
+func (p mcpInfoMapPrivate) SetKey(_ context.Context, key string, value []byte) diag.Diagnostics {
+	if value == nil {
+		delete(p, key)
+	} else {
+		p[key] = append([]byte(nil), value...)
+	}
+	return nil
+}
+
 func canonicalMCPInfoPrivateMap() mcpInfoMapPrivate {
 	return mcpInfoMapPrivate{
 		mcpInfoOwnershipVersionKey:      []byte(mcpInfoOwnershipVersion),

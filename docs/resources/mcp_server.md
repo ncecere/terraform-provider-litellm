@@ -165,6 +165,13 @@ The following arguments are supported:
 - `registration_url` - (String) OAuth2 dynamic client registration URL (used with `oauth2` auth type).
 - `allow_all_keys` - (Bool) Whether all API keys are allowed to access this MCP server.
 - `skip_url_validation` - (Bool, Deprecated) Compatibility-only attribute retained for existing HCL and state. LiteLLM v1.98 does not accept it, so the provider does not send it. New or changed `true` values are rejected; an unchanged historical `true` remains plannable so unrelated updates and destroy continue to work. Remove the argument (`false` remains a safe migration no-op).
+- `mcp_info_json` - (String, Optional, Computed, Sensitive) A complete non-null JSON object for whole-document MCP info ownership. The empty object (`{}`) means an explicit whole-document clear. It conflicts with `mcp_info`, `mcp_info_overrides_json`, and `mcp_info_clear_paths`.
+- `mcp_info_overrides_json` - (String, Optional, Sensitive) A recursively selective non-null JSON object. Scalars, arrays, nested `null`, and nested empty objects are atomic owned values; a non-empty nested object owns only its recursively selected members.
+- `mcp_info_clear_paths` - (List of String, Optional, Sensitive) Canonical RFC 6901 object-member pointers that record explicit tombstones. Root pointers, array traversal, duplicates, equal paths, and ancestor/descendant conflicts are rejected.
+
+> **Staged lifecycle notice:** This release adds the JSON schema, validation, state migration, planning, and private ownership/provenance contract for issue #213. Live Create/Update/read hydration for these three JSON controls is intentionally deferred to stage 3. Continue using the fixed `mcp_info` block for supported live mutations in this stage.
+>
+> Removing fixed fields or selective overrides relinquishes Terraform ownership; it does not request remote deletion. Only an explicit clear path, or whole-document `{}`, expresses deletion intent. Fixed fields can be combined with disjoint overrides and clears. Ownership paths may not overlap or contain one another.
 
 ### Nested Blocks
 
@@ -191,6 +198,7 @@ In addition to all arguments above, the following attributes are exported:
 - `server_id` - The server identifier assigned by LiteLLM.
 - `created_at` - Timestamp of when the MCP server was created.
 - `created_by` - The user or system that created the MCP server.
+- `mcp_info_ownership_generation` - A non-sensitive computed generation that changes when MCP info ownership intent changes, including equal-value takeover. It forces Apply without making the resource ID unknown.
 
 ## Migrating to the v1.98 transport contract
 

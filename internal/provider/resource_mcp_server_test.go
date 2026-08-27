@@ -235,17 +235,21 @@ func TestMCPServerTransportConfigValidation(t *testing.T) {
 	schema := mcpServerTestSchema(t)
 	base := func() MCPServerResourceModel {
 		return MCPServerResourceModel{
-			ServerName:        types.StringValue("server"),
-			AuthType:          types.StringValue("none"),
-			SpecVersion:       types.StringValue("2024-11-05"),
-			SkipURLValidation: types.BoolNull(),
-			MCPAccessGroups:   types.ListNull(types.StringType),
-			Args:              types.ListNull(types.StringType),
-			Env:               types.MapNull(types.StringType),
-			Credentials:       types.MapNull(types.StringType),
-			AllowedTools:      types.ListNull(types.StringType),
-			ExtraHeaders:      types.ListNull(types.StringType),
-			StaticHeaders:     types.MapNull(types.StringType),
+			ServerName:                 types.StringValue("server"),
+			AuthType:                   types.StringValue("none"),
+			SpecVersion:                types.StringValue("2024-11-05"),
+			SkipURLValidation:          types.BoolNull(),
+			MCPAccessGroups:            types.ListNull(types.StringType),
+			Args:                       types.ListNull(types.StringType),
+			Env:                        types.MapNull(types.StringType),
+			Credentials:                types.MapNull(types.StringType),
+			AllowedTools:               types.ListNull(types.StringType),
+			ExtraHeaders:               types.ListNull(types.StringType),
+			StaticHeaders:              types.MapNull(types.StringType),
+			MCPInfoJSON:                types.StringNull(),
+			MCPInfoOverridesJSON:       types.StringNull(),
+			MCPInfoClearPaths:          types.ListNull(types.StringType),
+			MCPInfoOwnershipGeneration: types.Int64Value(0),
 		}
 	}
 
