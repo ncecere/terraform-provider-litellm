@@ -182,18 +182,19 @@ func (r *FallbackResource) Delete(ctx context.Context, req resource.DeleteReques
 	}
 
 	endpoint := fallbackEndpoint(data.Model.ValueString(), data.FallbackType.ValueString())
-	if err := r.client.DoRequestWithResponse(ctx, http.MethodDelete, endpoint, nil, nil); err != nil {
-		if !IsNotFoundError(err) {
-			resp.Diagnostics.AddError("Fallback Delete Error", fallbackOperationDiagnostic("delete", err))
-			return
-		}
-	}
+	deleteErr := r.client.DoRequestWithResponse(ctx, http.MethodDelete, endpoint, nil, nil)
 
 	// LiteLLM v1.98 can return DELETE 404 while its authoritative GET still
 	// returns the fallback. Never interpret the DELETE status alone as absence:
 	// doing so would remove Terraform state while leaving live routing config.
-	if err := r.confirmFallbackDeleted(ctx, &data, fallbackDeleteMaxAttempts); err != nil {
-		resp.Diagnostics.AddError("Fallback Delete Unconfirmed", fallbackOperationDiagnostic("confirm deletion of", err))
+	if confirmationErr := r.confirmFallbackDeleted(ctx, &data, fallbackDeleteMaxAttempts); confirmationErr != nil {
+		diagnosticErr := confirmationErr
+		operation := "confirm deletion of"
+		if deleteErr != nil && !IsNotFoundError(deleteErr) {
+			diagnosticErr = deleteErr
+			operation = "delete"
+		}
+		resp.Diagnostics.AddError("Fallback Delete Unconfirmed", fallbackOperationDiagnostic(operation, diagnosticErr))
 	}
 }
 

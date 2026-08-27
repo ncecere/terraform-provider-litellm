@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -319,8 +320,9 @@ func TestFallbackDeleteRequiresAuthoritativeReadAbsence(t *testing.T) {
 	t.Parallel()
 
 	for name, deleteStatus := range map[string]int{
-		"delete success":        http.StatusOK,
-		"already absent delete": http.StatusNotFound,
+		"delete success":              http.StatusOK,
+		"already absent delete":       http.StatusNotFound,
+		"ambiguous server-side error": http.StatusInternalServerError,
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -349,6 +351,37 @@ func TestFallbackDeleteRequiresAuthoritativeReadAbsence(t *testing.T) {
 				t.Fatalf("requests: deletes=%d reads=%d, want 1 and 1", deletes, reads)
 			}
 		})
+	}
+}
+
+func TestFallbackDeleteTransportAmbiguityUsesAuthoritativeGET(t *testing.T) {
+	t.Parallel()
+
+	var requests int
+	client := &Client{
+		APIBase: "https://fallback.invalid",
+		APIKey:  "test-key",
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			requests++
+			if request.Method == http.MethodDelete {
+				return nil, io.ErrUnexpectedEOF
+			}
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{}`)),
+				Request:    request,
+			}, nil
+		})},
+	}
+	resourceUnderTest, state := fallbackDeleteTestResourceWithClient(t, client, "test-model")
+	response := &resource.DeleteResponse{State: state}
+	resourceUnderTest.Delete(context.Background(), resource.DeleteRequest{State: state}, response)
+	if response.Diagnostics.HasError() {
+		t.Fatalf("confirmed transport-ambiguous delete diagnostics: %v", response.Diagnostics)
+	}
+	if requests != 2 {
+		t.Fatalf("requests = %d, want DELETE and confirming GET", requests)
 	}
 }
 
@@ -461,10 +494,14 @@ func fallbackDeleteTestResource(t *testing.T, server *httptest.Server) (*Fallbac
 
 func fallbackDeleteTestResourceWithModel(t *testing.T, server *httptest.Server, model string) (*FallbackResource, tfsdk.State) {
 	t.Helper()
+	client := &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}
+	return fallbackDeleteTestResourceWithClient(t, client, model)
+}
+
+func fallbackDeleteTestResourceWithClient(t *testing.T, client *Client, model string) (*FallbackResource, tfsdk.State) {
+	t.Helper()
 	ctx := context.Background()
-	resourceUnderTest := &FallbackResource{
-		client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()},
-	}
+	resourceUnderTest := &FallbackResource{client: client}
 	var schemaResponse resource.SchemaResponse
 	resourceUnderTest.Schema(ctx, resource.SchemaRequest{}, &schemaResponse)
 	state := fallbackTestState(t, schemaResponse.Schema, FallbackResourceModel{
