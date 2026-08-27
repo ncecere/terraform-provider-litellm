@@ -300,7 +300,7 @@ resource "litellm_guardrail" "content_safety" {
 # =============================================================================
 
 resource "litellm_mcp_server" "github" {
-  server_name = "github-integration"
+  server_name = "github_integration"
   alias       = "github"
   description = "GitHub MCP server for repository operations"
   url         = "https://api.github.com/mcp"
