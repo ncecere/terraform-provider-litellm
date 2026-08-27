@@ -1567,7 +1567,7 @@
       },
       {
         "file": "internal/provider/resource_mcp_server.go",
-        "line": 1530
+        "line": 1528
       }
     ]
   },
@@ -1579,7 +1579,7 @@
     "evidence": [
       {
         "file": "internal/provider/resource_mcp_server.go",
-        "line": 810
+        "line": 808
       }
     ]
   },
@@ -1591,7 +1591,7 @@
     "evidence": [
       {
         "file": "internal/provider/resource_mcp_server.go",
-        "line": 956
+        "line": 954
       }
     ]
   },
@@ -1605,7 +1605,7 @@
     "evidence": [
       {
         "file": "internal/provider/resource_mcp_server.go",
-        "line": 1123
+        "line": 1121
       }
     ]
   },
@@ -1623,11 +1623,11 @@
       },
       {
         "file": "internal/provider/resource_mcp_server.go",
-        "line": 1511
+        "line": 1509
       },
       {
         "file": "internal/provider/resource_mcp_server.go",
-        "line": 1520
+        "line": 1518
       }
     ]
   },
