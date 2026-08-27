@@ -126,6 +126,23 @@ func appendThenOverwriteElement() diagnostics {
 	output[0] = nil
 	return output
 }
+func shadowedDiagnostics() diagnostics {
+	var diagnostics diagnosticsType
+	{
+		list, diagnostics := types.ListValue(elementType, elements)
+		_ = diagnostics
+	}
+	if diagnostics.HasError() { return diagnostics }
+	return diagnostics
+}
+func shadowedDestination() diagnostics {
+	list, diagnostics := types.ListValue(elementType, elements)
+	output.Append(diagnostics...)
+	{
+		output := replacement
+		return output
+	}
+}
 `
 	if err := os.WriteFile(filepath.Join(directory, "fixture.go"), []byte(source), 0o600); err != nil {
 		t.Fatal(err)
@@ -139,7 +156,7 @@ func appendThenOverwriteElement() diagnostics {
 		"ignored ElementsAs diagnostics":                 1,
 		"ignored Object.As diagnostics":                  1,
 		"discarded ListValue constructor diagnostics":    1,
-		"unchecked ListValue constructor diagnostics":    10,
+		"unchecked ListValue constructor diagnostics":    12,
 		"discarded SetValueFrom constructor diagnostics": 1,
 		"discarded SetValue constructor diagnostics":     1,
 		"discarded MapValue constructor diagnostics":     1,
@@ -218,7 +235,7 @@ func scanCollectionConversionFile(filename string, file *ast.File) []collectionA
 							violations = append(violations, collectionAuditViolation{File: filename, Symbol: symbol, Kind: "unchecked " + constructor + " constructor diagnostics"})
 						case target.Name == "_":
 							violations = append(violations, collectionAuditViolation{File: filename, Symbol: symbol, Kind: "discarded " + constructor + " constructor diagnostics"})
-						case !diagnosticAssignmentSafelyConsumed(function.Body, target.Name, typed.Pos()):
+						case !diagnosticAssignmentSafelyConsumed(function.Body, target, typed.Pos()):
 							violations = append(violations, collectionAuditViolation{File: filename, Symbol: symbol, Kind: "unchecked " + constructor + " constructor diagnostics"})
 						}
 					}
@@ -235,7 +252,7 @@ func scanCollectionConversionFile(filename string, file *ast.File) []collectionA
 	return violations
 }
 
-func diagnosticAssignmentSafelyConsumed(body *ast.BlockStmt, name string, assignment token.Pos) bool {
+func diagnosticAssignmentSafelyConsumed(body *ast.BlockStmt, source *ast.Ident, assignment token.Pos) bool {
 	parents := collectionAuditParentMap(body)
 	nextAssignment := token.NoPos
 	var safeUses []token.Pos
@@ -246,7 +263,7 @@ func diagnosticAssignmentSafelyConsumed(body *ast.BlockStmt, name string, assign
 		switch typed := node.(type) {
 		case *ast.AssignStmt:
 			for _, target := range typed.Lhs {
-				if identifier, ok := target.(*ast.Ident); ok && identifier.Name == name {
+				if identifier, ok := target.(*ast.Ident); ok && collectionAuditSameBinding(identifier, source) {
 					if nextAssignment == token.NoPos || typed.Pos() < nextAssignment {
 						nextAssignment = typed.Pos()
 					}
@@ -254,7 +271,7 @@ func diagnosticAssignmentSafelyConsumed(body *ast.BlockStmt, name string, assign
 			}
 		case *ast.ReturnStmt:
 			for _, result := range typed.Results {
-				if identifier, ok := result.(*ast.Ident); ok && identifier.Name == name {
+				if identifier, ok := result.(*ast.Ident); ok && collectionAuditSameBinding(identifier, source) {
 					safeUses = append(safeUses, typed.Pos())
 				}
 			}
@@ -264,21 +281,21 @@ func diagnosticAssignmentSafelyConsumed(body *ast.BlockStmt, name string, assign
 			switch function := typed.Fun.(type) {
 			case *ast.SelectorExpr:
 				if function.Sel.Name == "HasError" {
-					if identifier, ok := function.X.(*ast.Ident); ok && identifier.Name == name {
+					if identifier, ok := function.X.(*ast.Ident); ok && collectionAuditSameBinding(identifier, source) {
 						safe, requiresControlFlow = true, true
 					}
 				}
 				if function.Sel.Name == "Append" {
 					for _, argument := range typed.Args {
-						if identifier, ok := argument.(*ast.Ident); ok && identifier.Name == name {
-							safe = collectionAuditAppendedDiagnosticsPropagate(body, function.X, typed.Pos(), name, assignment, parents)
+						if identifier, ok := argument.(*ast.Ident); ok && collectionAuditSameBinding(identifier, source) {
+							safe = collectionAuditAppendedDiagnosticsPropagate(body, function.X, typed.Pos(), source, assignment, parents)
 						}
 					}
 				}
 			case *ast.Ident:
 				if function.Name == "len" || function.Name == "collectionProjectionError" {
 					for _, argument := range typed.Args {
-						if identifier, ok := argument.(*ast.Ident); ok && identifier.Name == name {
+						if identifier, ok := argument.(*ast.Ident); ok && collectionAuditSameBinding(identifier, source) {
 							safe, requiresControlFlow = true, true
 						}
 					}
@@ -315,7 +332,14 @@ func collectionAuditParentMap(root ast.Node) map[ast.Node]ast.Node {
 	return parents
 }
 
-func collectionAuditAppendedDiagnosticsPropagate(body *ast.BlockStmt, receiver ast.Expr, appendPosition token.Pos, sourceName string, sourceAssignment token.Pos, parents map[ast.Node]ast.Node) bool {
+func collectionAuditSameBinding(candidate, source *ast.Ident) bool {
+	if candidate.Obj != nil && source.Obj != nil {
+		return candidate.Obj == source.Obj
+	}
+	return candidate.Name == source.Name
+}
+
+func collectionAuditAppendedDiagnosticsPropagate(body *ast.BlockStmt, receiver ast.Expr, appendPosition token.Pos, source *ast.Ident, sourceAssignment token.Pos, parents map[ast.Node]ast.Node) bool {
 	receiverKey := collectionAuditExpressionKey(receiver)
 	if receiverKey == "" {
 		return false
@@ -329,7 +353,7 @@ func collectionAuditAppendedDiagnosticsPropagate(body *ast.BlockStmt, receiver a
 		for _, target := range assignment.Lhs {
 			invalidatesSource := false
 			if identifier, ok := target.(*ast.Ident); ok {
-				invalidatesSource = identifier.Name == sourceName
+				invalidatesSource = collectionAuditSameBinding(identifier, source)
 			}
 			targetKey := collectionAuditAssignmentRootKey(target)
 			invalidatesDestination := assignment.Pos() > appendPosition &&
@@ -369,6 +393,9 @@ func collectionAuditAppendedDiagnosticsPropagate(body *ast.BlockStmt, receiver a
 func collectionAuditExpressionKey(expression ast.Expr) string {
 	switch typed := expression.(type) {
 	case *ast.Ident:
+		if typed.Obj != nil {
+			return fmt.Sprintf("%p:%s", typed.Obj, typed.Name)
+		}
 		return typed.Name
 	case *ast.SelectorExpr:
 		prefix := collectionAuditExpressionKey(typed.X)
