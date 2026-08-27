@@ -59,16 +59,22 @@ func TestMCPAcceptedCreateCredentialRecoveryCommitsPendingWithoutPUTProtocol(t *
 		t.Fatalf("unconfirmed create: err=%v diagnostics=%v", err, created.Diagnostics)
 	}
 	readsEnabled.Store(true)
-	proposed := organizationProjectProtocolReplace(t, schema, created.NewState, configValues)
+	refreshed, err := protocolServer.ReadResource(ctx, &tfprotov6.ReadResourceRequest{
+		TypeName: "litellm_mcp_server", CurrentState: created.NewState, Private: created.Private,
+	})
+	if err != nil || accessGroupProtocolDiagnosticsHaveError(refreshed.Diagnostics) {
+		t.Fatalf("recovery refresh: err=%v diagnostics=%v", err, refreshed.Diagnostics)
+	}
+	proposed := organizationProjectProtocolReplace(t, schema, refreshed.NewState, configValues)
 	recoveryPlan, err := protocolServer.PlanResourceChange(ctx, &tfprotov6.PlanResourceChangeRequest{
-		TypeName: "litellm_mcp_server", Config: config, PriorState: created.NewState,
-		ProposedNewState: proposed, PriorPrivate: created.Private,
+		TypeName: "litellm_mcp_server", Config: config, PriorState: refreshed.NewState,
+		ProposedNewState: proposed, PriorPrivate: refreshed.Private,
 	})
 	if err != nil || accessGroupProtocolDiagnosticsHaveError(recoveryPlan.Diagnostics) {
 		t.Fatalf("recovery plan: err=%v diagnostics=%v", err, recoveryPlan.Diagnostics)
 	}
 	recovered, err := protocolServer.ApplyResourceChange(ctx, &tfprotov6.ApplyResourceChangeRequest{
-		TypeName: "litellm_mcp_server", Config: config, PriorState: created.NewState,
+		TypeName: "litellm_mcp_server", Config: config, PriorState: refreshed.NewState,
 		PlannedState: recoveryPlan.PlannedState, PlannedPrivate: recoveryPlan.PlannedPrivate,
 	})
 	if err != nil || accessGroupProtocolDiagnosticsHaveError(recovered.Diagnostics) || puts.Load() != 0 {

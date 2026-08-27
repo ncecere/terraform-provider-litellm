@@ -18,6 +18,7 @@ const (
 	mcpFieldOwnershipPrivateKey        = "mcp_field_ownership_v1"
 	mcpFieldPendingOwnershipPrivateKey = "mcp_field_pending_ownership_v1"
 	mcpFieldImportedPrivateKey         = "mcp_field_imported_v1"
+	mcpFieldAcceptedCreatePrivateKey   = "mcp_field_accepted_create_v1"
 	mcpFieldOwnershipVersion           = 1
 )
 
@@ -239,6 +240,8 @@ func readMCPFieldOwnership(ctx context.Context, private mcpInfoPrivateReader) (m
 	diagnostics.Append(pendingDiags...)
 	importedRaw, importedDiags := private.GetKey(ctx, mcpFieldImportedPrivateKey)
 	diagnostics.Append(importedDiags...)
+	acceptedCreateRaw, acceptedCreateDiags := private.GetKey(ctx, mcpFieldAcceptedCreatePrivateKey)
+	diagnostics.Append(acceptedCreateDiags...)
 	if diagnostics.HasError() {
 		return result, diagnostics
 	}
@@ -252,6 +255,10 @@ func readMCPFieldOwnership(ctx context.Context, private mcpInfoPrivateReader) (m
 			return result, diagnostics
 		}
 	}
+	if acceptedCreateRaw != nil && (string(acceptedCreateRaw) != "true" || pendingRaw == nil) {
+		mcpFieldPrivateError(&diagnostics)
+		return result, diagnostics
+	}
 	if raw == nil {
 		return result, diagnostics
 	}
@@ -263,21 +270,32 @@ func readMCPFieldOwnership(ctx context.Context, private mcpInfoPrivateReader) (m
 	return decoded, diagnostics
 }
 
-func mcpFieldPrivateHasPending(ctx context.Context, private mcpInfoPrivateReader) (bool, diag.Diagnostics) {
+func readMCPAcceptedCreateRecovery(ctx context.Context, private mcpInfoPrivateReader, expected mcpFieldOwnership) (bool, diag.Diagnostics) {
 	var diagnostics diag.Diagnostics
 	if private == nil {
 		return false, diagnostics
 	}
-	raw, keyDiags := private.GetKey(ctx, mcpFieldPendingOwnershipPrivateKey)
-	diagnostics.Append(keyDiags...)
-	if diagnostics.HasError() || raw == nil {
+	marker, markerDiags := private.GetKey(ctx, mcpFieldAcceptedCreatePrivateKey)
+	diagnostics.Append(markerDiags...)
+	if diagnostics.HasError() || marker == nil {
 		return false, diagnostics
 	}
-	if _, err := decodeMCPFieldOwnership(raw); err != nil {
+	pendingRaw, pendingDiags := private.GetKey(ctx, mcpFieldPendingOwnershipPrivateKey)
+	diagnostics.Append(pendingDiags...)
+	pending, err := decodeMCPFieldOwnership(pendingRaw)
+	if diagnostics.HasError() || string(marker) != "true" || err != nil || !mcpFieldOwnershipEqual(pending, expected) {
 		mcpFieldPrivateError(&diagnostics)
 		return false, diagnostics
 	}
 	return true, diagnostics
+}
+
+func writeMCPAcceptedCreateRecovery(ctx context.Context, private mcpInfoPrivateWriter) diag.Diagnostics {
+	var diagnostics diag.Diagnostics
+	if private != nil {
+		diagnostics.Append(private.SetKey(ctx, mcpFieldAcceptedCreatePrivateKey, []byte("true"))...)
+	}
+	return diagnostics
 }
 
 func readPendingMCPFieldOwnership(ctx context.Context, private mcpInfoPrivateReader, expected mcpFieldOwnership) (mcpFieldOwnership, diag.Diagnostics) {
@@ -310,6 +328,10 @@ func writeMCPFieldOwnership(ctx context.Context, private mcpInfoPrivateWriter, o
 		return diagnostics
 	}
 	diagnostics.Append(private.SetKey(ctx, mcpFieldPendingOwnershipPrivateKey, nil)...)
+	if diagnostics.HasError() {
+		return diagnostics
+	}
+	diagnostics.Append(private.SetKey(ctx, mcpFieldAcceptedCreatePrivateKey, nil)...)
 	return diagnostics
 }
 
@@ -422,6 +444,9 @@ func committedMCPFieldOwnership(candidate mcpFieldOwnership) mcpFieldOwnership {
 
 func validateMCPFieldOwnershipGeneration(generation types.Int64, ownership mcpFieldOwnership) error {
 	if generation.IsNull() || generation.IsUnknown() {
+		if ownership.Versioned && ownership.Generation > 0 {
+			return fmt.Errorf("MCP field ownership generation mismatch")
+		}
 		return nil
 	}
 	value := generation.ValueInt64()

@@ -495,6 +495,8 @@ func (r *MCPServerResource) ModifyPlan(ctx context.Context, req resource.ModifyP
 	candidate, ownershipDiags := deriveMCPInfoJSONPlanProvenance(ctx, prior, config, state)
 	resp.Diagnostics.Append(ownershipDiags...)
 	candidateFields := deriveMCPFieldPlanOwnership(priorFields, config)
+	_, acceptedCreateDiags := readMCPAcceptedCreateRecovery(ctx, req.Private, candidateFields)
+	resp.Diagnostics.Append(acceptedCreateDiags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -734,6 +736,7 @@ func (r *MCPServerResource) Create(ctx context.Context, req resource.CreateReque
 	if resp.Private != nil {
 		resp.Diagnostics.Append(writePendingMCPInfoProvenance(ctx, resp.Private, plannedOwnership)...)
 		resp.Diagnostics.Append(writePendingMCPFieldOwnership(ctx, resp.Private, plannedFields)...)
+		resp.Diagnostics.Append(writeMCPAcceptedCreateRecovery(ctx, resp.Private)...)
 		if resp.Diagnostics.HasError() {
 			partial := partialMCPServerState(serverID)
 			resp.Diagnostics.Append(resp.State.Set(ctx, &partial)...)

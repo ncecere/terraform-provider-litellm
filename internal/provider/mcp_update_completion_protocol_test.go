@@ -47,6 +47,15 @@ func runMCPUpdateCompletionProtocol(t *testing.T, stateValues, configValues, pro
 
 	protocolServer, schemas := configuredImportProtocolServer(t, ctx, server.URL)
 	schema := schemas.ResourceSchemas["litellm_mcp_server"]
+	ownership := protocolCommittedMCPFieldOwnership(t, private)
+	if ownership.Versioned && ownership.Generation > 0 {
+		stateCopy := make(map[string]interface{}, len(stateValues)+1)
+		for key, value := range stateValues {
+			stateCopy[key] = value
+		}
+		stateCopy["field_ownership_generation"] = ownership.Generation
+		stateValues = stateCopy
+	}
 	state := accessGroupProtocolDynamicValue(t, schema, organizationProjectProtocolValue(t, schema, stateValues))
 	config := accessGroupProtocolDynamicValue(t, schema, organizationProjectProtocolValue(t, schema, configValues))
 	proposed := organizationProjectProtocolReplace(t, schema, state, proposedChanges)

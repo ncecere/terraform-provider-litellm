@@ -309,13 +309,22 @@ func TestMCPFieldOwnershipGenerationBinding(t *testing.T) {
 	if err := validateMCPFieldOwnershipGeneration(types.Int64Value(3), committed); err != nil {
 		t.Fatalf("matching generation rejected: %v", err)
 	}
-	for _, generation := range []types.Int64{types.Int64Value(2), types.Int64Value(4)} {
+	for _, generation := range []types.Int64{types.Int64Value(2), types.Int64Value(4), types.Int64Null(), types.Int64Unknown()} {
 		if err := validateMCPFieldOwnershipGeneration(generation, committed); err == nil {
 			t.Fatalf("mismatched generation %s accepted", generation)
 		}
 	}
 	if err := validateMCPFieldOwnershipGeneration(types.Int64Value(1), emptyMCPFieldOwnership()); err == nil {
 		t.Fatal("missing private ownership accepted for a nonzero public generation")
+	}
+}
+
+func TestMCPEmptyObservableUpstreamResourceRejected(t *testing.T) {
+	if err := validateMCPCredentialStringMapV198(map[string]string{"upstream_resource": ""}); err == nil {
+		t.Fatal("empty upstream_resource was accepted even though pinned v1.98 omits it from readback")
+	}
+	if err := validateMCPCredentialStringMapV198(map[string]string{"upstream_resource": "resource"}); err != nil {
+		t.Fatalf("non-empty upstream_resource rejected: %v", err)
 	}
 }
 

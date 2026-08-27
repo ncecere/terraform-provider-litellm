@@ -101,10 +101,11 @@ func TestMCPServerRestrictedReadRetainsKnownSensitiveStateProtocol(t *testing.T)
 		"url": "https://owned.invalid/mcp", "spec_path": "/owned/spec.json", "command": "npx",
 		"authorization_url": "https://owned.invalid/authorize", "token_url": "https://owned.invalid/token", "registration_url": "https://owned.invalid/register",
 		"mcp_access_groups": protocolMCPStringList("group"), "args": protocolMCPStringList("package"), "allowed_tools": protocolMCPStringList("tool"), "extra_headers": protocolMCPStringList("X-Owned"),
-		"env":            map[string]tftypes.Value{"KEY": tftypes.NewValue(tftypes.String, "value")},
-		"static_headers": map[string]tftypes.Value{"X-Owned": tftypes.NewValue(tftypes.String, "value")},
-		"credentials":    map[string]tftypes.Value{"client_secret": tftypes.NewValue(tftypes.String, "value")},
-		"mcp_info_json":  "{}",
+		"env":                        map[string]tftypes.Value{"KEY": tftypes.NewValue(tftypes.String, "value")},
+		"static_headers":             map[string]tftypes.Value{"X-Owned": tftypes.NewValue(tftypes.String, "value")},
+		"credentials":                map[string]tftypes.Value{"client_secret": tftypes.NewValue(tftypes.String, "value")},
+		"mcp_info_json":              "{}",
+		"field_ownership_generation": int64(4),
 	}
 	state := accessGroupProtocolDynamicValue(t, schema, organizationProjectProtocolValue(t, schema, values))
 	owned := map[string]bool{}
@@ -389,6 +390,28 @@ func TestMCPServerUnsupportedCredentialKeysRejectedBeforeMutationProtocol(t *tes
 		}
 		if strings.Contains(fmtDiagnostics(applied.Diagnostics), "bogus") {
 			t.Fatal("credential diagnostic exposed an unsupported configured key")
+		}
+	})
+
+	t.Run("empty observable create", func(t *testing.T) {
+		var requests atomic.Int64
+		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			requests.Add(1)
+			http.NotFound(writer, request)
+		}))
+		defer server.Close()
+		protocolServer, schemas := configuredImportProtocolServer(t, ctx, server.URL)
+		schema := schemas.ResourceSchemas["litellm_mcp_server"]
+		config, nullState, planned := mcpServerProtocolCreatePlan(t, protocolServer, schema, map[string]interface{}{
+			"server_name": "empty-observable-credential", "transport": "http", "url": "https://known.invalid/mcp", "auth_type": "oauth2",
+			"credentials": map[string]tftypes.Value{"upstream_resource": tftypes.NewValue(tftypes.String, "")},
+		})
+		applied, err := protocolServer.ApplyResourceChange(ctx, &tfprotov6.ApplyResourceChangeRequest{
+			TypeName: "litellm_mcp_server", Config: config, PriorState: nullState,
+			PlannedState: planned.PlannedState, PlannedPrivate: planned.PlannedPrivate,
+		})
+		if err != nil || !accessGroupProtocolDiagnosticsHaveError(applied.Diagnostics) || requests.Load() != 0 {
+			t.Fatalf("empty observable credential create: err=%v diagnostics=%v requests=%d", err, applied.Diagnostics, requests.Load())
 		}
 	})
 

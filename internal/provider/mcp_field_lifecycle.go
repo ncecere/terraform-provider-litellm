@@ -29,6 +29,9 @@ func validateMCPCredentialStringMapV198(credentials map[string]string) error {
 		if name == "token_endpoint_auth_method" && value != "client_secret_basic" && value != "client_secret_post" {
 			return fmt.Errorf("credentials contain an unsupported token endpoint authentication method")
 		}
+		if name == "upstream_resource" && value == "" {
+			return fmt.Errorf("credentials contain an empty observable upstream resource that LiteLLM v1.98 cannot return")
+		}
 	}
 	return nil
 }
@@ -707,8 +710,8 @@ func (r *MCPServerResource) Update(ctx context.Context, req resource.UpdateReque
 	expectedFields := deriveMCPFieldPlanOwnership(committedFields, config)
 	plannedFields, pendingFieldDiags := readPendingMCPFieldOwnership(ctx, req.Private, expectedFields)
 	resp.Diagnostics.Append(pendingFieldDiags...)
-	hasPendingFields, pendingFieldPresenceDiags := mcpFieldPrivateHasPending(ctx, req.Private)
-	resp.Diagnostics.Append(pendingFieldPresenceDiags...)
+	acceptedCreateRecovery, acceptedCreateDiags := readMCPAcceptedCreateRecovery(ctx, req.Private, expectedFields)
+	resp.Diagnostics.Append(acceptedCreateDiags...)
 	if resp.Diagnostics.HasError() {
 		resp.State, resp.Private = req.State, req.Private
 		return
@@ -754,7 +757,7 @@ func (r *MCPServerResource) Update(ctx context.Context, req resource.UpdateReque
 		resp.Diagnostics.AddError("Invalid MCP Info Configuration", "The complete MCP info update could not be resolved safely. No PUT was attempted.")
 		return
 	}
-	recoverAcceptedCreate := hasPendingFields && !state.FieldOwnershipGeneration.IsNull() && !state.FieldOwnershipGeneration.IsUnknown() && state.FieldOwnershipGeneration.ValueInt64() == 0 && state.ServerName.IsNull() && state.AuthType.IsNull() && committedFields.Generation == 0 && len(committedFields.Owned) == 0 && len(committedFields.Removals) == 0
+	recoverAcceptedCreate := acceptedCreateRecovery && !state.FieldOwnershipGeneration.IsNull() && !state.FieldOwnershipGeneration.IsUnknown() && state.FieldOwnershipGeneration.ValueInt64() == 0 && committedFields.Generation == 0 && len(committedFields.Owned) == 0 && len(committedFields.Removals) == 0
 	comparisonState := state
 	comparisonFields := committedFields
 	if recoverAcceptedCreate {
