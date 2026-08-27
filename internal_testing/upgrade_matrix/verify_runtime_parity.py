@@ -86,6 +86,7 @@ REVIEWED_ISSUE222_PATHS = (
     "internal/provider/datasource_models_list.go",
     "internal/provider/datasource_organizations_list.go",
     "internal/provider/datasource_presence.go",
+    "internal/provider/datasource_presence_review_regression_test.go",
     "internal/provider/datasource_presence_test.go",
     "internal/provider/datasource_projects_list.go",
     "internal/provider/datasource_prompts_list.go",
@@ -101,9 +102,10 @@ REVIEWED_ISSUE222_PATHS = (
     "internal/provider/datasource_user.go",
     "internal/provider/datasource_users_list.go",
     "internal/provider/jwt_key_mapping_api.go",
+    "internal/provider/list_helpers.go",
 )
 REVIEWED_ISSUE222_RUNTIME_DIFF_SHA256 = (
-    "c39ad77222db81dbb872cbe46b08dc23bb162065b0ee8ca706196a6006a03f41"
+    "4842dbb53f7277f4e20a09a35e2f12d5c419c6bdd7d177af5eb623649c6db34c"
 )
 
 
