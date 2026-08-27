@@ -14,13 +14,10 @@ data "litellm_prompt" "minimal" {
 data "litellm_prompts" "development" {
   environment = "development"
   depends_on  = [litellm_prompt.minimal]
+}
 
-  lifecycle {
-    postcondition {
-      condition     = contains([for prompt in self.prompts : prompt.prompt_id], litellm_prompt.minimal.prompt_id)
-      error_message = "The environment-scoped prompt inventory omitted the managed prompt."
-    }
-  }
+output "prompt_development_registry_ids" {
+  value = [for prompt in data.litellm_prompts.development.prompts : prompt.prompt_id]
 }
 
 output "prompt_minimal_id" {

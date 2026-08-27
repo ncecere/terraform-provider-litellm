@@ -6,12 +6,15 @@ set -eu
 
 REPO_ROOT=${1:?usage: smoke.sh <repo_root> resources <file...> datasources <file...>}
 shift
-REPO_ROOT=$(cd "$REPO_ROOT" && pwd)
+REPO_ROOT=$(cd "$REPO_ROOT" && pwd -P)
 INTERNAL_TESTING="$REPO_ROOT/internal_testing"
 RESOURCES="$INTERNAL_TESTING/resources"
 DATASOURCES="$INTERNAL_TESTING/datasources"
 PROVIDER_DIR=${PROVIDER_DIR:-$REPO_ROOT}
 SMOKE_ASSEMBLY_ONLY=${SMOKE_ASSEMBLY_ONLY:-0}
+SMOKE_PRIVATE_ROOT=${SMOKE_PRIVATE_ROOT:-$INTERNAL_TESTING}
+SMOKE_DELETE_LOGS=${SMOKE_DELETE_LOGS:-0}
+SMOKE_DIAGNOSTIC_OUTPUT=${SMOKE_DIAGNOSTIC_OUTPUT:-}
 
 if [ "$SMOKE_ASSEMBLY_ONLY" != "1" ] && [ ! -f "$PROVIDER_DIR/terraform-provider-litellm" ]; then
   echo "Provider binary not found at $PROVIDER_DIR/terraform-provider-litellm; run 'make build'." >&2
@@ -26,9 +29,18 @@ if ! command -v python3 >/dev/null 2>&1; then
   exit 1
 fi
 
-mkdir -p "$INTERNAL_TESTING/.smoke-logs"
-SMOKE_DIR=$(mktemp -d "$INTERNAL_TESTING/.smoke.XXXXXX")
-SMOKE_LOG="$INTERNAL_TESTING/.smoke-logs/$(date '+%Y%m%d-%H%M%S')-$$.log"
+mkdir -p "$SMOKE_PRIVATE_ROOT/.smoke-logs"
+chmod 700 "$SMOKE_PRIVATE_ROOT" "$SMOKE_PRIVATE_ROOT/.smoke-logs"
+SMOKE_DIR=$(mktemp -d "$SMOKE_PRIVATE_ROOT/.smoke.XXXXXX")
+SMOKE_LOG=${SMOKE_LOG_OVERRIDE:-$SMOKE_PRIVATE_ROOT/.smoke-logs/$(date '+%Y%m%d-%H%M%S')-$$.log}
+case "$SMOKE_LOG" in "$SMOKE_PRIVATE_ROOT"/.smoke-logs/*.log) ;; *) echo 'Unsafe smoke log override.' >&2; exit 1 ;; esac
+[ ! -e "$SMOKE_LOG" ] || { echo 'Smoke log destination already exists.' >&2; exit 1; }
+if [ -n "$SMOKE_DIAGNOSTIC_OUTPUT" ]; then
+  case "$SMOKE_DIAGNOSTIC_OUTPUT" in "$SMOKE_PRIVATE_ROOT"/.smoke-logs/*.command.log) ;; *) echo 'Unsafe smoke diagnostic destination.' >&2; exit 1 ;; esac
+  [ ! -e "$SMOKE_DIAGNOSTIC_OUTPUT" ] || { echo 'Smoke diagnostic destination already exists.' >&2; exit 1; }
+fi
+: >"$SMOKE_LOG"
+chmod 600 "$SMOKE_LOG"
 APPLY_STARTED=0
 SUCCESS=0
 CLEANUP_ARGS=
@@ -37,28 +49,51 @@ IMPORT_BACKUP=
 cleanup() {
   status=$?
   trap - EXIT INT TERM HUP
+  cleanup_status=0
   if [ "$SUCCESS" -eq 1 ]; then
     rm -rf "$SMOKE_DIR"
+    [ "$SMOKE_DELETE_LOGS" = 1 ] && rm -f "$SMOKE_LOG"
     exit 0
   fi
 
   if [ -n "$IMPORT_BACKUP" ] && [ -f "$IMPORT_BACKUP" ]; then
     # A failed import after state rm must not orphan the seeded remote object.
-    cp "$IMPORT_BACKUP" "$SMOKE_DIR/terraform.tfstate"
+    cp "$IMPORT_BACKUP" "$SMOKE_DIR/terraform.tfstate" || cleanup_status=1
   fi
   if [ "$APPLY_STARTED" -eq 1 ] && [ -f "$SMOKE_DIR/terraform.tfstate" ]; then
-    echo "Attempting best-effort cleanup after failure..." >&3
-    # shellcheck disable=SC2086 # CLEANUP_ARGS intentionally expands to an optional complete argument.
-    (cd "$SMOKE_DIR" && terraform destroy -refresh=false -auto-approve $CLEANUP_ARGS) >>"$SMOKE_LOG" 2>&1 || true
+    echo "Attempting bounded cleanup after failure..." >&3
+    cleanup_attempt=1
+    while [ "$cleanup_attempt" -le 2 ]; do
+      # shellcheck disable=SC2086 # CLEANUP_ARGS is one optional complete argument.
+      if (cd "$SMOKE_DIR" && terraform destroy -refresh=false -auto-approve $CLEANUP_ARGS) >>"$SMOKE_LOG" 2>&1; then
+        if [ -z "$(cd "$SMOKE_DIR" && terraform state list 2>>"$SMOKE_LOG")" ]; then
+          cleanup_status=0
+          break
+        fi
+      fi
+      cleanup_status=1
+      cleanup_attempt=$((cleanup_attempt + 1))
+    done
   fi
-  echo "Smoke failed; workspace preserved at $SMOKE_DIR" >&3
-  echo "See $SMOKE_LOG" >&3
+  # Cleanup failure overrides an otherwise successful nested command and the
+  # sole state/log recovery material is retained. Never claim hosted teardown
+  # as authoritative remote absence.
+  if [ "$cleanup_status" -ne 0 ]; then status=1; fi
+  echo "Smoke failed; private workspace and recovery log retained" >&3
   exit "$status"
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM HUP
 
 trim() { printf '%s\n' "$1" | sed 's/^[,[:space:]]*//;s/[,[:space:]]*$//'; }
+
+validate_fixture_name() {
+  case "$1" in
+    ''|.*|*..*|*[!A-Za-z0-9_.-]*) return 1 ;;
+    *.tf) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 
 expand_arg() {
   _arg=$1
@@ -82,6 +117,7 @@ cat >"$SMOKE_DIR/terraformrc" <<EOF
 provider_installation {
   dev_overrides {
     "registry.terraform.io/ncecere/litellm" = $provider_dir_hcl
+    "registry.opentofu.org/ncecere/litellm"  = $provider_dir_hcl
   }
   direct {}
 }
@@ -107,6 +143,10 @@ while [ "$#" -gt 0 ]; do
     datasources) DIR=$DATASOURCES; shift ;;
     *)
       for file in $(expand_arg "$1"); do
+        validate_fixture_name "$file" || {
+          echo "Unsafe smoke fixture name rejected: $file" >&3
+          exit 1
+        }
         if [ -n "$DIR" ] && [ -f "$DIR/$file" ]; then
           name=$(basename "$file")
           if [ "$DIR" = "$RESOURCES" ]; then
@@ -152,20 +192,85 @@ printf '\n========== Isolated smoke test ==========\n'
 
 cd "$SMOKE_DIR"
 if [ "$SMOKE_ASSEMBLY_ONLY" = "1" ]; then
-  echo '=== ASSEMBLY FORMAT CHECK ==='
+  echo '=== ASSEMBLY FORMAT AND VALIDATION CHECK ==='
   terraform fmt -check -diff .
+  terraform validate
   SUCCESS=1
-  printf '\nSmoke assembly passed: fixture names are collision-free and all assembled HCL parses and is formatted.\n' >&3
+  printf '\nSmoke assembly passed: fixture names are collision-free and all assembled HCL validates and is formatted.\n' >&3
   echo "Results written to $SMOKE_LOG" >&3
   exit 0
 fi
 
 echo '=== PLAN ==='
 terraform plan -out=tfplan
+terraform show -json tfplan >matrix-initial-plan.json
 
 echo '=== APPLY ==='
 APPLY_STARTED=1
-terraform apply -auto-approve tfplan
+set +e
+terraform apply -auto-approve tfplan >initial-apply.log 2>&1
+initial_apply_status=$?
+set -e
+cat initial-apply.log
+if [ "$initial_apply_status" -ne 0 ]; then
+  if [ -n "$SMOKE_DIAGNOSTIC_OUTPUT" ]; then
+    python3 - initial-apply.log "$SMOKE_DIAGNOSTIC_OUTPUT" <<'PY'
+import os,sys
+source,destination=sys.argv[1:]
+raw=open(source,"rb").read()
+flags=os.O_WRONLY|os.O_CREAT|os.O_EXCL|getattr(os,"O_NOFOLLOW",0)
+fd=os.open(destination,flags,0o600)
+try:
+    os.write(fd,raw); os.fsync(fd)
+finally:
+    os.close(fd)
+PY
+  fi
+  exit "$initial_apply_status"
+fi
+
+if [ -f datasource_agent_structured_parity.tf ]; then
+  echo '=== AGENT SINGLE/LIST STRUCTURED PARITY ==='
+  terraform output -json ds_agent_structured_projection >agent-single-projection.json
+  terraform output -json ds_agents_structured_parity >agent-list-projection.json
+  python3 - agent-single-projection.json agent-list-projection.json <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as stream:
+    single = json.load(stream, parse_int=int)
+with open(sys.argv[2], encoding="utf-8") as stream:
+    listed = json.load(stream, parse_int=int)
+if single != listed:
+    raise SystemExit("Single-agent and list-agent structured projections differ.")
+PY
+fi
+
+if [ -f resource_guardrail_minimal.tf ]; then
+  echo '=== GUARDRAIL SINGLE/LIST PRESENCE ==='
+  terraform output -raw guardrail_minimal_id >guardrail-managed-id.txt
+  terraform output -json guardrail_registry_ids >guardrail-registry-ids.json
+  python3 - guardrail-managed-id.txt guardrail-registry-ids.json <<'PY'
+import json, sys
+managed = open(sys.argv[1], encoding="utf-8").read()
+with open(sys.argv[2], encoding="utf-8") as stream:
+    registry = json.load(stream)
+if managed not in registry:
+    raise SystemExit("The v2 guardrail registry omitted the Terraform-managed guardrail.")
+PY
+fi
+
+if [ -f resource_prompt_minimal.tf ]; then
+  echo '=== PROMPT SINGLE/LIST PRESENCE ==='
+  terraform output -raw prompt_minimal_id >prompt-managed-id.txt
+  terraform output -json prompt_development_registry_ids >prompt-registry-ids.json
+  python3 - prompt-managed-id.txt prompt-registry-ids.json <<'PY'
+import json, sys
+managed = open(sys.argv[1], encoding="utf-8").read()
+with open(sys.argv[2], encoding="utf-8") as stream:
+    registry = json.load(stream)
+if managed not in registry:
+    raise SystemExit("The environment-scoped prompt inventory omitted the managed prompt.")
+PY
+fi
 
 STEADY_ARGS=
 if [ "${SMOKE_CREDENTIAL_IMPORT:-}" = "1" ]; then
@@ -206,6 +311,7 @@ elif [ "${SMOKE_MCP_IMPORT:-}" = "1" ]; then
     "$mcp_import_id"
   STEADY_ARGS='-var=mcp_import_phase=imported'
   CLEANUP_ARGS=$STEADY_ARGS
+  terraform state pull >mcp-import-private-before.json
   for refresh_number in 1 2; do
     echo "=== MCP IMPORT REFRESH-ONLY APPLY $refresh_number ==="
     set +e
@@ -222,11 +328,42 @@ elif [ "${SMOKE_MCP_IMPORT:-}" = "1" ]; then
       exit 1
     fi
   done
+  terraform state pull >mcp-import-private-after.json
+  python3 - mcp-import-private-before.json mcp-import-private-after.json <<'PY'
+import hashlib,hmac,json,secrets,sys
+key=secrets.token_bytes(32)
+def private(path):
+    value=json.load(open(path,encoding="utf-8"))
+    rows=[]
+    for resource in value.get("resources",[]):
+        if resource.get("type") != "litellm_mcp_server": continue
+        for instance in resource.get("instances",[]): rows.append(instance.get("private") or "")
+    if len(rows)!=1 or not rows[0]: raise SystemExit(1)
+    return hmac.new(key,rows[0].encode(),hashlib.sha256).digest()
+if not hmac.compare_digest(private(sys.argv[1]),private(sys.argv[2])): raise SystemExit(1)
+PY
   echo '=== MCP IMPORT CONFIG OWNERSHIP CONVERGENCE APPLY ==='
   # shellcheck disable=SC2086 # STEADY_ARGS is one complete optional argument.
   terraform apply -auto-approve $STEADY_ARGS
+  if [ -n "${SMOKE_MCP_EVIDENCE:-}" ]; then
+    python3 - "$SMOKE_MCP_EVIDENCE" <<'PY'
+import json,sys
+with open(sys.argv[1], "x", encoding="utf-8") as output:
+    json.dump({"immediate_import":True,"refresh_only_zero_drift_count":2,"private_provenance_preserved":True}, output, sort_keys=True)
+    output.write("\n")
+PY
+    chmod 600 "$SMOKE_MCP_EVIDENCE"
+  fi
   rm -f "$IMPORT_BACKUP"
   IMPORT_BACKUP=
+  echo '=== MCP IMPORT CLEANUP ==='
+  terraform destroy -auto-approve $STEADY_ARGS
+  terraform state list >matrix-final-state.list
+  [ ! -s matrix-final-state.list ] || { echo 'MCP import cleanup left state.' >&3; exit 1; }
+  [ "$(wc -c <"$SMOKE_LOG")" -le 10485760 ] || { echo 'MCP smoke log exceeded its private bound.' >&3; exit 1; }
+  SUCCESS=1
+  printf '\nSmoke passed: MCP immediate import, two zero-drift refresh plans, provenance persistence, and cleanup succeeded.\n' >&3
+  exit 0
 elif [ "${SMOKE_CREDENTIAL_UPDATE:-}" = "1" ]; then
   echo '=== CREDENTIAL UPDATE APPLY ==='
   terraform apply -auto-approve -var=credential_update_phase=after
@@ -325,10 +462,29 @@ PY
   CLEANUP_ARGS=$STEADY_ARGS
 fi
 
+echo '=== REFRESH CANONICAL STATE ==='
+# Data-source inventories read during the initial plan before their producer
+# resources exist. Persist the authoritative post-apply reads, then require a
+# second plan to be exactly stable.
+# shellcheck disable=SC2086 # STEADY_ARGS intentionally expands to an optional complete argument.
+terraform apply -refresh-only -auto-approve $STEADY_ARGS
+# Preserve the complete post-command state before any later plan or destroy.
+# The supervisor is invoked immediately, so its phase receipt binds to this
+# successful refresh-only command rather than a later show/state-list command.
+cp terraform.tfstate matrix-refresh-state.tfstate
+if [ -n "${MATRIX_EVIDENCE_SESSION:-}" ] && [ -n "${MATRIX_HARNESS:-}" ] && [ "${SMOKE_SUPPLEMENTAL_ONLY:-0}" != "1" ]; then
+  set -- capture-refresh-phase --session "$MATRIX_EVIDENCE_SESSION" \
+    --plan matrix-initial-plan.json --refresh-state matrix-refresh-state.tfstate \
+    --cli "$MATRIX_EXECUTED_CLI"
+  [ -z "$STEADY_ARGS" ] || set -- "$@" "--refresh-argument=$STEADY_ARGS"
+  python3 "$MATRIX_HARNESS" "$@"
+fi
+terraform show -json >matrix-refreshed-state.json
+
 echo '=== NO-DRIFT PLAN ==='
 set +e
 # shellcheck disable=SC2086 # STEADY_ARGS intentionally expands to an optional complete argument.
-terraform plan -detailed-exitcode $STEADY_ARGS >steady-plan.log 2>&1
+terraform plan -detailed-exitcode -out=matrix-steady.tfplan $STEADY_ARGS >steady-plan.log 2>&1
 plan_status=$?
 set -e
 cat steady-plan.log
@@ -338,17 +494,115 @@ if [ "$plan_status" -ne 0 ]; then
   fi
   exit "$plan_status"
 fi
+terraform show -json matrix-steady.tfplan >matrix-steady-plan.json
 
-echo '=== DESTROY ==='
-# shellcheck disable=SC2086 # STEADY_ARGS intentionally expands to an optional complete argument.
-terraform destroy -auto-approve $STEADY_ARGS
+fallback_delete_unconfirmed=0
+fallback_delete_succeeded=0
+if [ "${SMOKE_FALLBACK_DELETE_UNSUPPORTED:-}" = "1" ]; then
+  fallback_delete_address=${SMOKE_FALLBACK_DELETE_ADDRESS:-}
+  case "$fallback_delete_address" in
+    litellm_fallback.minimal|'litellm_fallback.fallback_imported[0]') ;;
+    *) echo 'Fallback skip requires one exact reviewed state address.' >&3; exit 1 ;;
+  esac
+  echo '=== FALLBACK DESTROY FAIL-CLOSED PROOF ==='
+  set +e
+  # shellcheck disable=SC2086 # STEADY_ARGS intentionally expands to an optional complete argument.
+  terraform destroy -auto-approve $STEADY_ARGS >fallback-delete-unconfirmed.log 2>&1
+  fallback_destroy_status=$?
+  set -e
+  cat fallback-delete-unconfirmed.log
+  if [ "$fallback_destroy_status" -ne 0 ]; then
+    fallback_delete_unconfirmed=1
+    python3 "$INTERNAL_TESTING/upgrade_matrix/fallback_delete_diagnostic.py" \
+      fallback-delete-unconfirmed.log >/dev/null
+    echo '=== FALLBACK AUTHORITATIVE PRESENCE REFRESH ==='
+    set +e
+    # shellcheck disable=SC2086 # STEADY_ARGS intentionally expands to an optional complete argument.
+    terraform apply -refresh-only -auto-approve $STEADY_ARGS >fallback-presence-refresh.log 2>&1
+    fallback_presence_status=$?
+    set -e
+    cat fallback-presence-refresh.log
+    [ "$fallback_presence_status" -eq 0 ] || {
+      echo 'Fallback presence could not be authoritatively refreshed after the failed delete.' >&3
+      exit 1
+    }
+    terraform show -json >fallback-presence-state.json
+    python3 - matrix-refreshed-state.json fallback-presence-state.json "$fallback_delete_address" <<'PY'
+import json,sys
+def find(path,address):
+    value=json.load(open(path,encoding="utf-8")); found=[]
+    def walk(module):
+        for item in module.get("resources",[]):
+            if item.get("address")==address: found.append(item)
+        for child in module.get("child_modules",[]): walk(child)
+    walk(value.get("values",{}).get("root_module",{}))
+    return found
+before=find(sys.argv[1],sys.argv[3]); after=find(sys.argv[2],sys.argv[3])
+if len(before)!=1 or len(after)!=1: raise SystemExit(1)
+if before[0].get("type")!="litellm_fallback" or before[0].get("mode")!="managed": raise SystemExit(1)
+if before[0].get("values")!=after[0].get("values"): raise SystemExit(1)
+if any(not before[0]["values"].get(key) for key in ("id","model","fallback_type")): raise SystemExit(1)
+PY
+    if [ -n "${MATRIX_EVIDENCE_SESSION:-}" ] && [ -n "${MATRIX_HARNESS:-}" ] && [ "${SMOKE_SUPPLEMENTAL_ONLY:-0}" != "1" ]; then
+      set -- capture-fallback-presence --session "$MATRIX_EVIDENCE_SESSION" \
+        --before-state matrix-refreshed-state.json --after-state fallback-presence-state.json \
+        --refresh-output fallback-presence-refresh.log --delete-output fallback-delete-unconfirmed.log \
+        --address "$fallback_delete_address" --cli "$MATRIX_EXECUTED_CLI"
+      if [ -n "$STEADY_ARGS" ]; then
+        set -- "$@" "--refresh-argument=$STEADY_ARGS" "--delete-argument=$STEADY_ARGS"
+      fi
+      python3 "$MATRIX_HARNESS" "$@"
+    fi
+    terraform state list >fallback-delete-retained-state.list
+    grep -Fxq "$fallback_delete_address" fallback-delete-retained-state.list || {
+      echo 'Fallback delete failure did not retain the managed address.' >&3
+      exit 1
+    }
+    terraform state rm "$fallback_delete_address"
+    echo '=== FALLBACK DEPENDENCY CLEANUP ==='
+    # The pinned backend cannot remove the fallback. The disposable local stack
+    # is the only remote cleanup boundary; Terraform destroys all representable
+    # dependency objects after detaching only the known upstream-blocked address.
+    # shellcheck disable=SC2086 # STEADY_ARGS intentionally expands to an optional complete argument.
+    terraform destroy -auto-approve $STEADY_ARGS
+  else
+    fallback_delete_succeeded=1
+  fi
+else
+  echo '=== DESTROY ==='
+  # shellcheck disable=SC2086 # STEADY_ARGS intentionally expands to an optional complete argument.
+  terraform destroy -auto-approve $STEADY_ARGS
+fi
 
-state_list=$(terraform state list 2>/dev/null || true)
-if [ -n "$state_list" ]; then
-  echo "Smoke failed: state is not empty after destroy: $state_list" >&3
+terraform state list >matrix-final-state.list
+if [ -s matrix-final-state.list ]; then
+  echo 'Smoke failed: state is not empty after destroy.' >&3
   exit 1
+fi
+[ "$(wc -c <"$SMOKE_LOG")" -le 10485760 ] || { echo 'Smoke log exceeded its private bound.' >&3; exit 1; }
+if [ -n "${MATRIX_EVIDENCE_SESSION:-}" ] && [ -n "${MATRIX_HARNESS:-}" ] && [ "${SMOKE_SUPPLEMENTAL_ONLY:-0}" != "1" ]; then
+  set -- observe-smoke --session "$MATRIX_EVIDENCE_SESSION" \
+    --plan matrix-initial-plan.json --refresh-state matrix-refresh-state.tfstate \
+    --state matrix-refreshed-state.json --steady-plan matrix-steady-plan.json \
+    --final-state matrix-final-state.list
+  [ "$fallback_delete_unconfirmed" -ne 1 ] || set -- "$@" --fallback-delete-unconfirmed \
+    --fallback-delete-evidence fallback-delete-unconfirmed.log \
+    --fallback-presence-state fallback-presence-state.json \
+    --fallback-presence-output fallback-presence-refresh.log
+  if [ "$fallback_delete_succeeded" -eq 1 ]; then
+    set -- "$@" --fallback-delete-success-evidence fallback-delete-unconfirmed.log \
+      --fallback-delete-success-cli "$MATRIX_EXECUTED_CLI"
+    [ -z "$STEADY_ARGS" ] || set -- "$@" "--fallback-delete-success-argument=$STEADY_ARGS"
+  fi
+  python3 "$MATRIX_HARNESS" "$@"
 fi
 
 SUCCESS=1
-printf '\nSmoke passed: plan, apply, no-drift plan, and destroy succeeded.\n' >&3
+if [ "$fallback_delete_unconfirmed" -eq 1 ]; then
+  printf '\nSmoke passed: plan/apply/no-drift succeeded; authoritative fallback presence was recorded as an upstream skip.\n' >&3
+elif [ "$fallback_delete_succeeded" -eq 1 ]; then
+  printf '\nSmoke passed: plan/apply/no-drift and authoritative fallback deletion succeeded.\n' >&3
+else
+  printf '\nSmoke passed: plan, apply, no-drift plan, and destroy succeeded.\n' >&3
+fi
 echo "Results written to $SMOKE_LOG" >&3

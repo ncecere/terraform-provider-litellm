@@ -9,6 +9,7 @@ test_litellm/*
 internal_testing/.smoke/
 internal_testing/.smoke.*/
 internal_testing/.smoke-logs/
+internal_testing/upgrade-matrix-results.json
 
 # Generated dev_overrides CLI config for the manual smoke walkthrough
 internal_testing/.dev.tfrc

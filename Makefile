@@ -78,4 +78,16 @@ smoke: build
 testacc: build
 	@sh internal_testing/acceptance.sh
 
-.PHONY: build install test coverage fmt vet contract-check contract-update contract-diff contract-update-atomicity-test lint clean local logs smoke testacc
+# Non-destructive previous-release/import matrix assembly and safety tests.
+upgrade-matrix-assembly:
+	@sh internal_testing/upgrade_matrix/run.sh assembly
+
+upgrade-matrix-test:
+	@python3 -m unittest discover -s internal_testing/upgrade_matrix/tests -p 'test_*.py'
+	@sh internal_testing/upgrade_matrix/tests/safety_test.sh
+
+# Destructive pinned local lane; requires the same explicit double opt-in.
+upgrade-matrix: build
+	@sh internal_testing/upgrade_matrix/run.sh local
+
+.PHONY: build install test coverage fmt vet contract-check contract-update contract-diff contract-update-atomicity-test lint clean local logs smoke testacc upgrade-matrix-assembly upgrade-matrix-test upgrade-matrix

@@ -9,7 +9,7 @@ variable "fallback_import_phase" {
 
   validation {
     condition     = contains(["seed", "imported"], var.fallback_import_phase)
-    error_message = "fallback_import_phase must be seed or imported."
+    error_message = "Fallback import phase must be seed or imported."
   }
 }
 

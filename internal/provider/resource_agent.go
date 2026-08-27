@@ -439,6 +439,7 @@ func (r *AgentResource) Create(ctx context.Context, req resource.CreateRequest, 
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentImportedFieldsPrivateKey, encodeAgentFieldSet(agentFieldSet{}))...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipInitializedPrivateKey, []byte("true"))...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipPendingPrivateKey, nil)...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipMigrationPrivateKey, nil)...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentCollectionsPrivateKey, encodeAgentCollectionProvenance(emptyAgentCollectionProvenance()))...)
 	}
 }
@@ -451,6 +452,7 @@ func setAgentIdentityOnlyCreateState(ctx context.Context, resp *resource.CreateR
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentImportedFieldsPrivateKey, encodeAgentFieldSet(agentFieldSet{}))...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipInitializedPrivateKey, []byte("true"))...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipPendingPrivateKey, nil)...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipMigrationPrivateKey, nil)...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentCollectionsPrivateKey, encodeAgentCollectionProvenance(emptyAgentCollectionProvenance()))...)
 	}
 }
@@ -458,6 +460,7 @@ func setAgentIdentityOnlyCreateState(ctx context.Context, resp *resource.CreateR
 func (r *AgentResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	var data AgentResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
+	prior := cloneAgentResourceModel(data)
 	importedMarker, privateDiags := req.Private.GetKey(ctx, numericImportedPrivateKey)
 	resp.Diagnostics.Append(privateDiags...)
 	bundle, ownershipDiags := readAgentOwnershipBundle(ctx, req.Private)
@@ -488,6 +491,13 @@ func (r *AgentResource) Read(ctx context.Context, req resource.ReadRequest, resp
 	resolveAgentUnknowns(&data)
 	if !imported {
 		resp.Private = req.Private
+		if agentModelsExactlyEqual(data, prior) {
+			// State.Set canonicalizes framework collection/block representations.
+			// When an authoritative read produced no public semantic change, retain
+			// the incoming raw state so an ordinary refresh cannot manufacture one.
+			resp.State = req.State
+			return
+		}
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 	if resp.Diagnostics.HasError() {
@@ -504,6 +514,7 @@ func (r *AgentResource) Read(ctx context.Context, req resource.ReadRequest, resp
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentImportedFieldsPrivateKey, encodeAgentFieldSet(apiOwned))...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipInitializedPrivateKey, []byte("true"))...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipPendingPrivateKey, nil)...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipMigrationPrivateKey, nil)...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentCollectionsPrivateKey, encodeAgentCollectionProvenance(emptyAgentCollectionProvenance()))...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, nil)...)
 	}
@@ -544,6 +555,32 @@ func (r *AgentResource) Update(ctx context.Context, req resource.UpdateRequest, 
 		resp.Private = req.Private
 		resp.State = req.State
 		resp.Diagnostics.AddError("Unsupported Agent Clear", err.Error())
+		return
+	}
+	if bundle.migration && bundle.pending != nil && agentModelsExactlyEqual(planned, state) {
+		// A legacy state can transfer ownership of equal configured values. The
+		// unknown ID is only an apply trigger: verify two authoritative reads,
+		// retain public state byte-for-byte, and commit only private provenance.
+		_, err := r.confirmAgentMutation(ctx, planned, state, config, importedFields, 8)
+		if err != nil {
+			resp.Private = req.Private
+			resp.State = req.State
+			resp.Diagnostics.AddError("Agent Ownership Transfer Not Confirmed", "Authoritative read-back did not confirm an exact equal-value ownership transfer. Prior public and private state was retained; no remote mutation was attempted.")
+			return
+		}
+		resp.Private = req.Private
+		resp.State = req.State
+		if resp.Private != nil {
+			// pending already removes only the exact configured leaves that are
+			// transferring to Terraform. Preserve every unrelated API-owned scope
+			// marker so future remote additions remain correctly classified.
+			committed := cloneAgentFieldSet(bundle.pending)
+			collections := bundle.collections
+			resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentImportedFieldsPrivateKey, encodeAgentFieldSet(committed))...)
+			resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipPendingPrivateKey, nil)...)
+			resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipMigrationPrivateKey, nil)...)
+			resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentCollectionsPrivateKey, encodeAgentCollectionProvenance(collections))...)
+		}
 		return
 	}
 	// Preserve #181's proxy-admin preflight. PATCH omission is independently
@@ -672,6 +709,7 @@ func (r *AgentResource) Update(ctx context.Context, req resource.UpdateRequest, 
 		}
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentImportedFieldsPrivateKey, encodeAgentFieldSet(committed))...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipPendingPrivateKey, nil)...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipMigrationPrivateKey, nil)...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentCollectionsPrivateKey, encodeAgentCollectionProvenance(collections))...)
 	}
 }
@@ -705,6 +743,7 @@ func (r *AgentResource) ImportState(ctx context.Context, req resource.ImportStat
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentImportedFieldsPrivateKey, nil)...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipInitializedPrivateKey, nil)...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipPendingPrivateKey, nil)...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentOwnershipMigrationPrivateKey, nil)...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, agentCollectionsPrivateKey, nil)...)
 	}
 }
@@ -1774,14 +1813,12 @@ func (r *AgentResource) reconcileAgentCardWithOwnership(cardRaw map[string]inter
 	}
 
 	capsRaw, _ := cardRaw["capabilities"].(map[string]interface{})
-	if prior.Capabilities == nil && observed.Capabilities != nil && apiOwned[agentScopeCardCapabilities] {
-		out.Capabilities = observed.Capabilities
-		for field, wire := range map[string]string{agentFieldCardCapStreaming: "streaming", agentFieldCardCapPush: "pushNotifications", agentFieldCardCapHistory: "stateTransitionHistory"} {
-			if _, present := capsRaw[wire]; present {
-				apiOwned[field] = true
-			}
-		}
-	} else if prior.Capabilities != nil {
+	if prior.Capabilities == nil {
+		// Structural scope controls wire preservation, not public projection.
+		// Only the initial imported read may materialize a previously absent
+		// SingleNestedBlock; ordinary reads preserve prior block cardinality.
+		out.Capabilities = nil
+	} else {
 		capabilitiesTerraformOwned := (!prior.Capabilities.Streaming.IsNull() && !apiOwned[agentFieldCardCapStreaming]) ||
 			(!prior.Capabilities.PushNotifications.IsNull() && !apiOwned[agentFieldCardCapPush]) ||
 			(!prior.Capabilities.StateTransitionHistory.IsNull() && !apiOwned[agentFieldCardCapHistory])
@@ -1813,16 +1850,11 @@ func (r *AgentResource) reconcileAgentCardWithOwnership(cardRaw map[string]inter
 		}
 	}
 	provRaw, _ := cardRaw["provider"].(map[string]interface{})
-	if prior.Provider == nil && observed.Provider != nil && apiOwned[agentScopeCardProvider] {
-		provider := *observed.Provider
-		out.Provider = &provider
-		if _, present := provRaw["organization"]; present && !provider.Organization.IsNull() {
-			apiOwned[agentFieldCardProviderOrg] = true
-		}
-		if _, present := provRaw["url"]; present && !provider.URL.IsNull() {
-			apiOwned[agentFieldCardProviderURL] = true
-		}
-	} else if prior.Provider != nil {
+	if prior.Provider == nil {
+		// LiteLLM-generated provider metadata remains remotely observable and is
+		// preserved by structural scope, but cannot expand configured/legacy state.
+		out.Provider = nil
+	} else {
 		providerTerraformOwned := (!prior.Provider.Organization.IsNull() && !apiOwned[agentFieldCardProviderOrg]) ||
 			(!prior.Provider.URL.IsNull() && !apiOwned[agentFieldCardProviderURL])
 		if out.Provider == nil {

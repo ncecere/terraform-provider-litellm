@@ -5,7 +5,7 @@ variable "agent_lifecycle_phase" {
 
   validation {
     condition     = contains(["set", "cleared", "adversarial"], var.agent_lifecycle_phase)
-    error_message = "agent_lifecycle_phase must be set, cleared, or adversarial."
+    error_message = "Agent lifecycle phase must be set, cleared, or adversarial."
   }
 }
 
