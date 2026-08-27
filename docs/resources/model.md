@@ -289,6 +289,39 @@ The following arguments are supported:
   }
   ```
 
+* `additional_model_info_json` - (Optional, Computed, Sensitive) a lossless JSON-object sibling for heterogeneous custom `model_info` values. Use this attribute when string coercion in `additional_model_info` cannot preserve the intended type.
+
+  * The root must be one non-null JSON object with unique members. Nested objects, arrays, strings, booleans, numbers, and nested JSON null values are preserved without provider-side `float64` or string coercion. LiteLLM v1.98 omits arbitrary top-level null members when serializing `ModelInfo`, so the provider rejects them before any request; place a null inside a nested object or array when its presence is significant. Integers remain exact. Decimal/exponent values must survive LiteLLM v1.98's Python-float request/persistence round trip exactly; lossy values such as `1.0000000000000001` are rejected before any request instead of causing perpetual drift.
+  * Top-level keys must be disjoint from `additional_model_info` and from fields managed by dedicated model attributes, including LiteLLM's mirrored `input_cost_per_token` and `output_cost_per_token` fields. Overlap is rejected before any request, without including keys or values in diagnostics.
+  * Terraform manages only recursively owned JSON paths. Cost-map-derived and other API-only `model_info` fields are not adopted on read or import.
+  * `{}` is an explicitly managed empty view and differs from an omitted attribute. Imports and states upgraded from an earlier provider keep this attribute null and unmanaged.
+  * Any semantic value change, nested removal, clear, or removal of the attribute replaces the model. Formatting-only changes do not mutate the API, and semantically equal readback preserves the configured spelling.
+  * Literal strings such as `"****"` remain observable values; `model_info` does not apply a credential-mask heuristic.
+  * This attribute is sensitive because arbitrary custom metadata can contain confidential values. Mark any outputs derived from it as sensitive.
+
+  ```hcl
+  resource "litellm_model" "typed_metadata" {
+    model_name          = "typed-metadata"
+    custom_llm_provider = "openai"
+    base_model          = "gpt-4o-mini"
+
+    additional_model_info = {
+      owner = "platform" # disjoint legacy string-map key
+    }
+
+    additional_model_info_json = jsonencode({
+      native_false = false
+      large_number = 9007199254740993
+      nested = {
+        nullable = null
+        items    = [1, true, "1"]
+      }
+    })
+  }
+  ```
+
+  `additional_litellm_params_json`, object-form Vertex credentials, and model-budget JSON are separate lifecycle surfaces and are not provided by this attribute.
+
 ### AWS-specific Configuration
 
 * `aws_access_key_id` - (Optional) string (Sensitive). AWS access key ID for AWS-based models.

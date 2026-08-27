@@ -174,6 +174,7 @@ SMOKE_MCP_EVIDENCE=$mcp_evidence run_mcp_import_case
 emit_controlled_record import litellm_mcp_server passed '' '' "$mcp_evidence"
 rm -f "$mcp_evidence"
 run_case model resources model_minimal.tf datasources model.tf,models_list.tf
+run_case model_semantic_json resources model_semantic_json.tf
 run_case organization resources organization_minimal.tf datasources organization.tf,organizations_list.tf
 run_case organization_member resources organization_minimal.tf,organization_member_minimal.tf
 run_case prompt resources prompt_minimal.tf datasources prompt.tf,prompts_list.tf
