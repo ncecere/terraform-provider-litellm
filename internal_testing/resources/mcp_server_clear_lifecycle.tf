@@ -8,7 +8,7 @@ variable "mcp_clear_phase" {
 
   validation {
     condition     = contains(["set", "cleared"], var.mcp_clear_phase)
-    error_message = "mcp_clear_phase must be set or cleared."
+    error_message = "MCP clear phase must be set or cleared."
   }
 }
 
