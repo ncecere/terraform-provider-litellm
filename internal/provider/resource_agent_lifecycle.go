@@ -1269,7 +1269,13 @@ func agentStringListSetEqual(left, right types.List) bool {
 	if left.IsNull() || left.IsUnknown() || right.IsNull() || right.IsUnknown() {
 		return left.Equal(right)
 	}
-	l, r := listToStringSlice(left), listToStringSlice(right)
+	l, _, leftDiagnostics := strictTerraformStringList(context.Background(), left, path.Root("agent_collection"))
+	r, _, rightDiagnostics := strictTerraformStringList(context.Background(), right, path.Root("agent_collection"))
+	if leftDiagnostics.HasError() || rightDiagnostics.HasError() {
+		// Unknown or malformed elements are never partially compared. Exact
+		// Terraform value equality is the only safe answer until they resolve.
+		return left.Equal(right)
+	}
 	slices.Sort(l)
 	slices.Sort(r)
 	return slices.Equal(l, r)

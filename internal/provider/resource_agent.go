@@ -2479,28 +2479,3 @@ func reconcileAbsentAgentMCPToolPermissions(data *AgentResourceModel) {
 	}
 	data.ObjectPermission.MCPToolPermissions = types.MapNull(types.StringType)
 }
-
-// --- Helpers ---
-
-func listToStringSlice(l types.List) []string {
-	if l.IsNull() || l.IsUnknown() {
-		return nil
-	}
-	elems := l.Elements()
-	result := make([]string, 0, len(elems))
-	for _, e := range elems {
-		if sv, ok := e.(types.String); ok {
-			result = append(result, sv.ValueString())
-		}
-	}
-	return result
-}
-
-func interfaceSliceToStringList(items []interface{}) types.List {
-	object := map[string]interface{}{"value": items}
-	value, _, diagnostics := strictAPIStringList(context.Background(), object, "value", path.Root("collection"))
-	if diagnostics.HasError() {
-		return types.ListNull(types.StringType)
-	}
-	return value
-}

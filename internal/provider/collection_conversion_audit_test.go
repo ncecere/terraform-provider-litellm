@@ -51,6 +51,7 @@ func ignoredConversions() {
 	value.ElementsAs(ctx, &items, false)
 	_ = object.As(ctx, &decoded, options)
 	list, _ := types.ListValue(elementType, elements)
+	from, _ := types.SetValueFrom(ctx, elementType, values)
 	set, _ := types.SetValue(elementType, elements)
 	mapped, _ = types.MapValue(elementType, entries)
 	object, _ := types.ObjectValue(attributeTypes, attributes)
@@ -71,13 +72,14 @@ func propagatedConversions() diagnostics {
 	}
 	counts := countCollectionAuditViolations(violations)
 	want := map[string]int{
-		"ignored ElementsAs diagnostics":                1,
-		"ignored Object.As diagnostics":                 1,
-		"discarded ListValue constructor diagnostics":   1,
-		"discarded SetValue constructor diagnostics":    1,
-		"discarded MapValue constructor diagnostics":    1,
-		"discarded ObjectValue constructor diagnostics": 1,
-		"production SetValueMust constructor":           1,
+		"ignored ElementsAs diagnostics":                 1,
+		"ignored Object.As diagnostics":                  1,
+		"discarded ListValue constructor diagnostics":    1,
+		"discarded SetValueFrom constructor diagnostics": 1,
+		"discarded SetValue constructor diagnostics":     1,
+		"discarded MapValue constructor diagnostics":     1,
+		"discarded ObjectValue constructor diagnostics":  1,
+		"production SetValueMust constructor":            1,
 	}
 	got := make(map[string]int)
 	for violation, count := range counts {
@@ -184,7 +186,7 @@ func collectionConstructorName(call *ast.CallExpr) string {
 		return ""
 	}
 	switch selector.Sel.Name {
-	case "ListValue", "SetValue", "MapValue", "ObjectValue", "NewListValue", "NewSetValue", "NewMapValue", "NewObjectValue":
+	case "ListValue", "SetValue", "MapValue", "ObjectValue", "ListValueFrom", "SetValueFrom", "MapValueFrom", "ObjectValueFrom", "NewListValue", "NewSetValue", "NewMapValue", "NewObjectValue":
 		return selector.Sel.Name
 	default:
 		return ""
