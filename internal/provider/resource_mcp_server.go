@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/hashicorp/terraform-plugin-framework-validators/mapvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -434,8 +435,22 @@ func (r *MCPServerResource) ModifyPlan(ctx context.Context, req resource.ModifyP
 		return
 	}
 
+	var state MCPServerResourceModel
+	hasState := !req.State.Raw.IsNull()
+	if hasState {
+		resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+		if bindingErr := validateMCPFieldOwnershipGeneration(state.FieldOwnershipGeneration, priorFields); bindingErr != nil {
+			mcpFieldPrivateError(&resp.Diagnostics)
+		}
+		if resp.Diagnostics.HasError() {
+			resp.Private = req.Private
+			resp.Plan.Raw = req.State.Raw
+			return
+		}
+	}
+
 	// Destroy remains possible for historical phantom values only when their
-	// private ownership grammar is valid.
+	// private ownership grammar and public generation agree.
 	if req.Plan.Raw.IsNull() {
 		return
 	}
@@ -445,15 +460,6 @@ func (r *MCPServerResource) ModifyPlan(ctx context.Context, req resource.ModifyP
 	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
 	if resp.Diagnostics.HasError() {
 		return
-	}
-
-	var state MCPServerResourceModel
-	hasState := !req.State.Raw.IsNull()
-	if hasState {
-		resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
-		if resp.Diagnostics.HasError() {
-			return
-		}
 	}
 	// Re-run ownership validation from Config at resource plan time. This is
 	// intentionally not based on ProposedNewState, where Optional+Computed
@@ -710,14 +716,14 @@ func (r *MCPServerResource) Create(ctx context.Context, req resource.CreateReque
 		return
 	}
 
+	// Preselect identity so an accepted response-body failure can be reconciled
+	// through the direct endpoint without list discovery or an orphaned row.
+	serverID := uuid.NewString()
+	mcpReq["server_id"] = serverID
 	var result map[string]interface{}
-	if err := r.client.DoRequestWithResponse(ctx, "POST", "/v1/mcp/server", mcpReq, &result); err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to create MCP server: %s", err))
-		return
-	}
-	serverID, ok := result["server_id"].(string)
-	if !ok || serverID == "" {
-		resp.Diagnostics.AddError("Invalid Create Response", "LiteLLM accepted the MCP server create but did not return a usable identity.")
+	accepted, createErr := r.client.doRequestWithResponse(ctx, "POST", "/v1/mcp/server", mcpReq, &result)
+	if createErr != nil && !accepted {
+		resp.Diagnostics.AddError("Client Error", "Unable to create MCP server because LiteLLM did not accept the request.")
 		return
 	}
 	data.ServerID = types.StringValue(serverID)
@@ -786,6 +792,9 @@ func (r *MCPServerResource) Read(ctx context.Context, req resource.ReadRequest, 
 	resp.Diagnostics.Append(ownershipDiags...)
 	fieldOwnership, fieldOwnershipDiags := readMCPFieldOwnership(ctx, req.Private)
 	resp.Diagnostics.Append(fieldOwnershipDiags...)
+	if bindingErr := validateMCPFieldOwnershipGeneration(data.FieldOwnershipGeneration, fieldOwnership); bindingErr != nil {
+		mcpFieldPrivateError(&resp.Diagnostics)
+	}
 	hasPendingOwnership, pendingOwnershipDiags := mcpInfoPrivateHasPending(ctx, req.Private)
 	resp.Diagnostics.Append(pendingOwnershipDiags...)
 	if resp.Diagnostics.HasError() {
@@ -856,8 +865,8 @@ func (r *MCPServerResource) Read(ctx context.Context, req resource.ReadRequest, 
 	}
 }
 
-func (r *MCPServerResource) putMCPServer(ctx context.Context, request map[string]interface{}, result *map[string]interface{}) error {
-	return r.client.DoRequestWithResponse(ctx, "PUT", "/v1/mcp/server", request, result)
+func (r *MCPServerResource) putMCPServer(ctx context.Context, request map[string]interface{}, result *map[string]interface{}) (bool, error) {
+	return r.client.doRequestWithResponse(ctx, "PUT", "/v1/mcp/server", request, result)
 }
 
 func (r *MCPServerResource) updateLegacyIssue213(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
@@ -951,20 +960,16 @@ func (r *MCPServerResource) updateLegacyIssue213(ctx context.Context, req resour
 	var readback map[string]interface{}
 	if otherMutation || mcpMutation {
 		var updateResult map[string]interface{}
-		if err := r.putMCPServer(ctx, mcpReq, &updateResult); err != nil {
+		accepted, putErr := r.putMCPServer(ctx, mcpReq, &updateResult)
+		if putErr != nil && !accepted {
 			resp.State = req.State
 			resp.Private = req.Private
 			resp.Diagnostics.AddError("Client Error", "LiteLLM did not confirm the MCP server update. Prior public and private state was retained.")
 			return
 		}
-		if len(updateResult) > 0 {
-			if err := validateMCPServerResponse(updateResult, data.ServerID.ValueString()); err != nil {
-				resp.State = req.State
-				resp.Private = req.Private
-				resp.Diagnostics.AddError("Invalid Update Response", "LiteLLM accepted the MCP server update but returned a malformed required response shape. Prior public and private state was retained.")
-				return
-			}
-		}
+		// Accepted response-body failures and malformed success bodies are
+		// reconciled by the mandatory direct read below. The response body is
+		// never mutation authority.
 		if mcpEndpointWasCleared(state.URL, planned.URL) {
 			data.URL = types.StringUnknown()
 		}
@@ -1010,15 +1015,15 @@ func (r *MCPServerResource) Delete(ctx context.Context, req resource.DeleteReque
 
 	_, privateDiags := readMCPInfoProvenance(ctx, req.Private)
 	resp.Diagnostics.Append(privateDiags...)
-	_, fieldPrivateDiags := readMCPFieldOwnership(ctx, req.Private)
+	fieldOwnership, fieldPrivateDiags := readMCPFieldOwnership(ctx, req.Private)
 	resp.Diagnostics.Append(fieldPrivateDiags...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
+	if bindingErr := validateMCPFieldOwnershipGeneration(data.FieldOwnershipGeneration, fieldOwnership); bindingErr != nil {
+		mcpFieldPrivateError(&resp.Diagnostics)
+	}
 	if resp.Diagnostics.HasError() {
 		resp.State = req.State
 		resp.Private = req.Private
-		return
-	}
-	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
-	if resp.Diagnostics.HasError() {
 		return
 	}
 
@@ -1030,7 +1035,7 @@ func (r *MCPServerResource) Delete(ctx context.Context, req resource.DeleteReque
 	endpoint := mcpServerEndpoint(serverID)
 	if err := r.client.DoRequestWithResponse(ctx, "DELETE", endpoint, nil, nil); err != nil {
 		if !IsAPIErrorStatus(err, 404) {
-			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to delete MCP server: %s", err))
+			resp.Diagnostics.AddError("Client Error", "Unable to delete MCP server because LiteLLM did not confirm the deletion.")
 			return
 		}
 	}

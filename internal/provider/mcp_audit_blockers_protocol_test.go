@@ -39,6 +39,46 @@ func protocolCommittedMCPFieldOwnership(t *testing.T, private []byte) mcpFieldOw
 	return ownership
 }
 
+func TestMCPServerFieldOwnershipGenerationRejectsDeletionAndReplayProtocol(t *testing.T) {
+	ctx := context.Background()
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		requests.Add(1)
+		http.NotFound(writer, request)
+	}))
+	defer server.Close()
+	protocolServer, schemas := configuredImportProtocolServer(t, ctx, server.URL)
+	schema := schemas.ResourceSchemas["litellm_mcp_server"]
+	values := map[string]interface{}{
+		"id": "generation-binding", "server_id": "generation-binding", "server_name": "generation-binding",
+		"transport": "http", "url": "https://known.invalid/mcp", "auth_type": "none", "spec_version": "2024-11-05",
+		"field_ownership_generation": int64(4),
+	}
+	state := accessGroupProtocolDynamicValue(t, schema, organizationProjectProtocolValue(t, schema, values))
+	config := accessGroupProtocolDynamicValue(t, schema, organizationProjectProtocolValue(t, schema, map[string]interface{}{
+		"server_name": "generation-binding", "transport": "http", "url": "https://known.invalid/mcp",
+	}))
+	missingPrivate := protocolMCPV2Private(t, emptyMCPInfoProvenance())
+	replayedPrivate := protocolMCPFieldPrivate(t, mcpFieldOwnership{Owned: map[string]bool{}, Removals: map[string]bool{}, Generation: 3, Versioned: true})
+	for name, private := range map[string][]byte{"deleted": missingPrivate, "replayed": replayedPrivate} {
+		t.Run(name, func(t *testing.T) {
+			planned, err := protocolServer.PlanResourceChange(ctx, &tfprotov6.PlanResourceChangeRequest{
+				TypeName: "litellm_mcp_server", Config: config, PriorState: state, ProposedNewState: state, PriorPrivate: private,
+			})
+			if err != nil || !accessGroupProtocolDiagnosticsHaveError(planned.Diagnostics) {
+				t.Fatalf("plan accepted invalid binding: err=%v diagnostics=%v", err, planned.Diagnostics)
+			}
+			read, err := protocolServer.ReadResource(ctx, &tfprotov6.ReadResourceRequest{TypeName: "litellm_mcp_server", CurrentState: state, Private: private})
+			if err != nil || !accessGroupProtocolDiagnosticsHaveError(read.Diagnostics) {
+				t.Fatalf("read accepted invalid binding: err=%v diagnostics=%v", err, read.Diagnostics)
+			}
+		})
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("invalid generation binding reached HTTP %d times", requests.Load())
+	}
+}
+
 func TestMCPServerRestrictedReadRetainsKnownSensitiveStateProtocol(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

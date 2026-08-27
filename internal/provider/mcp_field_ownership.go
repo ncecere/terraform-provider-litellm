@@ -64,18 +64,22 @@ var mcpFieldAllowedPaths = func() map[string]bool {
 }()
 
 type mcpFieldOwnershipWire struct {
-	Version      int      `json:"version"`
-	Generation   int64    `json:"generation"`
-	OwnedPaths   []string `json:"owned_paths"`
-	Removals     []string `json:"removals"`
-	IntentDigest string   `json:"intent_digest"`
+	Version         int      `json:"version"`
+	Generation      int64    `json:"generation"`
+	OwnedPaths      []string `json:"owned_paths"`
+	Removals        []string `json:"removals"`
+	CredentialClass string   `json:"credential_class"`
+	CredentialKeys  []string `json:"credential_keys"`
+	IntentDigest    string   `json:"intent_digest"`
 }
 
 type mcpFieldOwnership struct {
-	Owned      map[string]bool
-	Removals   map[string]bool
-	Generation int64
-	Versioned  bool
+	Owned           map[string]bool
+	Removals        map[string]bool
+	CredentialClass string
+	CredentialKeys  []string
+	Generation      int64
+	Versioned       bool
 }
 
 func emptyMCPFieldOwnership() mcpFieldOwnership {
@@ -96,6 +100,7 @@ func cloneMCPFieldOwnership(source mcpFieldOwnership) mcpFieldOwnership {
 	result := source
 	result.Owned = cloneMCPFieldSet(source.Owned)
 	result.Removals = cloneMCPFieldSet(source.Removals)
+	result.CredentialKeys = slices.Clone(source.CredentialKeys)
 	return result
 }
 
@@ -110,13 +115,15 @@ func canonicalMCPFieldPaths(fields map[string]bool) []string {
 	return result
 }
 
-func mcpFieldIntentDigest(version int, generation int64, owned, removals []string) string {
+func mcpFieldIntentDigest(version int, generation int64, owned, removals []string, credentialClass string, credentialKeys []string) string {
 	intent := struct {
-		Version    int      `json:"version"`
-		Generation int64    `json:"generation"`
-		Owned      []string `json:"owned_paths"`
-		Removals   []string `json:"removals"`
-	}{version, generation, owned, removals}
+		Version         int      `json:"version"`
+		Generation      int64    `json:"generation"`
+		Owned           []string `json:"owned_paths"`
+		Removals        []string `json:"removals"`
+		CredentialClass string   `json:"credential_class"`
+		CredentialKeys  []string `json:"credential_keys"`
+	}{version, generation, owned, removals, credentialClass, credentialKeys}
 	raw, _ := json.Marshal(intent)
 	digest := sha256.Sum256(raw)
 	return hex.EncodeToString(digest[:])
@@ -125,12 +132,19 @@ func mcpFieldIntentDigest(version int, generation int64, owned, removals []strin
 func encodeMCPFieldOwnership(ownership mcpFieldOwnership) []byte {
 	owned := canonicalMCPFieldPaths(ownership.Owned)
 	removals := canonicalMCPFieldPaths(ownership.Removals)
+	credentialKeys := slices.Clone(ownership.CredentialKeys)
+	if credentialKeys == nil {
+		credentialKeys = []string{}
+	}
+	slices.Sort(credentialKeys)
 	wire := mcpFieldOwnershipWire{
-		Version:      mcpFieldOwnershipVersion,
-		Generation:   ownership.Generation,
-		OwnedPaths:   owned,
-		Removals:     removals,
-		IntentDigest: mcpFieldIntentDigest(mcpFieldOwnershipVersion, ownership.Generation, owned, removals),
+		Version:         mcpFieldOwnershipVersion,
+		Generation:      ownership.Generation,
+		OwnedPaths:      owned,
+		Removals:        removals,
+		CredentialClass: ownership.CredentialClass,
+		CredentialKeys:  credentialKeys,
+		IntentDigest:    mcpFieldIntentDigest(mcpFieldOwnershipVersion, ownership.Generation, owned, removals, ownership.CredentialClass, credentialKeys),
 	}
 	raw, _ := json.Marshal(wire)
 	return raw
@@ -146,7 +160,7 @@ func decodeMCPFieldOwnership(raw []byte) (mcpFieldOwnership, error) {
 	if err := decoder.Decode(&wire); err != nil || decoder.More() {
 		return mcpFieldOwnership{}, fmt.Errorf("malformed MCP field ownership")
 	}
-	if wire.Version != mcpFieldOwnershipVersion || wire.Generation < 0 || wire.OwnedPaths == nil || wire.Removals == nil {
+	if wire.Version != mcpFieldOwnershipVersion || wire.Generation < 0 || wire.OwnedPaths == nil || wire.Removals == nil || wire.CredentialKeys == nil {
 		return mcpFieldOwnership{}, fmt.Errorf("malformed MCP field ownership")
 	}
 	validate := func(paths []string) (map[string]bool, error) {
@@ -172,13 +186,37 @@ func decodeMCPFieldOwnership(raw []byte) (mcpFieldOwnership, error) {
 			return mcpFieldOwnership{}, fmt.Errorf("MCP field ownership overlaps removals")
 		}
 	}
+	if wire.CredentialClass == "" {
+		if len(wire.CredentialKeys) != 0 {
+			return mcpFieldOwnership{}, fmt.Errorf("malformed MCP credential ownership")
+		}
+	} else {
+		validClass := false
+		for _, authType := range mcpAuthTypesV198 {
+			if mcpAuthCredentialClass(authType) == wire.CredentialClass {
+				validClass = true
+				break
+			}
+		}
+		if !validClass || (!owned[mcpFieldCredentialsPath] && !removals[mcpFieldCredentialsPath]) {
+			return mcpFieldOwnership{}, fmt.Errorf("malformed MCP credential ownership")
+		}
+	}
+	for index, key := range wire.CredentialKeys {
+		if !mcpCredentialStringKeysV198[key] || (index > 0 && wire.CredentialKeys[index-1] >= key) {
+			return mcpFieldOwnership{}, fmt.Errorf("malformed MCP credential ownership keys")
+		}
+	}
+	if removals[mcpFieldCredentialsPath] && len(wire.CredentialKeys) != 0 {
+		return mcpFieldOwnership{}, fmt.Errorf("cleared MCP credentials retain key ownership")
+	}
 	if len(wire.IntentDigest) != sha256.Size*2 {
 		return mcpFieldOwnership{}, fmt.Errorf("malformed MCP field ownership digest")
 	}
-	if _, err := hex.DecodeString(wire.IntentDigest); err != nil || wire.IntentDigest != mcpFieldIntentDigest(wire.Version, wire.Generation, wire.OwnedPaths, wire.Removals) {
+	if _, err := hex.DecodeString(wire.IntentDigest); err != nil || wire.IntentDigest != mcpFieldIntentDigest(wire.Version, wire.Generation, wire.OwnedPaths, wire.Removals, wire.CredentialClass, wire.CredentialKeys) {
 		return mcpFieldOwnership{}, fmt.Errorf("MCP field ownership digest mismatch")
 	}
-	result := mcpFieldOwnership{Owned: owned, Removals: removals, Generation: wire.Generation, Versioned: true}
+	result := mcpFieldOwnership{Owned: owned, Removals: removals, CredentialClass: wire.CredentialClass, CredentialKeys: wire.CredentialKeys, Generation: wire.Generation, Versioned: true}
 	if !bytes.Equal(raw, encodeMCPFieldOwnership(result)) {
 		return mcpFieldOwnership{}, fmt.Errorf("non-canonical MCP field ownership")
 	}
@@ -218,11 +256,28 @@ func readMCPFieldOwnership(ctx context.Context, private mcpInfoPrivateReader) (m
 		return result, diagnostics
 	}
 	decoded, err := decodeMCPFieldOwnership(raw)
-	if err != nil || len(decoded.Removals) != 0 {
+	if err != nil {
 		mcpFieldPrivateError(&diagnostics)
 		return result, diagnostics
 	}
 	return decoded, diagnostics
+}
+
+func mcpFieldPrivateHasPending(ctx context.Context, private mcpInfoPrivateReader) (bool, diag.Diagnostics) {
+	var diagnostics diag.Diagnostics
+	if private == nil {
+		return false, diagnostics
+	}
+	raw, keyDiags := private.GetKey(ctx, mcpFieldPendingOwnershipPrivateKey)
+	diagnostics.Append(keyDiags...)
+	if diagnostics.HasError() || raw == nil {
+		return false, diagnostics
+	}
+	if _, err := decodeMCPFieldOwnership(raw); err != nil {
+		mcpFieldPrivateError(&diagnostics)
+		return false, diagnostics
+	}
+	return true, diagnostics
 }
 
 func readPendingMCPFieldOwnership(ctx context.Context, private mcpInfoPrivateReader, expected mcpFieldOwnership) (mcpFieldOwnership, diag.Diagnostics) {
@@ -250,7 +305,6 @@ func writeMCPFieldOwnership(ctx context.Context, private mcpInfoPrivateWriter, o
 		return diagnostics
 	}
 	ownership.Versioned = true
-	ownership.Removals = map[string]bool{}
 	diagnostics.Append(private.SetKey(ctx, mcpFieldOwnershipPrivateKey, encodeMCPFieldOwnership(ownership))...)
 	if diagnostics.HasError() {
 		return diagnostics
@@ -282,7 +336,7 @@ func mcpFieldSetsEqual(left, right map[string]bool) bool {
 }
 
 func mcpFieldOwnershipEqual(left, right mcpFieldOwnership) bool {
-	return left.Generation == right.Generation && mcpFieldSetsEqual(left.Owned, right.Owned) && mcpFieldSetsEqual(left.Removals, right.Removals)
+	return left.Generation == right.Generation && left.CredentialClass == right.CredentialClass && slices.Equal(left.CredentialKeys, right.CredentialKeys) && mcpFieldSetsEqual(left.Owned, right.Owned) && mcpFieldSetsEqual(left.Removals, right.Removals)
 }
 
 // 0 is absent, 1 is known-present, and 2 is unknown. Presence is taken only
@@ -316,7 +370,6 @@ func mcpFieldConfigPresence(config MCPServerResourceModel) map[string]int {
 func deriveMCPFieldPlanOwnership(prior mcpFieldOwnership, config MCPServerResourceModel) mcpFieldOwnership {
 	result := cloneMCPFieldOwnership(prior)
 	result.Versioned = true
-	result.Removals = map[string]bool{}
 	presence := mcpFieldConfigPresence(config)
 	legacy := !prior.Versioned
 	if legacy {
@@ -327,6 +380,7 @@ func deriveMCPFieldPlanOwnership(prior mcpFieldOwnership, config MCPServerResour
 		switch presence[fieldPath] {
 		case 1:
 			result.Owned[fieldPath] = true
+			delete(result.Removals, fieldPath)
 		case 0:
 			if !legacy && prior.Owned[fieldPath] {
 				delete(result.Owned, fieldPath)
@@ -336,7 +390,25 @@ func deriveMCPFieldPlanOwnership(prior mcpFieldOwnership, config MCPServerResour
 			// Unknown configuration retains exactly the prior owner.
 		}
 	}
-	if !mcpFieldSetsEqual(prior.Owned, result.Owned) || len(result.Removals) != 0 {
+	if result.Owned[mcpFieldCredentialsPath] && presence[mcpFieldCredentialsPath] == 1 {
+		result.CredentialKeys = result.CredentialKeys[:0]
+		for key := range config.Credentials.Elements() {
+			result.CredentialKeys = append(result.CredentialKeys, key)
+		}
+		slices.Sort(result.CredentialKeys)
+		if !config.AuthType.IsNull() && !config.AuthType.IsUnknown() {
+			result.CredentialClass = mcpAuthCredentialClass(config.AuthType.ValueString())
+		}
+	} else if result.Removals[mcpFieldCredentialsPath] {
+		result.CredentialKeys = []string{}
+		if !config.AuthType.IsNull() && !config.AuthType.IsUnknown() {
+			result.CredentialClass = mcpAuthCredentialClass(config.AuthType.ValueString())
+		}
+	} else if !result.Owned[mcpFieldCredentialsPath] {
+		result.CredentialClass = ""
+		result.CredentialKeys = []string{}
+	}
+	if !mcpFieldSetsEqual(prior.Owned, result.Owned) || !mcpFieldSetsEqual(prior.Removals, result.Removals) || prior.CredentialClass != result.CredentialClass || !slices.Equal(prior.CredentialKeys, result.CredentialKeys) {
 		result.Generation = prior.Generation + 1
 	}
 	return result
@@ -344,9 +416,19 @@ func deriveMCPFieldPlanOwnership(prior mcpFieldOwnership, config MCPServerResour
 
 func committedMCPFieldOwnership(candidate mcpFieldOwnership) mcpFieldOwnership {
 	result := cloneMCPFieldOwnership(candidate)
-	result.Removals = map[string]bool{}
 	result.Versioned = true
 	return result
+}
+
+func validateMCPFieldOwnershipGeneration(generation types.Int64, ownership mcpFieldOwnership) error {
+	if generation.IsNull() || generation.IsUnknown() {
+		return nil
+	}
+	value := generation.ValueInt64()
+	if value < 0 || value != ownership.Generation || (value > 0 && !ownership.Versioned) {
+		return fmt.Errorf("MCP field ownership generation mismatch")
+	}
+	return nil
 }
 
 func mcpFieldGenerationValue(ownership mcpFieldOwnership) types.Int64 {

@@ -71,10 +71,14 @@ func TestMCPServerMalformedCreateRetainsOnlyConfirmedIdentityProtocol(t *testing
 	t.Parallel()
 	ctx := context.Background()
 	var reads atomic.Int64
+	var requestedID atomic.Value
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
 		if request.Method == http.MethodPost && request.URL.Path == "/v1/mcp/server" {
-			_, _ = writer.Write([]byte(`{"server_id":"malformed-create","server_name":"unconfirmed","url":"https://unconfirmed.invalid/mcp","created_at":"unconfirmed"}`))
+			var body map[string]interface{}
+			_ = json.NewDecoder(request.Body).Decode(&body)
+			requestedID.Store(body["server_id"].(string))
+			_, _ = writer.Write([]byte(`{"server_name":"unconfirmed","url":"https://unconfirmed.invalid/mcp","created_at":"unconfirmed"}`))
 			return
 		}
 		reads.Add(1)
@@ -94,26 +98,73 @@ func TestMCPServerMalformedCreateRetainsOnlyConfirmedIdentityProtocol(t *testing
 	if err != nil || !accessGroupProtocolDiagnosticsHaveError(applied.Diagnostics) || reads.Load() != 1 {
 		t.Fatalf("malformed create: err=%v diagnostics=%v reads=%d", err, applied.Diagnostics, reads.Load())
 	}
-	assertMCPServerIdentityOnlyState(t, schema, applied.NewState, "malformed-create")
+	assertMCPServerIdentityOnlyState(t, schema, applied.NewState, requestedID.Load().(string))
+}
+
+func TestMCPServerAcceptedCreateBodyFailureRecoversBySelectedIdentityProtocol(t *testing.T) {
+	ctx := context.Background()
+	var requestedID atomic.Value
+	var reads atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		if request.Method == http.MethodPost {
+			var body map[string]interface{}
+			_ = json.NewDecoder(request.Body).Decode(&body)
+			requestedID.Store(body["server_id"].(string))
+			_, _ = writer.Write([]byte(`{"server_id":`))
+			return
+		}
+		reads.Add(1)
+		_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+			"server_id": requestedID.Load().(string), "server_name": "selected-identity", "transport": "http",
+			"url": "https://configured.invalid/mcp", "auth_type": "none", "mcp_info": map[string]interface{}{},
+		})
+	}))
+	defer server.Close()
+
+	protocolServer, schemas := configuredImportProtocolServer(t, ctx, server.URL)
+	schema := schemas.ResourceSchemas["litellm_mcp_server"]
+	config, nullState, planned := mcpServerProtocolCreatePlan(t, protocolServer, schema, map[string]interface{}{
+		"server_name": "selected-identity", "transport": "http", "url": "https://configured.invalid/mcp",
+	})
+	applied, err := protocolServer.ApplyResourceChange(ctx, &tfprotov6.ApplyResourceChangeRequest{
+		TypeName: "litellm_mcp_server", Config: config, PriorState: nullState,
+		PlannedState: planned.PlannedState, PlannedPrivate: planned.PlannedPrivate,
+	})
+	if err != nil || accessGroupProtocolDiagnosticsHaveError(applied.Diagnostics) || reads.Load() != 1 {
+		t.Fatalf("accepted create recovery: err=%v diagnostics=%v reads=%d", err, applied.Diagnostics, reads.Load())
+	}
+	attributes := protocolAttributeMap(t, schema, applied.NewState)
+	for _, field := range []string{"id", "server_id"} {
+		var got string
+		if err := attributes[field].As(&got); err != nil || got != requestedID.Load().(string) {
+			t.Fatalf("%s=%q err=%v", field, got, err)
+		}
+	}
 }
 
 func TestMCPServerCreateReadbackFailureRetainsOnlyIdentityProtocol(t *testing.T) {
 	for _, failure := range []string{"read failure", "endpoint mismatch", "transport mismatch"} {
 		t.Run(failure, func(t *testing.T) {
 			ctx := context.Background()
+			var requestedID atomic.Value
 			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 				writer.Header().Set("Content-Type", "application/json")
 				if request.Method == http.MethodPost {
-					_, _ = writer.Write([]byte(`{"server_id":"create-readback","server_name":"server","transport":"http","url":"https://configured.invalid/mcp"}`))
+					var body map[string]interface{}
+					_ = json.NewDecoder(request.Body).Decode(&body)
+					requestedID.Store(body["server_id"].(string))
+					_ = json.NewEncoder(writer).Encode(map[string]interface{}{"server_id": body["server_id"]})
 					return
 				}
+				serverID := requestedID.Load().(string)
 				switch failure {
 				case "read failure":
 					http.Error(writer, `{"error":"unavailable"}`, http.StatusInternalServerError)
 				case "endpoint mismatch":
-					_, _ = writer.Write([]byte(`{"server_id":"create-readback","server_name":"server","transport":"http","url":"https://different.invalid/mcp"}`))
+					_ = json.NewEncoder(writer).Encode(map[string]interface{}{"server_id": serverID, "server_name": "server", "transport": "http", "url": "https://different.invalid/mcp"})
 				case "transport mismatch":
-					_, _ = writer.Write([]byte(`{"server_id":"create-readback","server_name":"server","transport":"sse","url":"https://configured.invalid/mcp"}`))
+					_ = json.NewEncoder(writer).Encode(map[string]interface{}{"server_id": serverID, "server_name": "server", "transport": "sse", "url": "https://configured.invalid/mcp"})
 				}
 			}))
 			defer server.Close()
@@ -129,7 +180,7 @@ func TestMCPServerCreateReadbackFailureRetainsOnlyIdentityProtocol(t *testing.T)
 			if err != nil || !accessGroupProtocolDiagnosticsHaveError(applied.Diagnostics) {
 				t.Fatalf("create failure not surfaced: err=%v diagnostics=%v", err, applied.Diagnostics)
 			}
-			assertMCPServerIdentityOnlyState(t, schema, applied.NewState, "create-readback")
+			assertMCPServerIdentityOnlyState(t, schema, applied.NewState, requestedID.Load().(string))
 		})
 	}
 }
@@ -275,11 +326,63 @@ func TestMCPServerUpdateFailuresDoNotPublishPlanProtocol(t *testing.T) {
 			if err != nil || !accessGroupProtocolDiagnosticsHaveError(applied.Diagnostics) {
 				t.Fatalf("failed update: err=%v diagnostics=%v", err, applied.Diagnostics)
 			}
-			if failure == "malformed update response" && reads.Load() != 1 {
-				t.Fatalf("malformed update response triggered %d reads", reads.Load())
+			if reads.Load() != 2 {
+				t.Fatalf("failed update performed %d reads; want hydration plus authoritative recovery", reads.Load())
 			}
 			assertMCPServerFailedUpdateRetainsPriorState(t, schema, state, applied.NewState)
 		})
+	}
+}
+
+func TestMCPServerAcceptedMalformedUpdateResponseRecoversByDirectReadProtocol(t *testing.T) {
+	ctx := context.Background()
+	var reads, puts atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		if request.Method == http.MethodPut {
+			puts.Add(1)
+			_, _ = writer.Write([]byte(`{"server_id":"accepted-recovery"}`))
+			return
+		}
+		readNumber := reads.Add(1)
+		description := "old"
+		if readNumber > 1 {
+			description = "changed"
+		}
+		_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+			"server_id": "accepted-recovery", "server_name": "accepted-recovery", "description": description,
+			"transport": "http", "url": "https://configured.invalid/mcp", "mcp_info": map[string]interface{}{},
+		})
+	}))
+	defer server.Close()
+
+	protocolServer, schemas := configuredImportProtocolServer(t, ctx, server.URL)
+	schema := schemas.ResourceSchemas["litellm_mcp_server"]
+	state := accessGroupProtocolDynamicValue(t, schema, organizationProjectProtocolValue(t, schema, map[string]interface{}{
+		"id": "accepted-recovery", "server_id": "accepted-recovery", "server_name": "accepted-recovery", "description": "old",
+		"transport": "http", "url": "https://configured.invalid/mcp", "auth_type": "none", "spec_version": "2024-11-05",
+	}))
+	config := accessGroupProtocolDynamicValue(t, schema, organizationProjectProtocolValue(t, schema, map[string]interface{}{
+		"server_name": "accepted-recovery", "description": "changed", "transport": "http", "url": "https://configured.invalid/mcp",
+	}))
+	proposed := organizationProjectProtocolReplace(t, schema, state, map[string]interface{}{"description": "changed"})
+	planned, err := protocolServer.PlanResourceChange(ctx, &tfprotov6.PlanResourceChangeRequest{
+		TypeName: "litellm_mcp_server", Config: config, PriorState: state, ProposedNewState: proposed,
+	})
+	if err != nil || accessGroupProtocolDiagnosticsHaveError(planned.Diagnostics) {
+		t.Fatalf("plan: err=%v diagnostics=%v", err, planned.Diagnostics)
+	}
+	applied, err := protocolServer.ApplyResourceChange(ctx, &tfprotov6.ApplyResourceChangeRequest{
+		TypeName: "litellm_mcp_server", Config: config, PriorState: state,
+		PlannedState: planned.PlannedState, PlannedPrivate: planned.PlannedPrivate,
+	})
+	if err != nil || accessGroupProtocolDiagnosticsHaveError(applied.Diagnostics) || reads.Load() != 2 || puts.Load() != 1 {
+		t.Fatalf("accepted recovery: err=%v diagnostics=%v reads=%d puts=%d", err, applied.Diagnostics, reads.Load(), puts.Load())
+	}
+	attributes := protocolAttributeMap(t, schema, applied.NewState)
+	var description string
+	if err := attributes["description"].As(&description); err != nil || description != "changed" {
+		t.Fatalf("recovered description=%q err=%v", description, err)
 	}
 }
 
@@ -320,13 +423,17 @@ func TestMCPServerCreateAndUpdateReadbackExposeOwnedEndpointOmissionProtocol(t *
 	t.Parallel()
 	t.Run("create", func(t *testing.T) {
 		ctx := context.Background()
+		var requestedID atomic.Value
 		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 			writer.Header().Set("Content-Type", "application/json")
 			switch request.Method {
 			case http.MethodPost:
-				_, _ = writer.Write([]byte(`{"server_id":"create-omission","server_name":"create","transport":"http","url":"https://configured.invalid/mcp"}`))
+				var body map[string]interface{}
+				_ = json.NewDecoder(request.Body).Decode(&body)
+				requestedID.Store(body["server_id"].(string))
+				_ = json.NewEncoder(writer).Encode(map[string]interface{}{"server_id": body["server_id"]})
 			case http.MethodGet:
-				_, _ = writer.Write([]byte(`{"server_id":"create-omission","server_name":"create","transport":"http","spec_path":"/remote/unowned.json"}`))
+				_ = json.NewEncoder(writer).Encode(map[string]interface{}{"server_id": requestedID.Load().(string), "server_name": "create", "transport": "http", "spec_path": "/remote/unowned.json"})
 			default:
 				http.NotFound(writer, request)
 			}
@@ -344,7 +451,7 @@ func TestMCPServerCreateAndUpdateReadbackExposeOwnedEndpointOmissionProtocol(t *
 		if err != nil || !accessGroupProtocolDiagnosticsHaveError(applied.Diagnostics) {
 			t.Fatalf("create omission was not surfaced: err=%v diagnostics=%v", err, applied.Diagnostics)
 		}
-		assertMCPServerIdentityOnlyState(t, schema, applied.NewState, "create-omission")
+		assertMCPServerIdentityOnlyState(t, schema, applied.NewState, requestedID.Load().(string))
 	})
 
 	t.Run("update", func(t *testing.T) {
@@ -435,13 +542,17 @@ func TestMCPServerCreateAndUpdateReadbackExposeOwnedEndpointOmissionProtocol(t *
 
 	t.Run("transport mismatch", func(t *testing.T) {
 		ctx := context.Background()
+		var requestedID atomic.Value
 		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 			writer.Header().Set("Content-Type", "application/json")
 			if request.Method == http.MethodPost {
-				_, _ = writer.Write([]byte(`{"server_id":"transport-mismatch","server_name":"transport","transport":"http","url":"https://configured.invalid/mcp"}`))
+				var body map[string]interface{}
+				_ = json.NewDecoder(request.Body).Decode(&body)
+				requestedID.Store(body["server_id"].(string))
+				_ = json.NewEncoder(writer).Encode(map[string]interface{}{"server_id": body["server_id"]})
 				return
 			}
-			_, _ = writer.Write([]byte(`{"server_id":"transport-mismatch","server_name":"transport","transport":"sse","url":"https://configured.invalid/mcp"}`))
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{"server_id": requestedID.Load().(string), "server_name": "transport", "transport": "sse", "url": "https://configured.invalid/mcp"})
 		}))
 		defer server.Close()
 		protocolServer, schemas := configuredImportProtocolServer(t, ctx, server.URL)
@@ -456,6 +567,6 @@ func TestMCPServerCreateAndUpdateReadbackExposeOwnedEndpointOmissionProtocol(t *
 		if err != nil || !accessGroupProtocolDiagnosticsHaveError(applied.Diagnostics) {
 			t.Fatalf("transport mismatch was not surfaced: err=%v diagnostics=%v", err, applied.Diagnostics)
 		}
-		assertMCPServerIdentityOnlyState(t, schema, applied.NewState, "transport-mismatch")
+		assertMCPServerIdentityOnlyState(t, schema, applied.NewState, requestedID.Load().(string))
 	})
 }

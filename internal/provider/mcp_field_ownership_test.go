@@ -15,7 +15,7 @@ func TestMCPFieldOwnershipGrammarCanonicalAndValueFree(t *testing.T) {
 	for _, fieldPath := range mcpFieldPaths {
 		owned[fieldPath] = true
 	}
-	ownership := mcpFieldOwnership{Owned: owned, Removals: map[string]bool{}, Generation: 7, Versioned: true}
+	ownership := mcpFieldOwnership{Owned: owned, Removals: map[string]bool{}, CredentialClass: "api_key", CredentialKeys: []string{"auth_value"}, Generation: 7, Versioned: true}
 	raw := encodeMCPFieldOwnership(ownership)
 	decoded, err := decodeMCPFieldOwnership(raw)
 	if err != nil || !mcpFieldOwnershipEqual(decoded, ownership) {
@@ -25,7 +25,7 @@ func TestMCPFieldOwnershipGrammarCanonicalAndValueFree(t *testing.T) {
 	if err := json.Unmarshal(raw, &wire); err != nil {
 		t.Fatal(err)
 	}
-	if len(wire) != 5 {
+	if len(wire) != 7 {
 		t.Fatalf("private grammar keys = %#v", wire)
 	}
 	paths := append([]string(nil), mcpFieldPaths...)
@@ -114,8 +114,8 @@ func TestMCPFieldOwnershipTakeoverRemovalUnknownAndReacquire(t *testing.T) {
 		t.Fatalf("removal = %#v", removed)
 	}
 	steady := deriveMCPFieldPlanOwnership(committedMCPFieldOwnership(removed), MCPServerResourceModel{})
-	if len(steady.Removals) != 0 || steady.Generation != 2 {
-		t.Fatalf("post-clear no-op = %#v", steady)
+	if !steady.Removals[mcpFieldAliasPath] || steady.Generation != 2 {
+		t.Fatalf("post-clear authority was not retained = %#v", steady)
 	}
 	reacquired := deriveMCPFieldPlanOwnership(committedMCPFieldOwnership(removed), config)
 	if !reacquired.Owned[mcpFieldAliasPath] || reacquired.Generation != 3 {
@@ -256,6 +256,69 @@ func TestMCPImplicitClearPreflightRejectsUnchangedAndAllowsCompleteClear(t *test
 	}
 }
 
+func TestMCPConfirmedCredentialClearAllowsSameClassReAdd(t *testing.T) {
+	ctx := context.Background()
+	credentials := types.MapValueMust(types.StringType, map[string]attr.Value{"auth_value": types.StringValue("replacement")})
+	state := MCPServerResourceModel{AuthType: types.StringValue("api_key"), Credentials: types.MapNull(types.StringType)}
+	config := MCPServerResourceModel{AuthType: types.StringValue("api_key"), Credentials: credentials}
+	plan := config
+	committed := mcpFieldOwnership{
+		Owned: map[string]bool{}, Removals: map[string]bool{mcpFieldCredentialsPath: true}, Generation: 2, Versioned: true,
+	}
+	candidate := deriveMCPFieldPlanOwnership(committed, config)
+	delta, err := buildMCPFieldDelta(ctx, plan, config, state, committed, candidate, map[string]interface{}{"auth_type": "api_key", "credentials": nil})
+	if err != nil {
+		t.Fatalf("confirmed-clear re-add rejected: %v", err)
+	}
+	if !mcpWireValuesEqual(delta["credentials"], map[string]string{"auth_value": "replacement"}) || candidate.Removals[mcpFieldCredentialsPath] {
+		t.Fatalf("confirmed-clear re-add was not exact: candidate=%#v delta=%#v", candidate, delta)
+	}
+}
+
+func TestMCPPendingCredentialClassReplacementRetriesAfterRemoteAuthAdvanced(t *testing.T) {
+	ctx := context.Background()
+	priorCredentials := types.MapValueMust(types.StringType, map[string]attr.Value{
+		"client_secret": types.StringValue("old"), "audience": types.StringValue("old-audience"),
+	})
+	desiredCredentials := types.MapValueMust(types.StringType, map[string]attr.Value{"auth_value": types.StringValue("replacement")})
+	// A refresh after an accepted PUT can observe the new auth class while
+	// role-masked credentials still retain the prior Terraform values.
+	state := MCPServerResourceModel{AuthType: types.StringValue("api_key"), Credentials: priorCredentials}
+	config := MCPServerResourceModel{AuthType: types.StringValue("api_key"), Credentials: desiredCredentials}
+	committed := mcpFieldOwnership{
+		Owned: map[string]bool{mcpFieldCredentialsPath: true}, Removals: map[string]bool{},
+		CredentialClass: "oauth2_token_exchange", CredentialKeys: []string{"audience", "client_secret"}, Generation: 1, Versioned: true,
+	}
+	candidate := deriveMCPFieldPlanOwnership(committed, config)
+	delta, err := buildMCPFieldDelta(ctx, config, config, state, committed, candidate, map[string]interface{}{
+		"auth_type": "api_key", "credentials": nil, "audience": nil,
+	})
+	if err != nil {
+		t.Fatalf("pending class replacement retry rejected: %v", err)
+	}
+	if candidate.CredentialClass != "api_key" || !slices.Equal(candidate.CredentialKeys, []string{"auth_value"}) || !mcpWireValuesEqual(delta["credentials"], map[string]string{"auth_value": "replacement"}) {
+		t.Fatalf("pending class replacement retry was not exact: candidate=%#v delta=%#v", candidate, delta)
+	}
+	if value, present := delta["audience"]; !present || value != nil {
+		t.Fatalf("retry omitted prior lifted-key clear: %#v", delta)
+	}
+}
+
+func TestMCPFieldOwnershipGenerationBinding(t *testing.T) {
+	committed := mcpFieldOwnership{Owned: map[string]bool{}, Removals: map[string]bool{mcpFieldCredentialsPath: true}, Generation: 3, Versioned: true}
+	if err := validateMCPFieldOwnershipGeneration(types.Int64Value(3), committed); err != nil {
+		t.Fatalf("matching generation rejected: %v", err)
+	}
+	for _, generation := range []types.Int64{types.Int64Value(2), types.Int64Value(4)} {
+		if err := validateMCPFieldOwnershipGeneration(generation, committed); err == nil {
+			t.Fatalf("mismatched generation %s accepted", generation)
+		}
+	}
+	if err := validateMCPFieldOwnershipGeneration(types.Int64Value(1), emptyMCPFieldOwnership()); err == nil {
+		t.Fatal("missing private ownership accepted for a nonzero public generation")
+	}
+}
+
 func TestMCPConfiguredCredentialKeyDeletionRejected(t *testing.T) {
 	ctx := context.Background()
 	state := MCPServerResourceModel{AuthType: types.StringValue("oauth2"), Credentials: types.MapValueMust(types.StringType, map[string]attr.Value{
@@ -265,11 +328,11 @@ func TestMCPConfiguredCredentialKeyDeletionRejected(t *testing.T) {
 		"client_id": types.StringValue("id"),
 	})}
 	ownership := mcpFieldOwnership{Owned: map[string]bool{mcpFieldCredentialsPath: true}, Removals: map[string]bool{}, Versioned: true}
-	if err := validateMCPFieldCredentialMerge(ctx, state, state, config, nil, ownership); err == nil {
+	if err := validateMCPFieldCredentialMerge(ctx, state, state, config, nil, ownership, ownership); err == nil {
 		t.Fatal("configured credential key deletion was accepted despite v1.98 merge semantics")
 	}
 	config.Credentials = types.MapNull(types.StringType)
-	if err := validateMCPFieldCredentialMerge(ctx, state, state, config, nil, ownership); err != nil {
+	if err := validateMCPFieldCredentialMerge(ctx, state, state, config, nil, ownership, ownership); err != nil {
 		t.Fatalf("whole credential clear was rejected: %v", err)
 	}
 }

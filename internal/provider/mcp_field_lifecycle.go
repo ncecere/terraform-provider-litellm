@@ -304,8 +304,12 @@ func mcpCredentialClassWillReplace(plan, state MCPServerResourceModel, hydration
 		mcpAuthCredentialClass(priorAuth) != mcpAuthCredentialClass(plan.AuthType.ValueString())
 }
 
-func validateMCPFieldCredentialMerge(ctx context.Context, plan, state, config MCPServerResourceModel, hydration map[string]interface{}, committed mcpFieldOwnership) error {
-	if !committed.Owned[mcpFieldCredentialsPath] || mcpCredentialClassWillReplace(plan, state, hydration) || config.Credentials.IsNull() || config.Credentials.IsUnknown() || state.Credentials.IsNull() || state.Credentials.IsUnknown() {
+func mcpCredentialOwnershipClassWillReplace(committed, candidate mcpFieldOwnership) bool {
+	return committed.CredentialClass != "" && candidate.CredentialClass != "" && committed.CredentialClass != candidate.CredentialClass
+}
+
+func validateMCPFieldCredentialMerge(ctx context.Context, plan, state, config MCPServerResourceModel, hydration map[string]interface{}, committed, candidate mcpFieldOwnership) error {
+	if !committed.Owned[mcpFieldCredentialsPath] || mcpCredentialClassWillReplace(plan, state, hydration) || mcpCredentialOwnershipClassWillReplace(committed, candidate) || config.Credentials.IsNull() || config.Credentials.IsUnknown() || state.Credentials.IsNull() || state.Credentials.IsUnknown() {
 		return nil
 	}
 	prior, err := mcpFieldStringMap(ctx, state.Credentials)
@@ -356,7 +360,7 @@ func mcpAmbiguousEmptyCollectionNeedsWrite(ctx context.Context, fieldPath string
 }
 
 func buildMCPFieldDelta(ctx context.Context, plan MCPServerResourceModel, config, state MCPServerResourceModel, committed, candidate mcpFieldOwnership, hydration map[string]interface{}) (map[string]interface{}, error) {
-	if err := validateMCPFieldCredentialMerge(ctx, plan, state, config, hydration, committed); err != nil {
+	if err := validateMCPFieldCredentialMerge(ctx, plan, state, config, hydration, committed, candidate); err != nil {
 		return nil, err
 	}
 	delta := map[string]interface{}{}
@@ -407,9 +411,10 @@ func buildMCPFieldDelta(ctx context.Context, plan MCPServerResourceModel, config
 			// prior row exists.
 			if !committed.Owned[fieldPath] {
 				credentials, validCredentials := desired.(map[string]string)
-				replacesCredentialClass := mcpCredentialClassWillReplace(plan, state, hydration)
-				if !validCredentials || !replacesCredentialClass {
-					return nil, fmt.Errorf("credentials cannot be adopted safely through LiteLLM's merge-only update without a credential-class replacement")
+				replacesCredentialClass := mcpCredentialClassWillReplace(plan, state, hydration) || mcpCredentialOwnershipClassWillReplace(committed, candidate)
+				confirmedClear := committed.Removals[fieldPath]
+				if !validCredentials || (!replacesCredentialClass && !confirmedClear) {
+					return nil, fmt.Errorf("credentials cannot be adopted safely through LiteLLM's merge-only update without a credential-class replacement or a confirmed Terraform clear")
 				}
 				delta[name] = desired
 				addLiftedCredentialIntent(credentials)
@@ -418,7 +423,7 @@ func buildMCPFieldDelta(ctx context.Context, plan MCPServerResourceModel, config
 				if !validCredentials {
 					return nil, fmt.Errorf("configured credentials are invalid")
 				}
-				replacesCredentialClass := mcpCredentialClassWillReplace(plan, state, hydration)
+				replacesCredentialClass := mcpCredentialClassWillReplace(plan, state, hydration) || mcpCredentialOwnershipClassWillReplace(committed, candidate)
 				if replacesCredentialClass {
 					priorCredentials, err := mcpFieldStringMap(ctx, state.Credentials)
 					if err != nil {
@@ -689,6 +694,9 @@ func (r *MCPServerResource) Update(ctx context.Context, req resource.UpdateReque
 	resp.Diagnostics.Append(infoDiags...)
 	committedFields, fieldDiags := readMCPFieldOwnership(ctx, req.Private)
 	resp.Diagnostics.Append(fieldDiags...)
+	if bindingErr := validateMCPFieldOwnershipGeneration(state.FieldOwnershipGeneration, committedFields); bindingErr != nil {
+		mcpFieldPrivateError(&resp.Diagnostics)
+	}
 	if resp.Diagnostics.HasError() {
 		resp.State, resp.Private = req.State, req.Private
 		return
@@ -699,6 +707,8 @@ func (r *MCPServerResource) Update(ctx context.Context, req resource.UpdateReque
 	expectedFields := deriveMCPFieldPlanOwnership(committedFields, config)
 	plannedFields, pendingFieldDiags := readPendingMCPFieldOwnership(ctx, req.Private, expectedFields)
 	resp.Diagnostics.Append(pendingFieldDiags...)
+	hasPendingFields, pendingFieldPresenceDiags := mcpFieldPrivateHasPending(ctx, req.Private)
+	resp.Diagnostics.Append(pendingFieldPresenceDiags...)
 	if resp.Diagnostics.HasError() {
 		resp.State, resp.Private = req.State, req.Private
 		return
@@ -744,13 +754,29 @@ func (r *MCPServerResource) Update(ctx context.Context, req resource.UpdateReque
 		resp.Diagnostics.AddError("Invalid MCP Info Configuration", "The complete MCP info update could not be resolved safely. No PUT was attempted.")
 		return
 	}
-	delta, err := buildMCPFieldDelta(ctx, plan, config, state, committedFields, plannedFields, hydration)
+	recoverAcceptedCreate := hasPendingFields && !state.FieldOwnershipGeneration.IsNull() && !state.FieldOwnershipGeneration.IsUnknown() && state.FieldOwnershipGeneration.ValueInt64() == 0 && state.ServerName.IsNull() && state.AuthType.IsNull() && committedFields.Generation == 0 && len(committedFields.Owned) == 0 && len(committedFields.Removals) == 0
+	comparisonState := state
+	comparisonFields := committedFields
+	if recoverAcceptedCreate {
+		// An identity-only state is produced only after an accepted create. The
+		// direct identity-valid response confirms the pending create intent; use
+		// the pending plan as the comparison baseline so recovery commits without
+		// a merge-only PUT.
+		if verifyMCPFieldCreateReadback(ctx, config, hydration, plannedFields) != nil {
+			resp.State, resp.Private = req.State, req.Private
+			resp.Diagnostics.AddError("MCP Server Recovery Not Confirmed", "The direct endpoint did not confirm the accepted create intent. No PUT was attempted and identity-only state was retained.")
+			return
+		}
+		comparisonState = plan
+		comparisonFields = committedMCPFieldOwnership(plannedFields)
+	}
+	delta, err := buildMCPFieldDelta(ctx, plan, config, comparisonState, comparisonFields, plannedFields, hydration)
 	if err != nil {
 		resp.State, resp.Private = req.State, req.Private
 		resp.Diagnostics.AddError("Unsafe MCP Field Update", err.Error())
 		return
 	}
-	addMCPBaseDelta(delta, plan, state, hydration)
+	addMCPBaseDelta(delta, plan, comparisonState, hydration)
 	if err := completeMCPUpdateDelta(ctx, delta, plan, hydration); err != nil {
 		resp.State, resp.Private = req.State, req.Private
 		resp.Diagnostics.AddError("Unsafe MCP Update", err.Error()+". No PUT was attempted; prior public and private state was retained.")
@@ -790,7 +816,7 @@ func (r *MCPServerResource) Update(ctx context.Context, req resource.UpdateReque
 	}
 	desiredAuth, authSent := delta["auth_type"].(string)
 	authClassChanged := authSent && mcpAuthCredentialClass(remoteAuth) != mcpAuthCredentialClass(desiredAuth)
-	if err := validateMCPImplicitClearSafety(config, state, plannedFields, hydration, delta, urlChanged, authClassChanged); err != nil {
+	if err := validateMCPImplicitClearSafety(config, comparisonState, plannedFields, hydration, delta, urlChanged, authClassChanged); err != nil {
 		resp.State, resp.Private = req.State, req.Private
 		resp.Diagnostics.AddError("Unsafe MCP URL or Authentication Update", "LiteLLM v1.98 would implicitly clear an unowned, unknown, or unchanged OAuth/credential value ("+err.Error()+"). Configure every affected value with a genuinely changed or cleared complete intent in one apply. No PUT was attempted; restorative PUTs are never used.")
 		return
@@ -806,16 +832,14 @@ func (r *MCPServerResource) Update(ctx context.Context, req resource.UpdateReque
 	readback := hydration
 	if mutation {
 		var updateResult map[string]interface{}
-		if err := r.putMCPServer(ctx, delta, &updateResult); err != nil {
+		accepted, putErr := r.putMCPServer(ctx, delta, &updateResult)
+		if putErr != nil && !accepted {
 			resp.State, resp.Private = req.State, req.Private
 			resp.Diagnostics.AddError("Client Error", "LiteLLM did not confirm the MCP server update. Prior public and private state was retained.")
 			return
 		}
-		if len(updateResult) > 0 && validateMCPServerResponse(updateResult, plan.ServerID.ValueString()) != nil {
-			resp.State, resp.Private = req.State, req.Private
-			resp.Diagnostics.AddError("Invalid Update Response", "LiteLLM accepted the update but returned a malformed response. Prior state/private ownership was retained.")
-			return
-		}
+		// Accepted response-body failures and malformed success bodies are
+		// reconciled by the mandatory identity-valid direct read below.
 		_, _, readback, err = r.readMCPServerWithAllProvenanceDirect(ctx, &plan, plannedInfo, committedMCPFieldOwnership(plannedFields), false)
 	} else {
 		err = r.readMCPServerResultProjection(ctx, &plan, readback, plannedInfo, committedMCPFieldOwnership(plannedFields), false, mcpInfoLeafSet{}, cloneMCPInfoLeafSet(plannedInfo.API))
