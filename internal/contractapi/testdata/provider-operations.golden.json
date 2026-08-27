@@ -571,7 +571,7 @@
     "evidence": [
       {
         "file": "internal/provider/resource_model.go",
-        "line": 800
+        "line": 958
       }
     ]
   },
@@ -594,11 +594,15 @@
       },
       {
         "file": "internal/provider/resource_model.go",
-        "line": 1012
+        "line": 1191
       },
       {
         "file": "internal/provider/resource_model.go",
-        "line": 1014
+        "line": 1193
+      },
+      {
+        "file": "internal/provider/resource_model_semantic_dictionary.go",
+        "line": 236
       }
     ]
   },
@@ -610,7 +614,7 @@
     "evidence": [
       {
         "file": "internal/provider/resource_model.go",
-        "line": 996
+        "line": 1175
       }
     ]
   },
@@ -622,7 +626,7 @@
     "evidence": [
       {
         "file": "internal/provider/resource_model.go",
-        "line": 996
+        "line": 1175
       }
     ]
   },
@@ -636,7 +640,7 @@
     "evidence": [
       {
         "file": "internal/provider/resource_model.go",
-        "line": 2144
+        "line": 2371
       }
     ]
   },

@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/url"
@@ -44,12 +45,13 @@ type ModelResource struct {
 }
 
 type modelReadOwnership struct {
-	imported             bool
-	importedFields       map[string]struct{}
-	topThinkingOwned     bool
-	clearedFields        map[string]struct{}
-	durablyClearedFields map[string]struct{}
-	freshConnection      bool
+	imported                          bool
+	importedFields                    map[string]struct{}
+	topThinkingOwned                  bool
+	additionalModelInfoJSONProvenance semanticDictionaryProvenance
+	clearedFields                     map[string]struct{}
+	durablyClearedFields              map[string]struct{}
+	freshConnection                   bool
 }
 
 // ModelResourceModel describes the resource data model.
@@ -89,6 +91,7 @@ type ModelResourceModel struct {
 	AdditionalLiteLLMParams           types.Map     `tfsdk:"additional_litellm_params"`
 	AdditionalLiteLLMParamsConfigured types.Bool    `tfsdk:"additional_litellm_params_configured"`
 	AdditionalModelInfo               types.Map     `tfsdk:"additional_model_info"`
+	AdditionalModelInfoJSON           types.String  `tfsdk:"additional_model_info_json"`
 	AdditionalModelInfoConfigured     types.Bool    `tfsdk:"additional_model_info_configured"`
 }
 
@@ -306,6 +309,15 @@ func (r *ModelResource) Schema(ctx context.Context, req resource.SchemaRequest, 
 					modelAdditionalModelInfoRemovalModifier{},
 				},
 			},
+			"additional_model_info_json": schema.StringAttribute{
+				Description: "Sensitive lossless JSON-object sibling for heterogeneous model_info fields. Keys cannot overlap additional_model_info or fields managed by dedicated attributes. Any change replaces the model so LiteLLM cannot retain removed nested values.",
+				Optional:    true,
+				Computed:    true,
+				Sensitive:   true,
+				Validators: []validator.String{
+					modelSemanticDictionaryValidator{},
+				},
+			},
 			"additional_model_info_configured": schema.BoolAttribute{
 				Description: "Internal state marker indicating whether additional_model_info is explicitly managed by configuration.",
 				Computed:    true,
@@ -353,6 +365,48 @@ func (r *ModelResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanR
 		return
 	}
 	importedFields := decodeModelImportedFields(marker)
+	semanticMarker, diagnostics := req.Private.GetKey(ctx, modelAdditionalModelInfoJSONProvenancePrivateKey)
+	resp.Diagnostics.Append(diagnostics...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	semanticProvenance, err := decodeModelAdditionalModelInfoJSONProvenance(ctx, semanticMarker, state.AdditionalModelInfoJSON)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("additional_model_info_json"),
+			"Invalid Semantic Dictionary Provenance",
+			"Private ownership state is missing or malformed. No model plan was produced.",
+		)
+		return
+	}
+	if !config.AdditionalModelInfoJSON.IsNull() && !config.AdditionalModelInfoJSON.IsUnknown() {
+		if _, _, err := modelAdditionalModelInfoJSONConfiguration(ctx, config.AdditionalModelInfoJSON, config.AdditionalModelInfo); err != nil {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("additional_model_info_json"),
+				"Invalid Semantic Model Information",
+				"The JSON object is malformed or overlaps another managed model information surface. No model plan was produced.",
+			)
+			return
+		}
+	}
+	semanticReplace, err := modelAdditionalModelInfoJSONNeedsReplacement(ctx, config.AdditionalModelInfoJSON, state.AdditionalModelInfoJSON, semanticProvenance)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("additional_model_info_json"),
+			"Invalid Semantic Model Information",
+			"The JSON object or its ownership state could not be compared safely. No model plan was produced.",
+		)
+		return
+	}
+	if !semanticProvenance.Configured && config.AdditionalModelInfoJSON.IsNull() {
+		plan.AdditionalModelInfoJSON = types.StringNull()
+	}
+	if semanticReplace {
+		if config.AdditionalModelInfoJSON.IsNull() {
+			plan.AdditionalModelInfoJSON = types.StringUnknown()
+		}
+		resp.RequiresReplace = append(resp.RequiresReplace, path.Root("additional_model_info_json"))
+	}
 	forceOwnershipUpdate := false
 
 	stringFields := []struct {
@@ -532,11 +586,17 @@ func (r *ModelResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanR
 	if forceOwnershipUpdate {
 		plan.ID = types.StringUnknown()
 	}
-	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
-	if resp.Diagnostics.HasError() {
+	semanticRaw, err := encodeModelAdditionalModelInfoJSONProvenance(ctx, semanticProvenance)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("additional_model_info_json"), "Invalid Semantic Dictionary Provenance", "Private ownership state could not be encoded safely. No model plan was produced.")
 		return
 	}
 	resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelImportedFieldsPrivateKey, encodeModelImportedFields(importedFields))...)
+	resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelAdditionalModelInfoJSONProvenancePrivateKey, semanticRaw)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 }
 
 func (r *ModelResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -576,6 +636,26 @@ func (r *ModelResource) Create(ctx context.Context, req resource.CreateRequest, 
 	}
 	data.AdditionalModelInfoConfigured = types.BoolValue(!configuredModelInfo.IsNull() && !configuredModelInfo.IsUnknown())
 
+	var configuredModelInfoJSON types.String
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("additional_model_info_json"), &configuredModelInfoJSON)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if configuredModelInfoJSON.IsUnknown() {
+		resp.Diagnostics.AddAttributeError(path.Root("additional_model_info_json"), "Unknown Semantic Model Information", "The JSON object must be known before creating a model.")
+		return
+	}
+	data.AdditionalModelInfoJSON = configuredModelInfoJSON
+	_, semanticProvenance, err := modelAdditionalModelInfoJSONConfiguration(ctx, configuredModelInfoJSON, configuredModelInfo)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("additional_model_info_json"), "Invalid Semantic Model Information", "The JSON object is malformed or overlaps another managed model information surface. No model request was sent.")
+		return
+	}
+	semanticRaw, err := encodeModelAdditionalModelInfoJSONProvenance(ctx, semanticProvenance)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("additional_model_info_json"), "Invalid Semantic Dictionary Provenance", "Private ownership state could not be encoded safely. No model request was sent.")
+		return
+	}
 	resp.Diagnostics.Append(validateModelRequestCollections(ctx, data)...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -599,20 +679,44 @@ func (r *ModelResource) Create(ctx context.Context, req resource.CreateRequest, 
 
 	// Read back to ensure consistency using the same ownership that built the
 	// request. Additional thinking still wins when both forms are configured.
-	ownership := modelReadOwnership{topThinkingOwned: topThinkingOwned}
+	ownership := modelReadOwnership{
+		topThinkingOwned:                  topThinkingOwned,
+		additionalModelInfoJSONProvenance: semanticProvenance,
+	}
 	if err := r.readModelWithRetryOwnership(ctx, &data, 8, ownership); err != nil {
 		if finalizeErr := finalizeModelComputedDefaults(ctx, &data); finalizeErr != nil {
 			resp.Diagnostics.AddError("Model State Projection Failed", finalizeErr.Error())
+			return
+		}
+		reassertPlannedCosts(&data, &planned)
+		if semanticProvenance.Configured && errors.Is(err, errModelSemanticDictionaryProjection) {
+			if resp.Private != nil {
+				resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelAdditionalModelInfoJSONProvenancePrivateKey, semanticRaw)...)
+				resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelTopThinkingOwnedPrivateKey, []byte(strconv.FormatBool(topThinkingOwned)))...)
+				if resp.Diagnostics.HasError() {
+					return
+				}
+			}
+			resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+			resp.Diagnostics.AddAttributeError(
+				path.Root("additional_model_info_json"),
+				"Semantic Model Information Not Confirmed",
+				"LiteLLM created the model but did not return the complete owned JSON shape required for confirmation. Terraform retained the complete planned state and ownership so a later refresh can reconcile safely.",
+			)
 			return
 		}
 		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Model created but failed to read back: %s", err))
 	}
 	reassertPlannedCosts(&data, &planned)
 
-	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
-	if !resp.Diagnostics.HasError() && resp.Private != nil {
+	if resp.Private != nil {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelAdditionalModelInfoJSONProvenancePrivateKey, semanticRaw)...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelTopThinkingOwnedPrivateKey, []byte(strconv.FormatBool(topThinkingOwned)))...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
 	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
 func (r *ModelResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -631,7 +735,14 @@ func (r *ModelResource) Read(ctx context.Context, req resource.ReadRequest, resp
 	resp.Diagnostics.Append(importedFieldsDiags...)
 	topThinkingMarker, topThinkingDiags := req.Private.GetKey(ctx, modelTopThinkingOwnedPrivateKey)
 	resp.Diagnostics.Append(topThinkingDiags...)
+	semanticMarker, semanticDiags := req.Private.GetKey(ctx, modelAdditionalModelInfoJSONProvenancePrivateKey)
+	resp.Diagnostics.Append(semanticDiags...)
 	if resp.Diagnostics.HasError() {
+		return
+	}
+	semanticProvenance, err := decodeModelAdditionalModelInfoJSONProvenance(ctx, semanticMarker, data.AdditionalModelInfoJSON)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("additional_model_info_json"), "Invalid Semantic Dictionary Provenance", "Private ownership state is missing or malformed. No model read was performed.")
 		return
 	}
 	imported := string(importedMarker) == "true"
@@ -643,10 +754,11 @@ func (r *ModelResource) Read(ctx context.Context, req resource.ReadRequest, resp
 	}
 
 	importedFields := decodeModelImportedFields(importedFieldsMarker)
-	err := r.readModelWithRetryOwnership(ctx, &data, 8, modelReadOwnership{
-		imported:         imported,
-		importedFields:   importedFields,
-		topThinkingOwned: topThinkingOwned,
+	err = r.readModelWithRetryOwnership(ctx, &data, 8, modelReadOwnership{
+		imported:                          imported,
+		importedFields:                    importedFields,
+		topThinkingOwned:                  topThinkingOwned,
+		additionalModelInfoJSONProvenance: semanticProvenance,
 	})
 	if err != nil {
 		if IsNotFoundError(err) {
@@ -672,9 +784,14 @@ func (r *ModelResource) Read(ctx context.Context, req resource.ReadRequest, resp
 		data.AdditionalModelInfoConfigured = types.BoolValue(configured)
 	}
 
-	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
-	if !resp.Diagnostics.HasError() && resp.Private != nil {
+	semanticRaw, semanticErr := encodeModelAdditionalModelInfoJSONProvenance(ctx, semanticProvenance)
+	if semanticErr != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("additional_model_info_json"), "Invalid Semantic Dictionary Provenance", "Private ownership state could not be encoded safely. No model state was produced.")
+		return
+	}
+	if resp.Private != nil {
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelTopThinkingOwnedPrivateKey, []byte(strconv.FormatBool(topThinkingOwned)))...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelAdditionalModelInfoJSONProvenancePrivateKey, semanticRaw)...)
 		if imported {
 			fields := importedFields
 			for name := range modelImportedFieldsFromState(data) {
@@ -683,7 +800,11 @@ func (r *ModelResource) Read(ctx context.Context, req resource.ReadRequest, resp
 			resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelImportedFieldsPrivateKey, encodeModelImportedFields(fields))...)
 			resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelImportedPrivateKey, nil)...)
 		}
+		if resp.Diagnostics.HasError() {
+			return
+		}
 	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
 func (r *ModelResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
@@ -717,6 +838,22 @@ func (r *ModelResource) Update(ctx context.Context, req resource.UpdateRequest, 
 	}
 	data.AdditionalModelInfoConfigured = types.BoolValue(!configuredModelInfo.IsNull() && !configuredModelInfo.IsUnknown())
 
+	var configuredModelInfoJSON types.String
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("additional_model_info_json"), &configuredModelInfoJSON)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if configuredModelInfoJSON.IsUnknown() {
+		resp.Diagnostics.AddAttributeError(path.Root("additional_model_info_json"), "Unknown Semantic Model Information", "The JSON object must be known before updating a model.")
+		return
+	}
+	data.AdditionalModelInfoJSON = configuredModelInfoJSON
+	_, semanticProvenance, err := modelAdditionalModelInfoJSONConfiguration(ctx, configuredModelInfoJSON, configuredModelInfo)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("additional_model_info_json"), "Invalid Semantic Model Information", "The JSON object is malformed or overlaps another managed model information surface. No model request was sent.")
+		return
+	}
+
 	resp.Diagnostics.Append(validateModelRequestCollections(ctx, data)...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -733,7 +870,18 @@ func (r *ModelResource) Update(ctx context.Context, req resource.UpdateRequest, 
 	resp.Diagnostics.Append(priorThinkingDiags...)
 	importedFieldsMarker, importedFieldsDiags := req.Private.GetKey(ctx, modelImportedFieldsPrivateKey)
 	resp.Diagnostics.Append(importedFieldsDiags...)
+	semanticMarker, semanticDiags := req.Private.GetKey(ctx, modelAdditionalModelInfoJSONProvenancePrivateKey)
+	resp.Diagnostics.Append(semanticDiags...)
 	if resp.Diagnostics.HasError() {
+		return
+	}
+	if _, err := decodeModelAdditionalModelInfoJSONProvenance(ctx, semanticMarker, state.AdditionalModelInfoJSON); err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("additional_model_info_json"), "Invalid Semantic Dictionary Provenance", "Private ownership state is missing or malformed. No model request was sent.")
+		return
+	}
+	semanticRaw, err := encodeModelAdditionalModelInfoJSONProvenance(ctx, semanticProvenance)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("additional_model_info_json"), "Invalid Semantic Dictionary Provenance", "Private ownership state could not be encoded safely. No model request was sent.")
 		return
 	}
 	priorTopThinkingOwned := string(priorThinkingMarker) == "true"
@@ -749,7 +897,12 @@ func (r *ModelResource) Update(ctx context.Context, req resource.UpdateRequest, 
 
 	// A configured-equal imported field uses an unknown ID only to force a
 	// read-backed ownership transition. Avoid a mutation when no API field changed.
-	if modelAPIFieldsChanged(data, state) {
+	apiFieldsChanged, err := modelAPIFieldsChanged(ctx, data, state)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("additional_model_info_json"), "Invalid Semantic Model Information", "The JSON object could not be compared safely. No model request was sent.")
+		return
+	}
+	if apiFieldsChanged {
 		patchResult, err := r.patchModel(ctx, &data, &state, topThinkingOwned, priorTopThinkingOwned)
 		if err != nil {
 			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to update model: %s", err))
@@ -765,11 +918,12 @@ func (r *ModelResource) Update(ctx context.Context, req resource.UpdateRequest, 
 	}
 
 	ownership := modelReadOwnership{
-		importedFields:       decodeModelImportedFields(importedFieldsMarker),
-		topThinkingOwned:     topThinkingOwned,
-		clearedFields:        readbackClears,
-		durablyClearedFields: durablyClearedFields,
-		freshConnection:      true,
+		importedFields:                    decodeModelImportedFields(importedFieldsMarker),
+		topThinkingOwned:                  topThinkingOwned,
+		additionalModelInfoJSONProvenance: semanticProvenance,
+		clearedFields:                     readbackClears,
+		durablyClearedFields:              durablyClearedFields,
+		freshConnection:                   true,
 	}
 	// v1.98 model reads can lag durable writes across workers for several seconds.
 	if err := r.readModelAfterUpdateWithOwnership(ctx, &data, plannedData, state, 24, ownership); err != nil {
@@ -781,11 +935,15 @@ func (r *ModelResource) Update(ctx context.Context, req resource.UpdateRequest, 
 		return
 	}
 
-	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
-	if !resp.Diagnostics.HasError() && resp.Private != nil {
+	if resp.Private != nil {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelAdditionalModelInfoJSONProvenancePrivateKey, semanticRaw)...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelTopThinkingOwnedPrivateKey, []byte(strconv.FormatBool(topThinkingOwned)))...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelImportedPrivateKey, nil)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
 	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
 func (r *ModelResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
@@ -810,13 +968,16 @@ func (r *ModelResource) ImportState(ctx context.Context, req resource.ImportStat
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelImportedPrivateKey, []byte("true"))...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelImportedFieldsPrivateKey, nil)...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelTopThinkingOwnedPrivateKey, []byte("false"))...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelAdditionalModelInfoJSONProvenancePrivateKey, nil)...)
 	}
 }
 
 type modelRequestCollections struct {
-	accessGroups            []string
-	additionalLiteLLMParams map[string]string
-	additionalModelInfo     map[string]string
+	accessGroups                  []string
+	additionalLiteLLMParams       map[string]string
+	additionalModelInfo           map[string]string
+	additionalModelInfoJSON       map[string]interface{}
+	additionalModelInfoConfigured bool
 }
 
 func convertModelRequestCollections(ctx context.Context, data ModelResourceModel) (modelRequestCollections, diag.Diagnostics) {
@@ -829,6 +990,17 @@ func convertModelRequestCollections(ctx context.Context, data ModelResourceModel
 	diagnostics.Append(converted...)
 	result.additionalModelInfo, _, converted = strictTerraformStringMap(ctx, data.AdditionalModelInfo, path.Root("additional_model_info"), false)
 	diagnostics.Append(converted...)
+	semanticObject, semanticProvenance, semanticErr := modelAdditionalModelInfoJSONConfiguration(ctx, data.AdditionalModelInfoJSON, data.AdditionalModelInfo)
+	if semanticErr != nil {
+		diagnostics.AddAttributeError(
+			path.Root("additional_model_info_json"),
+			"Invalid Semantic Model Information",
+			"The JSON object is malformed, unknown, or overlaps another managed model information surface.",
+		)
+	} else {
+		result.additionalModelInfoJSON = semanticObject
+		result.additionalModelInfoConfigured = semanticProvenance.Configured
+	}
 	if diagnostics.HasError() {
 		return modelRequestCollections{}, diagnostics
 	}
@@ -979,6 +1151,13 @@ func (r *ModelResource) createOrUpdateModel(ctx context.Context, data *ModelReso
 	if !data.AdditionalModelInfo.IsNull() && !data.AdditionalModelInfo.IsUnknown() {
 		for key, value := range collections.additionalModelInfo {
 			modelInfo[key] = convertStringValue(value)
+		}
+	}
+	if collections.additionalModelInfoConfigured {
+		var overlayErr error
+		modelInfo, overlayErr = overlayModelAdditionalModelInfoJSON(ctx, modelInfo, collections.additionalModelInfoJSON)
+		if overlayErr != nil {
+			return fmt.Errorf("semantic model information overlay failed")
 		}
 	}
 
@@ -1479,6 +1658,21 @@ func (r *ModelResource) readModelWithOwnership(ctx context.Context, data *ModelR
 		data.AdditionalModelInfo = value
 	}
 
+	semanticModelInfo := modelInfo
+	if !hasModelInfo {
+		semanticModelInfo = nil
+	}
+	semanticJSON, err := reconcileModelAdditionalModelInfoJSON(
+		ctx,
+		data.AdditionalModelInfoJSON,
+		semanticModelInfo,
+		ownership.additionalModelInfoJSONProvenance,
+	)
+	if err != nil {
+		return fmt.Errorf("%w", errModelSemanticDictionaryProjection)
+	}
+	data.AdditionalModelInfoJSON = semanticJSON
+
 	// Ensure mode is never Unknown after a Read. Terraform requires all
 	// Computed attributes to resolve to a known (or null) value after apply.
 	// Wildcard routes (e.g. openai/*) may not have a mode set in the API
@@ -1818,7 +2012,7 @@ func changedModelFieldsNotConverged(planned, prior, observed ModelResourceModel)
 	return stale
 }
 
-func modelAPIFieldsChanged(planned, prior ModelResourceModel) bool {
+func modelAPIFieldsChanged(ctx context.Context, planned, prior ModelResourceModel) (bool, error) {
 	plannedValue := reflect.ValueOf(planned)
 	priorValue := reflect.ValueOf(prior)
 	modelType := plannedValue.Type()
@@ -1829,11 +2023,29 @@ func modelAPIFieldsChanged(planned, prior ModelResourceModel) bool {
 		}
 		plannedAttr, plannedOK := plannedValue.Field(i).Interface().(attr.Value)
 		priorAttr, priorOK := priorValue.Field(i).Interface().(attr.Value)
+		if name == "additional_model_info_json" {
+			plannedJSON, plannedIsString := plannedAttr.(types.String)
+			priorJSON, priorIsString := priorAttr.(types.String)
+			if plannedIsString && priorIsString && !plannedJSON.IsNull() && !plannedJSON.IsUnknown() && !priorJSON.IsNull() && !priorJSON.IsUnknown() {
+				plannedObject, plannedErr := parseSemanticDictionary(ctx, plannedJSON.ValueString())
+				priorObject, priorErr := parseSemanticDictionary(ctx, priorJSON.ValueString())
+				if plannedErr != nil || priorErr != nil {
+					return false, errors.New("semantic model information comparison failed")
+				}
+				equal, compareErr := semanticDictionaryValuesEqual(ctx, plannedObject, priorObject)
+				if compareErr != nil {
+					return false, compareErr
+				}
+				if equal {
+					continue
+				}
+			}
+		}
 		if plannedOK && priorOK && !plannedAttr.IsUnknown() && !plannedAttr.Equal(priorAttr) {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, ctx.Err()
 }
 
 func modelClearedFields(planned, prior ModelResourceModel, topThinkingOwned bool) map[string]struct{} {
@@ -2034,6 +2246,14 @@ func (r *ModelResource) patchModel(ctx context.Context, data, prior *ModelResour
 		return nil, fmt.Errorf("model request collection conversion failed")
 	}
 	modelID := data.ID.ValueString()
+	semanticModelInfoPatch := collections.additionalModelInfoJSON
+	if collections.additionalModelInfoConfigured {
+		var hydrationErr error
+		semanticModelInfoPatch, hydrationErr = r.hydrateModelAdditionalModelInfoJSONPatch(ctx, modelID, collections.additionalModelInfoJSON)
+		if hydrationErr != nil {
+			return nil, fmt.Errorf("semantic model information hydration failed")
+		}
+	}
 	customLLMProvider := data.CustomLLMProvider.ValueString()
 	baseModel := data.BaseModel.ValueString()
 	modelName := fmt.Sprintf("%s/%s", customLLMProvider, baseModel)
@@ -2129,6 +2349,13 @@ func (r *ModelResource) patchModel(ctx context.Context, data, prior *ModelResour
 	if !data.AdditionalModelInfo.IsNull() && !data.AdditionalModelInfo.IsUnknown() {
 		for key, value := range collections.additionalModelInfo {
 			modelInfo[key] = convertStringValue(value)
+		}
+	}
+	if collections.additionalModelInfoConfigured {
+		var overlayErr error
+		modelInfo, overlayErr = overlayModelAdditionalModelInfoJSON(ctx, modelInfo, semanticModelInfoPatch)
+		if overlayErr != nil {
+			return nil, fmt.Errorf("semantic model information overlay failed")
 		}
 	}
 

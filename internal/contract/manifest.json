@@ -16,7 +16,7 @@
   "provider_golden": {
     "operation_count": 108,
     "path": "internal/contractapi/testdata/provider-operations.golden.json",
-    "sha256": "d1812e43c6f4f1388ecd60bf7184b2447e4614b7d27ae594976ce915d4d65ff7"
+    "sha256": "d0dc9e71da4a639b121383eefc51d1d868c1501b55203c8c9a31b2c6587dc75d"
   },
   "provider_operations": [
     {
@@ -587,7 +587,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_model.go",
-          "line": 800
+          "line": 958
         }
       ],
       "method": "POST",
@@ -607,11 +607,15 @@
         },
         {
           "file": "internal/provider/resource_model.go",
-          "line": 1012
+          "line": 1191
         },
         {
           "file": "internal/provider/resource_model.go",
-          "line": 1014
+          "line": 1193
+        },
+        {
+          "file": "internal/provider/resource_model_semantic_dictionary.go",
+          "line": 236
         }
       ],
       "method": "GET",
@@ -626,7 +630,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_model.go",
-          "line": 996
+          "line": 1175
         }
       ],
       "method": "POST",
@@ -638,7 +642,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_model.go",
-          "line": 996
+          "line": 1175
         }
       ],
       "method": "POST",
@@ -650,7 +654,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_model.go",
-          "line": 2144
+          "line": 2371
         }
       ],
       "method": "PATCH",
