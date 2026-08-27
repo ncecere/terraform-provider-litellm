@@ -119,6 +119,10 @@ func (d *ModelsListDataSource) Read(ctx context.Context, req datasource.ReadRequ
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	if err := validateOptionalStringFilter("team_id", data.TeamID); err != nil {
+		resp.Diagnostics.AddError("Invalid Model List Filter", err.Error())
+		return
+	}
 
 	filters := modelListFilters(data.TeamID)
 	endpoint := endpointWithQuery("/model/info", filters)

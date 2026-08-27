@@ -127,7 +127,7 @@ func (d *TagsListDataSource) Read(ctx context.Context, req datasource.ReadReques
 			budgetErr = updateTagBudgetState(tagListBudgetTargets(&tag), object, false, true)
 		}
 		if budgetErr != nil {
-			resp.Diagnostics.AddError("Invalid API Response", budgetErr.Error())
+			resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned malformed tag budget data.")
 			return
 		}
 		tags = append(tags, tag)

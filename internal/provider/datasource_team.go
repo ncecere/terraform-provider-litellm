@@ -155,13 +155,10 @@ func (d *TeamDataSource) Read(ctx context.Context, req datasource.ReadRequest, r
 
 	permissionEndpoint := endpointWithQuery("/team/permissions_list", query)
 	var permissionResult map[string]interface{}
-	// Keep generated contract evidence stable without modifying scoped artifacts.
-//line internal/provider/datasource_team.go:238
 	if err := d.client.DoRequestWithResponse(ctx, "GET", permissionEndpoint, nil, &permissionResult); err != nil {
 		resp.Diagnostics.AddError("Client Error", "Unable to read team permissions: "+safeListDiagnostic(err, query))
 		return
 	}
-//line internal/provider/datasource_team.go:164
 	permissions, err := projectTeamDataSourcePermissions(permissionResult, teamID)
 	if err != nil {
 		resp.Diagnostics.AddError("Invalid Team Permissions Response", err.Error())

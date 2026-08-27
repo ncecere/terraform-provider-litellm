@@ -86,6 +86,10 @@ func (d *OrganizationsListDataSource) Read(ctx context.Context, req datasource.R
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	if err := validateOptionalStringFilter("org_alias", data.OrgAlias); err != nil {
+		resp.Diagnostics.AddError("Invalid Organization List Filter", err.Error())
+		return
+	}
 	filters := organizationListFilters(data.OrgAlias)
 	endpoint := endpointWithQuery("/organization/list", filters)
 	var rawResult json.RawMessage
@@ -125,17 +129,16 @@ func (d *OrganizationsListDataSource) Read(ctx context.Context, req datasource.R
 			resp.Diagnostics.AddError("Invalid API Response", err.Error())
 			return
 		}
-		item := OrganizationListItem{OrganizationID: identity, Blocked: types.BoolValue(false)}
+		item := OrganizationListItem{OrganizationID: identity, Blocked: types.BoolNull()}
 		item.OrganizationAlias, err = dataSourceNullableStringAt(object, "organization_alias")
 		if err != nil {
 			resp.Diagnostics.AddError("Invalid API Response", err.Error())
 			return
 		}
-		if rawBlocked, exists := object["blocked"]; exists && rawBlocked != nil {
-			if _, ok := rawBlocked.(bool); !ok {
-				resp.Diagnostics.AddError("Invalid API Response", "invalid response field blocked: expected a boolean or null")
-				return
-			}
+		item.Blocked, err = dataSourceNullableBoolAt(object, "blocked")
+		if err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", err.Error())
+			return
 		}
 		budgetID, presence, err := budgetTableID(object, table)
 		if err != nil {

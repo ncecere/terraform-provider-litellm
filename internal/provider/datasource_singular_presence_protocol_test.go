@@ -74,15 +74,15 @@ func singularPresenceCases() []singularPresenceCase {
 			body: func(mode string) string {
 				switch mode {
 				case "omit":
-					return `{"user_info":{"user_id":"presence-user"}}`
+					return `{"user_id":"presence-user","user_info":{"user_id":"presence-user"}}`
 				case "null":
-					return `{"user_info":{"user_id":"presence-user","teams":null,"max_budget":null}}`
+					return `{"user_id":"presence-user","user_info":{"user_id":"presence-user","teams":null,"max_budget":null}}`
 				case "empty":
-					return `{"user_info":{"user_id":"presence-user","user_alias":"","user_email":"","user_role":"","teams":[],"models":[],"max_budget":0,"budget_duration":"","tpm_limit":0,"rpm_limit":0,"metadata":{},"spend":0}}`
+					return `{"user_id":"presence-user","user_info":{"user_id":"presence-user","user_alias":"","user_email":"","user_role":"","teams":[],"models":[],"max_budget":0,"budget_duration":"","tpm_limit":0,"rpm_limit":0,"metadata":{},"spend":0}}`
 				case "malformed":
-					return `{"user_info":{"user_id":"presence-user","teams":["ok",1]}}`
+					return `{"user_id":"presence-user","user_info":{"user_id":"presence-user","teams":["ok",1]}}`
 				case "mismatch":
-					return `{"user_info":{"user_id":"other"}}`
+					return `{"user_id":"presence-user","user_info":{"user_id":"other"}}`
 				}
 				return ""
 			},

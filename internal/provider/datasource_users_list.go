@@ -128,6 +128,10 @@ func (d *UsersListDataSource) Read(ctx context.Context, req datasource.ReadReque
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	if err := validateOptionalStringFilter("user_role", data.UserRole); err != nil {
+		resp.Diagnostics.AddError("Invalid User List Filter", err.Error())
+		return
+	}
 
 	filters := userListFilters(data.UserRole)
 	users, err := listUsers(ctx, d.client, filters)

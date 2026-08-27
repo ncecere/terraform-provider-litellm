@@ -144,6 +144,12 @@ func (d *KeysListDataSource) Read(ctx context.Context, req datasource.ReadReques
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	for name, value := range map[string]types.String{"team_id": data.TeamID, "user_id": data.UserID} {
+		if err := validateOptionalStringFilter(name, value); err != nil {
+			resp.Diagnostics.AddError("Invalid Key List Filter", err.Error())
+			return
+		}
+	}
 
 	filters := keyListFilters(data.TeamID, data.UserID)
 
@@ -238,14 +244,14 @@ func decodeKeyListItem(raw json.RawMessage) (KeyListItem, error) {
 		if !ok {
 			return KeyListItem{}, fmt.Errorf("/key/list returned a key string without a valid SHA256 management hash")
 		}
-		return KeyListItem{KeyName: types.StringValue(canonicalHash), Blocked: types.BoolValue(false)}, nil
+		return KeyListItem{KeyName: types.StringValue(canonicalHash), Blocked: types.BoolNull()}, nil
 	}
 
 	keyMap, err := decodeListObject(trimmed, "/key/list", "key item")
 	if err != nil {
 		return KeyListItem{}, err
 	}
-	item := KeyListItem{Blocked: types.BoolValue(false)}
+	item := KeyListItem{Blocked: types.BoolNull()}
 	token, ok := keyMap["token"].(string)
 	canonicalHash, validHash := canonicalSHA256ManagementHash(token)
 	if !ok || !validHash {

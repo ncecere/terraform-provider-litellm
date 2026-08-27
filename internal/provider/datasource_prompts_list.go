@@ -252,10 +252,7 @@ func fetchPromptListItems(ctx context.Context, client *Client, environment strin
 		var raw map[string]interface{}
 		err := client.DoRequestWithResponse(ctx, "GET", promptEndpoint(promptID, environment, nil), nil, &raw)
 		if err != nil {
-			if isPromptAbsentError(err) {
-				continue
-			}
-			return nil, err
+			return nil, fmt.Errorf("prompt inventory enrichment failed")
 		}
 		spec, ok := raw["prompt_spec"].(map[string]interface{})
 		if !ok {
@@ -291,8 +288,12 @@ func (d *PromptsListDataSource) Read(ctx context.Context, req datasource.ReadReq
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	if err := validateOptionalStringFilter("environment", data.Environment); err != nil {
+		resp.Diagnostics.AddError("Invalid Prompt List Filter", err.Error())
+		return
+	}
 
-	environmentConfigured := !data.Environment.IsNull() && !data.Environment.IsUnknown()
+	environmentConfigured := !data.Environment.IsNull()
 	environment := data.Environment.ValueString()
 	prompts, err := fetchPromptListItems(ctx, d.client, environment, environmentConfigured)
 	if err != nil {

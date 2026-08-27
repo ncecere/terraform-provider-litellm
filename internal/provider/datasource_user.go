@@ -139,22 +139,19 @@ func (d *UserDataSource) Read(ctx context.Context, req datasource.ReadRequest, r
 		return
 	}
 
-	userInfo := result
-	if raw, presence, err := apiValueAt(result, "user_info"); err != nil {
-		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+	rootUserID, err := dataSourceRequiredStringAt(result, "user_id")
+	if err != nil || rootUserID.ValueString() != userID {
+		resp.Diagnostics.AddError("Invalid API Response", "User response root identity did not match the requested user.")
 		return
-	} else if presence == apiValuePresent {
-		var ok bool
-		userInfo, ok = raw.(map[string]interface{})
-		if !ok {
-			resp.Diagnostics.AddError("Invalid API Response", dataSourceShapeError([]string{"user_info"}, "an object or null").Error())
-			return
-		}
 	}
-
+	userInfo, err := dataSourceRequiredObjectAt(result, "user_info")
+	if err != nil || len(userInfo) == 0 {
+		resp.Diagnostics.AddError("Invalid API Response", "User response omitted the required user_info object.")
+		return
+	}
 	actualUserID, err := dataSourceRequiredStringAt(userInfo, "user_id")
-	if err != nil || actualUserID.ValueString() != userID {
-		resp.Diagnostics.AddError("Invalid API Response", "User response identity did not match the requested user.")
+	if err != nil || actualUserID.ValueString() != userID || !actualUserID.Equal(rootUserID) {
+		resp.Diagnostics.AddError("Invalid API Response", "User response nested identity did not match the requested user.")
 		return
 	}
 	data := UserDataSourceModel{ID: actualUserID, UserID: config.UserID}
