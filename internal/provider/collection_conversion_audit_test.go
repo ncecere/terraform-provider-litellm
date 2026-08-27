@@ -109,6 +109,11 @@ func responseDiagnosticsReturn() {
 	resp.Diagnostics.Append(diagnostics...)
 	if resp.Diagnostics.HasError() { return }
 }
+func nilErrorReturn() error {
+	list, diagnostics := types.ListValue(elementType, elements)
+	if diagnostics.HasError() { return nil }
+	return nil
+}
 `
 	if err := os.WriteFile(filepath.Join(directory, "fixture.go"), []byte(source), 0o600); err != nil {
 		t.Fatal(err)
@@ -122,7 +127,7 @@ func responseDiagnosticsReturn() {
 		"ignored ElementsAs diagnostics":                 1,
 		"ignored Object.As diagnostics":                  1,
 		"discarded ListValue constructor diagnostics":    1,
-		"unchecked ListValue constructor diagnostics":    7,
+		"unchecked ListValue constructor diagnostics":    8,
 		"discarded SetValueFrom constructor diagnostics": 1,
 		"discarded SetValue constructor diagnostics":     1,
 		"discarded MapValue constructor diagnostics":     1,
@@ -407,8 +412,13 @@ func collectionAuditBlockPropagatesFailure(block *ast.BlockStmt, checkedContaine
 		if !ok {
 			continue
 		}
-		if len(returned.Results) > 0 || strings.HasSuffix(checkedContainer, ".Diagnostics") {
+		if strings.HasSuffix(checkedContainer, ".Diagnostics") {
 			return true
+		}
+		for _, result := range returned.Results {
+			if identifier, ok := result.(*ast.Ident); !ok || identifier.Name != "nil" {
+				return true
+			}
 		}
 	}
 	return false
