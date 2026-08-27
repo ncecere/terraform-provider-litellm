@@ -16,6 +16,7 @@ from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 
 PROVIDER_SOURCE = "registry.terraform.io/ncecere/litellm"
+OPENTOFU_PROVIDER_SOURCE = "registry.opentofu.org/ncecere/litellm"
 _COLLECTION_MODES = {"list", "set", "map"}
 _NESTING_MODES = {"single", *_COLLECTION_MODES}
 _MISSING = object()
@@ -1060,12 +1061,17 @@ def load_json(path: Path) -> Any:
         raise UpgradeStateError("unable to read strict JSON input") from error
 
 
+def _current_provider_schema(schema_document: Mapping[str, Any]) -> Mapping[str, Any]:
+    provider_schemas = _mapping(schema_document.get("provider_schemas"), "provider_schemas")
+    matches = [source for source in (PROVIDER_SOURCE, OPENTOFU_PROVIDER_SOURCE) if source in provider_schemas]
+    if len(matches) != 1:
+        raise UpgradeStateError("current provider schema must have one exact supported source")
+    return _mapping(provider_schemas[matches[0]], "provider schema")
+
+
 def compare_files(args: argparse.Namespace) -> int:
     schema_document = _mapping(load_json(Path(args.schema)), "schema document")
-    provider_schemas = _mapping(schema_document.get("provider_schemas"), "provider_schemas")
-    if PROVIDER_SOURCE not in provider_schemas:
-        raise UpgradeStateError("current provider schema is absent")
-    provider_schema = provider_schemas[PROVIDER_SOURCE]
+    provider_schema = _current_provider_schema(schema_document)
     matrix = _mapping(load_json(Path(args.matrix)), "matrix")
     before, after = load_json(Path(args.before)), load_json(Path(args.after))
     rows = canonicalize_resources(before, provider_schema)
@@ -1099,12 +1105,10 @@ def compare_files(args: argparse.Namespace) -> int:
 
 def review_plan_files(args: argparse.Namespace) -> int:
     schema_document = _mapping(load_json(Path(args.schema)), "schema document")
-    provider_schemas = _mapping(schema_document.get("provider_schemas"), "provider_schemas")
-    if PROVIDER_SOURCE not in provider_schemas:
-        raise UpgradeStateError("current provider schema is absent")
+    provider_schema = _current_provider_schema(schema_document)
     matrix = _mapping(load_json(Path(args.matrix)), "matrix")
     triggered = review_upgrade_plan(
-        load_json(Path(args.plan)), provider_schemas[PROVIDER_SOURCE], matrix
+        load_json(Path(args.plan)), provider_schema, matrix
     )
     if triggered:
         if triggered != {args.resource_type}:
@@ -1115,7 +1119,7 @@ def review_plan_files(args: argparse.Namespace) -> int:
             _exclusive_json_write(
                 Path(args.private_trigger_baseline),
                 private_trigger_plan_baseline(
-                    load_json(Path(args.plan)), provider_schemas[PROVIDER_SOURCE],
+                    load_json(Path(args.plan)), provider_schema,
                     matrix, args.resource_type,
                 ),
             )

@@ -429,8 +429,8 @@ func TestFallbackDeleteRetainsStateWhenDelete404DisagreesWithGET(t *testing.T) {
 			t.Fatalf("delete diagnostic exposed %q: %s", forbidden, diagnostic)
 		}
 	}
-	if !strings.Contains(diagnostic, "Fallback Delete Unconfirmed") {
-		t.Fatalf("delete diagnostic was not actionable: %s", diagnostic)
+	if !strings.Contains(diagnostic, "Fallback Delete Unconfirmed") || !strings.Contains(diagnostic, fallbackDeleteStillPresentDiagnostic) {
+		t.Fatalf("delete diagnostic did not classify authoritative retained presence: %s", diagnostic)
 	}
 }
 
@@ -482,8 +482,12 @@ func TestFallbackDeleteConfirmationHonorsCancellation(t *testing.T) {
 	if !response.Diagnostics.HasError() || response.State.Raw.IsNull() {
 		t.Fatalf("cancelled confirmation did not retain state: diagnostics=%v", response.Diagnostics)
 	}
-	if !strings.Contains(fmt.Sprint(response.Diagnostics), "Fallback Delete Unconfirmed") {
+	diagnostic := fmt.Sprint(response.Diagnostics)
+	if !strings.Contains(diagnostic, "Fallback Delete Unconfirmed") {
 		t.Fatalf("cancellation diagnostic was not actionable: %v", response.Diagnostics)
+	}
+	if strings.Contains(diagnostic, fallbackDeleteStillPresentDiagnostic) {
+		t.Fatalf("cancellation was misclassified as authoritative retained presence: %v", response.Diagnostics)
 	}
 }
 

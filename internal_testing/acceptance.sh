@@ -8,6 +8,10 @@ REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
 API_BASE=http://localhost:4000
 CLI_VERSION=$(terraform version 2>/dev/null | sed -n '1{s/^[^0-9]*//;s/[^0-9.].*$//;p;}')
 CLI_SUPPORTS_111=$(python3 -c 'import sys; p=tuple(int(v) for v in sys.argv[1].split(".")); print(1 if p >= (1, 11, 0) else 0)' "${CLI_VERSION:-0.0.0}")
+# Supplemental/skip controls are assigned only by the exact cases below; an
+# ambient environment cannot suppress evidence or detach a managed address.
+unset SMOKE_SUPPLEMENTAL_ONLY SMOKE_FALLBACK_DELETE_UNSUPPORTED SMOKE_FALLBACK_DELETE_ADDRESS SMOKE_FALLBACK_IMPORT
+unset SMOKE_DIAGNOSTIC_OUTPUT SMOKE_LOG_OVERRIDE
 
 if [ "$ASSEMBLY_ONLY" != "1" ]; then
   if [ "${TF_ACC:-}" != "1" ]; then
@@ -50,7 +54,7 @@ emit_controlled_record() {
   set -- --session "$MATRIX_EVIDENCE_SESSION" --name "$category:$subject" --category "$category" \
     --status "$status" --assertion "$assertion" --evidence "$evidence"
   [ -z "$reason" ] || set -- "$@" --reason "$reason"
-  [ -z "$diagnostic" ] || set -- "$@" --diagnostic-code "$diagnostic"
+  [ -z "$diagnostic" ] || set -- "$@" --diagnostic-code "$diagnostic" --diagnostic-evidence "$evidence"
   python3 "$MATRIX_HARNESS" record-observation "$@"
 }
 
@@ -75,9 +79,18 @@ run_credential_import_case() {
   SMOKE_ASSEMBLY_ONLY=$ASSEMBLY_ONLY SMOKE_CREDENTIAL_IMPORT=1 sh "$REPO_ROOT/internal_testing/smoke.sh" "$REPO_ROOT" resources credential_import.tf
 }
 
+run_fallback_case() {
+  printf '\n===== ACCEPTANCE: fallback =====\n'
+  SMOKE_ASSEMBLY_ONLY=$ASSEMBLY_ONLY SMOKE_FALLBACK_DELETE_UNSUPPORTED=1 \
+    SMOKE_FALLBACK_DELETE_ADDRESS=litellm_fallback.minimal \
+    sh "$REPO_ROOT/internal_testing/smoke.sh" "$REPO_ROOT" resources fallback_minimal.tf datasources fallback.tf
+}
+
 run_fallback_import_case() {
   printf '\n===== ACCEPTANCE: fallback_special_identity_import =====\n'
-  SMOKE_ASSEMBLY_ONLY=$ASSEMBLY_ONLY SMOKE_FALLBACK_IMPORT=1 sh "$REPO_ROOT/internal_testing/smoke.sh" "$REPO_ROOT" resources fallback_import.tf
+  SMOKE_ASSEMBLY_ONLY=$ASSEMBLY_ONLY SMOKE_FALLBACK_IMPORT=1 SMOKE_SUPPLEMENTAL_ONLY=1 \
+    SMOKE_FALLBACK_DELETE_UNSUPPORTED=1 SMOKE_FALLBACK_DELETE_ADDRESS='litellm_fallback.fallback_imported[0]' \
+    sh "$REPO_ROOT/internal_testing/smoke.sh" "$REPO_ROOT" resources fallback_import.tf
 }
 
 run_mcp_import_case() {
@@ -101,7 +114,7 @@ run_case credential_values resources credential_minimal.tf,credential_full.tf da
 run_case credential_model resources credential_model.tf datasources credential_by_model.tf
 run_credential_update_case
 run_credential_import_case
-run_case fallback resources fallback_minimal.tf datasources fallback.tf
+run_fallback_case
 run_fallback_import_case
 run_case guardrail resources guardrail_minimal.tf datasources guardrail.tf,guardrails_list.tf
 run_case guardrail_structured_mode resources guardrail_full.tf
@@ -110,25 +123,28 @@ if [ "$CLI_SUPPORTS_111" = "1" ]; then
   emit_controlled_record optional_feature send_invite_email passed
   printf '\n===== ACCEPTANCE: key_write_only =====\n'
   keywo_log="$SMOKE_PRIVATE_ROOT/.smoke-logs/key-write-only-attempt.log"
-  rm -f "$keywo_log"
+  keywo_command_log="$SMOKE_PRIVATE_ROOT/.smoke-logs/key-write-only-attempt.command.log"
+  rm -f "$keywo_log" "$keywo_command_log"
   set +e
-  SMOKE_LOG_OVERRIDE=$keywo_log sh "$REPO_ROOT/internal_testing/smoke.sh" "$REPO_ROOT" resources key_write_only.tf
+  SMOKE_LOG_OVERRIDE=$keywo_log SMOKE_DIAGNOSTIC_OUTPUT=$keywo_command_log \
+    sh "$REPO_ROOT/internal_testing/smoke.sh" "$REPO_ROOT" resources key_write_only.tf
   keywo_status=$?
   set -e
   if [ "$keywo_status" -eq 0 ]; then
     emit_controlled_record optional_feature key_wo passed
   else
-    python3 - "$keywo_log" <<'PY'
+    python3 - "$keywo_command_log" <<'PY'
 from pathlib import Path
 import re,sys
 text=Path(sys.argv[1]).read_text(encoding="utf-8",errors="replace")
 if len(text.encode()) > 2*1024*1024: raise SystemExit(1)
 normalized=re.sub(r"\s+"," ",text)
-if text.count("Error: Write-Only Key Creation Error") != 1: raise SystemExit(1)
+titles=[line.strip() for line in text.splitlines() if line.strip().startswith("Error:")]
+if titles != ["Error: Write-Only Key Creation Error"]: raise SystemExit(1)
 if "LiteLLM returned HTTP 400 while creating the write-only key." not in normalized: raise SystemExit(1)
 if "response body was omitted" not in normalized: raise SystemExit(1)
 PY
-    emit_controlled_record optional_feature key_wo skipped api-endpoint-unavailable key-write-only-endpoint-unavailable "$keywo_log"
+    emit_controlled_record optional_feature key_wo skipped api-endpoint-unavailable key-write-only-endpoint-unavailable "$keywo_command_log"
   fi
   run_case jwt_key_mapping resources key_minimal.tf,jwt_key_mapping.tf datasources jwt_key_mapping.tf,jwt_key_mappings_list.tf
   emit_controlled_record optional_feature jwt_key_mapping_key_wo passed

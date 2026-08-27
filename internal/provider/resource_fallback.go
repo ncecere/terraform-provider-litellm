@@ -38,6 +38,10 @@ func NewFallbackResource() resource.Resource {
 	return &FallbackResource{}
 }
 
+var errFallbackDeleteStillPresent = errors.New("fallback remained present after the bounded deletion confirmation")
+
+const fallbackDeleteStillPresentDiagnostic = "LiteLLM's authoritative fallback GET remained present after the bounded DELETE confirmation. Terraform state was retained."
+
 type FallbackResource struct {
 	client             *Client
 	readMaxAttempts    int
@@ -188,6 +192,10 @@ func (r *FallbackResource) Delete(ctx context.Context, req resource.DeleteReques
 	// returns the fallback. Never interpret the DELETE status alone as absence:
 	// doing so would remove Terraform state while leaving live routing config.
 	if confirmationErr := r.confirmFallbackDeleted(ctx, &data, fallbackDeleteMaxAttempts); confirmationErr != nil {
+		if errors.Is(confirmationErr, errFallbackDeleteStillPresent) && (deleteErr == nil || IsNotFoundError(deleteErr)) {
+			resp.Diagnostics.AddError("Fallback Delete Unconfirmed", fallbackDeleteStillPresentDiagnostic)
+			return
+		}
 		diagnosticErr := confirmationErr
 		operation := "confirm deletion of"
 		if deleteErr != nil && !IsNotFoundError(deleteErr) {
@@ -330,7 +338,7 @@ func (r *FallbackResource) confirmFallbackDeleted(ctx context.Context, data *Fal
 			return err
 		}
 		if attempt == maxAttempts-1 {
-			return fmt.Errorf("fallback remained present after the bounded deletion confirmation")
+			return errFallbackDeleteStillPresent
 		}
 		if delay > 0 {
 			timer := time.NewTimer(delay)

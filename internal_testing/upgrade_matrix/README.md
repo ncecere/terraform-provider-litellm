@@ -14,11 +14,13 @@ The harness compares the checked-in inventory to provider registration:
 - 2 controlled-fault recovery scenarios; and
 - 1 current-provider-only MCP immediate-import/no-drift/private-provenance assertion folded into the existing `import:litellm_mcp_server` scenario (never added as a fourth documentation scenario).
 
-The execution matrix is exactly 166 scenarios. The Terraform 1.11.4 local lane is contractually 156 passes and 10 exact, reason-bound skips. Assembly validates inventory, HCL formatting, provider schemas, computed-migration masks, and the separate reviewed private-plan-trigger contract. Its execution-category pass counts are always zero. Enterprise, unavailable API, pre-1.11 features, and resources absent from signed v2.0.1 are explicit skips with controlled reasons; they are never counted as passes. Local execution fails if any resource, data source, or required category lacks one result.
+The execution matrix is exactly 166 scenarios. Modern CLI lanes have 10 exact mandatory skips plus zero, one, or two fallback skips based only on observed authoritative deletion outcomes (154–156 passes and 10–12 skips). Pre-1.11 lanes have 18 exact mandatory skips, exactly one of two Agent import representation/role outcomes, and the same zero-to-two fallback outcomes (145–147 passes and 19–21 skips). Assembly validates inventory, HCL formatting, provider schemas, computed-migration masks, and the separate reviewed private-plan-trigger contract. Its execution-category pass counts are always zero. Enterprise, unavailable API, pre-1.11 features, and resources absent from signed v2.0.1 are explicit skips with controlled reasons; they are never counted as passes. Local execution fails if any resource, data source, or required category lacks one result.
+
+Fallback resource coverage, data-source reads, refresh, and no-drift remain execution-backed. Pinned LiteLLM v1.98 cannot reliably delete a fallback: DELETE can return 404 while exact GET remains 200. A failed delete is skippable only when the provider emits its dedicated safe authoritative-GET-retained-presence diagnostic and an immediately consecutive supervised refresh-only command and state capture prove that the same complete fallback identity and values remain present; the phase embeds the failed-delete, refresh, and state command receipts and exact order. Authentication, connectivity, timeout, cancellation, malformed response, uncertain GET, operational delete failure, or stale evidence abort instead. A confirmed successful delete and authoritative absence are reported as a pass, never a capability skip. Failed lifecycle and import-cleanup observations use the exact `fallback-delete-not-authoritative` reason linked to provider #265 and LiteLLM #38425. Upgrade-fixture teardown may detach only the exact fallback address after the same typed diagnostic, a successful authoritative refresh, complete value equality, and an exact singleton state listing. The local disposable stack is the only cleanup boundary for an unrepresentable remote deletion; the harness never counts a detached fallback as destroyed.
 
 ## Provenance
 
-`tools.lock.json` pins Terraform 1.1.0/1.11.4 and OpenTofu 1.6.3/1.11.1 archives. It also pins the v2.0.1 Registry metadata, release key, full fingerprint, detached signature, checksum manifest, Registry manifest, archives, and extracted executable digests.
+`tools.lock.json` pins Terraform 1.1.0/1.11.4 and OpenTofu 1.6.3/1.11.1 archives. It also pins the v2.0.1 Registry metadata, release key, full fingerprint, detached signature, checksum manifest, Registry manifest, archives, extracted executable digests, and the exact previous-provider schema digest emitted by each CLI lane. Terraform 1.1 serializes that schema differently from the other three pinned CLIs, so one cross-CLI schema hash would be a false pin.
 
 The installer:
 
@@ -29,7 +31,7 @@ The installer:
 5. verifies `SHA256SUMS.sig` against fingerprint `C753834A70062246C92CEF56F0A1AEC231353F8B` in a fresh GnuPG home;
 6. trusts archive and manifest checksums only after signature verification;
 7. extracts into a fresh private directory while rejecting links and unsafe paths; and
-8. verifies the exact executable name and digest before constructing the mirror.
+8. verifies the exact executable name and digest before constructing byte-identical `registry.terraform.io` and `registry.opentofu.org` mirror entries. OpenTofu 1.6 rewrites provider state to its registry hostname, so generated OpenTofu upgrade modules use that hostname while Terraform modules retain the published Terraform Registry source. Both exact signed-cache paths and both dev overrides are required for offline schema/state inspection.
 
 Every current-provider dev override receives a dedicated private directory containing exactly one verified executable. The redacted report and safe evidence ledger contain only controlled enums, bounded integers, HMAC-authenticated receipts, commit/digest provenance, and exact canonical schema fingerprints. The ephemeral ledger signing key and raw command output, plans, state, IDs, endpoints, and API assertions stay in bounded mode-0700 scratch storage. The key is securely unlinked after every cleanup attempt. Successful reports remove all raw scratch material; failed execution retains bounded diagnostics or recovery state without the session key.
 
@@ -44,7 +46,7 @@ python3 -m unittest discover -s internal_testing/upgrade_matrix/tests -p 'test_*
 sh internal_testing/upgrade_matrix/tests/safety_test.sh
 ```
 
-Reports are strict schema-version 3 JSON. They reject arbitrary fields and diagnostics, protected field names, secrets, credentials, UUIDs, URLs, response bodies, and filesystem paths. Diagnostic titles are scenario-specifically mapped to controlled codes. Publication opens or creates every path component relative to retained directory FDs with `O_NOFOLLOW`, then uses an exclusive temporary file, file/directory `fsync`, and atomic create-only linking. Existing destinations, symlink ancestors, and mid-operation ancestor swaps fail or remain confined to the already opened directory.
+Reports are strict schema-version 3 JSON. They reject arbitrary fields and diagnostics, protected field names, secrets, credentials, UUIDs, URLs, response bodies, and filesystem paths. Diagnostic titles are scenario-specifically mapped to controlled codes. Every diagnostic observation supplies the exact bounded command-output artifact; the harness reconstructs the supervisor's domain-separated `exit_code || output` result digest, requires one matching failed-command receipt, and folds that artifact into the assertion digest. An unrelated earlier or later failure cannot satisfy the diagnostic record. Publication opens or creates every path component relative to retained directory FDs with `O_NOFOLLOW`, then uses an exclusive temporary file, file/directory `fsync`, and atomic create-only linking. Existing destinations, symlink ancestors, and mid-operation ancestor swaps fail or remain confined to the already opened directory.
 
 A local execution writes both `result.json` and `result.evidence.jsonl`. The latter is the redacted, digest-only audit ledger; it is safe to preserve with the report. Data-source completion is derived from an immediately captured successful refresh-only command, the exact Terraform configuration catalog, complete refreshed state, and a final detailed-exitcode zero-drift plan. Eager reads absent from initial plan changes therefore remain execution-backed. Phase-only records, fabricated TSV, or matrix-only claims cannot publish a report.
 
@@ -64,7 +66,7 @@ sh internal_testing/upgrade_matrix/run.sh local
 internal_testing/compose.sh down -v
 ```
 
-The runtime-parity gate retains one digest-bound #210 exception from the two reviewed test-branch bases for exactly the Agent resource, Agent lifecycle, and Agent ownership protocol-test files; a different path or patch byte fails, and the exception is inert once the change is in the event base. Repository-owned non-PR workflow jobs execute this lane against a new local backend with all four pinned CLIs. Pull requests and forks run assembly only. Tag releases run all four full lanes against the exact tagged SHA before GPG import, build, or signing; each gate job has read-only contents permission and a wall timeout. There is no workflow-enabled remote mutation lane; adding one requires a separate future gate and reviewed scenario allowlist.
+The runtime-parity gate retains one digest-bound #210 exception from the reviewed integration bases for exactly the reviewed Agent ownership/lifecycle paths and the fallback retained-presence diagnostic classification paths; a different path or patch byte fails, and the exception is inert once the change is in the event base. Repository-owned non-PR workflow jobs execute this lane against a new local backend with all four pinned CLIs. Pull requests and forks run assembly only. Tag releases run all four full lanes against the exact tagged SHA before GPG import, build, or signing; each gate job has read-only contents permission and a wall timeout. There is no workflow-enabled remote mutation lane; adding one requires a separate future gate and reviewed scenario allowlist.
 
 ## Import ownership
 
@@ -76,9 +78,11 @@ Owned-object import tests use two workspaces and a cryptographically random name
 - the producer destroys everything it owns; and
 - a source-free re-import must fail with an exact provider/API endpoint absence diagnostic (including LiteLLM v1.98's bounded 400 absence on affected info routes), never a plan/address/configuration error.
 
-The agent import limitation is skippable only when the bounded refresh returns the exact allowlisted role-redaction diagnostic/status. Every other agent or import failure aborts the lane.
+The agent import limitation is skippable only when the bounded refresh returns either the exact allowlisted role-redaction diagnostic/status or, on a CLI below 1.11, the exact Core diagnostic proving that an imported API-owned `agent_card.provider` block cannot remain publicly observable while configuration omits it. The latter is a protocol-representation limitation, not remote absence or provider success; CLI 1.11 and later may not use that skip. Every other agent or import failure aborts the lane.
 
-A genuine-preexisting mode may only detach imported state and must never call destroy. It is not inferred from the owned producer mode.
+A genuine-preexisting mode may only detach its exact manifest-bound imported address and must never call destroy. Failure cleanup applies the same rule: importer state may contain producer-owned dependency snapshots, but only `IMPORT_ADDRESS` can be detached, and every other importer address must match producer state. Unknown addresses fail closed and remain in the private recovery workspace.
+
+A genuine-preexisting mode is not inferred from the owned producer mode.
 
 ## Replacement and recovery
 

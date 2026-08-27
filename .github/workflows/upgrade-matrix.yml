@@ -84,6 +84,8 @@ jobs:
       - name: Python safety and assembly tests
         run: python3 -m unittest discover -s internal_testing/upgrade_matrix/tests -p 'test_*.py'
       - name: Shell safety tests
+        env:
+          MATRIX_CLI: ${{ runner.temp }}/tools/${{ matrix.product }}/${{ matrix.version }}/linux_amd64/${{ matrix.executable }}
         run: sh internal_testing/upgrade_matrix/tests/safety_test.sh
       - name: Non-destructive offline assembly
         run: mkdir -m 700 "$RUNNER_TEMP/reports"
@@ -94,7 +96,7 @@ jobs:
           MATRIX_REPORT: ${{ runner.temp }}/reports/upgrade-matrix-${{ matrix.product }}-${{ matrix.version }}.json
         run: sh internal_testing/upgrade_matrix/run.sh assembly
       - name: Publish concise scenario summary
-        if: ${{ !cancelled() }}
+        if: ${{ success() }}
         run: |
           {
             echo '## Issue #210 assembly'

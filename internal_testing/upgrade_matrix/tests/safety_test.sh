@@ -30,6 +30,15 @@ grep -q 'upgrade-private-plan-trigger-migration' "$SCRIPT_DIR/run.sh"
 grep -q 'upgrade-reviewed-private-migration' "$SCRIPT_DIR/harness.py"
 grep -q '"litellm_agent": \["id"\]' "$SCRIPT_DIR/matrix.json"
 grep -q 'terraform validate' "$REPO_ROOT/internal_testing/smoke.sh"
+grep -q 'unset SMOKE_SUPPLEMENTAL_ONLY SMOKE_FALLBACK_DELETE_UNSUPPORTED SMOKE_FALLBACK_DELETE_ADDRESS SMOKE_FALLBACK_IMPORT' "$REPO_ROOT/internal_testing/acceptance.sh"
+grep -q 'terraform state rm "$fallback_delete_address"' "$REPO_ROOT/internal_testing/smoke.sh"
+grep -q 'validate_fixture_name "$file"' "$REPO_ROOT/internal_testing/smoke.sh"
+grep -q 'scenario command evidence is not bound to one exact' "$SCRIPT_DIR/harness.py"
+grep -q 'run_cli state rm "$IMPORT_ADDRESS"' "$SCRIPT_DIR/run.sh"
+grep -q 'registry.opentofu.org/ncecere/litellm' "$REPO_ROOT/internal_testing/smoke.sh"
+grep -q 'registry.opentofu.org/ncecere/litellm' "$SCRIPT_DIR/run.sh"
+grep -q 'opentofu-\*) provider_source=registry.opentofu.org/ncecere/litellm' "$SCRIPT_DIR/run.sh"
+grep -q "litellm_fallback.minimal|'litellm_fallback.fallback_imported\[0\]'" "$REPO_ROOT/internal_testing/smoke.sh"
 if grep -q 'litellm_api_base=http://127.0.0.1:1' "$SCRIPT_DIR/run.sh"; then
   echo 'failure recovery uses a dead base URL instead of the controlled proxy' >&2
   exit 1

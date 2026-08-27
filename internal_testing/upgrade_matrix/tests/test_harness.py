@@ -1,6 +1,8 @@
+import hashlib
 import importlib.util
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -38,6 +40,10 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(len(matrix["data_sources"]), 35)
         self.assertEqual(sum(matrix["scenario_counts"].values()) + len(matrix["optional_features"]), 166)
         self.assertEqual(len(matrix["terraform_1_11_4_expected_skips"]), 10)
+        self.assertEqual(len(matrix["terraform_1_11_4_conditional_skips"]), 2)
+        fallback = next(item for item in matrix["resources"] if item["type"] == "litellm_fallback")
+        self.assertEqual(fallback["lifecycle_skip_reason"], "fallback-delete-not-authoritative")
+        self.assertEqual(fallback["import_skip_reason"], "fallback-delete-not-authoritative")
         self.assertEqual(sum(bool(item["action"]) for item in matrix["resources"]), 2)
         self.assertEqual(
             matrix["upgrade_expected_private_plan_triggers"],
@@ -59,6 +65,58 @@ class HarnessTests(unittest.TestCase):
         self.assertIn(
             "upgrade-private-plan-trigger-migration", harness.ASSERTION_CODES
         )
+
+    def test_diagnostic_evidence_binds_exact_failed_command_result(self):
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "diagnostic"
+            payload = b"Error: reviewed\n"
+            path.write_bytes(payload)
+            exit_code = 1
+            digest = hashlib.sha256(
+                b"issue210-result-v1\0" + exit_code.to_bytes(4, "big", signed=True) + payload
+            ).hexdigest()
+            command = {"command_sha256": "1" * 64, "result_sha256": digest, "exit_code": exit_code}
+            unrelated = {"command_sha256": "2" * 64, "result_sha256": "3" * 64, "exit_code": 1}
+            self.assertIs(harness._command_for_diagnostic([unrelated, command], path), command)
+            path.write_bytes(payload + b"extra")
+            with self.assertRaises(harness.HarnessError):
+                harness._command_for_diagnostic([unrelated, command], path)
+            path.write_bytes(payload)
+            command["exit_code"] = 0
+            with self.assertRaises(harness.HarnessError):
+                harness._command_for_diagnostic([command], path)
+            success_digest = hashlib.sha256(
+                b"issue210-result-v1\0" + (0).to_bytes(4, "big", signed=True) + payload
+            ).hexdigest()
+            success = {"command_sha256": "4" * 64, "result_sha256": success_digest, "exit_code": 0}
+            self.assertIs(harness._command_for_output([success], path, require_failed=False), success)
+            for failure_exit in (1, 22, 124, 130):  # API 500/401, timeout/connectivity, cancellation
+                failed_digest = hashlib.sha256(
+                    b"issue210-result-v1\0" + failure_exit.to_bytes(4, "big", signed=True) + payload
+                ).hexdigest()
+                failed = {"command_sha256": "5" * 64, "result_sha256": failed_digest, "exit_code": failure_exit}
+                with self.assertRaises(harness.HarnessError):
+                    harness._command_for_output([failed], path, require_failed=False)
+
+    def test_fallback_presence_requires_exact_consecutive_command_sequence(self):
+        old = {"command_sha256": "0" * 64}
+        delete = {"command_sha256": "1" * 64}
+        refresh = {"command_sha256": "2" * 64}
+        state = {"command_sha256": "3" * 64}
+        harness._require_consecutive_fallback_commands(
+            [old, delete, refresh, state], delete, refresh, state,
+            "1" * 64, "2" * 64, "3" * 64,
+        )
+        with self.assertRaises(harness.HarnessError):
+            harness._require_consecutive_fallback_commands(
+                [delete, old, refresh, state], delete, refresh, state,
+                "1" * 64, "2" * 64, "3" * 64,
+            )
+        with self.assertRaises(harness.HarnessError):
+            harness._require_consecutive_fallback_commands(
+                [delete, refresh, state, old], delete, refresh, state,
+                "1" * 64, "2" * 64, "3" * 64,
+            )
 
     def test_private_migration_report_code_is_controlled_and_scan_safe(self):
         scenario = {
@@ -112,7 +170,11 @@ class HarnessTests(unittest.TestCase):
         key = tools["previous_provider"]["signing_key"]
         self.assertEqual(key["fingerprint"], "C753834A70062246C92CEF56F0A1AEC231353F8B")
         self.assertRegex(tools["previous_provider"]["signature_sha256"], r"^[0-9a-f]{64}$")
-        self.assertRegex(tools["previous_provider"]["schema_sha256"], r"^[0-9a-f]{64}$")
+        schema_pins = tools["previous_provider"]["schema_sha256_by_cli"]
+        self.assertEqual(set(schema_pins), {
+            "terraform-1.1.0", "terraform-1.11.4", "opentofu-1.6.3", "opentofu-1.11.1",
+        })
+        self.assertTrue(all(re.fullmatch(r"[0-9a-f]{64}", value) for value in schema_pins.values()))
 
     def test_report_is_strict_derived_exclusive_and_create_only(self):
         scenario = {
@@ -255,7 +317,7 @@ class HarnessTests(unittest.TestCase):
             )
             phase = {"record_type": "phase", "subjects": sorted(types), "assertion_sha256": digest}
             observed = []
-            args = type("Args", (), {"session": str(root / "session.json"), **{key: str(value) for key, value in paths.items()}})()
+            args = type("Args", (), {"session": str(root / "session.json"), "fallback_delete_unconfirmed": False, "fallback_delete_evidence": None, "fallback_presence_state": None, "fallback_presence_output": None, "fallback_delete_success_evidence": None, "fallback_delete_success_cli": None, "fallback_delete_success_argument": [], **{key: str(value) for key, value in paths.items()}})()
             with mock.patch.object(harness, "_read_session", return_value={}), \
                  mock.patch.object(harness, "_ledger_values", return_value=[phase]), \
                  mock.patch.object(harness, "_append_scenario", side_effect=lambda *a, **kw: observed.append(kw)):
@@ -264,6 +326,51 @@ class HarnessTests(unittest.TestCase):
             self.assertEqual(len(plan["resource_changes"]), 28)
             self.assertEqual({item["name"].split(":", 1)[1] for item in data_records}, set(types))
             self.assertTrue(all(item["command_record"] is phase for item in data_records))
+
+    def test_fallback_smoke_diagnostic_is_bound_only_when_observed(self):
+        plan = {"configuration": {"root_module": {"resources": []}}}
+        raw_state = {"resources": []}
+        show_state = {"values": {"root_module": {"resources": [
+            {"mode": "managed", "type": "litellm_fallback", "address": "litellm_fallback.test"},
+        ]}}}
+        steady = {"resource_changes": []}
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            paths = {
+                "plan": root / "plan.json", "refresh_state": root / "refresh.tfstate",
+                "state": root / "state.json", "steady_plan": root / "steady.json",
+                "final_state": root / "final.list",
+            }
+            for name, value in (("plan", plan), ("refresh_state", raw_state), ("state", show_state), ("steady_plan", steady)):
+                paths[name].write_text(json.dumps(value), encoding="utf-8")
+            paths["final_state"].write_text("", encoding="utf-8")
+            for observed_failure, expected_code in ((False, ""), (True, "fallback-delete-not-authoritative")):
+                observed = []
+                args = type("Args", (), {
+                    "session": str(root / "session.json"),
+                    "fallback_delete_unconfirmed": observed_failure,
+                    "fallback_delete_evidence": str(paths["final_state"]) if observed_failure else None,
+                    "fallback_presence_state": str(paths["state"]) if observed_failure else None,
+                    "fallback_presence_output": str(paths["final_state"]) if observed_failure else None,
+                    "fallback_delete_success_evidence": None if observed_failure else str(paths["final_state"]),
+                    "fallback_delete_success_cli": None if observed_failure else "terraform",
+                    "fallback_delete_success_argument": [],
+                    **{key: str(value) for key, value in paths.items()},
+                })()
+                presence_digest = harness._assertion_digest(
+                    [paths["state"], paths["state"], paths["final_state"], paths["final_state"]], "terraform-plan-state-api"
+                )
+                phase = {"record_type": "phase", "phase": "fallback-authoritative-presence", "subjects": ["litellm_fallback"], "assertion_sha256": presence_digest}
+                empty_result = hashlib.sha256(b"issue210-result-v1\0" + (0).to_bytes(4, "big", signed=True)).hexdigest()
+                success = {"record_type": "command", "command_sha256": harness._command_digest(["terraform", "destroy", "-auto-approve"]), "result_sha256": empty_result, "exit_code": 0}
+                with mock.patch.object(harness, "_read_session", return_value={}), \
+                     mock.patch.object(harness, "_ledger_values", return_value=[phase] if observed_failure else [success]), \
+                     mock.patch.object(harness, "_append_scenario", side_effect=lambda *a, **kw: observed.append(kw)):
+                    harness.observe_smoke(args)
+                lifecycle = next(item for item in observed if item["category"] == "lifecycle")
+                self.assertEqual(lifecycle["status"], "skipped" if observed_failure else "passed")
+                self.assertEqual(lifecycle["reason"], "fallback-delete-not-authoritative" if observed_failure else "")
+                self.assertEqual(lifecycle["diagnostic_code"], expected_code)
 
     def test_refresh_phase_requires_exact_successful_refresh_only_argv(self):
         plan = {"configuration": {"root_module": {"resources": [
@@ -361,7 +468,7 @@ class HarnessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             records = root / "fabricated.tsv"
-            records.write_text("upgrade:litellm_model\tupgrade\tpassed\t\t\n" * 156)
+            records.write_text("upgrade:litellm_model\tupgrade\tpassed\t\t\n" * 166)
             report = root / "report.json"
             proc = subprocess.run(
                 [sys.executable, str(harness.HERE / "harness.py"), "report-records",

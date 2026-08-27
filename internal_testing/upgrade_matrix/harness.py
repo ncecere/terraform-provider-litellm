@@ -76,6 +76,8 @@ DIAGNOSTIC_TITLE_CODES = {
     "model_failed_create_retry": ("Client Error", "model-create-error"),
     "team_failed_create_retry": ("Client Error", "team-create-error"),
     "agent_role_redacted_import": ("Unsupported Agent Clear", "agent-role-redacted-read"),
+    "agent_import_public_projection": ("Provider produced invalid plan", "agent-import-public-projection-unavailable"),
+    "fallback_delete_not_authoritative": ("Fallback Delete Unconfirmed", "fallback-delete-not-authoritative"),
     "key_wo_endpoint_unavailable": ("Write-Only Key Creation Error", "key-write-only-endpoint-unavailable"),
 }
 DIAGNOSTIC_CODES = {value[1] for value in DIAGNOSTIC_TITLE_CODES.values()}
@@ -87,7 +89,7 @@ ASSERTION_CODES = {
     "validated-documentation", "allowlisted-unavailability",
     "refresh-only-config-state-zero-drift",
 }
-TF_1114_EXPECTED_SKIPS = {
+MODERN_MANDATORY_SKIPS = {
     ("resource_coverage", "litellm_project", "enterprise-license-required"),
     ("upgrade", "litellm_jwt_key_mapping", "previous-release-resource-unavailable"),
     ("upgrade", "litellm_project", "enterprise-license-required"),
@@ -98,6 +100,29 @@ TF_1114_EXPECTED_SKIPS = {
     ("data_source", "litellm_project", "enterprise-license-required"),
     ("data_source", "litellm_projects", "enterprise-license-required"),
     ("optional_feature", "key_wo", "api-endpoint-unavailable"),
+}
+FALLBACK_CONDITIONAL_SKIPS = {
+    ("lifecycle", "litellm_fallback", "fallback-delete-not-authoritative"),
+    ("import", "litellm_fallback", "fallback-delete-not-authoritative"),
+}
+PRE_111_MANDATORY_SKIPS = (MODERN_MANDATORY_SKIPS - {
+    ("import", "litellm_agent", "role-redacted-state-requires-admin"),
+    ("optional_feature", "key_wo", "api-endpoint-unavailable"),
+}) | {
+    ("resource_coverage", "litellm_jwt_key_mapping", "cli-version-below-1.11"),
+    ("lifecycle", "litellm_jwt_key_mapping", "cli-version-below-1.11"),
+    ("drift", "litellm_jwt_key_mapping", "cli-version-below-1.11"),
+    ("data_source", "litellm_jwt_key_mapping", "cli-version-below-1.11"),
+    ("data_source", "litellm_jwt_key_mappings", "cli-version-below-1.11"),
+    ("import", "litellm_jwt_key_mapping", "cli-version-below-1.11"),
+    ("replacement", "jwt_claim_pair_identity", "cli-version-below-1.11"),
+    ("optional_feature", "send_invite_email", "cli-version-below-1.11"),
+    ("optional_feature", "key_wo", "cli-version-below-1.11"),
+    ("optional_feature", "jwt_key_mapping_key_wo", "cli-version-below-1.11"),
+}
+PRE_111_AGENT_SKIPS = {
+    ("import", "litellm_agent", "role-redacted-state-requires-admin"),
+    ("import", "litellm_agent", "cli-version-below-1.11-agent-import-projection"),
 }
 URL_RE = re.compile(r"(?i)(?:\b(?:https?|postgres(?:ql)?|file)://\S+|\b[a-z0-9.-]+:\d{2,5}(?:/\S*)?)")
 UUID_RE = re.compile(r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b")
@@ -307,6 +332,15 @@ def check_inventory(matrix: dict) -> None:
         for fixture in item["fixture"] + item.get("import_fixture", []):
             if not (ROOT / "internal_testing" / "resources" / fixture).is_file():
                 raise HarnessError("resource matrix references a missing fixture")
+    lifecycle_skips = {
+        (item["type"], item.get("lifecycle_skip_reason"), item.get("lifecycle_skip_diagnostic_code"))
+        for item in resources if item.get("lifecycle_skip_reason") or item.get("lifecycle_skip_diagnostic_code")
+    }
+    if lifecycle_skips != {(
+        "litellm_fallback", "fallback-delete-not-authoritative",
+        "fallback-delete-not-authoritative",
+    )}:
+        raise HarnessError("fallback lifecycle skip contract changed without review")
     expected_counts = {
         "resource_coverage": 24, "upgrade": 24, "lifecycle": 24, "import": 24,
         "drift": 24, "replacement": 3, "failure_recovery": 2,
@@ -318,8 +352,12 @@ def check_inventory(matrix: dict) -> None:
         raise HarnessError("execution matrix must contain exactly 166 independently reviewed scenarios")
     expected_skips = matrix.get("terraform_1_11_4_expected_skips", [])
     skip_identities = {(item.get("category"), item.get("subject"), item.get("reason")) for item in expected_skips}
-    if len(expected_skips) != 10 or skip_identities != TF_1114_EXPECTED_SKIPS:
-        raise HarnessError("Terraform 1.11.4 must have the exact ten independently reviewed skips")
+    conditional_skips = matrix.get("terraform_1_11_4_conditional_skips", [])
+    conditional_identities = {(item.get("category"), item.get("subject"), item.get("reason")) for item in conditional_skips}
+    if len(expected_skips) != 10 or skip_identities != MODERN_MANDATORY_SKIPS:
+        raise HarnessError("modern CLI lanes must have the exact ten independently reviewed mandatory skips")
+    if len(conditional_skips) != 2 or conditional_identities != FALLBACK_CONDITIONAL_SKIPS:
+        raise HarnessError("fallback conditional skip inventory is not exact")
     for scenario in matrix.get("replacement_scenarios", []):
         if scenario.get("name") == "jwt_claim_pair_identity" and scenario.get("minimum_cli") != "1.11.0":
             raise HarnessError("JWT replacement does not have an exact CLI feature gate")
@@ -389,10 +427,18 @@ def check_release_contract(tools: dict) -> None:
         or hash_file(key_path) != key.get("sha256")
     ):
         raise HarnessError("release signing key or fingerprint is not the exact pin")
+    schema_by_cli = previous.get("schema_sha256_by_cli", {})
+    expected_schema_lanes = {
+        f"{product}-{version}"
+        for product in ("terraform", "opentofu")
+        for version in tools[product]
+    }
+    if set(schema_by_cli) != expected_schema_lanes:
+        raise HarnessError("previous provider schema pins do not cover the exact CLI matrix")
     digests = [
         *previous.get("registry_metadata_sha256", {}).values(), previous.get("checksums_file_sha256"),
         previous.get("signature_sha256"), previous.get("manifest_sha256"),
-        previous.get("schema_sha256"),
+        *schema_by_cli.values(),
     ]
     for archive in previous["archives"].values():
         digests.extend((archive.get("sha256"), archive.get("executable_sha256")))
@@ -444,6 +490,7 @@ def make_cli_config(directory: Path, provider_binary: Path) -> Path:
     encoded = (
         'provider_installation {\n  dev_overrides {\n'
         f'    "registry.terraform.io/ncecere/litellm" = {json.dumps(str(provider_dir))}\n'
+        f'    "registry.opentofu.org/ncecere/litellm" = {json.dumps(str(provider_dir))}\n'
         "  }\n}\n"
     ).encode()
     try:
@@ -1187,29 +1234,32 @@ def install_previous(args: argparse.Namespace) -> int:
         executable = extract_executable(archive, extraction_parent / "v2.0.1", executable_name, expected["executable_sha256"])
         # Product/version are selected by the signed exact filename, exact archive
         # member, and protocol manifest; Terraform later executes this digest.
-        mirror = secure_directory(cache / "mirror" / "registry.terraform.io" / "ncecere" / "litellm")
-        mirror_archive = mirror / name
-        if mirror_archive.exists() or mirror_archive.is_symlink():
-            if hash_file(mirror_archive) != expected["sha256"]:
-                raise HarnessError("provider mirror archive was replaced")
-        else:
-            temporary = mirror / (".mirror-" + secrets.token_hex(16))
-            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
-            try:
-                source = os.open(archive, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        mirror_archives = []
+        for registry_host in ("registry.terraform.io", "registry.opentofu.org"):
+            mirror = secure_directory(cache / "mirror" / registry_host / "ncecere" / "litellm")
+            mirror_archive = mirror / name
+            if mirror_archive.exists() or mirror_archive.is_symlink():
+                if hash_file(mirror_archive) != expected["sha256"]:
+                    raise HarnessError("provider mirror archive was replaced")
+            else:
+                temporary = mirror / (".mirror-" + secrets.token_hex(16))
+                descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
                 try:
-                    while True:
-                        chunk = os.read(source, 1024 * 1024)
-                        if not chunk:
-                            break
-                        os.write(descriptor, chunk)
-                    os.fsync(descriptor)
+                    source = os.open(archive, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+                    try:
+                        while True:
+                            chunk = os.read(source, 1024 * 1024)
+                            if not chunk:
+                                break
+                            os.write(descriptor, chunk)
+                        os.fsync(descriptor)
+                    finally:
+                        os.close(source)
                 finally:
-                    os.close(source)
-            finally:
-                os.close(descriptor)
-            os.replace(temporary, mirror_archive)
-        if hash_file(mirror_archive) != expected["sha256"] or hash_file(executable) != expected["executable_sha256"]:
+                    os.close(descriptor)
+                os.replace(temporary, mirror_archive)
+            mirror_archives.append(mirror_archive)
+        if any(hash_file(value) != expected["sha256"] for value in mirror_archives) or hash_file(executable) != expected["executable_sha256"]:
             raise HarnessError("verified provider cache changed before use")
     print(
         "Verified provider 2.0.1: fingerprint=" + tools["signing_key"]["fingerprint"]
@@ -1388,9 +1438,35 @@ def _assertion_digest(paths: list[Path], assertion: str) -> str:
     return digest.hexdigest()
 
 
+def _command_for_output(commands: list[dict], evidence: Path, *, require_failed: bool) -> dict:
+    require_regular_file(evidence)
+    raw = evidence.read_bytes()
+    if len(raw) > 2 * 1024 * 1024:
+        raise HarnessError("scenario command evidence exceeds its private bound")
+    matches = []
+    for item in commands:
+        exit_code = item.get("exit_code")
+        if not isinstance(exit_code, int) or ((exit_code != 0) != require_failed):
+            continue
+        encoded = exit_code.to_bytes(4, "big", signed=True) + raw
+        digest = hashlib.sha256(b"issue210-result-v1\0" + encoded).hexdigest()
+        if hmac.compare_digest(digest, str(item.get("result_sha256", ""))):
+            matches.append(item)
+    triples = {(item["command_sha256"], item["result_sha256"], item["exit_code"]) for item in matches}
+    if len(triples) != 1:
+        kind = "failed" if require_failed else "successful"
+        raise HarnessError(f"scenario command evidence is not bound to one exact {kind} command result")
+    return matches[-1]
+
+
+def _command_for_diagnostic(commands: list[dict], evidence: Path) -> dict:
+    return _command_for_output(commands, evidence, require_failed=True)
+
+
 def _append_scenario(session: dict, *, name: str, category: str, status: str,
                      reason: str, diagnostic_code: str, assertion: str,
-                     evidence_paths: list[Path], command_record: dict | None = None) -> None:
+                     evidence_paths: list[Path], command_record: dict | None = None,
+                     diagnostic_evidence: Path | None = None) -> None:
     matrix = load_json(MATRIX_PATH)
     if category not in _expected_subjects(matrix) or ":" not in name:
         raise HarnessError("scenario observation category/name is invalid")
@@ -1406,12 +1482,18 @@ def _append_scenario(session: dict, *, name: str, category: str, status: str,
         raise HarnessError("non-skipped scenario observation has a reason")
     if diagnostic_code and diagnostic_code not in DIAGNOSTIC_CODES:
         raise HarnessError("scenario observation diagnostic is not allowlisted")
+    if bool(diagnostic_code) != bool(diagnostic_evidence):
+        raise HarnessError("scenario diagnostic code and exact command evidence must be paired")
     values = _ledger_values(session)
     commands = [item for item in values if item.get("record_type") == "command"]
     if not commands:
         raise HarnessError("scenario observation has no executed bounded command")
-    failed_commands = [item for item in commands if item.get("exit_code") != 0]
-    command = command_record or (failed_commands[-1] if status == "skipped" and diagnostic_code and failed_commands else commands[-1])
+    if diagnostic_evidence is not None:
+        command = _command_for_diagnostic(commands, diagnostic_evidence)
+        if diagnostic_evidence not in evidence_paths:
+            evidence_paths = [*evidence_paths, diagnostic_evidence]
+    else:
+        command = command_record or commands[-1]
     bindings = {key: session[key] for key in (
         "run_nonce", "cli_lane", "candidate_commit", "provider_sha256",
         "provider_schema_sha256", "harness_sha256", "matrix_sha256",
@@ -1441,10 +1523,27 @@ def _append_scenario(session: dict, *, name: str, category: str, status: str,
 
 def record_observation(args: argparse.Namespace) -> int:
     session = _read_session(Path(args.session))
+    evidence_paths = [Path(value) for value in args.evidence]
+    presence_paths = [Path(value) for value in (args.fallback_presence_evidence or [])]
+    requires_presence = args.name == "import:litellm_fallback" and args.diagnostic_code == "fallback-delete-not-authoritative"
+    if bool(presence_paths) != requires_presence or (presence_paths and len(presence_paths) != 3):
+        raise HarnessError("fallback import diagnostic and exact presence phase evidence must be paired")
+    if presence_paths:
+        phase_digest = _assertion_digest([*presence_paths, Path(args.diagnostic_evidence)], "terraform-plan-state-api")
+        phases = [
+            item for item in _ledger_values(session)
+            if item.get("record_type") == "phase"
+            and item.get("phase") == "fallback-authoritative-presence"
+            and item.get("assertion_sha256") == phase_digest
+        ]
+        if len(phases) != 1 or phases[0].get("subjects") != ["litellm_fallback"]:
+            raise HarnessError("fallback import skip lacks one exact authoritative presence phase")
+        evidence_paths.extend(presence_paths)
     _append_scenario(
         session, name=args.name, category=args.category, status=args.status,
         reason=args.reason or "", diagnostic_code=args.diagnostic_code or "",
-        assertion=args.assertion, evidence_paths=[Path(value) for value in args.evidence],
+        assertion=args.assertion, evidence_paths=evidence_paths,
+        diagnostic_evidence=Path(args.diagnostic_evidence) if args.diagnostic_evidence else None,
     )
     return 0
 
@@ -1534,8 +1633,80 @@ def capture_refresh_phase(args: argparse.Namespace) -> int:
     return 0
 
 
+def _require_consecutive_fallback_commands(commands: list[dict], delete_command: dict,
+                                           refresh_command: dict, state_command: dict,
+                                           expected_delete: str, expected_refresh: str,
+                                           expected_state: str) -> None:
+    if (
+        delete_command.get("command_sha256") != expected_delete
+        or refresh_command.get("command_sha256") != expected_refresh
+        or state_command.get("command_sha256") != expected_state
+        or commands[-3:] != [delete_command, refresh_command, state_command]
+    ):
+        raise HarnessError("fallback presence proof is not the exact consecutive delete-refresh-state sequence")
+
+
+def capture_fallback_presence(args: argparse.Namespace) -> int:
+    session = _read_session(Path(args.session))
+    if args.address != "litellm_fallback.minimal":
+        raise HarnessError("fallback presence proof address is not the exact matrix target")
+    paths = [Path(args.before_state), Path(args.after_state), Path(args.refresh_output), Path(args.delete_output)]
+    for path in paths:
+        require_regular_file(path)
+    before = [item for item in _walk_resources(load_json(paths[0]).get("values", {}).get("root_module", {})) if item.get("address") == args.address]
+    after = [item for item in _walk_resources(load_json(paths[1]).get("values", {}).get("root_module", {})) if item.get("address") == args.address]
+    if len(before) != 1 or len(after) != 1:
+        raise HarnessError("fallback presence proof does not contain one exact target before and after refresh")
+    for item in (before[0], after[0]):
+        if item.get("mode") != "managed" or item.get("type") != "litellm_fallback":
+            raise HarnessError("fallback presence proof target metadata changed")
+    before_values, after_values = before[0].get("values"), after[0].get("values")
+    if not isinstance(before_values, dict) or before_values != after_values:
+        raise HarnessError("fallback authoritative refresh changed or lost the exact target")
+    if any(not before_values.get(key) for key in ("id", "model", "fallback_type")):
+        raise HarnessError("fallback presence proof lacks exact nonempty identity fields")
+    commands = [item for item in _ledger_values(session) if item.get("record_type") == "command"]
+    refresh_command = _command_for_output(commands, paths[2], require_failed=False)
+    delete_command = _command_for_output(commands, paths[3], require_failed=True)
+    state_command = _command_for_output(commands, paths[1], require_failed=False)
+    expected_refresh = [args.cli, "apply", "-refresh-only", "-auto-approve", *args.refresh_argument]
+    expected_delete = [args.cli, "destroy", "-auto-approve", *args.delete_argument]
+    expected_state = [args.cli, "show", "-json"]
+    if delete_command.get("exit_code") != 1:
+        raise HarnessError("fallback delete proof is not a provider diagnostic exit")
+    _require_consecutive_fallback_commands(
+        commands, delete_command, refresh_command, state_command,
+        _command_digest(expected_delete), _command_digest(expected_refresh), _command_digest(expected_state),
+    )
+    bindings = {key: session[key] for key in (
+        "run_nonce", "cli_lane", "candidate_commit", "provider_sha256",
+        "provider_schema_sha256", "harness_sha256", "matrix_sha256",
+    )}
+    item = {
+        "record_type": "phase", **bindings, "phase": "fallback-authoritative-presence",
+        "subjects": ["litellm_fallback"], "target_code": "fallback-minimal",
+        "command_sha256": refresh_command["command_sha256"],
+        "result_sha256": refresh_command["result_sha256"], "command_exit_code": refresh_command["exit_code"],
+        "delete_command_sha256": delete_command["command_sha256"],
+        "delete_result_sha256": delete_command["result_sha256"], "delete_exit_code": delete_command["exit_code"],
+        "state_command_sha256": state_command["command_sha256"],
+        "state_result_sha256": state_command["result_sha256"], "state_exit_code": state_command["exit_code"],
+        "assertion_sha256": _assertion_digest(paths, "terraform-plan-state-api"),
+    }
+    item["receipt_hmac"] = _sign_record(item, _session_key(session))
+    _append_ledger(Path(session["ledger"]), item)
+    return 0
+
+
 def observe_smoke(args: argparse.Namespace) -> int:
     session = _read_session(Path(args.session))
+    fallback_artifacts = (args.fallback_delete_evidence, args.fallback_presence_state, args.fallback_presence_output)
+    if args.fallback_delete_unconfirmed != all(bool(value) for value in fallback_artifacts) or (not args.fallback_delete_unconfirmed and any(bool(value) for value in fallback_artifacts)):
+        raise HarnessError("fallback diagnostic and authoritative presence artifacts must be complete and paired")
+    if args.fallback_delete_unconfirmed and args.fallback_delete_success_evidence:
+        raise HarnessError("fallback deletion cannot be both confirmed and unconfirmed")
+    if bool(args.fallback_delete_success_evidence) != bool(args.fallback_delete_success_cli):
+        raise HarnessError("successful fallback delete evidence and CLI must be paired")
     paths = [Path(args.plan), Path(args.refresh_state), Path(args.state), Path(args.steady_plan), Path(args.final_state)]
     for path in paths:
         require_regular_file(path)
@@ -1561,11 +1732,54 @@ def observe_smoke(args: argparse.Namespace) -> int:
     data_sources = {resource_type for _, resource_type in configured}
     matrix = load_json(MATRIX_PATH)
     expected = _expected_subjects(matrix)
+    resource_contracts = {entry["type"]: entry for entry in matrix["resources"]}
     if not managed or not managed.issubset(expected["lifecycle"]) or not data_sources.issubset(expected["data_source"]):
         raise HarnessError("smoke plan/state addresses are outside the checked matrix")
+    if args.fallback_delete_unconfirmed and "litellm_fallback" not in managed:
+        raise HarnessError("fallback delete diagnostic was attached to another smoke scenario")
+    fallback_contract_present = "litellm_fallback" in managed and bool(resource_contracts["litellm_fallback"].get("lifecycle_skip_reason"))
+    if fallback_contract_present and not (args.fallback_delete_unconfirmed or args.fallback_delete_success_evidence):
+        raise HarnessError("fallback lifecycle lacks either confirmed deletion or exact retained-presence proof")
+    fallback_success_command = None
+    fallback_success_paths = []
+    if args.fallback_delete_success_evidence:
+        fallback_success_path = Path(args.fallback_delete_success_evidence)
+        commands = [item for item in _ledger_values(session) if item.get("record_type") == "command"]
+        fallback_success_command = _command_for_output(commands, fallback_success_path, require_failed=False)
+        expected = [args.fallback_delete_success_cli, "destroy", "-auto-approve", *args.fallback_delete_success_argument]
+        if fallback_success_command.get("command_sha256") != _command_digest(expected):
+            raise HarnessError("successful fallback lifecycle is not bound to the exact destroy command")
+        fallback_success_paths = [fallback_success_path]
+    fallback_presence_paths = []
+    if args.fallback_delete_unconfirmed:
+        fallback_presence_paths = [paths[2], Path(args.fallback_presence_state), Path(args.fallback_presence_output)]
+        phase_digest = _assertion_digest([*fallback_presence_paths, Path(args.fallback_delete_evidence)], "terraform-plan-state-api")
+        phases = [
+            item for item in _ledger_values(session)
+            if item.get("record_type") == "phase"
+            and item.get("phase") == "fallback-authoritative-presence"
+            and item.get("assertion_sha256") == phase_digest
+        ]
+        if len(phases) != 1 or phases[0].get("subjects") != ["litellm_fallback"]:
+            raise HarnessError("fallback delete skip lacks one exact authoritative presence phase")
     for subject in sorted(managed):
         for category in ("resource_coverage", "lifecycle", "drift"):
-            _append_scenario(session, name=f"{category}:{subject}", category=category, status="passed", reason="", diagnostic_code="", assertion="terraform-plan-state-api", evidence_paths=paths)
+            reason = ""
+            diagnostic_code = ""
+            status = "passed"
+            if category == "lifecycle" and args.fallback_delete_unconfirmed:
+                reason = resource_contracts[subject].get("lifecycle_skip_reason", "")
+                diagnostic_code = resource_contracts[subject].get("lifecycle_skip_diagnostic_code", "")
+                status = "skipped" if reason else "passed"
+            lifecycle_success = category == "lifecycle" and subject == "litellm_fallback" and fallback_success_command is not None
+            _append_scenario(
+                session, name=f"{category}:{subject}", category=category,
+                status=status, reason=reason, diagnostic_code=diagnostic_code,
+                assertion="terraform-plan-state-api",
+                evidence_paths=[*paths, *fallback_presence_paths] if diagnostic_code else [*paths, *fallback_success_paths] if lifecycle_success else paths,
+                command_record=fallback_success_command if lifecycle_success else None,
+                diagnostic_evidence=Path(args.fallback_delete_evidence) if diagnostic_code else None,
+            )
     if data_sources:
         phase_digest = _assertion_digest(paths[:2], "refresh-only-config-state-zero-drift")
         phases = [item for item in _ledger_values(session) if item.get("record_type") == "phase" and item.get("assertion_sha256") == phase_digest]
@@ -1598,6 +1812,12 @@ def finalize_evidence(args: argparse.Namespace) -> int:
         "record_type", "run_nonce", "cli_lane", "candidate_commit", "provider_sha256",
         "provider_schema_sha256", "harness_sha256", "matrix_sha256", "phase", "subjects",
         "command_sha256", "result_sha256", "command_exit_code", "assertion_sha256", "receipt_hmac",
+        "target_code", "delete_command_sha256", "delete_result_sha256", "delete_exit_code",
+        "state_command_sha256", "state_result_sha256", "state_exit_code",
+    }
+    fallback_phase_fields = {
+        "target_code", "delete_command_sha256", "delete_result_sha256", "delete_exit_code",
+        "state_command_sha256", "state_result_sha256", "state_exit_code",
     }
     bindings = {key: session[key] for key in (
         "run_nonce", "cli_lane", "candidate_commit", "provider_sha256",
@@ -1608,7 +1828,7 @@ def finalize_evidence(args: argparse.Namespace) -> int:
     for item in values[1:]:
         kind = item.get("record_type")
         allowed = allowed_command if kind == "command" else allowed_scenario if kind == "scenario" else allowed_phase if kind == "phase" else set()
-        required = allowed_command if kind == "command" else allowed_scenario - {"reason", "diagnostic_code"} if kind == "scenario" else allowed_phase if kind == "phase" else set()
+        required = allowed_command if kind == "command" else allowed_scenario - {"reason", "diagnostic_code"} if kind == "scenario" else allowed_phase - fallback_phase_fields if kind == "phase" else set()
         if not allowed or set(item) - allowed or not required.issubset(item):
             raise HarnessError("evidence ledger record schema is invalid")
         if any(item.get(key) != value for key, value in bindings.items()):
@@ -1621,15 +1841,28 @@ def finalize_evidence(args: argparse.Namespace) -> int:
                 raise HarnessError("command receipt result bound is invalid")
             command_pairs.add((item["command_sha256"], item["result_sha256"], item["exit_code"]))
         elif kind == "phase":
-            if (
-                item.get("phase") != "refresh-only-data-sources"
-                or item.get("command_exit_code") != 0
+            common_phase_invalid = (
+                item.get("command_exit_code") != 0
                 or (item["command_sha256"], item["result_sha256"], item["command_exit_code"]) not in command_pairs
                 or not isinstance(item.get("subjects"), list)
                 or item["subjects"] != sorted(set(item["subjects"]))
-                or not set(item["subjects"]).issubset(_expected_subjects(load_json(MATRIX_PATH))["data_source"])
-            ):
-                raise HarnessError("refresh-only phase evidence is invalid")
+            )
+            if item.get("phase") == "refresh-only-data-sources":
+                phase_invalid = not set(item["subjects"]).issubset(_expected_subjects(load_json(MATRIX_PATH))["data_source"])
+            elif item.get("phase") == "fallback-authoritative-presence":
+                phase_invalid = (
+                    item["subjects"] != ["litellm_fallback"]
+                    or item.get("target_code") != "fallback-minimal"
+                    or not fallback_phase_fields.issubset(item)
+                    or item.get("delete_exit_code") != 1
+                    or item.get("state_exit_code") != 0
+                    or (item.get("delete_command_sha256"), item.get("delete_result_sha256"), item.get("delete_exit_code")) not in command_pairs
+                    or (item.get("state_command_sha256"), item.get("state_result_sha256"), item.get("state_exit_code")) not in command_pairs
+                )
+            else:
+                phase_invalid = True
+            if common_phase_invalid or phase_invalid:
+                raise HarnessError("supervised phase evidence is invalid")
         else:
             if item.get("status") not in STATUSES or item.get("category") not in CATEGORIES or item.get("assertion") not in ASSERTION_CODES:
                 raise HarnessError("scenario evidence enum is invalid")
@@ -1652,13 +1885,22 @@ def finalize_evidence(args: argparse.Namespace) -> int:
             raise HarnessError("trusted evidence ledger lacks an exact scenario set")
     if len(scenarios) != 166:
         raise HarnessError("trusted evidence ledger does not contain the exact 166-scenario matrix")
-    if session["cli_lane"] == "terraform-1.11.4":
-        actual_skips = {
-            (item["category"], item["subject"], item.get("reason", ""))
-            for item in scenarios if item["status"] == "skipped"
-        }
-        if actual_skips != TF_1114_EXPECTED_SKIPS or sum(item["status"] == "passed" for item in scenarios) != 156:
-            raise HarnessError("Terraform 1.11.4 evidence is not the reviewed 156-pass/10-skip result")
+    actual_skips = {
+        (item["category"], item["subject"], item.get("reason", ""))
+        for item in scenarios if item["status"] == "skipped"
+    }
+    lane = session["cli_lane"]
+    if lane in {"terraform-1.11.4", "opentofu-1.11.1"}:
+        if not MODERN_MANDATORY_SKIPS.issubset(actual_skips) or actual_skips - MODERN_MANDATORY_SKIPS - FALLBACK_CONDITIONAL_SKIPS:
+            raise HarnessError("modern CLI evidence differs from its exact mandatory/conditional skip contract")
+    elif lane in {"terraform-1.1.0", "opentofu-1.6.3"}:
+        agent_skips = actual_skips & PRE_111_AGENT_SKIPS
+        if len(agent_skips) != 1 or not PRE_111_MANDATORY_SKIPS.issubset(actual_skips) or actual_skips - PRE_111_MANDATORY_SKIPS - agent_skips - FALLBACK_CONDITIONAL_SKIPS:
+            raise HarnessError("pre-1.11 CLI evidence differs from its exact lane/subject/reason skip contract")
+    else:
+        raise HarnessError("evidence CLI lane is outside the exact release matrix")
+    if sum(item["status"] == "passed" for item in scenarios) != 166 - len(actual_skips):
+        raise HarnessError("scenario pass/skip accounting is not exact")
     report_scenarios = []
     evidence_codes = {
         "resource_coverage": "apply-refresh-plan-destroy", "lifecycle": "apply-refresh-plan-destroy",
@@ -1690,8 +1932,9 @@ def finalize_evidence(args: argparse.Namespace) -> int:
     previous_executable_digest, previous_schema_digest = provider_schema_fingerprint(
         args.cli, Path(args.previous_provider_binary), validate_upgrade_contract=False
     )
-    if previous_executable_digest != previous_archive["executable_sha256"] or previous_schema_digest != previous["schema_sha256"]:
-        raise HarnessError("executed previous provider differs from its signed exact pin")
+    expected_previous_schema = previous["schema_sha256_by_cli"].get(session["cli_lane"])
+    if previous_executable_digest != previous_archive["executable_sha256"] or previous_schema_digest != expected_previous_schema:
+        raise HarnessError("executed previous provider differs from its signed exact CLI-bound pin")
     ledger_digest = hash_file(Path(session["ledger"]))
     provenance = {
         "cli_product": session["cli_lane"].split("-", 1)[0],
@@ -1792,6 +2035,8 @@ def parser() -> argparse.ArgumentParser:
     observation.add_argument("--status", required=True, choices=tuple(sorted(STATUSES)))
     observation.add_argument("--reason")
     observation.add_argument("--diagnostic-code")
+    observation.add_argument("--diagnostic-evidence")
+    observation.add_argument("--fallback-presence-evidence", nargs=3)
     observation.add_argument("--assertion", required=True)
     observation.add_argument("--evidence", action="append", required=True)
     observation.set_defaults(function=record_observation)
@@ -1809,7 +2054,25 @@ def parser() -> argparse.ArgumentParser:
     smoke.add_argument("--state", required=True)
     smoke.add_argument("--steady-plan", required=True)
     smoke.add_argument("--final-state", required=True)
+    smoke.add_argument("--fallback-delete-unconfirmed", action="store_true")
+    smoke.add_argument("--fallback-delete-evidence")
+    smoke.add_argument("--fallback-presence-state")
+    smoke.add_argument("--fallback-presence-output")
+    smoke.add_argument("--fallback-delete-success-evidence")
+    smoke.add_argument("--fallback-delete-success-cli")
+    smoke.add_argument("--fallback-delete-success-argument", action="append", default=[])
     smoke.set_defaults(function=observe_smoke)
+    fallback_presence = commands.add_parser("capture-fallback-presence")
+    fallback_presence.add_argument("--session", required=True)
+    fallback_presence.add_argument("--before-state", required=True)
+    fallback_presence.add_argument("--after-state", required=True)
+    fallback_presence.add_argument("--refresh-output", required=True)
+    fallback_presence.add_argument("--delete-output", required=True)
+    fallback_presence.add_argument("--address", required=True)
+    fallback_presence.add_argument("--cli", required=True)
+    fallback_presence.add_argument("--refresh-argument", action="append", default=[])
+    fallback_presence.add_argument("--delete-argument", action="append", default=[])
+    fallback_presence.set_defaults(function=capture_fallback_presence)
     finalize = commands.add_parser("finalize-evidence")
     finalize.add_argument("--session", required=True)
     finalize.add_argument("--report", required=True)

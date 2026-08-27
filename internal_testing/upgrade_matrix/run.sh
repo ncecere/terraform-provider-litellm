@@ -50,10 +50,25 @@ cleanup() {
   fi
   if [ -n "$IMPORTER_WORKSPACE" ] && [ -d "$IMPORTER_WORKSPACE" ]; then
     importer_addresses=$(cd "$IMPORTER_WORKSPACE" && run_cli state list 2>>"$LOG") || cleanup_status=$?
-    if [ "$cleanup_status" -eq 0 ]; then
+    producer_addresses=
+    if [ "$cleanup_status" -eq 0 ] && [ -n "$PRODUCER_WORKSPACE" ] && [ -d "$PRODUCER_WORKSPACE" ]; then
+      producer_addresses=$(cd "$PRODUCER_WORKSPACE" && run_cli state list 2>>"$LOG") || cleanup_status=$?
+    fi
+    import_matches=0
+    if [ "$cleanup_status" -eq 0 ] && [ -n "$IMPORT_ADDRESS" ]; then
       for address in $importer_addresses; do
-        (cd "$IMPORTER_WORKSPACE" && run_cli state rm "$address") >>"$LOG" 2>&1 || cleanup_status=$?
+        if [ "$address" = "$IMPORT_ADDRESS" ]; then
+          import_matches=$((import_matches + 1))
+        elif ! printf '%s\n' "$producer_addresses" | grep -Fxq "$address"; then
+          cleanup_status=1
+        fi
       done
+      [ "$import_matches" -le 1 ] || cleanup_status=1
+      if [ "$cleanup_status" -eq 0 ] && [ "$import_matches" -eq 1 ]; then
+        (cd "$IMPORTER_WORKSPACE" && run_cli state rm "$IMPORT_ADDRESS") >>"$LOG" 2>&1 || cleanup_status=$?
+      fi
+    elif [ -n "$importer_addresses" ]; then
+      cleanup_status=1
     fi
   fi
   if [ -n "$PRODUCER_WORKSPACE" ] && [ -d "$PRODUCER_WORKSPACE" ]; then
@@ -83,12 +98,18 @@ cleanup() {
   fi
   if [ -n "$WORKSPACE" ] && [ "$WORKSPACE" != "$PRODUCER_WORKSPACE" ] && [ -d "$WORKSPACE" ]; then
     if [ "$CLEANUP_MODE" = import ]; then
-      # Imported/pre-existing objects are detached only. Never substitute destroy.
+      # Imported/pre-existing objects detach only the manifest-bound target.
+      # An unknown address fails closed and is never removed opportunistically.
       addresses=$(cd "$WORKSPACE" && run_cli state list 2>>"$LOG" || cleanup_status=$?)
       if [ "$cleanup_status" -eq 0 ]; then
-        for address in $addresses; do
-          (cd "$WORKSPACE" && run_cli state rm "$address") >>"$LOG" 2>&1 || cleanup_status=$?
-        done
+        [ -n "$IMPORT_ADDRESS" ] || cleanup_status=1
+        import_matches=$(printf '%s\n' "$addresses" | grep -Fxc "$IMPORT_ADDRESS" || true)
+        [ "$import_matches" -le 1 ] || cleanup_status=1
+        unexpected=$(printf '%s\n' "$addresses" | grep -Fxv "$IMPORT_ADDRESS" || true)
+        [ -z "$unexpected" ] || cleanup_status=1
+        if [ "$cleanup_status" -eq 0 ] && [ "$import_matches" -eq 1 ]; then
+          (cd "$WORKSPACE" && run_cli state rm "$IMPORT_ADDRESS") >>"$LOG" 2>&1 || cleanup_status=$?
+        fi
       fi
     elif [ "$CLEANUP_MODE" = owned ]; then
       cleanup_attempt=1
@@ -235,12 +256,14 @@ PREVIOUS_PROVIDER_BINARY=$CACHE/providers/extracted/$provider_platform/v2.0.1/te
 
 write_provider_config() {
   destination=$1
-  cat >"$destination/provider.tf" <<'TF'
+  provider_source=registry.terraform.io/ncecere/litellm
+  case "${MATRIX_CLI_LANE:-}" in opentofu-*) provider_source=registry.opentofu.org/ncecere/litellm ;; esac
+  cat >"$destination/provider.tf" <<TF
 terraform {
   required_version = ">= 1.1.0"
   required_providers {
     litellm = {
-      source  = "registry.terraform.io/ncecere/litellm"
+      source  = "$provider_source"
       version = "= 2.0.1"
     }
   }
@@ -262,7 +285,7 @@ write_old_config() {
 provider_installation {
   filesystem_mirror {
     path    = $(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$PREVIOUS_MIRROR")
-    include = ["registry.terraform.io/ncecere/litellm"]
+    include = ["registry.terraform.io/ncecere/litellm", "registry.opentofu.org/ncecere/litellm"]
   }
 }
 EOF
@@ -273,6 +296,7 @@ write_current_config() {
 provider_installation {
   dev_overrides {
     "registry.terraform.io/ncecere/litellm" = $(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$(dirname "$PROVIDER_BINARY")")
+    "registry.opentofu.org/ncecere/litellm"  = $(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$(dirname "$PROVIDER_BINARY")")
   }
 }
 EOF
@@ -283,7 +307,13 @@ record() {
   # to the latest bounded command receipt plus an observed private artifact.
   name=$1 category=$2 status=$3 reason=$4
   observation_evidence=${SCENARIO_EVIDENCE:-$LOG}
+  diagnostic_evidence=${SCENARIO_DIAGNOSTIC_EVIDENCE:-}
+  diagnostic_override=${SCENARIO_DIAGNOSTIC_CODE_OVERRIDE:-auto}
+  fallback_presence_evidence=${SCENARIO_FALLBACK_PRESENCE_EVIDENCE:-}
   SCENARIO_EVIDENCE=
+  SCENARIO_DIAGNOSTIC_EVIDENCE=
+  SCENARIO_DIAGNOSTIC_CODE_OVERRIDE=
+  SCENARIO_FALLBACK_PRESENCE_EVIDENCE=
   log_size=$(wc -c <"$LOG")
   [ "$log_size" -le 10485760 ] || fail 'private child log exceeded its bounded size'
   assertion=terraform-plan-state-api
@@ -310,11 +340,25 @@ record() {
     failure_recovery:model_failed_create_retry) diagnostic=model-create-error ;;
     failure_recovery:team_failed_create_retry) diagnostic=team-create-error ;;
     import:litellm_agent) [ "$status" != skipped ] || diagnostic=agent-role-redacted-read ;;
+    import:litellm_fallback) [ "$status" != skipped ] || diagnostic=fallback-delete-not-authoritative ;;
     optional_feature:key_wo) [ "$status" != skipped ] || diagnostic=key-write-only-endpoint-unavailable ;;
+  esac
+  case "$diagnostic_override" in
+    auto) ;;
+    none) diagnostic= ;;
+    *) diagnostic=$diagnostic_override ;;
   esac
   set -- --session "$SESSION" --name "$name" --category "$category" --status "$status" --assertion "$assertion" --evidence "$observation_evidence"
   [ -z "$reason" ] || set -- "$@" --reason "$reason"
-  [ -z "$diagnostic" ] || set -- "$@" --diagnostic-code "$diagnostic"
+  [ -z "$diagnostic" ] || set -- "$@" --diagnostic-code "$diagnostic" --diagnostic-evidence "$diagnostic_evidence"
+  if [ -n "$fallback_presence_evidence" ]; then
+    presence_before=${fallback_presence_evidence%%|*}
+    presence_rest=${fallback_presence_evidence#*|}
+    presence_after=${presence_rest%%|*}
+    presence_output=${presence_rest#*|}
+    [ -n "$presence_before" ] && [ -n "$presence_after" ] && [ -n "$presence_output" ] || fail 'fallback presence evidence tuple is incomplete'
+    set -- "$@" --fallback-presence-evidence "$presence_before" "$presence_after" "$presence_output"
+  fi
   python3 "$SCRIPT_DIR/harness.py" record-observation "$@" || fail 'trusted scenario observation was rejected'
   printf '%-18s %-38s %s\n' "$category" "$name" "$status"
 }
@@ -417,7 +461,54 @@ run_upgrade() {
   final_upgrade_status=$?
   set -e
   [ "$final_upgrade_status" -eq 0 ] || fail 'reviewed refresh migration did not reach final zero drift'
-  (cd "$WORKSPACE" && run_cli destroy -auto-approve) >>"$LOG" 2>&1 || fail 'owned upgrade fixture cleanup failed'
+  if [ "$resource_type" = litellm_fallback ]; then
+    set +e
+    (cd "$WORKSPACE" && run_cli destroy -auto-approve) >"$SCRATCH/upgrade-fallback-delete.out" 2>&1
+    upgrade_destroy_status=$?
+    set -e
+    cat "$SCRATCH/upgrade-fallback-delete.out" >>"$LOG"
+    if [ "$upgrade_destroy_status" -ne 0 ]; then
+      [ "$upgrade_destroy_status" -eq 1 ] || fail 'fallback upgrade cleanup ended operationally'
+      python3 "$SCRIPT_DIR/fallback_delete_diagnostic.py" "$SCRATCH/upgrade-fallback-delete.out" >/dev/null || \
+        fail 'fallback upgrade cleanup was not exact authoritative retained presence'
+      (cd "$WORKSPACE" && run_cli apply -refresh-only -auto-approve) >"$SCRATCH/upgrade-fallback-refresh.out" 2>&1 || \
+        fail 'fallback upgrade cleanup presence refresh failed'
+      (cd "$WORKSPACE" && run_cli show -json) >"$SCRATCH/upgrade-fallback-retained.json" 2>>"$LOG" || \
+        fail 'fallback upgrade cleanup state inspection failed'
+      python3 - "$SCRATCH/state-after.json" "$SCRATCH/upgrade-fallback-retained.json" <<'PY' || \
+        fail 'fallback upgrade cleanup did not prove unchanged authoritative presence'
+import json, sys
+
+def find(path):
+    document = json.load(open(path, encoding="utf-8"))
+    found = []
+    def walk(module):
+        for resource in module.get("resources", []):
+            if resource.get("address") == "litellm_fallback.minimal":
+                found.append(resource)
+        for child in module.get("child_modules", []):
+            walk(child)
+    walk(document.get("values", {}).get("root_module", {}))
+    return found
+before, after = find(sys.argv[1]), find(sys.argv[2])
+if len(before) != 1 or len(after) != 1 or before[0].get("values") != after[0].get("values"):
+    raise SystemExit(1)
+PY
+      cleanup_addresses=$(cd "$WORKSPACE" && run_cli state list 2>>"$LOG") || fail 'fallback upgrade cleanup state listing failed'
+      expected_cleanup_addresses='litellm_fallback.minimal
+litellm_model.fallback_minimal_fallback
+litellm_model.fallback_minimal_primary'
+      [ "$cleanup_addresses" = "$expected_cleanup_addresses" ] || fail 'fallback upgrade cleanup found an unexpected state address'
+      (cd "$WORKSPACE" && run_cli state rm litellm_fallback.minimal) >>"$LOG" 2>&1 || \
+        fail 'fallback upgrade cleanup could not detach the exact retained address'
+      (cd "$WORKSPACE" && run_cli destroy -auto-approve) >>"$LOG" 2>&1 || \
+        fail 'fallback upgrade dependency cleanup failed'
+      [ -z "$(cd "$WORKSPACE" && run_cli state list 2>>"$LOG")" ] || \
+        fail 'fallback upgrade dependency cleanup retained state'
+    fi
+  else
+    (cd "$WORKSPACE" && run_cli destroy -auto-approve) >>"$LOG" 2>&1 || fail 'owned upgrade fixture cleanup failed'
+  fi
   CLEANUP_MODE=none
   rm -rf "$WORKSPACE"
   WORKSPACE=
@@ -434,6 +525,24 @@ assert_authoritative_not_found() {
     fail 'post-destroy check was not an exact provider/API not-found result'
 }
 
+assert_fallback_delete_unconfirmed() {
+  evidence=$1 state_list=$2 address=$3
+  python3 "$SCRIPT_DIR/fallback_delete_diagnostic.py" "$evidence" >/dev/null 2>&1 || \
+    fail 'fallback deletion skip was not the exact fail-closed diagnostic'
+  python3 - "$state_list" "$address" <<'PY' || fail 'fallback deletion failure did not retain the exact reviewed address'
+from pathlib import Path
+import sys
+state = Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace").splitlines()
+if state.count(sys.argv[2]) != 1: raise SystemExit(1)
+PY
+}
+
+assert_agent_import_projection_skip() {
+  evidence=$1
+  python3 "$SCRIPT_DIR/agent_import_diagnostic.py" "$evidence" >/dev/null 2>&1 || \
+    fail 'agent import failure was not the exact pre-1.11 public-projection diagnostic'
+}
+
 assert_agent_role_redaction_skip() {
   evidence=$1 agent_id_file=$2
   agent_status=$(curl --silent --show-error --connect-timeout 3 --max-time 15 \
@@ -447,7 +556,8 @@ text=Path(sys.argv[1]).read_text(encoding="utf-8",errors="replace")
 body=Path(sys.argv[2]).read_bytes(); expected=Path(sys.argv[3]).read_text(encoding="utf-8").strip()
 if len(text.encode()) > 2*1024*1024 or len(body) > 1024*1024: raise SystemExit(1)
 normalized=" ".join(text.lower().split())
-if text.count("Error: Unsupported Agent Clear") != 1: raise SystemExit(1)
+titles=[line.strip() for line in text.splitlines() if line.strip().startswith("Error:")]
+if titles != ["Error: Unsupported Agent Clear"]: raise SystemExit(1)
 if "the complete provider block cannot be removed while it contains api-owned leaves" not in normalized: raise SystemExit(1)
 value=json.loads(body)
 if not isinstance(value,dict) or value.get("agent_id") != expected: raise SystemExit(1)
@@ -562,10 +672,21 @@ PYNS
   set -e
   cat "$SCRATCH/import-refresh.out" >>"$LOG"
   if [ "$refresh_status" -ne 0 ]; then
-    [ "$resource_type" = litellm_agent ] && [ "$expected_skip" = role-redacted-state-requires-admin ] || fail 'post-import refresh failed outside the exact agent role-redaction allowance'
-    assert_agent_role_redaction_skip "$SCRATCH/import-refresh.out" "$SCRATCH/import-id"
-    # The endpoint-specific limitation was exercised, not inferred. Detach the
-    # failed import, destroy only through the authoritative producer, and prove
+    [ "$resource_type" = litellm_agent ] && [ "$expected_skip" = role-redacted-state-requires-admin ] || fail 'post-import refresh failed outside the exact agent import allowances'
+    agent_skip_reason=role-redacted-state-requires-admin
+    agent_skip_diagnostic=agent-role-redacted-read
+    agent_skip_evidence=$SCRATCH/agent-role-observation.json
+    if grep -Fq 'Error: Provider produced invalid plan' "$SCRATCH/import-refresh.out"; then
+      [ "$CLI_SUPPORTS_111" -ne 1 ] || fail 'agent import public projection failed on a CLI that supports the current protocol'
+      assert_agent_import_projection_skip "$SCRATCH/import-refresh.out"
+      agent_skip_reason=cli-version-below-1.11-agent-import-projection
+      agent_skip_diagnostic=agent-import-public-projection-unavailable
+      agent_skip_evidence=$SCRATCH/import-refresh.out
+    else
+      assert_agent_role_redaction_skip "$SCRATCH/import-refresh.out" "$SCRATCH/import-id"
+    fi
+    # The exact limitation was exercised, not inferred. Detach the failed
+    # import, destroy only through the authoritative producer, and prove
     # both empty state and remote absence before recording an explicit skip.
     (cd "$importer" && run_cli state rm "$address") >>"$LOG" 2>&1 || fail 'limited import target detach failed'
     (cd "$producer" && run_cli destroy -auto-approve) >>"$LOG" 2>&1 || fail 'limited import producer cleanup failed'
@@ -577,6 +698,14 @@ PYNS
     cat "$SCRATCH/import-absence.out" >>"$LOG"
     [ "$absence_status" -ne 0 ] || fail 'limited import target remained authoritative after destroy'
     assert_authoritative_not_found "$SCRATCH/import-absence.out" "$resource_type"
+    python3 - "$agent_skip_evidence" "$SCRATCH/import-absence.out" "$agent_skip_reason" <<'PY' >"$SCRATCH/agent-import-observation.json"
+import hashlib,json,sys
+reason=sys.argv[3]
+allowed={"role-redacted-state-requires-admin","cli-version-below-1.11-agent-import-projection"}
+if reason not in allowed: raise SystemExit(1)
+def digest(path): return hashlib.sha256(open(path,"rb").read()).hexdigest()
+print(json.dumps({"schema_version":1,"reason":reason,"limitation_sha256":digest(sys.argv[1]),"absence_sha256":digest(sys.argv[2])},sort_keys=True))
+PY
     CLEANUP_MODE=none
     rm -rf "$producer" "$importer"
     WORKSPACE=
@@ -585,8 +714,10 @@ PYNS
     IMPORT_ADDRESS=
     IMPORT_RESOURCE_TYPE=
     IMPORT_ID_FILE=
-    SCENARIO_EVIDENCE=$SCRATCH/agent-role-observation.json
-    record "import:$resource_type" import skipped "$expected_skip"
+    SCENARIO_EVIDENCE=$SCRATCH/agent-import-observation.json
+    SCENARIO_DIAGNOSTIC_EVIDENCE=$SCRATCH/import-refresh.out
+    SCENARIO_DIAGNOSTIC_CODE_OVERRIDE=$agent_skip_diagnostic
+    record "import:$resource_type" import skipped "$agent_skip_reason"
     return
   fi
   set +e
@@ -619,6 +750,50 @@ PYNS
   (cd "$importer" && run_cli state rm "$address") >>"$LOG" 2>&1 || fail 'importer target detach failed'
   if (cd "$importer" && run_cli state list 2>>"$LOG" | grep -Fx "$address" >/dev/null); then
     fail 'imported address remained after target-only detach'
+  fi
+  if [ "$expected_skip" = fallback-delete-not-authoritative ]; then
+    [ "$resource_type" = litellm_fallback ] || fail 'fallback deletion skip was assigned to another resource'
+    (cd "$producer" && run_cli show -json) >"$SCRATCH/fallback-presence-before.json" 2>>"$LOG" || fail 'fallback pre-delete state capture failed'
+    set +e
+    (cd "$producer" && run_cli destroy -auto-approve) >"$SCRATCH/fallback-delete-unconfirmed.out" 2>&1
+    fallback_destroy_status=$?
+    set -e
+    cat "$SCRATCH/fallback-delete-unconfirmed.out" >>"$LOG"
+    if [ "$fallback_destroy_status" -eq 0 ]; then
+      [ -z "$(cd "$producer" && run_cli state list 2>>"$LOG")" ] || fail 'successful fallback delete left producer state'
+      set +e
+      (cd "$importer" && run_cli import "$address" "$(cat "$SCRATCH/import-id")") >"$SCRATCH/fallback-import-absence.out" 2>&1
+      fallback_absence_status=$?
+      set -e
+      [ "$fallback_absence_status" -ne 0 ] || fail 'successfully deleted fallback remained authoritative'
+      assert_authoritative_not_found "$SCRATCH/fallback-import-absence.out" "$resource_type"
+      CLEANUP_MODE=none
+      rm -rf "$producer" "$importer"
+      WORKSPACE= PRODUCER_WORKSPACE= IMPORTER_WORKSPACE= IMPORT_ADDRESS= IMPORT_RESOURCE_TYPE= IMPORT_ID_FILE=
+      SCENARIO_EVIDENCE=$SCRATCH/fallback-import-absence.out
+      record "import:$resource_type" import passed ''
+      return
+    fi
+    (cd "$producer" && run_cli apply -refresh-only -auto-approve) >"$SCRATCH/fallback-presence-refresh.out" 2>&1 || fail 'fallback authoritative presence refresh failed'
+    (cd "$producer" && run_cli show -json) >"$SCRATCH/fallback-presence-after.json" 2>>"$LOG" || fail 'fallback post-delete presence state capture failed'
+    python3 "$SCRIPT_DIR/harness.py" capture-fallback-presence --session "$SESSION" \
+      --before-state "$SCRATCH/fallback-presence-before.json" --after-state "$SCRATCH/fallback-presence-after.json" \
+      --refresh-output "$SCRATCH/fallback-presence-refresh.out" --delete-output "$SCRATCH/fallback-delete-unconfirmed.out" \
+      --address "$address" --cli "$CLI" || fail 'fallback authoritative presence phase was rejected'
+    (cd "$producer" && run_cli state list) >"$SCRATCH/fallback-delete-retained-state.list" 2>>"$LOG" || fail 'fallback retained-state inspection failed'
+    assert_fallback_delete_unconfirmed "$SCRATCH/fallback-delete-unconfirmed.out" \
+      "$SCRATCH/fallback-delete-retained-state.list" "$address"
+    (cd "$producer" && run_cli state rm "$address") >>"$LOG" 2>&1 || fail 'upstream-blocked fallback state detach failed'
+    (cd "$producer" && run_cli destroy -auto-approve) >>"$LOG" 2>&1 || fail 'fallback dependency cleanup failed'
+    [ -z "$(cd "$producer" && run_cli state list 2>>"$LOG")" ] || fail 'fallback producer state was not empty after cleanup'
+    CLEANUP_MODE=none
+    rm -rf "$producer" "$importer"
+    WORKSPACE= PRODUCER_WORKSPACE= IMPORTER_WORKSPACE= IMPORT_ADDRESS= IMPORT_RESOURCE_TYPE= IMPORT_ID_FILE=
+    SCENARIO_EVIDENCE=$SCRATCH/fallback-delete-unconfirmed.out
+    SCENARIO_DIAGNOSTIC_EVIDENCE=$SCRATCH/fallback-delete-unconfirmed.out
+    SCENARIO_FALLBACK_PRESENCE_EVIDENCE="$SCRATCH/fallback-presence-before.json|$SCRATCH/fallback-presence-after.json|$SCRATCH/fallback-presence-refresh.out"
+    record "import:$resource_type" import skipped "$expected_skip"
+    return
   fi
   (cd "$producer" && run_cli destroy -auto-approve) >>"$LOG" 2>&1 || fail 'producer-owned import cleanup failed'
   [ -z "$(cd "$producer" && run_cli state list 2>>"$LOG")" ] || fail 'producer state was not empty after cleanup'
@@ -826,7 +1001,7 @@ for line in open(sys.argv[1],encoding="utf-8",errors="replace"):
   except json.JSONDecodeError: continue
   diagnostic=value.get("diagnostic",{})
   if isinstance(diagnostic,dict) and diagnostic.get("severity")=="error" and isinstance(diagnostic.get("summary"),str): titles.append(diagnostic["summary"])
-if sorted(set(titles)) != [expected]: raise SystemExit("unexpected error diagnostics: "+",".join(sorted(set(titles))))
+if titles != [expected]: raise SystemExit("unexpected error diagnostics: "+",".join(titles))
 PYDIAG
   [ -s "$stats_file" ] || fail 'controlled endpoint was not attempted'
   python3 - "$stats_file" <<'PYSTATS' || fail 'fault proxy did not prove a pre-commit target attempt'
@@ -861,7 +1036,8 @@ PYSTATS
   rm -rf "$WORKSPACE"
   WORKSPACE=
   SCENARIO_EVIDENCE=$stats_file
-  record "failure_recovery:$name" failure_recovery passed '' "$expected_title"
+  SCENARIO_DIAGNOSTIC_EVIDENCE=$SCRATCH/failure.jsonl
+  record "failure_recovery:$name" failure_recovery passed ''
 }
 
 # Remote execution is intentionally assembly/read-only in this change. The

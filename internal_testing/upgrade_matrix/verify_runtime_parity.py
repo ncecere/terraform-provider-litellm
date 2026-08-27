@@ -13,14 +13,17 @@ REVIEWED_ISSUE210_BASES = {
     "a5cca7a1a9e416e72c40de6a5aa8c8bdd63a7701",
     "be91657f738b5764aa09db4e38c69dcc09683198",
     "d728ea5d8bb8d0fc5c6648e8d1e1b1d2f929601c",
+    "e3e5aef247903f0a44c178aa1d40a5781df096ec",
 }
 REVIEWED_ISSUE210_PATHS = (
     "internal/provider/agent_ownership_pending_protocol_test.go",
     "internal/provider/resource_agent.go",
     "internal/provider/resource_agent_lifecycle.go",
+    "internal/provider/resource_fallback.go",
+    "internal/provider/resource_fallback_test.go",
 )
 REVIEWED_ISSUE210_RUNTIME_DIFF_SHA256 = (
-    "cf64a6e999b5a5ca5286cc09cad30d46b001ce231f1779442c150657254cc999"
+    "c0ba020349961e46c4b01518901c868f1e4c434f51030aba8f9784590663b313"
 )
 
 

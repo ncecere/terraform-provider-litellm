@@ -90,7 +90,7 @@ For backward compatibility, a model-only ID without any colon still imports as `
 
 ## Notes
 
-> **LiteLLM v1.98 deletion limitation:** LiteLLM v1.98 can return 404 from `DELETE /fallback/{model}` while the same fallback remains readable. The provider therefore confirms absence with the exact GET identity after every delete. If LiteLLM still returns the fallback, destroy fails and retains Terraform state instead of reporting false success. Do not remove the resource from state while the routing configuration remains active. Authoritative upstream deletion is tracked in [LiteLLM #38425](https://github.com/BerriAI/litellm/issues/38425).
+> **LiteLLM v1.98 deletion limitation:** LiteLLM v1.98 can return 404 from `DELETE /fallback/{model}` while the same fallback remains readable. The provider therefore confirms absence with the exact GET identity after every delete. If LiteLLM still returns the fallback, destroy fails and retains Terraform state instead of reporting false success. That confirmed retained-presence case uses a dedicated content-safe diagnostic so automation cannot confuse it with timeout, cancellation, connectivity, malformed-response, or other operational confirmation failures. Do not remove the resource from state while the routing configuration remains active. Authoritative upstream deletion is tracked in [LiteLLM #38425](https://github.com/BerriAI/litellm/issues/38425).
 
 - Resource addresses, schema, state, and IDs remain unchanged: the state ID is the raw `model:fallback_type` value.
 - The LiteLLM API allows one fallback configuration per `(model, fallback_type)` pair. Creating a resource with the same model and type updates the existing configuration.

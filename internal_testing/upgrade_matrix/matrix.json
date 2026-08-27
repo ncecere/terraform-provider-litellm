@@ -26,8 +26,8 @@
     {"type":"litellm_prompt","fixture":["issue210_prompt_v201.tf"],"address":"litellm_prompt.upgrade","import_expression":"litellm_prompt.upgrade.id","lane":"oss","action":false},
     {"type":"litellm_guardrail","fixture":["issue210_guardrail_v201.tf"],"address":"litellm_guardrail.upgrade","import_expression":"litellm_guardrail.upgrade.id","lane":"oss","action":false,"limitations":["masked-parameters-require-admin"]},
     {"type":"litellm_search_tool","fixture":["search_tool_minimal.tf"],"address":"litellm_search_tool.minimal","import_expression":"litellm_search_tool.minimal.id","lane":"oss","action":false},
-    {"type":"litellm_fallback","fixture":["fallback_minimal.tf"],"address":"litellm_fallback.minimal","import_expression":"litellm_fallback.minimal.id","lane":"oss","action":false},
-    {"type":"litellm_agent","fixture":["agent_minimal.tf"],"address":"litellm_agent.minimal","import_expression":"litellm_agent.minimal.id","lane":"oss","action":false,"import_skip_reason":"role-redacted-state-requires-admin","limitations":["role-redacted-state-requires-admin"]},
+    {"type":"litellm_fallback","fixture":["fallback_minimal.tf"],"address":"litellm_fallback.minimal","import_expression":"litellm_fallback.minimal.id","lane":"oss","action":false,"lifecycle_skip_reason":"fallback-delete-not-authoritative","lifecycle_skip_diagnostic_code":"fallback-delete-not-authoritative","import_skip_reason":"fallback-delete-not-authoritative","limitations":["fallback-delete-not-authoritative"]},
+    {"type":"litellm_agent","fixture":["agent_minimal.tf"],"address":"litellm_agent.minimal","import_expression":"litellm_agent.minimal.id","lane":"oss","action":false,"import_skip_reason":"role-redacted-state-requires-admin","limitations":["role-redacted-state-requires-admin","cli-version-below-1.11-agent-import-projection"]},
     {"type":"litellm_project","fixture":["team_minimal.tf","issue210_project_v201.tf"],"address":"litellm_project.upgrade","import_expression":"litellm_project.upgrade.id","lane":"enterprise","action":false,"limitations":["enterprise-license-required"]}
   ],
   "non_importable_resources": [],
@@ -112,6 +112,10 @@
     {"category":"data_source","subject":"litellm_projects","reason":"enterprise-license-required"},
     {"category":"optional_feature","subject":"key_wo","reason":"api-endpoint-unavailable"}
   ],
+  "terraform_1_11_4_conditional_skips": [
+    {"category":"lifecycle","subject":"litellm_fallback","reason":"fallback-delete-not-authoritative"},
+    {"category":"import","subject":"litellm_fallback","reason":"fallback-delete-not-authoritative"}
+  ],
   "allowed_skip_reasons": [
     "enterprise-license-required",
     "inventory-endpoint-may-be-unavailable",
@@ -120,7 +124,9 @@
     "masked-values-metadata-only-import",
     "masked-parameters-require-admin",
     "role-redacted-state-requires-admin",
+    "cli-version-below-1.11-agent-import-projection",
     "cli-version-below-1.11",
-    "previous-release-resource-unavailable"
+    "previous-release-resource-unavailable",
+    "fallback-delete-not-authoritative"
   ]
 }
