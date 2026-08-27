@@ -60,6 +60,10 @@ func ignoredConversions() {
 	_ = declaredElements
 	var declaredObject = object.As(ctx, &decoded, options)
 	_ = declaredObject
+	sentinel, multiElements := 0, value.ElementsAs(ctx, &items, false)
+	_ = multiElements
+	var otherSentinel, multiObject = 0, object.As(ctx, &decoded, options)
+	_ = multiObject
 	var declaredList, declaredListDiagnostics = types.ListValue(elementType, elements)
 	_ = declaredListDiagnostics
 	list, _ := types.ListValue(elementType, elements)
@@ -166,9 +170,9 @@ func shadowedDestination() diagnostics {
 	counts := countCollectionAuditViolations(violations)
 	want := map[string]int{
 		"ignored ElementsAs diagnostics":                 1,
-		"unchecked ElementsAs diagnostics":               2,
+		"unchecked ElementsAs diagnostics":               3,
 		"ignored Object.As diagnostics":                  1,
-		"unchecked Object.As diagnostics":                2,
+		"unchecked Object.As diagnostics":                3,
 		"discarded ListValue constructor diagnostics":    1,
 		"unchecked ListValue constructor diagnostics":    14,
 		"discarded SetValueFrom constructor diagnostics": 1,
@@ -215,17 +219,14 @@ func scanCollectionConversionFile(filename string, file *ast.File) []collectionA
 		if general, ok := declaration.(*ast.GenDecl); ok {
 			for _, specification := range general.Specs {
 				value, valueOK := specification.(*ast.ValueSpec)
-				if !valueOK || len(value.Values) != 1 {
+				if !valueOK {
 					continue
 				}
-				call, callOK := value.Values[0].(*ast.CallExpr)
-				if callOK {
-					targets := make([]ast.Expr, len(value.Names))
-					for index, name := range value.Names {
-						targets[index] = name
-					}
-					violations = append(violations, collectionCallAssignmentViolations(filename, "<package>", &ast.BlockStmt{}, targets, call, value.Pos())...)
+				targets := make([]ast.Expr, len(value.Names))
+				for index, name := range value.Names {
+					targets[index] = name
 				}
+				violations = append(violations, collectionAssignmentViolations(filename, "<package>", &ast.BlockStmt{}, targets, value.Values, value.Pos())...)
 				ast.Inspect(value, func(node ast.Node) bool {
 					if nested, ok := node.(*ast.CallExpr); ok {
 						if must := collectionValueMustName(nested); must != "" {
@@ -254,21 +255,13 @@ func scanCollectionConversionFile(filename string, file *ast.File) []collectionA
 					}
 				}
 			case *ast.AssignStmt:
-				if len(typed.Rhs) == 1 {
-					if call, ok := typed.Rhs[0].(*ast.CallExpr); ok {
-						violations = append(violations, collectionCallAssignmentViolations(filename, symbol, function.Body, typed.Lhs, call, typed.Pos())...)
-					}
-				}
+				violations = append(violations, collectionAssignmentViolations(filename, symbol, function.Body, typed.Lhs, typed.Rhs, typed.Pos())...)
 			case *ast.ValueSpec:
-				if len(typed.Values) == 1 {
-					if call, ok := typed.Values[0].(*ast.CallExpr); ok {
-						targets := make([]ast.Expr, len(typed.Names))
-						for index, name := range typed.Names {
-							targets[index] = name
-						}
-						violations = append(violations, collectionCallAssignmentViolations(filename, symbol, function.Body, targets, call, typed.Pos())...)
-					}
+				targets := make([]ast.Expr, len(typed.Names))
+				for index, name := range typed.Names {
+					targets[index] = name
 				}
+				violations = append(violations, collectionAssignmentViolations(filename, symbol, function.Body, targets, typed.Values, typed.Pos())...)
 			}
 			if call, ok := node.(*ast.CallExpr); ok {
 				if must := collectionValueMustName(call); must != "" {
@@ -277,6 +270,25 @@ func scanCollectionConversionFile(filename string, file *ast.File) []collectionA
 			}
 			return true
 		})
+	}
+	return violations
+}
+
+func collectionAssignmentViolations(filename, symbol string, body *ast.BlockStmt, targets, values []ast.Expr, position token.Pos) []collectionAuditViolation {
+	var violations []collectionAuditViolation
+	if len(values) == 1 {
+		if call, ok := values[0].(*ast.CallExpr); ok {
+			return collectionCallAssignmentViolations(filename, symbol, body, targets, call, position)
+		}
+		return nil
+	}
+	if len(values) != len(targets) {
+		return nil
+	}
+	for index, value := range values {
+		if call, ok := value.(*ast.CallExpr); ok {
+			violations = append(violations, collectionCallAssignmentViolations(filename, symbol, body, targets[index:index+1], call, position)...)
+		}
 	}
 	return violations
 }
