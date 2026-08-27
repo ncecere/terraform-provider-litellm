@@ -168,7 +168,7 @@ func TestMCPFieldDeltaEmitsAllAndOnlyV198RemovalSentinels(t *testing.T) {
 	committed := mcpFieldOwnership{Owned: owned, Removals: map[string]bool{}, Generation: 4, Versioned: true}
 	candidate := deriveMCPFieldPlanOwnership(committed, MCPServerResourceModel{})
 	state := MCPServerResourceModel{Credentials: types.MapValueMust(types.StringType, map[string]attr.Value{})}
-	delta, err := buildMCPFieldDelta(ctx, MCPServerResourceModel{}, MCPServerResourceModel{}, state, committed, candidate, map[string]interface{}{})
+	delta, err := buildMCPFieldDelta(ctx, MCPServerResourceModel{}, MCPServerResourceModel{}, state, committed, candidate, map[string]interface{}{}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -266,7 +266,7 @@ func TestMCPConfirmedCredentialClearAllowsSameClassReAdd(t *testing.T) {
 		Owned: map[string]bool{}, Removals: map[string]bool{mcpFieldCredentialsPath: true}, Generation: 2, Versioned: true,
 	}
 	candidate := deriveMCPFieldPlanOwnership(committed, config)
-	delta, err := buildMCPFieldDelta(ctx, plan, config, state, committed, candidate, map[string]interface{}{"auth_type": "api_key", "credentials": nil})
+	delta, err := buildMCPFieldDelta(ctx, plan, config, state, committed, candidate, map[string]interface{}{"auth_type": "api_key", "credentials": nil}, false)
 	if err != nil {
 		t.Fatalf("confirmed-clear re-add rejected: %v", err)
 	}
@@ -292,7 +292,7 @@ func TestMCPPendingCredentialClassReplacementRetriesAfterRemoteAuthAdvanced(t *t
 	candidate := deriveMCPFieldPlanOwnership(committed, config)
 	delta, err := buildMCPFieldDelta(ctx, config, config, state, committed, candidate, map[string]interface{}{
 		"auth_type": "api_key", "credentials": nil, "audience": nil,
-	})
+	}, false)
 	if err != nil {
 		t.Fatalf("pending class replacement retry rejected: %v", err)
 	}

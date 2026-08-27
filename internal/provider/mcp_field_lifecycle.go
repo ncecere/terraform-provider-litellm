@@ -362,7 +362,7 @@ func mcpAmbiguousEmptyCollectionNeedsWrite(ctx context.Context, fieldPath string
 	return err != nil || !mcpWireValuesEqual(desired, prior)
 }
 
-func buildMCPFieldDelta(ctx context.Context, plan MCPServerResourceModel, config, state MCPServerResourceModel, committed, candidate mcpFieldOwnership, hydration map[string]interface{}) (map[string]interface{}, error) {
+func buildMCPFieldDelta(ctx context.Context, plan MCPServerResourceModel, config, state MCPServerResourceModel, committed, candidate mcpFieldOwnership, hydration map[string]interface{}, recoverAcceptedCreate bool) (map[string]interface{}, error) {
 	if err := validateMCPFieldCredentialMerge(ctx, plan, state, config, hydration, committed, candidate); err != nil {
 		return nil, err
 	}
@@ -414,6 +414,14 @@ func buildMCPFieldDelta(ctx context.Context, plan MCPServerResourceModel, config
 			// prior row exists.
 			if !committed.Owned[fieldPath] {
 				credentials, validCredentials := desired.(map[string]string)
+				if recoverAcceptedCreate && validCredentials {
+					// The accepted-create marker is bound to this exact credential
+					// class and key set. Re-send every configured value so opaque value
+					// changes are applied rather than inferred from masked readback.
+					delta[name] = desired
+					addLiftedCredentialIntent(credentials)
+					continue
+				}
 				replacesCredentialClass := mcpCredentialClassWillReplace(plan, state, hydration) || mcpCredentialOwnershipClassWillReplace(committed, candidate)
 				confirmedClear := committed.Removals[fieldPath]
 				if !validCredentials || (!replacesCredentialClass && !confirmedClear) {
@@ -758,28 +766,13 @@ func (r *MCPServerResource) Update(ctx context.Context, req resource.UpdateReque
 		return
 	}
 	recoverAcceptedCreate := acceptedCreateRecovery && !state.FieldOwnershipGeneration.IsNull() && !state.FieldOwnershipGeneration.IsUnknown() && state.FieldOwnershipGeneration.ValueInt64() == 0 && committedFields.Generation == 0 && len(committedFields.Owned) == 0 && len(committedFields.Removals) == 0
-	comparisonState := state
-	comparisonFields := committedFields
-	if recoverAcceptedCreate {
-		// An identity-only state is produced only after an accepted create. The
-		// direct identity-valid response confirms the pending create intent; use
-		// the pending plan as the comparison baseline so recovery commits without
-		// a merge-only PUT.
-		if verifyMCPFieldCreateReadback(ctx, config, hydration, plannedFields) != nil {
-			resp.State, resp.Private = req.State, req.Private
-			resp.Diagnostics.AddError("MCP Server Recovery Not Confirmed", "The direct endpoint did not confirm the accepted create intent. No PUT was attempted and identity-only state was retained.")
-			return
-		}
-		comparisonState = plan
-		comparisonFields = committedMCPFieldOwnership(plannedFields)
-	}
-	delta, err := buildMCPFieldDelta(ctx, plan, config, comparisonState, comparisonFields, plannedFields, hydration)
+	delta, err := buildMCPFieldDelta(ctx, plan, config, state, committedFields, plannedFields, hydration, recoverAcceptedCreate)
 	if err != nil {
 		resp.State, resp.Private = req.State, req.Private
 		resp.Diagnostics.AddError("Unsafe MCP Field Update", err.Error())
 		return
 	}
-	addMCPBaseDelta(delta, plan, comparisonState, hydration)
+	addMCPBaseDelta(delta, plan, state, hydration)
 	if err := completeMCPUpdateDelta(ctx, delta, plan, hydration); err != nil {
 		resp.State, resp.Private = req.State, req.Private
 		resp.Diagnostics.AddError("Unsafe MCP Update", err.Error()+". No PUT was attempted; prior public and private state was retained.")
@@ -819,7 +812,7 @@ func (r *MCPServerResource) Update(ctx context.Context, req resource.UpdateReque
 	}
 	desiredAuth, authSent := delta["auth_type"].(string)
 	authClassChanged := authSent && mcpAuthCredentialClass(remoteAuth) != mcpAuthCredentialClass(desiredAuth)
-	if err := validateMCPImplicitClearSafety(config, comparisonState, plannedFields, hydration, delta, urlChanged, authClassChanged); err != nil {
+	if err := validateMCPImplicitClearSafety(config, state, plannedFields, hydration, delta, urlChanged, authClassChanged); err != nil {
 		resp.State, resp.Private = req.State, req.Private
 		resp.Diagnostics.AddError("Unsafe MCP URL or Authentication Update", "LiteLLM v1.98 would implicitly clear an unowned, unknown, or unchanged OAuth/credential value ("+err.Error()+"). Configure every affected value with a genuinely changed or cleared complete intent in one apply. No PUT was attempted; restorative PUTs are never used.")
 		return

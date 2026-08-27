@@ -12,7 +12,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-go/tftypes"
 )
 
-func TestMCPAcceptedCreateCredentialRecoveryCommitsPendingWithoutPUTProtocol(t *testing.T) {
+func TestMCPAcceptedCreateCredentialRecoveryReappliesOpaqueValuesProtocol(t *testing.T) {
 	ctx := context.Background()
 	var requestedID atomic.Value
 	var readsEnabled atomic.Bool
@@ -48,7 +48,7 @@ func TestMCPAcceptedCreateCredentialRecoveryCommitsPendingWithoutPUTProtocol(t *
 	schema := schemas.ResourceSchemas["litellm_mcp_server"]
 	configValues := map[string]interface{}{
 		"server_name": "credential-recovery", "url": "https://mcp.example.test", "transport": "http", "auth_type": "api_key",
-		"credentials": map[string]tftypes.Value{"auth_value": tftypes.NewValue(tftypes.String, "secret")},
+		"credentials": map[string]tftypes.Value{"auth_value": tftypes.NewValue(tftypes.String, "old-secret")},
 	}
 	config, nullState, createPlan := mcpServerProtocolCreatePlan(t, protocolServer, schema, configValues)
 	created, err := protocolServer.ApplyResourceChange(ctx, &tfprotov6.ApplyResourceChangeRequest{
@@ -65,20 +65,28 @@ func TestMCPAcceptedCreateCredentialRecoveryCommitsPendingWithoutPUTProtocol(t *
 	if err != nil || accessGroupProtocolDiagnosticsHaveError(refreshed.Diagnostics) {
 		t.Fatalf("recovery refresh: err=%v diagnostics=%v", err, refreshed.Diagnostics)
 	}
-	proposed := organizationProjectProtocolReplace(t, schema, refreshed.NewState, configValues)
+	recoveryConfigValues := map[string]interface{}{
+		"server_name": "credential-recovery", "url": "https://mcp.example.test", "transport": "http", "auth_type": "api_key",
+		"credentials": map[string]tftypes.Value{"auth_value": tftypes.NewValue(tftypes.String, "new-secret")},
+	}
+	recoveryConfig := accessGroupProtocolDynamicValue(t, schema, organizationProjectProtocolValue(t, schema, recoveryConfigValues))
+	proposed := organizationProjectProtocolReplace(t, schema, refreshed.NewState, recoveryConfigValues)
 	recoveryPlan, err := protocolServer.PlanResourceChange(ctx, &tfprotov6.PlanResourceChangeRequest{
-		TypeName: "litellm_mcp_server", Config: config, PriorState: refreshed.NewState,
+		TypeName: "litellm_mcp_server", Config: recoveryConfig, PriorState: refreshed.NewState,
 		ProposedNewState: proposed, PriorPrivate: refreshed.Private,
 	})
 	if err != nil || accessGroupProtocolDiagnosticsHaveError(recoveryPlan.Diagnostics) {
 		t.Fatalf("recovery plan: err=%v diagnostics=%v", err, recoveryPlan.Diagnostics)
 	}
 	recovered, err := protocolServer.ApplyResourceChange(ctx, &tfprotov6.ApplyResourceChangeRequest{
-		TypeName: "litellm_mcp_server", Config: config, PriorState: refreshed.NewState,
+		TypeName: "litellm_mcp_server", Config: recoveryConfig, PriorState: refreshed.NewState,
 		PlannedState: recoveryPlan.PlannedState, PlannedPrivate: recoveryPlan.PlannedPrivate,
 	})
-	if err != nil || accessGroupProtocolDiagnosticsHaveError(recovered.Diagnostics) || puts.Load() != 0 {
+	if err != nil || accessGroupProtocolDiagnosticsHaveError(recovered.Diagnostics) || puts.Load() != 1 {
 		t.Fatalf("recovery apply: err=%v diagnostics=%s puts=%d body=%#v", err, agentProtocolDiagnosticsText(recovered.Diagnostics), puts.Load(), putBody.Load())
+	}
+	if body, _ := putBody.Load().(map[string]interface{}); !mcpWireValuesEqual(body["credentials"], map[string]interface{}{"auth_value": "new-secret"}) {
+		t.Fatalf("recovery PUT did not contain the complete current opaque intent: %#v", body)
 	}
 	attributes := protocolAttributeMap(t, schema, recovered.NewState)
 	var credentials map[string]tftypes.Value
@@ -88,7 +96,7 @@ func TestMCPAcceptedCreateCredentialRecoveryCommitsPendingWithoutPUTProtocol(t *
 	var authValue string
 	if value, present := credentials["auth_value"]; !present {
 		t.Fatalf("recovered credentials omitted auth_value: %#v", credentials)
-	} else if err := value.As(&authValue); err != nil || authValue != "secret" {
+	} else if err := value.As(&authValue); err != nil || authValue != "new-secret" {
 		t.Fatalf("recovered auth_value=%q err=%v", authValue, err)
 	}
 	committed := protocolCommittedMCPFieldOwnership(t, recovered.Private)
