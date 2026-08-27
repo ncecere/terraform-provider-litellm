@@ -60,6 +60,13 @@ func mcpFieldDesiredValue(ctx context.Context, data MCPServerResourceModel, fiel
 
 func mcpFieldWireName(fieldPath string) string { return fieldPath[1:] }
 
+var mcpCredentialLiftedColumnNames = []string{
+	"audience",
+	"subject_token_type",
+	"token_exchange_endpoint",
+	"token_exchange_profile",
+}
+
 func mcpFieldRemovalSentinel(fieldPath string) interface{} {
 	switch fieldPath {
 	case mcpFieldAliasPath, mcpFieldDescriptionPath, mcpFieldCommandPath,
@@ -193,6 +200,10 @@ func validateMCPImplicitClearSafety(config, state MCPServerResourceModel, planne
 		"audience", "subject_token_type", "token_exchange_profile",
 	} {
 		if raw, present := hydration[name]; present && raw != nil {
+			desired, supplied := delta[name]
+			if supplied && !mcpWireValuesEqual(desired, raw) {
+				continue
+			}
 			return fmt.Errorf("a hidden authentication-flow value would be cleared implicitly")
 		}
 	}
@@ -264,6 +275,27 @@ func buildMCPFieldDelta(ctx context.Context, plan MCPServerResourceModel, config
 	}
 	delta := map[string]interface{}{}
 	presence := mcpFieldConfigPresence(config)
+	addLiftedCredentialIntent := func(credentials map[string]string) {
+		for _, name := range mcpCredentialLiftedColumnNames {
+			if value, present := credentials[name]; present {
+				delta[name] = value
+			}
+		}
+	}
+	if candidate.Removals[mcpFieldCredentialsPath] {
+		priorCredentials, err := mcpFieldStringMap(ctx, state.Credentials)
+		if err != nil {
+			return nil, fmt.Errorf("owned credentials cannot be cleared without known prior state")
+		}
+		// v1.98 lifts these accepted legacy credential keys into dedicated
+		// columns. Clear exactly the columns established by prior Terraform
+		// intent alongside the credential blob; never clear an unowned column.
+		for _, name := range mcpCredentialLiftedColumnNames {
+			if _, owned := priorCredentials[name]; owned {
+				delta[name] = nil
+			}
+		}
+	}
 	for fieldPath := range candidate.Removals {
 		delta[mcpFieldWireName(fieldPath)] = mcpFieldRemovalSentinel(fieldPath)
 	}
@@ -299,8 +331,14 @@ func buildMCPFieldDelta(ctx context.Context, plan MCPServerResourceModel, config
 					return nil, fmt.Errorf("empty credentials cannot be adopted safely through LiteLLM's merge-only update")
 				}
 				delta[name] = desired
+				addLiftedCredentialIntent(credentials)
 			} else if !config.Credentials.Equal(state.Credentials) {
+				credentials, validCredentials := desired.(map[string]string)
+				if !validCredentials {
+					return nil, fmt.Errorf("configured credentials are invalid")
+				}
 				delta[name] = desired
+				addLiftedCredentialIntent(credentials)
 			}
 			continue
 		}
@@ -468,6 +506,33 @@ func verifyMCPBaseDeltaReadback(delta, observed map[string]interface{}) error {
 		}
 		if !present || !mcpWireValuesEqual(want, got) {
 			return fmt.Errorf("changed MCP base field did not converge")
+		}
+	}
+	return nil
+}
+
+func verifyMCPCredentialLiftedColumns(baseline, observed, delta map[string]interface{}) error {
+	for _, name := range mcpCredentialLiftedColumnNames {
+		want, sent := delta[name]
+		got, present := observed[name]
+		if sent {
+			if want == nil {
+				if present && got != nil {
+					return fmt.Errorf("a lifted credential column did not clear")
+				}
+				continue
+			}
+			if !present || !mcpWireValuesEqual(want, got) {
+				return fmt.Errorf("a lifted credential column did not converge")
+			}
+			continue
+		}
+		prior, visible := baseline[name]
+		if !visible || prior == nil {
+			continue
+		}
+		if !present || !mcpWireValuesEqual(prior, got) {
+			return fmt.Errorf("a visible unowned lifted credential column changed")
 		}
 	}
 	return nil
@@ -647,7 +712,7 @@ func (r *MCPServerResource) Update(ctx context.Context, req resource.UpdateReque
 		return
 	}
 	observedInfo, observedInfoPresence, infoErr := mcpInfoDocumentFromResponse(readback)
-	if infoErr != nil || observedInfoPresence != apiValuePresent || mcpOwnedEndpointReadbackMismatch(&desiredPlan, &plan, &state) || verifyMCPInfoReadback(baseInfo, resolvedInfo.Document, observedInfo, plannedInfo) != nil || verifyMCPBaseDeltaReadback(delta, readback) != nil || verifyMCPFieldUpdateReadback(ctx, plan, config, committedFields, plannedFields, hydration, readback, delta) != nil {
+	if infoErr != nil || observedInfoPresence != apiValuePresent || mcpOwnedEndpointReadbackMismatch(&desiredPlan, &plan, &state) || verifyMCPInfoReadback(baseInfo, resolvedInfo.Document, observedInfo, plannedInfo) != nil || verifyMCPBaseDeltaReadback(delta, readback) != nil || verifyMCPCredentialLiftedColumns(hydration, readback, delta) != nil || verifyMCPFieldUpdateReadback(ctx, plan, config, committedFields, plannedFields, hydration, readback, delta) != nil {
 		resp.State, resp.Private = req.State, req.Private
 		resp.Diagnostics.AddError("Inconsistent MCP Server Readback", "LiteLLM did not confirm all changed owned values, clear sentinels, and visible unmanaged values. Prior public and private state was retained.")
 		return

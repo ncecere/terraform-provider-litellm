@@ -164,6 +164,101 @@ func TestMCPServerNameAndAliasRemovalHasZeroPUTProtocol(t *testing.T) {
 	}
 }
 
+func TestMCPServerCredentialsClearIncludesOwnedLiftedColumnsProtocol(t *testing.T) {
+	credentials := map[string]tftypes.Value{
+		"client_secret":           tftypes.NewValue(tftypes.String, "secret"),
+		"audience":                tftypes.NewValue(tftypes.String, "audience"),
+		"subject_token_type":      tftypes.NewValue(tftypes.String, "subject"),
+		"token_exchange_endpoint": tftypes.NewValue(tftypes.String, "https://token.invalid/exchange"),
+	}
+	state := map[string]interface{}{
+		"id": "clear-lifted", "server_id": "clear-lifted", "server_name": "clear-lifted", "transport": "http",
+		"url": "https://known.invalid/mcp", "auth_type": "oauth2_token_exchange", "spec_version": "2024-11-05",
+		"credentials": credentials, "field_ownership_generation": int64(1),
+	}
+	config := map[string]interface{}{
+		"server_name": "clear-lifted", "transport": "http", "url": "https://known.invalid/mcp", "auth_type": "oauth2_token_exchange",
+	}
+	before := map[string]interface{}{
+		"server_id": "clear-lifted", "server_name": "clear-lifted", "transport": "http", "url": "https://known.invalid/mcp",
+		"auth_type": "oauth2_token_exchange", "credentials": nil, "audience": "audience", "subject_token_type": "subject",
+		"token_exchange_endpoint": "https://token.invalid/exchange", "token_exchange_profile": "unowned-profile", "mcp_info": map[string]interface{}{},
+	}
+	owned := mcpFieldOwnership{Owned: map[string]bool{mcpFieldCredentialsPath: true}, Removals: map[string]bool{}, Generation: 1, Versioned: true}
+	for _, test := range []struct {
+		name           string
+		retainAudience bool
+		wantFailure    bool
+	}{
+		{name: "exact clear"},
+		{name: "failed lifted clear", retainAudience: true, wantFailure: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			after := map[string]interface{}{
+				"server_id": "clear-lifted", "server_name": "clear-lifted", "transport": "http", "url": "https://known.invalid/mcp",
+				"auth_type": "oauth2_token_exchange", "credentials": nil, "audience": nil, "subject_token_type": nil,
+				"token_exchange_endpoint": nil, "token_exchange_profile": "unowned-profile", "mcp_info": map[string]interface{}{},
+			}
+			if test.retainAudience {
+				after["audience"] = "audience"
+			}
+			result := runMCPUpdateCompletionProtocol(t, state, config, map[string]interface{}{"credentials": nil}, before, after, protocolMCPFieldPrivate(t, owned))
+			if accessGroupProtocolDiagnosticsHaveError(result.applied.Diagnostics) != test.wantFailure || result.puts != 1 {
+				t.Fatalf("credential clear result: puts=%d diagnostics=%v", result.puts, result.applied.Diagnostics)
+			}
+			if value, present := result.body["credentials"]; !present || value != nil {
+				t.Fatalf("credential clear sentinel missing: %#v", result.body)
+			}
+			for _, name := range []string{"audience", "subject_token_type", "token_exchange_endpoint"} {
+				if value, present := result.body[name]; !present || value != nil {
+					t.Fatalf("owned lifted clear %s missing: %#v", name, result.body)
+				}
+			}
+			if _, sent := result.body["token_exchange_profile"]; sent {
+				t.Fatalf("unowned lifted column was cleared: %#v", result.body)
+			}
+			if test.wantFailure {
+				assertMCPServerFailedUpdateRetainsPriorState(t, result.schema, result.state, result.applied.NewState)
+			} else if ownership := protocolCommittedMCPFieldOwnership(t, result.applied.Private); ownership.Owned[mcpFieldCredentialsPath] {
+				t.Fatalf("credential ownership survived confirmed clear: %#v", ownership)
+			}
+		})
+	}
+}
+
+func TestMCPServerCredentialsUpdateProjectsLiftedColumnIntentProtocol(t *testing.T) {
+	priorCredentials := map[string]tftypes.Value{
+		"client_secret": tftypes.NewValue(tftypes.String, "secret"),
+		"audience":      tftypes.NewValue(tftypes.String, "old-audience"),
+	}
+	desiredCredentials := map[string]tftypes.Value{
+		"client_secret": tftypes.NewValue(tftypes.String, "secret"),
+		"audience":      tftypes.NewValue(tftypes.String, "new-audience"),
+	}
+	state := map[string]interface{}{
+		"id": "update-lifted", "server_id": "update-lifted", "server_name": "update-lifted", "transport": "http",
+		"url": "https://known.invalid/mcp", "auth_type": "oauth2_token_exchange", "spec_version": "2024-11-05",
+		"credentials": priorCredentials, "field_ownership_generation": int64(1),
+	}
+	config := map[string]interface{}{
+		"server_name": "update-lifted", "transport": "http", "url": "https://known.invalid/mcp", "auth_type": "oauth2_token_exchange",
+		"credentials": desiredCredentials,
+	}
+	before := map[string]interface{}{
+		"server_id": "update-lifted", "server_name": "update-lifted", "transport": "http", "url": "https://known.invalid/mcp",
+		"auth_type": "oauth2_token_exchange", "credentials": nil, "audience": "old-audience", "mcp_info": map[string]interface{}{},
+	}
+	after := map[string]interface{}{
+		"server_id": "update-lifted", "server_name": "update-lifted", "transport": "http", "url": "https://known.invalid/mcp",
+		"auth_type": "oauth2_token_exchange", "credentials": nil, "audience": "new-audience", "mcp_info": map[string]interface{}{},
+	}
+	owned := mcpFieldOwnership{Owned: map[string]bool{mcpFieldCredentialsPath: true}, Removals: map[string]bool{}, Generation: 1, Versioned: true}
+	result := runMCPUpdateCompletionProtocol(t, state, config, map[string]interface{}{"credentials": desiredCredentials}, before, after, protocolMCPFieldPrivate(t, owned))
+	if accessGroupProtocolDiagnosticsHaveError(result.applied.Diagnostics) || result.puts != 1 || result.body["audience"] != "new-audience" {
+		t.Fatalf("lifted credential intent did not converge: puts=%d body=%#v diagnostics=%v", result.puts, result.body, result.applied.Diagnostics)
+	}
+}
+
 func TestMCPServerInitialEmptyCredentialsTakeoverHasZeroPUTProtocol(t *testing.T) {
 	state := map[string]interface{}{
 		"id": "empty-credentials", "server_id": "empty-credentials", "server_name": "empty-credentials",
