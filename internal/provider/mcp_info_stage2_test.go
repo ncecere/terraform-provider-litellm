@@ -17,7 +17,7 @@ func TestMCPInfoStage2Schema(t *testing.T) {
 	if response.Diagnostics.HasError() {
 		t.Fatal(response.Diagnostics)
 	}
-	if response.Schema.Version != 2 {
+	if response.Schema.Version != 3 {
 		t.Fatalf("schema version = %d", response.Schema.Version)
 	}
 	whole, ok := response.Schema.Attributes["mcp_info_json"].(schema.StringAttribute)
@@ -35,6 +35,10 @@ func TestMCPInfoStage2Schema(t *testing.T) {
 	generation, ok := response.Schema.Attributes["mcp_info_ownership_generation"].(schema.Int64Attribute)
 	if !ok || !generation.Computed || generation.Optional || generation.Sensitive {
 		t.Fatalf("mcp_info_ownership_generation schema = %#v", response.Schema.Attributes["mcp_info_ownership_generation"])
+	}
+	fieldGeneration, ok := response.Schema.Attributes["field_ownership_generation"].(schema.Int64Attribute)
+	if !ok || !fieldGeneration.Computed || fieldGeneration.Optional || fieldGeneration.Sensitive {
+		t.Fatalf("field_ownership_generation schema = %#v", response.Schema.Attributes["field_ownership_generation"])
 	}
 	block, ok := response.Schema.Blocks["mcp_info"].(schema.SingleNestedBlock)
 	if !ok || len(block.Attributes) != 3 || len(block.Blocks) != 1 {

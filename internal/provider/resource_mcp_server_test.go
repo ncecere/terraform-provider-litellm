@@ -696,7 +696,7 @@ func TestReadMCPServerPreservesPhantomMigrationAndOptionalOwnership(t *testing.T
 	}
 }
 
-func TestReadMCPServerEndpointOwnershipIsAuthoritative(t *testing.T) {
+func TestReadMCPServerKnownEndpointsSurviveRestrictedNullOrOmission(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name         string
@@ -724,17 +724,17 @@ func TestReadMCPServerEndpointOwnershipIsAuthoritative(t *testing.T) {
 		{
 			name: "owned URL omitted", stateURL: types.StringValue("https://configured.invalid/mcp"), stateSpec: types.StringNull(),
 			response: map[string]interface{}{"server_id": "owned", "transport": "http", "spec_path": "/unowned/remote.json"},
-			wantURL:  types.StringNull(), wantSpecPath: types.StringNull(),
+			wantURL:  types.StringValue("https://configured.invalid/mcp"), wantSpecPath: types.StringNull(),
 		},
 		{
 			name: "owned spec explicit null", stateURL: types.StringNull(), stateSpec: types.StringValue("/configured/spec.json"),
 			response: map[string]interface{}{"server_id": "owned", "transport": "http", "url": "https://unowned.invalid/mcp", "spec_path": nil},
-			wantURL:  types.StringNull(), wantSpecPath: types.StringNull(),
+			wantURL:  types.StringNull(), wantSpecPath: types.StringValue("/configured/spec.json"),
 		},
 		{
 			name: "owned both with spec omitted", stateURL: types.StringValue("https://configured.invalid/mcp"), stateSpec: types.StringValue("/configured/spec.json"),
 			response: map[string]interface{}{"server_id": "owned", "transport": "http", "url": "https://remote.invalid/mcp"},
-			wantURL:  types.StringValue("https://remote.invalid/mcp"), wantSpecPath: types.StringNull(),
+			wantURL:  types.StringValue("https://remote.invalid/mcp"), wantSpecPath: types.StringValue("/configured/spec.json"),
 		},
 	}
 	for _, test := range tests {

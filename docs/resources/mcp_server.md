@@ -173,6 +173,16 @@ The following arguments are supported:
 >
 > The provider hydrates the complete remote object before Update and sends a complete `mcp_info` document whenever an Update is required. Unknown access-control flags, nested objects, arrays, nulls, and exact JSON numbers are preserved. A null or omitted API parent is treated as role masking, not an empty object: Update can proceed only from a previously authoritative complete JSON snapshot. Post-write direct readback must confirm owned values, clears, fixed fields, and every preserved unowned path before state or ownership generation is committed. Equal-value ownership takeover commits provenance without a PUT.
 
+### Presence-aware field clears
+
+The existing `alias`, `description`, `command`, OAuth URL, access-group, argument, environment, tool/header, credential, and `allow_all_keys` arguments now have presence-aware ownership without changing any public argument type or Optional/Computed flag. A known configured value, including an empty collection, empty string, or `false`, acquires ownership. An unknown expression retains prior ownership. Removing a previously owned argument sends LiteLLM v1.98's exact clear sentinel; an omitted unowned argument is never projected into an Update.
+
+Update always performs an identity- and type-valid direct singular read first, then sends only the changed managed values and owned removals. Collection null/omission/empty responses may be role-redacted and therefore do not erase a prior owned projection. Credential response values are never authoritative; configured sensitive values survive redaction, and confirmation uses the successful write plus identity/schema-valid direct readback. Because v1.98 merges credential maps, deleting individual configured keys is rejected. Remove the entire `credentials` argument and apply its top-level `null` clear first, then re-add the replacement map in a second apply.
+
+LiteLLM v1.98 can implicitly clear OAuth endpoints when `url` or the credential authentication class changes, and can implicitly clear credentials on an authentication-class change. The provider rejects the operation before PUT unless every affected existing value is explicitly owned, genuinely changed or cleared, and supplied completely in the same update. It never attempts a restorative second PUT.
+
+Legacy state has no trustworthy presence history. On the first schema-v3 plan, ownership is acquired only from known non-null configuration; public state is never used as ownership evidence. Consequently, removing an ambiguously historical value during that first upgrade does not clear it remotely. For a safe migration, first apply with the value still configured to record ownership, then remove it and apply again. This two-step rule prevents accidental first-upgrade clears.
+
 ### Nested Blocks
 
 #### `mcp_info`
@@ -199,6 +209,7 @@ In addition to all arguments above, the following attributes are exported:
 - `created_at` - Timestamp of when the MCP server was created.
 - `created_by` - The user or system that created the MCP server.
 - `mcp_info_ownership_generation` - A non-sensitive computed generation that changes when MCP info ownership intent changes, including equal-value takeover. It forces Apply without making the resource ID unknown.
+- `field_ownership_generation` - A non-sensitive computed generation for presence-aware ownership of existing MCP fields. It forces Apply for ownership-only takeover or removal without changing identity.
 
 ## Migrating to the v1.98 transport contract
 
@@ -221,7 +232,7 @@ MCP servers can be imported using their server ID:
 terraform import litellm_mcp_server.example <server-id>
 ```
 
-On the first authoritative read after import, the provider records the complete visible object in sensitive `mcp_info_json`, adopts representable numeric cost leaves in `mcp_info.mcp_server_cost_info`, and leaves display leaves unowned. Arbitrarily typed known or unknown members remain lossless in JSON even when they cannot be projected into the fixed block. The import marker is retained while the parent is null or omitted and is cleared only after an authoritative object read. Subsequent refreshes preserve semantically equivalent JSON spelling and do not infer ownership from public values.
+On the first authoritative read after import, the provider records the complete visible object in sensitive `mcp_info_json`, adopts representable numeric cost leaves in `mcp_info.mcp_server_cost_info`, and leaves display leaves unowned. Arbitrarily typed known or unknown members remain lossless in JSON even when they cannot be projected into the fixed block. The MCP-info import marker is retained while the parent is null or omitted and is cleared only after an authoritative object read. Presence-aware field provenance starts empty and its independent marker clears after an identity-valid singular read. Visible non-empty collection projections do not establish ownership; Optional-only scalar import behavior is unchanged. Subsequent refreshes preserve semantically equivalent JSON spelling and do not infer ownership from public values.
 
 ## Transport Types
 
