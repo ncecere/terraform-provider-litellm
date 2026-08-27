@@ -223,7 +223,7 @@ func decodeJWTKeyMappingListPage(raw json.RawMessage, requestedPage int) (number
 	}
 	page.Items = make([]jwtKeyMappingObject, 0, len(rawItems))
 	for _, itemRaw := range rawItems {
-		item, err := decodeJWTKeyMappingObject(itemRaw)
+		item, err := decodeJWTKeyMappingListObject(itemRaw)
 		if err != nil {
 			return page, err
 		}
@@ -249,6 +249,23 @@ func decodeJWTKeyMappingListPage(raw json.RawMessage, requestedPage int) (number
 		return page, fmt.Errorf("JWT key mapping list response returned inconsistent total_pages")
 	}
 	return page, nil
+}
+
+func decodeJWTKeyMappingListObject(raw json.RawMessage) (jwtKeyMappingObject, error) {
+	var object map[string]json.RawMessage
+	if err := decodeJSONUseNumber(raw, &object); err != nil || object == nil {
+		return jwtKeyMappingObject{}, fmt.Errorf("JWT key mapping response must be a valid JSON object")
+	}
+	for _, field := range []string{"description", "created_by", "updated_by"} {
+		if _, present := object[field]; !present {
+			object[field] = json.RawMessage("null")
+		}
+	}
+	normalized, err := json.Marshal(object)
+	if err != nil {
+		return jwtKeyMappingObject{}, fmt.Errorf("JWT key mapping response must be a valid JSON object")
+	}
+	return decodeJWTKeyMappingObject(normalized)
 }
 
 func listJWTKeyMappings(ctx context.Context, client *Client) ([]jwtKeyMappingObject, error) {

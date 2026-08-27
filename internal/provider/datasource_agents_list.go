@@ -82,25 +82,37 @@ func agentListItem(projected AgentDataSourceModel) AgentListItemModel {
 
 func (d *AgentsListDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
 	var data AgentsListDataSourceModel
-	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
 	result, err := fetchTopLevelListObjects(ctx, d.client, "/v1/agents", "agent item")
 	if err != nil {
 		resp.Diagnostics.AddError("Client Error", "Unable to list agents authoritatively.")
 		return
 	}
 	agents := make([]AgentListItemModel, 0, len(result))
+	seen := make(map[string]struct{}, len(result))
 	for _, item := range result {
-		id, ok := item["agent_id"].(string)
-		if !ok || id == "" {
+		identity, identityErr := dataSourceRequiredStringAt(item, "agent_id")
+		if identityErr != nil {
 			resp.Diagnostics.AddError("Invalid API Response", "/v1/agents returned an agent object without a valid agent_id.")
+			return
+		}
+		id := identity.ValueString()
+		for _, field := range []string{"tpm_limit", "rpm_limit", "session_tpm_limit", "session_rpm_limit"} {
+			if _, fieldErr := dataSourceNullableInt64At(item, field); fieldErr != nil {
+				resp.Diagnostics.AddError("Invalid API Response", "/v1/agents returned a malformed agent object.")
+				return
+			}
+		}
+		if _, fieldErr := dataSourceNullableFloat64At(item, "spend"); fieldErr != nil {
+			resp.Diagnostics.AddError("Invalid API Response", "/v1/agents returned a malformed agent object.")
 			return
 		}
 		projected, err := projectAgentData(item, id)
 		if err != nil {
 			resp.Diagnostics.AddError("Invalid API Response", "/v1/agents returned a malformed agent object.")
+			return
+		}
+		if err := dataSourceListIdentity(seen, id, "/v1/agents", "agent_id"); err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", err.Error())
 			return
 		}
 		agents = append(agents, agentListItem(projected))

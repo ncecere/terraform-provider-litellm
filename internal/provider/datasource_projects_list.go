@@ -89,28 +89,33 @@ func (d *ProjectsListDataSource) Configure(_ context.Context, req datasource.Con
 
 func (d *ProjectsListDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
 	var data ProjectsListDataSourceModel
-	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
 	result, err := fetchTopLevelListObjects(ctx, d.client, "/project/list", "project item")
 	if err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to list projects: %s", err))
 		return
 	}
 	projects := make([]ProjectListItemModel, 0, len(result))
+	seen := make(map[string]struct{}, len(result))
 	for _, object := range result {
-		projectID, ok := object["project_id"].(string)
-		if !ok || projectID == "" {
-			resp.Diagnostics.AddError("Invalid API Response", "/project/list returned a project object without project_id")
+		identity, err := dataSourceRequiredStringAt(object, "project_id")
+		if err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", "/project/list returned a project object without a canonical project_id")
+			return
+		}
+		projectID := identity.ValueString()
+		if err := dataSourceListIdentity(seen, projectID, "/project/list", "project_id"); err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", err.Error())
 			return
 		}
 		table, err := parseBudgetTable(object)
+		if err == nil {
+			err = validateDataSourceBudgetTableNumbers(table)
+		}
 		if err != nil {
 			resp.Diagnostics.AddError("Invalid API Response", err.Error())
 			return
 		}
-		project := ProjectListItemModel{ProjectID: types.StringValue(projectID)}
+		project := ProjectListItemModel{ProjectID: identity}
 		for _, field := range []struct {
 			name   string
 			target *types.String
@@ -135,7 +140,8 @@ func (d *ProjectsListDataSource) Read(ctx context.Context, req datasource.ReadRe
 		} else {
 			project.Blocked = types.BoolNull()
 		}
-		if err := updateFloat64FromAPI(&project.Spend, object, true, true, "spend"); err != nil {
+		project.Spend, err = dataSourceNullableFloat64At(object, "spend")
+		if err != nil {
 			resp.Diagnostics.AddError("Invalid API Response", err.Error())
 			return
 		}
@@ -175,11 +181,13 @@ func (d *ProjectsListDataSource) Read(ctx context.Context, req datasource.ReadRe
 			resp.Diagnostics.AddError("Invalid API Response", err.Error())
 			return
 		}
-		if err := updateInt64MapFromAPI(&project.ModelRPMLimit, object, true, true, "metadata", "model_rpm_limit"); err != nil {
+		project.ModelRPMLimit, err = dataSourceNullableInt64MapAt(object, "metadata", "model_rpm_limit")
+		if err != nil {
 			resp.Diagnostics.AddError("Invalid API Response", err.Error())
 			return
 		}
-		if err := updateInt64MapFromAPI(&project.ModelTPMLimit, object, true, true, "metadata", "model_tpm_limit"); err != nil {
+		project.ModelTPMLimit, err = dataSourceNullableInt64MapAt(object, "metadata", "model_tpm_limit")
+		if err != nil {
 			resp.Diagnostics.AddError("Invalid API Response", err.Error())
 			return
 		}

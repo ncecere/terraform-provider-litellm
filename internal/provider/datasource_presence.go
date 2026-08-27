@@ -169,6 +169,96 @@ func dataSourceNullableStringMapAt(object map[string]interface{}, path ...string
 	return dataSourceStringMapValue(raw, path)
 }
 
+func dataSourceNullableInt64MapAt(object map[string]interface{}, path ...string) (types.Map, error) {
+	raw, present, err := dataSourceNullableValueAt(object, "an object of exact integral JSON numbers or null", path...)
+	if err != nil || !present {
+		return types.MapNull(types.Int64Type), err
+	}
+	values, ok := raw.(map[string]interface{})
+	if !ok {
+		return types.MapNull(types.Int64Type), dataSourceShapeError(path, "an object of exact integral JSON numbers or null")
+	}
+	elements := make(map[string]attr.Value, len(values))
+	for key, rawValue := range values {
+		if !dataSourceAPIJSONNumber(rawValue) {
+			return types.MapNull(types.Int64Type), dataSourceShapeError(path, "an object of exact integral JSON numbers or null")
+		}
+		value, conversionErr := exactInt64FromAPI(rawValue)
+		if conversionErr != nil {
+			return types.MapNull(types.Int64Type), dataSourceShapeError(path, "an object of exact integral JSON numbers or null")
+		}
+		elements[key] = types.Int64Value(value)
+	}
+	value, diagnostics := types.MapValue(types.Int64Type, elements)
+	if diagnostics.HasError() {
+		return types.MapNull(types.Int64Type), dataSourceShapeError(path, "an object of exact integral JSON numbers or null")
+	}
+	return value, nil
+}
+
+func dataSourceNullableFloat64AtPaths(object map[string]interface{}, paths ...[]string) (types.Float64, error) {
+	selected, err := firstAPIFieldPath(object, paths...)
+	if err != nil || selected == nil {
+		return types.Float64Null(), err
+	}
+	return dataSourceNullableFloat64At(object, selected...)
+}
+
+func dataSourceRequiredObjectAt(object map[string]interface{}, path ...string) (map[string]interface{}, error) {
+	raw, err := dataSourceRequiredValueAt(object, "an object", path...)
+	if err != nil {
+		return nil, err
+	}
+	value, ok := raw.(map[string]interface{})
+	if !ok || value == nil {
+		return nil, dataSourceShapeError(path, "an object")
+	}
+	return value, nil
+}
+
+func dataSourceNullableObjectAt(object map[string]interface{}, path ...string) (map[string]interface{}, bool, error) {
+	raw, present, err := dataSourceNullableValueAt(object, "an object or null", path...)
+	if err != nil || !present {
+		return nil, false, err
+	}
+	value, ok := raw.(map[string]interface{})
+	if !ok || value == nil {
+		return nil, false, dataSourceShapeError(path, "an object or null")
+	}
+	return value, true, nil
+}
+
+// dataSourceListIdentity records canonical identities while callers build the
+// complete list off-state. State is published once, so any duplicate or
+// malformed later item fails atomically.
+func dataSourceListIdentity(seen map[string]struct{}, identity, endpoint, field string) error {
+	if identity == "" {
+		return fmt.Errorf("%s returned an item without a nonempty canonical %s", endpoint, field)
+	}
+	if _, duplicate := seen[identity]; duplicate {
+		return fmt.Errorf("%s returned duplicate canonical %s identities", endpoint, field)
+	}
+	seen[identity] = struct{}{}
+	return nil
+}
+
+func validateDataSourceBudgetTableNumbers(table budgetTableState) error {
+	if table.presence != apiValuePresent {
+		return nil
+	}
+	for _, field := range []string{"max_budget", "soft_budget"} {
+		if _, err := dataSourceNullableFloat64At(table.object, field); err != nil {
+			return err
+		}
+	}
+	for _, field := range []string{"max_parallel_requests", "tpm_limit", "rpm_limit"} {
+		if _, err := dataSourceNullableInt64At(table.object, field); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Canonical JSON fields are Terraform strings whose API representation must be
 // an object. json.Marshal keeps json.Number lexemes exact and deterministically
 // orders object keys; no conversion through float64 occurs.

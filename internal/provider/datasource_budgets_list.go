@@ -127,11 +127,6 @@ func (d *BudgetsListDataSource) Configure(ctx context.Context, req datasource.Co
 func (d *BudgetsListDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
 	var data BudgetsListDataSourceModel
 
-	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
 	results, err := fetchTopLevelListObjects(ctx, d.client, "/budget/list", "budget item")
 	if err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to list budgets: %s", err))
@@ -139,13 +134,17 @@ func (d *BudgetsListDataSource) Read(ctx context.Context, req datasource.ReadReq
 	}
 
 	budgets := make([]BudgetListItemModel, 0, len(results))
+	seen := make(map[string]struct{}, len(results))
 	for _, result := range results {
 		budget := BudgetListItemModel{}
 
-		if budgetID, ok := result["budget_id"].(string); ok && budgetID != "" {
-			budget.BudgetID = types.StringValue(budgetID)
-		} else {
-			resp.Diagnostics.AddError("Invalid API Response", "/budget/list returned a budget object without budget_id")
+		budget.BudgetID, err = dataSourceRequiredStringAt(result, "budget_id")
+		if err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", "/budget/list returned a budget object without a canonical budget_id")
+			return
+		}
+		if err := dataSourceListIdentity(seen, budget.BudgetID.ValueString(), "/budget/list", "budget_id"); err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", err.Error())
 			return
 		}
 		for _, field := range []struct {
@@ -155,10 +154,12 @@ func (d *BudgetsListDataSource) Read(ctx context.Context, req datasource.ReadReq
 			{"max_budget", &budget.MaxBudget},
 			{"soft_budget", &budget.SoftBudget},
 		} {
-			if err := updateFloat64FromAPI(field.target, result, true, true, field.name); err != nil {
-				resp.Diagnostics.AddError("Invalid API Response", err.Error())
+			value, fieldErr := dataSourceNullableFloat64At(result, field.name)
+			if fieldErr != nil {
+				resp.Diagnostics.AddError("Invalid API Response", fieldErr.Error())
 				return
 			}
+			*field.target = value
 		}
 		for _, field := range []struct {
 			name   string
@@ -168,26 +169,32 @@ func (d *BudgetsListDataSource) Read(ctx context.Context, req datasource.ReadReq
 			{"tpm_limit", &budget.TPMLimit},
 			{"rpm_limit", &budget.RPMLimit},
 		} {
-			if err := updateInt64FromAPI(field.target, result, true, true, field.name); err != nil {
-				resp.Diagnostics.AddError("Invalid API Response", err.Error())
+			value, fieldErr := dataSourceNullableInt64At(result, field.name)
+			if fieldErr != nil {
+				resp.Diagnostics.AddError("Invalid API Response", fieldErr.Error())
 				return
 			}
+			*field.target = value
 		}
-		if budgetDuration, ok := result["budget_duration"].(string); ok {
-			budget.BudgetDuration = types.StringValue(budgetDuration)
+		for _, field := range []struct {
+			name   string
+			target *types.String
+		}{
+			{"budget_duration", &budget.BudgetDuration},
+			{"budget_reset_at", &budget.BudgetResetAt},
+			{"created_at", &budget.CreatedAt},
+			{"updated_at", &budget.UpdatedAt},
+		} {
+			value, fieldErr := dataSourceNullableStringAt(result, field.name)
+			if fieldErr != nil {
+				resp.Diagnostics.AddError("Invalid API Response", fieldErr.Error())
+				return
+			}
+			*field.target = value
 		}
 		if err := updateModelBudgetStringState(&budget.ModelMaxBudget, result, "model_max_budget", true); err != nil {
 			resp.Diagnostics.AddError("Invalid API Response", err.Error())
 			return
-		}
-		if value, ok := result["budget_reset_at"].(string); ok {
-			budget.BudgetResetAt = types.StringValue(value)
-		}
-		if value, ok := result["created_at"].(string); ok {
-			budget.CreatedAt = types.StringValue(value)
-		}
-		if value, ok := result["updated_at"].(string); ok {
-			budget.UpdatedAt = types.StringValue(value)
 		}
 
 		budgets = append(budgets, budget)

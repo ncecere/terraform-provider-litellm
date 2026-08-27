@@ -83,11 +83,6 @@ func (d *AccessGroupsListDataSource) Configure(ctx context.Context, req datasour
 func (d *AccessGroupsListDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
 	var data AccessGroupsListDataSourceModel
 
-	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
 	groups, err := fetchEnvelopeListObjects(ctx, d.client, "/access_group/list", "access_groups", "access group item")
 	if err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to list access groups: %s", err))
@@ -95,19 +90,30 @@ func (d *AccessGroupsListDataSource) Read(ctx context.Context, req datasource.Re
 	}
 
 	accessGroups := make([]AccessGroupListItemModel, 0, len(groups))
+	seen := make(map[string]struct{}, len(groups))
 	for _, groupMap := range groups {
 		item := AccessGroupListItemModel{}
-		if accessGroup, ok := groupMap["access_group"].(string); ok && accessGroup != "" {
-			item.AccessGroup = types.StringValue(accessGroup)
-		} else {
-			resp.Diagnostics.AddError("Invalid API Response", "/access_group/list returned an access group object without access_group")
+		item.AccessGroup, err = dataSourceRequiredStringAt(groupMap, "access_group")
+		if err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", "/access_group/list returned an access group object without a canonical access_group")
+			return
+		}
+		if err := dataSourceListIdentity(seen, item.AccessGroup.ValueString(), "/access_group/list", "access_group"); err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", err.Error())
 			return
 		}
 
-		modelNames, err := reconcileAccessGroupModelNames(ctx, types.ListNull(types.StringType), groupMap["model_names"])
+		modelNames, err := dataSourceNullableStringListAt(groupMap, "model_names")
 		if err != nil {
-			resp.Diagnostics.AddError("Invalid API Response", fmt.Sprintf("Unable to decode model_names for access group %q: %s", item.AccessGroup.ValueString(), err))
+			resp.Diagnostics.AddError("Invalid API Response", "Unable to decode model_names for an access group.")
 			return
+		}
+		if !modelNames.IsNull() {
+			modelNames, err = reconcileAccessGroupModelNames(ctx, types.ListNull(types.StringType), groupMap["model_names"])
+			if err != nil {
+				resp.Diagnostics.AddError("Invalid API Response", "Unable to decode model_names for an access group.")
+				return
+			}
 		}
 		item.ModelNames = modelNames
 

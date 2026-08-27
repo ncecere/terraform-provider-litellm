@@ -102,11 +102,6 @@ func (d *SearchToolsListDataSource) Configure(ctx context.Context, req datasourc
 func (d *SearchToolsListDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
 	var data SearchToolsListDataSourceModel
 
-	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
 	const endpoint = "/search_tools/list"
 	result, err := fetchEnvelopeListObjects(ctx, d.client, endpoint, "search_tools", "search tool item")
 	if err != nil {
@@ -116,33 +111,51 @@ func (d *SearchToolsListDataSource) Read(ctx context.Context, req datasource.Rea
 
 	data.ID = types.StringValue("search_tools")
 	data.SearchTools = make([]SearchToolListItem, 0, len(result))
+	seen := make(map[string]struct{}, len(result))
 	for _, toolMap := range result {
-
 		item := SearchToolListItem{}
-
-		if searchToolID, ok := toolMap["search_tool_id"].(string); ok {
-			item.SearchToolID = types.StringValue(searchToolID)
+		item.SearchToolID, err = dataSourceRequiredStringAt(toolMap, "search_tool_id")
+		if err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", "/search_tools/list returned a search tool object without a canonical search_tool_id")
+			return
 		}
-		if searchToolName, ok := toolMap["search_tool_name"].(string); ok && searchToolName != "" {
-			item.SearchToolName = types.StringValue(searchToolName)
-		} else {
+		if err := dataSourceListIdentity(seen, item.SearchToolID.ValueString(), endpoint, "search_tool_id"); err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", err.Error())
+			return
+		}
+		item.SearchToolName, err = dataSourceRequiredStringAt(toolMap, "search_tool_name")
+		if err != nil {
 			resp.Diagnostics.AddError("Invalid API Response", "/search_tools/list returned a search tool object without search_tool_name")
 			return
 		}
 
-		// Handle litellm_params
-		if litellmParams, ok := toolMap["litellm_params"].(map[string]interface{}); ok {
-			if searchProvider, ok := litellmParams["search_provider"].(string); ok {
-				item.SearchProvider = types.StringValue(searchProvider)
-			}
-			if apiBase, ok := litellmParams["api_base"].(string); ok {
-				item.APIBase = types.StringValue(apiBase)
-			}
-			if err := updateFloat64FromAPI(&item.Timeout, litellmParams, true, true, "timeout"); err != nil {
+		item.SearchProvider = types.StringNull()
+		item.APIBase = types.StringNull()
+		item.Timeout = types.Float64Null()
+		item.MaxRetries = types.Int64Null()
+		litellmParams, present, paramsErr := dataSourceNullableObjectAt(toolMap, "litellm_params")
+		if paramsErr != nil {
+			resp.Diagnostics.AddError("Invalid API Response", paramsErr.Error())
+			return
+		}
+		if present {
+			item.SearchProvider, err = dataSourceNullableStringAt(litellmParams, "search_provider")
+			if err != nil {
 				resp.Diagnostics.AddError("Invalid API Response", err.Error())
 				return
 			}
-			if err := updateInt64FromAPI(&item.MaxRetries, litellmParams, true, true, "max_retries"); err != nil {
+			item.APIBase, err = dataSourceNullableStringAt(litellmParams, "api_base")
+			if err != nil {
+				resp.Diagnostics.AddError("Invalid API Response", err.Error())
+				return
+			}
+			item.Timeout, err = dataSourceNullableFloat64At(litellmParams, "timeout")
+			if err != nil {
+				resp.Diagnostics.AddError("Invalid API Response", err.Error())
+				return
+			}
+			item.MaxRetries, err = dataSourceNullableInt64At(litellmParams, "max_retries")
+			if err != nil {
 				resp.Diagnostics.AddError("Invalid API Response", err.Error())
 				return
 			}
