@@ -39,6 +39,33 @@ REVIEWED_ISSUE217_PATHS = (
 REVIEWED_ISSUE217_RUNTIME_DIFF_SHA256 = (
     "d051caea606b1760b389b14ae74a2305508700a92e4a08e3ffb978deb16b0517"
 )
+REVIEWED_ISSUE213_BASE = "33bc7ff74e910c1c5054808907fb614702f701ec"
+REVIEWED_ISSUE213_PATHS = (
+    "internal/provider/api_numbers.go",
+    "internal/provider/api_numbers_test.go",
+    "internal/provider/datasource_mcp_server.go",
+    "internal/provider/datasource_mcp_servers_list.go",
+    "internal/provider/mcp_info_create_recovery_protocol_test.go",
+    "internal/provider/mcp_info_json.go",
+    "internal/provider/mcp_info_json_test.go",
+    "internal/provider/mcp_info_lifecycle.go",
+    "internal/provider/mcp_info_plan.go",
+    "internal/provider/mcp_info_provenance.go",
+    "internal/provider/mcp_info_provenance_test.go",
+    "internal/provider/mcp_info_stage2_protocol_test.go",
+    "internal/provider/mcp_info_stage2_test.go",
+    "internal/provider/mcp_info_stage3_protocol_additional_test.go",
+    "internal/provider/mcp_info_stage3_test.go",
+    "internal/provider/mcp_info_state_upgrade_protocol_test.go",
+    "internal/provider/mcp_server_import_projection_protocol_test.go",
+    "internal/provider/mcp_server_lifecycle_protocol_test.go",
+    "internal/provider/numeric_map_validation_test.go",
+    "internal/provider/resource_mcp_server.go",
+    "internal/provider/resource_mcp_server_test.go",
+)
+REVIEWED_ISSUE213_RUNTIME_DIFF_SHA256 = (
+    "e921feaf70385ea8ee2d3928f052a80b439139cb31bf72a5e2bba48026935819"
+)
 
 
 def git(*args: str) -> str:
@@ -98,6 +125,12 @@ def main() -> int:
             and digest == REVIEWED_ISSUE217_RUNTIME_DIFF_SHA256
         ):
             reviewed = "issue217"
+        elif (
+            comparison == REVIEWED_ISSUE213_BASE
+            and changed_paths == REVIEWED_ISSUE213_PATHS
+            and digest == REVIEWED_ISSUE213_RUNTIME_DIFF_SHA256
+        ):
+            reviewed = "issue213"
         if reviewed is not None:
             print(
                 f"Provider runtime parity verified: reviewed={reviewed} "
