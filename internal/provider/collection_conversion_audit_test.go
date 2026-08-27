@@ -114,6 +114,12 @@ func nilErrorReturn() error {
 	if diagnostics.HasError() { return nil }
 	return nil
 }
+func appendThenErase() diagnostics {
+	list, diagnostics := types.ListValue(elementType, elements)
+	output.Append(diagnostics...)
+	output = nil
+	return output
+}
 `
 	if err := os.WriteFile(filepath.Join(directory, "fixture.go"), []byte(source), 0o600); err != nil {
 		t.Fatal(err)
@@ -127,7 +133,7 @@ func nilErrorReturn() error {
 		"ignored ElementsAs diagnostics":                 1,
 		"ignored Object.As diagnostics":                  1,
 		"discarded ListValue constructor diagnostics":    1,
-		"unchecked ListValue constructor diagnostics":    8,
+		"unchecked ListValue constructor diagnostics":    9,
 		"discarded SetValueFrom constructor diagnostics": 1,
 		"discarded SetValue constructor diagnostics":     1,
 		"discarded MapValue constructor diagnostics":     1,
@@ -315,7 +321,14 @@ func collectionAuditAppendedDiagnosticsPropagate(body *ast.BlockStmt, receiver a
 			return true
 		}
 		for _, target := range assignment.Lhs {
-			if identifier, ok := target.(*ast.Ident); ok && identifier.Name == sourceName {
+			invalidatesSource := false
+			if identifier, ok := target.(*ast.Ident); ok {
+				invalidatesSource = identifier.Name == sourceName
+			}
+			targetKey := collectionAuditExpressionKey(target)
+			invalidatesDestination := assignment.Pos() > appendPosition &&
+				(targetKey == receiverKey || (targetKey != "" && strings.HasPrefix(receiverKey, targetKey+".")))
+			if invalidatesSource || invalidatesDestination {
 				if boundary == token.NoPos || assignment.Pos() < boundary {
 					boundary = assignment.Pos()
 				}
