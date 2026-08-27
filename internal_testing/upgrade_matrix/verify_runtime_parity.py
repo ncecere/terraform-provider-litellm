@@ -107,6 +107,16 @@ REVIEWED_ISSUE222_PATHS = (
 REVIEWED_ISSUE222_RUNTIME_DIFF_SHA256 = (
     "4842dbb53f7277f4e20a09a35e2f12d5c419c6bdd7d177af5eb623649c6db34c"
 )
+REVIEWED_ISSUE202_PHASE2_BASE = "5f1b3a9c5889f552bd5227aed724e85b853d3db1"
+REVIEWED_ISSUE202_PHASE2_PATHS = (
+    "internal/provider/jwt_key_mapping_api.go",
+    "internal/provider/jwt_key_mapping_safe_read_protocol_test.go",
+    "internal/provider/jwt_key_mapping_safe_read_test.go",
+    "internal/provider/safe_read_retry.go",
+)
+REVIEWED_ISSUE202_PHASE2_RUNTIME_DIFF_SHA256 = (
+    "76315bef756afdc23bc2aaf69c46bb18b4dfc7b8eaa1696667a2233ee9a7b63e"
+)
 
 
 def git(*args: str) -> str:
@@ -178,6 +188,12 @@ def main() -> int:
             and digest == REVIEWED_ISSUE222_RUNTIME_DIFF_SHA256
         ):
             reviewed = "issue222"
+        elif (
+            comparison == REVIEWED_ISSUE202_PHASE2_BASE
+            and changed_paths == REVIEWED_ISSUE202_PHASE2_PATHS
+            and digest == REVIEWED_ISSUE202_PHASE2_RUNTIME_DIFF_SHA256
+        ):
+            reviewed = "issue202-phase2"
         if reviewed is not None:
             print(
                 f"Provider runtime parity verified: reviewed={reviewed} "
