@@ -88,10 +88,10 @@ func TestAdditionalNumericImportProtocolsAdoptOnceAndTransitionMarker(t *testing
 			if request.URL.Query().Get("team_id") == "team-member-import" {
 				_, _ = writer.Write([]byte(`{"team_id":"team-member-import","team_info":{"team_id":"team-member-import","team_alias":"member team","members_with_roles":[{"user_id":"member-import","role":"user"}]},"team_memberships":[{"user_id":"member-import","team_id":"team-member-import","budget_id":"member-budget","litellm_budget_table":{"budget_id":"member-budget","max_budget":42.5,"budget_duration":null}}]}`))
 			} else {
-				_, _ = writer.Write([]byte(`{"team_info":{"team_id":"team-import","team_alias":"imported team","tpm_limit":9007199254740993,"metadata":{"model_rpm_limit":{},"model_tpm_limit":{}}}}`))
+				_, _ = writer.Write([]byte(`{"team_id":"team-import","team_info":{"team_id":"team-import","team_alias":"imported team","tpm_limit":9007199254740993,"metadata":{"model_rpm_limit":{},"model_tpm_limit":{}}},"keys":[],"team_memberships":[]}`))
 			}
 		case "/team/permissions_list":
-			_, _ = writer.Write([]byte(`{"team_member_permissions":[]}`))
+			_, _ = writer.Write([]byte(`{"team_id":"team-import","team_member_permissions":[]}`))
 		case "/user/info":
 			_, _ = writer.Write([]byte(`{"user_info":{"user_id":"user-resource-import","user_email":"import@example.test","tpm_limit":9007199254740993}}`))
 		case "/key/info":

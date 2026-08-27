@@ -20,9 +20,9 @@ func TestNumericImportOwnershipAdoptsOptionalResourceValues(t *testing.T) {
 		case "/tag/info":
 			_, _ = writer.Write([]byte(`{"tag-1":{"name":"tag-1","litellm_budget_table":{"budget_id":"tag-budget","max_budget":20.5,"tpm_limit":9007199254740993,"rpm_limit":70,"model_max_budget":{"gpt":9007199254740993}}}}`))
 		case "/team/info":
-			_, _ = writer.Write([]byte(`{"team_info":{"team_id":"team-1","team_alias":"team","max_budget":30.5,"tpm_limit":9007199254740993,"rpm_limit":80,"metadata":{"model_rpm_limit":{"gpt":9007199254740993},"model_tpm_limit":{}}}}`))
+			_, _ = writer.Write([]byte(`{"team_id":"team-1","team_info":{"team_id":"team-1","team_alias":"team","max_budget":30.5,"tpm_limit":9007199254740993,"rpm_limit":80,"metadata":{"model_rpm_limit":{"gpt":9007199254740993},"model_tpm_limit":{}}},"keys":[],"team_memberships":[]}`))
 		case "/team/permissions_list":
-			_, _ = writer.Write([]byte(`{"team_member_permissions":[]}`))
+			_, _ = writer.Write([]byte(`{"team_id":"team-1","team_member_permissions":[]}`))
 		case "/user/info":
 			_, _ = writer.Write([]byte(`{"user_info":{"user_id":"user-1","user_email":"user@example.com","max_budget":40.5,"tpm_limit":9007199254740993,"rpm_limit":90}}`))
 		case "/key/info":
