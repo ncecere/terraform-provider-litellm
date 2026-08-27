@@ -68,6 +68,54 @@ type TeamResourceModel struct {
 	RouterSettings        types.Object  `tfsdk:"router_settings"`
 }
 
+func preserveTeamMutationRepresentations(planned TeamResourceModel, observed *TeamResourceModel) {
+	for _, pair := range []struct {
+		planned  types.List
+		observed *types.List
+	}{
+		{planned.Models, &observed.Models},
+		{planned.Tags, &observed.Tags},
+		{planned.Guardrails, &observed.Guardrails},
+		{planned.Prompts, &observed.Prompts},
+		{planned.TeamMemberPermissions, &observed.TeamMemberPermissions},
+	} {
+		if !pair.planned.IsNull() && !pair.planned.IsUnknown() && len(pair.planned.Elements()) == 0 && pair.observed.IsNull() {
+			*pair.observed = pair.planned
+		}
+	}
+	if planned.RouterSettings.IsNull() && !observed.RouterSettings.IsNull() && !observed.RouterSettings.IsUnknown() {
+		empty := true
+		for _, value := range observed.RouterSettings.Attributes() {
+			list, ok := value.(types.List)
+			if !ok || (!list.IsNull() && (list.IsUnknown() || len(list.Elements()) != 0)) {
+				empty = false
+				break
+			}
+		}
+		if empty {
+			observed.RouterSettings = planned.RouterSettings
+		}
+	}
+}
+
+func partialTeamState(teamID string) TeamResourceModel {
+	return TeamResourceModel{
+		ID:                    types.StringValue(teamID),
+		TeamID:                types.StringValue(teamID),
+		AccessGroupIDs:        types.SetNull(types.StringType),
+		Metadata:              types.MapNull(types.StringType),
+		Models:                types.ListNull(types.StringType),
+		ModelAliases:          types.MapNull(types.StringType),
+		ModelRPMLimit:         types.MapNull(types.Int64Type),
+		ModelTPMLimit:         types.MapNull(types.Int64Type),
+		Tags:                  types.ListNull(types.StringType),
+		Guardrails:            types.ListNull(types.StringType),
+		Prompts:               types.ListNull(types.StringType),
+		TeamMemberPermissions: types.ListNull(types.StringType),
+		RouterSettings:        types.ObjectNull(routerSettingsAttrTypes),
+	}
+}
+
 type RouterSettingsModel struct {
 	Fallbacks              types.List `tfsdk:"fallbacks"`
 	ContextWindowFallbacks types.List `tfsdk:"context_window_fallbacks"`
@@ -369,17 +417,31 @@ func (r *TeamResource) Create(ctx context.Context, req resource.CreateRequest, r
 		return
 	}
 
-	if err := r.client.DoRequestWithResponse(ctx, "POST", "/team/new", teamReq, nil); err != nil {
+	var createResult map[string]interface{}
+	if err := r.client.DoRequestWithResponse(ctx, "POST", "/team/new", teamReq, &createResult); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to create team: %s", err))
 		return
 	}
 
-	data.ID = types.StringValue(teamID)
-
-	// Read back
-	if err := r.readTeam(ctx, &data); err != nil {
-		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Team created but failed to read back: %s", err))
+	partial := partialTeamState(teamID)
+	createdID, createIDErr := requiredTeamString(createResult, "team_id")
+	if createIDErr != nil || createdID != teamID {
+		resp.Diagnostics.Append(resp.State.Set(ctx, &partial)...)
+		resp.Diagnostics.AddError("Invalid Create Response", "LiteLLM accepted the team create but did not return the requested identity. Only the requested recovery identity was retained.")
+		return
 	}
+	data.ID = types.StringValue(createdID)
+	data.TeamID = types.StringValue(createdID)
+
+	// Publish only an authoritative read-back. A successful mutation followed by
+	// a malformed or ambiguous response must not turn planned values into state.
+	planned := data
+	if err := r.readTeam(ctx, &data); err != nil {
+		resp.Diagnostics.Append(resp.State.Set(ctx, &partial)...)
+		resp.Diagnostics.AddError("Read Error", "LiteLLM accepted the team create, but authoritative read-back failed. Only the confirmed identity was retained for recovery.")
+		return
+	}
+	preserveTeamMutationRepresentations(planned, &data)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -400,7 +462,9 @@ func (r *TeamResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 			resp.State.RemoveResource(ctx)
 			return
 		}
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read team: %s", err))
+		resp.State = req.State
+		resp.Private = req.Private
+		resp.Diagnostics.AddError("Client Error", "Unable to read team because LiteLLM did not return an authoritative response. Prior state was retained.")
 		return
 	}
 
@@ -423,6 +487,9 @@ func (r *TeamResource) Update(ctx context.Context, req resource.UpdateRequest, r
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	// Every failed or unconfirmed update retains the complete prior state.
+	resp.State = req.State
+	resp.Private = req.Private
 
 	data.ID = state.ID
 	data.TeamID = state.TeamID
@@ -435,6 +502,11 @@ func (r *TeamResource) Update(ctx context.Context, req resource.UpdateRequest, r
 		return
 	}
 	applyTeamNullableClears(teamReq, &state, &data)
+	metadataChanged := !data.Metadata.IsUnknown() && !data.Metadata.Equal(state.Metadata)
+	if err := r.hydrateTeamUpdateMetadata(ctx, state, metadataChanged, teamReq); err != nil {
+		resp.Diagnostics.AddError("Team Metadata Hydration Error", "The authoritative team metadata could not be safely hydrated. Prior state was retained and no update was attempted.")
+		return
+	}
 
 	// LiteLLM's team-default budget handler ignores explicit nulls whenever the
 	// same request also contains another non-null member-budget field. Split
@@ -464,9 +536,14 @@ func (r *TeamResource) Update(ctx context.Context, req resource.UpdateRequest, r
 		}
 	}
 
+	planned := data
 	if err := r.readTeam(ctx, &data); err != nil {
-		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Team updated but failed to read back: %s", err))
+		resp.State = req.State
+		resp.Private = req.Private
+		resp.Diagnostics.AddError("Read Error", "LiteLLM accepted the team update, but authoritative read-back failed. Prior state was retained.")
+		return
 	}
+	preserveTeamMutationRepresentations(planned, &data)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -589,9 +666,7 @@ func (r *TeamResource) buildTeamRequest(ctx context.Context, data *TeamResourceM
 	if !data.TeamMemberPermissions.IsNull() && !data.TeamMemberPermissions.IsUnknown() {
 		var permissions []string
 		data.TeamMemberPermissions.ElementsAs(ctx, &permissions, false)
-		if len(permissions) > 0 {
-			teamReq["team_member_permissions"] = permissions
-		}
+		teamReq["team_member_permissions"] = permissions
 	}
 
 	// Map fields - check IsNull, IsUnknown, and len > 0
@@ -746,262 +821,104 @@ func (r *TeamResource) readTeam(ctx context.Context, data *TeamResourceModel) er
 	return r.readTeamWithNumericOwnership(ctx, data, false)
 }
 
-func (r *TeamResource) readTeamWithNumericOwnership(ctx context.Context, data *TeamResourceModel, imported bool) error {
-	query := url.Values{"team_id": []string{data.ID.ValueString()}}
+func (r *TeamResource) getTeamInfo(ctx context.Context, teamID string) (map[string]interface{}, error) {
+	query := url.Values{"team_id": []string{teamID}}
 	endpoint := endpointWithQuery("/team/info", query)
-
 	var result map[string]interface{}
 	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
-		return err
+		return nil, err
 	}
+	return result, nil
+}
 
-	// The /team/info endpoint may return team data nested inside "team_info".
-	teamInfo := result
-	if nested, ok := result["team_info"].(map[string]interface{}); ok {
-		teamInfo = nested
-	}
-	if imported {
-		validated, err := requireImportedObjectField(true, "team", result, "team_info")
-		if err != nil {
-			return err
-		}
-		teamInfo = validated
-	}
-	if err := validateImportedObjectIdentity(imported, "team", teamInfo, "team_id", data.ID.ValueString()); err != nil {
-		return err
-	}
-	if err := requireImportedStringField(imported, "team", teamInfo, "team_alias"); err != nil {
-		return err
-	}
-
-	// Keep the configurable team_id and Terraform id tied to the same remote
-	// identity. Imports and legacy state learn team_id from the resource ID.
-	if observedTeamID, ok := teamInfo["team_id"].(string); ok && observedTeamID != "" && observedTeamID != data.ID.ValueString() {
-		return fmt.Errorf("LiteLLM returned team_id %q while reading team %q", observedTeamID, data.ID.ValueString())
-	}
-	data.TeamID = data.ID
-
-	// Update fields from response
-	if teamAlias, ok := teamInfo["team_alias"].(string); ok && teamAlias != "" {
-		data.TeamAlias = types.StringValue(teamAlias)
-	}
-	if orgID, ok := teamInfo["organization_id"].(string); ok && orgID != "" {
-		data.OrganizationID = types.StringValue(orgID)
-	}
-	accessGroupIDs, err := stringSetFromAPI(ctx, teamInfo["access_group_ids"])
+func (r *TeamResource) hydrateTeamUpdateMetadata(ctx context.Context, state TeamResourceModel, metadataChanged bool, request map[string]interface{}) error {
+	result, err := r.getTeamInfo(ctx, state.ID.ValueString())
 	if err != nil {
-		return fmt.Errorf("invalid access_group_ids in team response: %w", err)
-	}
-	data.AccessGroupIDs = accessGroupIDs
-	// These numeric attributes are Optional-only. Validate every present value,
-	// adopt only configured values, and clear configured state on API null or
-	// omission so remote removals are observable.
-	tpmOwned := imported || (!data.TPMLimit.IsNull() && !data.TPMLimit.IsUnknown())
-	if err := updateInt64FromAPI(&data.TPMLimit, teamInfo, tpmOwned, tpmOwned, "tpm_limit"); err != nil {
 		return err
 	}
-	rpmOwned := imported || (!data.RPMLimit.IsNull() && !data.RPMLimit.IsUnknown())
-	if err := updateInt64FromAPI(&data.RPMLimit, teamInfo, rpmOwned, rpmOwned, "rpm_limit"); err != nil {
+	if _, err := projectTeamInfoResponse(ctx, state, result, false); err != nil {
 		return err
 	}
-	maxBudgetOwned := imported || (!data.MaxBudget.IsNull() && !data.MaxBudget.IsUnknown())
-	if err := updateFloat64FromAPI(&data.MaxBudget, teamInfo, maxBudgetOwned, maxBudgetOwned, "max_budget"); err != nil {
+	teamInfo, _, err := unwrapTeamInfoResponse(result)
+	if err != nil {
 		return err
 	}
-	if v, exists := teamInfo["budget_duration"]; exists {
-		if budgetDuration, ok := v.(string); ok && budgetDuration != "" && !data.BudgetDuration.IsNull() {
-			data.BudgetDuration = types.StringValue(budgetDuration)
-		} else if v == nil {
-			data.BudgetDuration = types.StringNull()
-		}
-	} else if data.BudgetDuration.IsUnknown() {
-		data.BudgetDuration = types.StringNull()
-	}
-	if blocked, ok := teamInfo["blocked"].(bool); ok {
-		data.Blocked = types.BoolValue(blocked)
-	}
-	if tpmLimitType, ok := teamInfo["tpm_limit_type"].(string); ok && tpmLimitType != "" {
-		data.TPMLimitType = types.StringValue(tpmLimitType)
-	}
-	if rpmLimitType, ok := teamInfo["rpm_limit_type"].(string); ok && rpmLimitType != "" {
-		data.RPMLimitType = types.StringValue(rpmLimitType)
-	}
-	teamMemberBudgetInfo := teamInfo
-	if nestedBudget, ok := teamInfo["team_member_budget_table"].(map[string]interface{}); ok {
-		teamMemberBudgetInfo = nestedBudget
-	}
-	teamMemberBudgetOwned := imported || (!data.TeamMemberBudget.IsNull() && !data.TeamMemberBudget.IsUnknown())
-	if err := updateFloat64FromAPIAliases(&data.TeamMemberBudget, teamMemberBudgetInfo, teamMemberBudgetOwned, teamMemberBudgetOwned, "team_member_budget", "max_budget"); err != nil {
+	remote, presence, err := optionalObjectAt(teamInfo, "metadata")
+	if err != nil {
 		return err
 	}
-	if !data.MemberBudgetDuration.IsNull() || data.MemberBudgetDuration.IsUnknown() {
-		if v, exists := teamMemberBudgetInfo["team_member_budget_duration"]; exists {
-			if duration, ok := v.(string); ok && duration != "" {
-				data.MemberBudgetDuration = types.StringValue(duration)
-			} else if v == nil || v == "" {
-				data.MemberBudgetDuration = types.StringNull()
-			}
-		} else if v, exists := teamMemberBudgetInfo["budget_duration"]; exists {
-			if duration, ok := v.(string); ok && duration != "" {
-				data.MemberBudgetDuration = types.StringValue(duration)
-			} else if v == nil || v == "" {
-				data.MemberBudgetDuration = types.StringNull()
-			}
-		} else if data.MemberBudgetDuration.IsUnknown() {
-			data.MemberBudgetDuration = types.StringNull()
+	if !metadataChanged {
+		// Omitting metadata is the only way v1.98 can preserve its server-owned
+		// team_member_budget_id during an unrelated update: the endpoint strips
+		// that key from every caller-supplied metadata document.
+		delete(request, "metadata")
+		return nil
+	}
+	base := map[string]interface{}{}
+	if presence == apiValuePresent {
+		for key, value := range remote {
+			base[key] = value
 		}
 	}
-	teamMemberRPMOwned := imported || (!data.TeamMemberRPMLimit.IsNull() && !data.TeamMemberRPMLimit.IsUnknown())
-	if err := updateInt64FromAPIAliases(&data.TeamMemberRPMLimit, teamMemberBudgetInfo, teamMemberRPMOwned, teamMemberRPMOwned, "team_member_rpm_limit", "rpm_limit"); err != nil {
-		return err
-	}
-	teamMemberTPMOwned := imported || (!data.TeamMemberTPMLimit.IsNull() && !data.TeamMemberTPMLimit.IsUnknown())
-	if err := updateInt64FromAPIAliases(&data.TeamMemberTPMLimit, teamMemberBudgetInfo, teamMemberTPMOwned, teamMemberTPMOwned, "team_member_tpm_limit", "tpm_limit"); err != nil {
-		return err
-	}
-
-	// Handle models list - preserve null when API returns empty and config didn't specify models
-	if models, ok := teamInfo["models"].([]interface{}); ok && len(models) > 0 {
-		modelsList := make([]attr.Value, 0, len(models))
-		for _, m := range models {
-			if str, ok := m.(string); ok {
-				modelsList = append(modelsList, types.StringValue(str))
+	if _, serverOwned := base["team_member_budget_id"]; serverOwned {
+		willRestore := false
+		for _, field := range []string{"team_member_budget", "team_member_budget_duration", "team_member_rpm_limit", "team_member_tpm_limit"} {
+			if value, present := request[field]; present && value != nil {
+				willRestore = true
+				break
 			}
 		}
-		data.Models, _ = types.ListValue(types.StringType, modelsList)
-	} else if !data.Models.IsNull() {
-		data.Models, _ = types.ListValue(types.StringType, []attr.Value{})
-	}
-
-	// Handle tags list - preserve null when API returns empty and config didn't specify tags
-	if tags, ok := teamInfo["tags"].([]interface{}); ok && len(tags) > 0 {
-		tagsList := make([]attr.Value, 0, len(tags))
-		for _, t := range tags {
-			if str, ok := t.(string); ok {
-				tagsList = append(tagsList, types.StringValue(str))
-			}
+		if !willRestore {
+			return fmt.Errorf("authoritative team metadata contains a server-owned relation that v1.98 cannot preserve during metadata replacement")
 		}
-		data.Tags, _ = types.ListValue(types.StringType, tagsList)
-	} else if !data.Tags.IsNull() {
-		data.Tags, _ = types.ListValue(types.StringType, []attr.Value{})
+		// The endpoint strips caller-supplied IDs, then its member-budget upsert
+		// restores the authoritative relation because a non-null default is sent.
+		delete(base, "team_member_budget_id")
 	}
-
-	// Handle guardrails list - preserve null when API returns empty and config didn't specify guardrails
-	if guardrails, ok := teamInfo["guardrails"].([]interface{}); ok && len(guardrails) > 0 {
-		guardrailsList := make([]attr.Value, 0, len(guardrails))
-		for _, g := range guardrails {
-			if str, ok := g.(string); ok {
-				guardrailsList = append(guardrailsList, types.StringValue(str))
-			}
+	if !state.Metadata.IsNull() && !state.Metadata.IsUnknown() {
+		for key := range state.Metadata.Elements() {
+			delete(base, key)
 		}
-		data.Guardrails, _ = types.ListValue(types.StringType, guardrailsList)
-	} else if !data.Guardrails.IsNull() {
-		data.Guardrails, _ = types.ListValue(types.StringType, []attr.Value{})
 	}
-
-	// Handle prompts list - preserve null when API returns empty and config didn't specify prompts
-	if prompts, ok := teamInfo["prompts"].([]interface{}); ok && len(prompts) > 0 {
-		promptsList := make([]attr.Value, 0, len(prompts))
-		for _, p := range prompts {
-			if str, ok := p.(string); ok {
-				promptsList = append(promptsList, types.StringValue(str))
-			}
+	if configured, ok := request["metadata"].(map[string]interface{}); ok {
+		for key, value := range configured {
+			base[key] = value
 		}
-		data.Prompts, _ = types.ListValue(types.StringType, promptsList)
-	} else if !data.Prompts.IsNull() {
-		data.Prompts, _ = types.ListValue(types.StringType, []attr.Value{})
 	}
-
-	// Handle metadata map - preserve null when API returns empty and config didn't specify metadata.
-	// The API may inject internal keys (e.g. tpm_limit_type, rpm_limit_type) into metadata.
-	// Only include keys that were in the user's original config to avoid drift.
-	if metadata, ok := teamInfo["metadata"].(map[string]interface{}); ok && len(metadata) > 0 {
-		configuredKeys := make(map[string]bool)
-		if !data.Metadata.IsNull() && !data.Metadata.IsUnknown() {
-			var currentMeta map[string]string
-			data.Metadata.ElementsAs(ctx, &currentMeta, false)
-			for k := range currentMeta {
-				configuredKeys[k] = true
-			}
-		}
-
-		metaMap := make(map[string]attr.Value)
-		for k, v := range metadata {
-			if k == "model_rpm_limit" || k == "model_tpm_limit" {
-				continue
-			}
-			if len(configuredKeys) > 0 && !configuredKeys[k] {
-				continue
-			}
-			metaMap[k] = types.StringValue(metadataValueToString(v))
-		}
-		if len(metaMap) > 0 {
-			data.Metadata, _ = types.MapValue(types.StringType, metaMap)
-		} else if data.Metadata.IsUnknown() {
-			data.Metadata, _ = types.MapValue(types.StringType, map[string]attr.Value{})
-		}
-	} else if data.Metadata.IsUnknown() {
-		data.Metadata, _ = types.MapValue(types.StringType, map[string]attr.Value{})
+	if containsMaskedTeamMetadata(base) {
+		return fmt.Errorf("authoritative team metadata contains an unrecoverable masked value")
 	}
-
-	// Handle model_aliases map
-	// The API may not echo back model_aliases, so only clear on Unknown.
-	if modelAliases, ok := teamInfo["model_aliases"].(map[string]interface{}); ok && len(modelAliases) > 0 {
-		aliasMap := make(map[string]attr.Value)
-		for k, v := range modelAliases {
-			if str, ok := v.(string); ok {
-				aliasMap[k] = types.StringValue(str)
-			}
-		}
-		data.ModelAliases, _ = types.MapValue(types.StringType, aliasMap)
-	} else if data.ModelAliases.IsUnknown() {
-		data.ModelAliases, _ = types.MapValue(types.StringType, map[string]attr.Value{})
-	}
-
-	// LiteLLM v1.98 stores team per-model rates in team_info.metadata.
-	modelRPMOwned := imported || (!data.ModelRPMLimit.IsNull() && !data.ModelRPMLimit.IsUnknown())
-	if err := updateInt64MapFromAPI(&data.ModelRPMLimit, teamInfo, modelRPMOwned, modelRPMOwned, "metadata", "model_rpm_limit"); err != nil {
-		return err
-	}
-	modelTPMOwned := imported || (!data.ModelTPMLimit.IsNull() && !data.ModelTPMLimit.IsUnknown())
-	if err := updateInt64MapFromAPI(&data.ModelTPMLimit, teamInfo, modelTPMOwned, modelTPMOwned, "metadata", "model_tpm_limit"); err != nil {
-		return err
-	}
-
-	// Handle router_settings - always reflect the API's actual state so Terraform
-	// can detect drift and clear stale fallbacks when the block is removed from config.
-	if rs, ok := teamInfo["router_settings"].(map[string]interface{}); ok && len(rs) > 0 {
-		data.RouterSettings = parseRouterSettingsFromAPI(rs)
+	if len(base) > 0 || presence == apiValuePresent {
+		request["metadata"] = base
 	} else {
-		data.RouterSettings = types.ObjectNull(routerSettingsAttrTypes)
+		delete(request, "metadata")
+	}
+	return nil
+}
+
+func (r *TeamResource) readTeamWithNumericOwnership(ctx context.Context, data *TeamResourceModel, imported bool) error {
+	result, err := r.getTeamInfo(ctx, data.ID.ValueString())
+	if err != nil {
+		return err
+	}
+	projected, err := projectTeamInfoResponse(ctx, *data, result, imported)
+	if err != nil {
+		return err
 	}
 
-	// Fetch permissions separately - preserve null when API returns empty and config didn't specify permissions
 	permissionQuery := url.Values{"team_id": []string{data.ID.ValueString()}}
-	permEndpoint := endpointWithQuery("/team/permissions_list", permissionQuery)
-	var permResult map[string]interface{}
-	if err := r.client.DoRequestWithResponse(ctx, "GET", permEndpoint, nil, &permResult); err == nil {
-		permsValue, permsPresent := permResult["team_member_permissions"].([]interface{})
-		if imported && !permsPresent {
-			return fmt.Errorf("team import permissions response is missing the required permissions array")
-		}
-		if perms := permsValue; permsPresent && len(perms) > 0 {
-			permissions := make([]string, len(perms))
-			for i, p := range perms {
-				if s, ok := p.(string); ok {
-					permissions[i] = s
-				}
-			}
-			data.TeamMemberPermissions, _ = types.ListValueFrom(ctx, types.StringType, permissions)
-		} else if !data.TeamMemberPermissions.IsNull() {
-			data.TeamMemberPermissions, _ = types.ListValue(types.StringType, []attr.Value{})
-		}
-	} else if imported {
-		return fmt.Errorf("team import permissions response could not be authoritatively validated")
-	} else if !data.TeamMemberPermissions.IsNull() {
-		data.TeamMemberPermissions, _ = types.ListValue(types.StringType, []attr.Value{})
+	permissionEndpoint := endpointWithQuery("/team/permissions_list", permissionQuery)
+	var permissionResult map[string]interface{}
+	if err := r.client.DoRequestWithResponse(ctx, "GET", permissionEndpoint, nil, &permissionResult); err != nil {
+		return fmt.Errorf("team permissions response could not be authoritatively validated: %w", err)
 	}
+	permissions, err := projectTeamPermissions(data.TeamMemberPermissions, permissionResult, data.ID.ValueString())
+	if err != nil {
+		return err
+	}
+	projected.TeamMemberPermissions = permissions
 
+	*data = projected
 	return nil
 }
 

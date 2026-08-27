@@ -25,6 +25,20 @@ REVIEWED_ISSUE210_PATHS = (
 REVIEWED_ISSUE210_RUNTIME_DIFF_SHA256 = (
     "c0ba020349961e46c4b01518901c868f1e4c434f51030aba8f9784590663b313"
 )
+REVIEWED_ISSUE217_BASE = "79ec45fcefe647e6ccdee66858a12fcca7bfe20a"
+REVIEWED_ISSUE217_PATHS = (
+    "internal/provider/numeric_import_ownership_test.go",
+    "internal/provider/numeric_import_protocol_additional_test.go",
+    "internal/provider/read_test.go",
+    "internal/provider/resource_team.go",
+    "internal/provider/resource_team_test.go",
+    "internal/provider/team_response.go",
+    "internal/provider/team_response_protocol_test.go",
+    "internal/provider/team_response_test.go",
+)
+REVIEWED_ISSUE217_RUNTIME_DIFF_SHA256 = (
+    "d051caea606b1760b389b14ae74a2305508700a92e4a08e3ffb978deb16b0517"
+)
 
 
 def git(*args: str) -> str:
@@ -67,20 +81,29 @@ def main() -> int:
     changed = git("diff", "--name-only", comparison, head, "--", *RUNTIME_PATHS)
     if changed:
         changed_paths = tuple(changed.splitlines())
+        patch = git_bytes(
+            "diff", "--binary", comparison, head, "--", *RUNTIME_PATHS
+        )
+        digest = hashlib.sha256(patch).hexdigest()
+        reviewed = None
         if (
             comparison in REVIEWED_ISSUE210_BASES
             and changed_paths == REVIEWED_ISSUE210_PATHS
+            and digest == REVIEWED_ISSUE210_RUNTIME_DIFF_SHA256
         ):
-            patch = git_bytes(
-                "diff", "--binary", comparison, head, "--", *RUNTIME_PATHS
+            reviewed = "issue210"
+        elif (
+            comparison == REVIEWED_ISSUE217_BASE
+            and changed_paths == REVIEWED_ISSUE217_PATHS
+            and digest == REVIEWED_ISSUE217_RUNTIME_DIFF_SHA256
+        ):
+            reviewed = "issue217"
+        if reviewed is not None:
+            print(
+                f"Provider runtime parity verified: reviewed={reviewed} "
+                f"base={base} merge_base={merge_base} head={head}"
             )
-            digest = hashlib.sha256(patch).hexdigest()
-            if digest == REVIEWED_ISSUE210_RUNTIME_DIFF_SHA256:
-                print(
-                    "Provider runtime parity verified: reviewed=issue210 "
-                    f"base={base} merge_base={merge_base} head={head}"
-                )
-                return 0
+            return 0
         print("Provider runtime differs from the actual event base:", file=sys.stderr)
         for path in changed.splitlines():
             print(path, file=sys.stderr)

@@ -184,6 +184,8 @@ terraform import litellm_team.example <team-id>
 
 ## Notes
 
+- LiteLLM v1.98 permits a nullable `team_alias`, but this resource intentionally retains its existing required, non-null Terraform contract. Import and refresh therefore require the remote team to have an alias; a null or omitted alias fails safely instead of retaining stale state.
+- Team metadata is selectively owned. The provider preserves API-managed and unconfigured metadata keys while reading configured keys authoritatively. Fields represented by dedicated arguments (including tags, guardrails, prompts, per-model limits, and limit types) are read from their native LiteLLM v1.98 metadata locations rather than copied into the generic `metadata` map.
 - Earlier provider documentation suggested `"key"` and `"team"` for the limit-type attributes. LiteLLM v1.98 rejects those values in `NewTeamRequest`, and `UpdateTeamRequest` has no limit-type fields. The attributes are therefore create-only and force replacement when added, changed, or removed. Existing imported/read state is not rewritten by schema validation, but explicit configuration must use one of the two supported throughput literals.
 - Team members are managed through the separate `litellm_team_member` resource. See the `litellm_team_member` resource documentation for details on managing team membership.
 - The `tags` attribute requires a LiteLLM Enterprise license.

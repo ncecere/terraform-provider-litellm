@@ -405,26 +405,38 @@ func TestReadModelPreservesExactLimitsAndFloatCosts(t *testing.T) {
 func TestReadTeamPreservesExactNestedLimits(t *testing.T) {
 	t.Parallel()
 
-	server, client := jsonServer(t, map[string]interface{}{
-		"team_member_permissions": []interface{}{},
-		"team_info": map[string]interface{}{
-			"team_id":    "team-1",
-			"team_alias": "team",
-			"tpm_limit":  int64(9007199254740993),
-			"rpm_limit":  int64(math.MaxInt64),
-			"team_member_budget_table": map[string]interface{}{
-				"team_member_tpm_limit": int64(math.MinInt64),
-				"team_member_rpm_limit": int64(9007199254740991),
-			},
-			"metadata": map[string]interface{}{
-				"model_rpm_limit": map[string]int64{"large": 9007199254740993},
-				"model_tpm_limit": map[string]int64{"maximum": math.MaxInt64},
-			},
-		},
-	})
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		switch request.URL.Path {
+		case "/team/info":
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+				"team_id":          "team-1",
+				"keys":             []interface{}{},
+				"team_memberships": []interface{}{},
+				"team_info": map[string]interface{}{
+					"team_id":    "team-1",
+					"team_alias": "team",
+					"tpm_limit":  int64(9007199254740993),
+					"rpm_limit":  int64(math.MaxInt64),
+					"team_member_budget_table": map[string]interface{}{
+						"tpm_limit": int64(math.MinInt64),
+						"rpm_limit": int64(9007199254740991),
+					},
+					"metadata": map[string]interface{}{
+						"model_rpm_limit": map[string]int64{"large": 9007199254740993},
+						"model_tpm_limit": map[string]int64{"maximum": math.MaxInt64},
+					},
+				},
+			})
+		case "/team/permissions_list":
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{"team_id": "team-1", "team_member_permissions": []interface{}{}})
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
 	defer server.Close()
 
-	r := &TeamResource{client: client}
+	r := &TeamResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
 	data := &TeamResourceModel{
 		ID:                 types.StringValue("team-1"),
 		TPMLimit:           types.Int64Value(1),

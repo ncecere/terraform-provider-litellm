@@ -157,6 +157,9 @@ func TestReadTeamCustomIDIsEscapedAndMirrored(t *testing.T) {
 		switch request.URL.Path {
 		case "/team/info":
 			_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+				"team_id":          request.URL.Query().Get("team_id"),
+				"keys":             []interface{}{},
+				"team_memberships": []interface{}{},
 				"team_info": map[string]interface{}{
 					"team_id":          teamID,
 					"team_alias":       "Engineering Platform",
@@ -165,6 +168,7 @@ func TestReadTeamCustomIDIsEscapedAndMirrored(t *testing.T) {
 			})
 		case "/team/permissions_list":
 			_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+				"team_id":                 request.URL.Query().Get("team_id"),
 				"team_member_permissions": []interface{}{},
 			})
 		default:
@@ -199,6 +203,91 @@ func TestReadTeamCustomIDIsEscapedAndMirrored(t *testing.T) {
 	}
 }
 
+func TestHydrateTeamUpdateMetadataRejectsUnrecoverableMaskedUnknown(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+			"team_id": "team-masked",
+			"team_info": map[string]interface{}{
+				"team_id": "team-masked", "team_alias": "team",
+				"metadata": map[string]interface{}{"external": "litellm_enc::masked"},
+			},
+			"keys":             []interface{}{},
+			"team_memberships": []interface{}{},
+		})
+	}))
+	defer server.Close()
+
+	resourceUnderTest := &TeamResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
+	state := TeamResourceModel{ID: types.StringValue("team-masked"), TeamAlias: types.StringValue("team"), Metadata: types.MapNull(types.StringType)}
+	request := map[string]interface{}{"team_id": "team-masked", "team_alias": "updated"}
+	if err := resourceUnderTest.hydrateTeamUpdateMetadata(context.Background(), state, true, request); err == nil {
+		t.Fatal("masked unowned metadata was accepted as a mutation base")
+	}
+}
+
+func TestHydrateTeamUpdateMetadataPreservesCreateOnlyAndServerOwnedFields(t *testing.T) {
+	t.Parallel()
+	var metadata = map[string]interface{}{
+		"configured":     "old",
+		"external":       map[string]interface{}{"owner": "keep"},
+		"tpm_limit_type": "guaranteed_throughput",
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+			"team_id":          "team-metadata",
+			"keys":             []interface{}{},
+			"team_memberships": []interface{}{},
+			"team_info": map[string]interface{}{
+				"team_id": "team-metadata", "team_alias": "team", "metadata": metadata,
+			},
+		})
+	}))
+	defer server.Close()
+
+	resourceUnderTest := &TeamResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
+	state := TeamResourceModel{
+		ID: types.StringValue("team-metadata"), TeamAlias: types.StringValue("team"),
+		Metadata: types.MapValueMust(types.StringType, map[string]attr.Value{"configured": types.StringValue("old")}),
+	}
+	request := map[string]interface{}{"team_id": "team-metadata", "metadata": map[string]interface{}{"configured": "new"}}
+	if err := resourceUnderTest.hydrateTeamUpdateMetadata(context.Background(), state, true, request); err != nil {
+		t.Fatalf("metadata hydration failed: %v", err)
+	}
+	hydrated := request["metadata"].(map[string]interface{})
+	if hydrated["configured"] != "new" || hydrated["tpm_limit_type"] != "guaranteed_throughput" {
+		t.Fatalf("managed/create-only metadata was not preserved: %#v", hydrated)
+	}
+	if external, ok := hydrated["external"].(map[string]interface{}); !ok || external["owner"] != "keep" {
+		t.Fatalf("unowned metadata was not preserved: %#v", hydrated)
+	}
+
+	metadata["team_member_budget_id"] = "server-owned"
+	unrelated := map[string]interface{}{"team_id": "team-metadata", "metadata": map[string]interface{}{"configured": "old"}}
+	if err := resourceUnderTest.hydrateTeamUpdateMetadata(context.Background(), state, false, unrelated); err != nil {
+		t.Fatalf("unrelated update should preserve metadata by omission: %v", err)
+	}
+	if _, sent := unrelated["metadata"]; sent {
+		t.Fatalf("unrelated update sent destructive metadata replacement: %#v", unrelated)
+	}
+	changed := map[string]interface{}{"team_id": "team-metadata", "metadata": map[string]interface{}{"configured": "new"}}
+	if err := resourceUnderTest.hydrateTeamUpdateMetadata(context.Background(), state, true, changed); err == nil {
+		t.Fatal("metadata replacement accepted an unpreservable server-owned relation")
+	}
+	changedWithBudget := map[string]interface{}{
+		"team_id": "team-metadata", "team_member_budget": 25.0,
+		"metadata": map[string]interface{}{"configured": "new"},
+	}
+	if err := resourceUnderTest.hydrateTeamUpdateMetadata(context.Background(), state, true, changedWithBudget); err != nil {
+		t.Fatalf("member-budget update should restore its server-owned relation: %v", err)
+	}
+	if _, injected := changedWithBudget["metadata"].(map[string]interface{})["team_member_budget_id"]; injected {
+		t.Fatal("server-owned member-budget identity was sent as caller metadata")
+	}
+}
+
 func TestReadTeamRejectsMismatchedRemoteIdentity(t *testing.T) {
 	t.Parallel()
 
@@ -215,7 +304,7 @@ func TestReadTeamRejectsMismatchedRemoteIdentity(t *testing.T) {
 
 	teamResource := &TeamResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
 	data := TeamResourceModel{ID: types.StringValue("expected-team")}
-	if err := teamResource.readTeam(context.Background(), &data); err == nil || !strings.Contains(err.Error(), "different-team") {
+	if err := teamResource.readTeam(context.Background(), &data); err == nil || !strings.Contains(err.Error(), "requested identity") {
 		t.Fatalf("readTeam mismatch error = %v, want remote identity diagnostic", err)
 	}
 }
@@ -229,11 +318,13 @@ func TestReadTeamResolvesUnknownOptionalComputedCollections(t *testing.T) {
 		switch r.URL.Path {
 		case "/team/info":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"team_id":    "team-123",
 				"team_alias": "agent-team",
 				"blocked":    false,
 			})
 		case "/team/permissions_list":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"team_id":                 r.URL.Query().Get("team_id"),
 				"team_member_permissions": []string{},
 			})
 		default:
@@ -365,6 +456,9 @@ func TestReadTeamIgnoresUnconfiguredServerBudgetDefaults(t *testing.T) {
 		switch r.URL.Path {
 		case "/team/info":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"team_id":          r.URL.Query().Get("team_id"),
+				"keys":             []interface{}{},
+				"team_memberships": []interface{}{},
 				"team_info": map[string]interface{}{
 					"team_id":          "team-defaults",
 					"team_alias":       "defaults-team",
@@ -381,6 +475,7 @@ func TestReadTeamIgnoresUnconfiguredServerBudgetDefaults(t *testing.T) {
 			})
 		case "/team/permissions_list":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"team_id":                 r.URL.Query().Get("team_id"),
 				"team_member_permissions": []string{},
 			})
 		default:
@@ -437,6 +532,9 @@ func TestReadTeamWithNestedTeamInfoResponse(t *testing.T) {
 		switch r.URL.Path {
 		case "/team/info":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"team_id":          r.URL.Query().Get("team_id"),
+				"keys":             []interface{}{},
+				"team_memberships": []interface{}{},
 				"team_info": map[string]interface{}{
 					"team_id":         "team-abc-123",
 					"team_alias":      "production-team",
@@ -446,18 +544,20 @@ func TestReadTeamWithNestedTeamInfoResponse(t *testing.T) {
 					"rpm_limit":       1000.0,
 					"budget_duration": "monthly",
 					"blocked":         false,
-					"tpm_limit_type":  "team",
-					"rpm_limit_type":  "team",
 					"models":          []interface{}{"gpt-4", "claude-3"},
-					"tags":            []interface{}{"prod", "high-priority"},
-					"guardrails":      []interface{}{"content-filter"},
-					"prompts":         []interface{}{},
 					"metadata": map[string]interface{}{
 						"env":             "production",
+						"tpm_limit_type":  "team",
+						"rpm_limit_type":  "team",
+						"tags":            []interface{}{"prod", "high-priority"},
+						"guardrails":      []interface{}{"content-filter"},
+						"prompts":         []interface{}{},
 						"model_rpm_limit": map[string]interface{}{"gpt-4": 100.0},
 						"model_tpm_limit": map[string]interface{}{"gpt-4": 5000.0},
 					},
-					"model_aliases": map[string]interface{}{"fast": "gpt-3.5-turbo"},
+					"litellm_model_table": map[string]interface{}{
+						"model_aliases": map[string]interface{}{"fast": "gpt-3.5-turbo"},
+					},
 					"team_member_budget_table": map[string]interface{}{
 						"max_budget":      50.0,
 						"budget_duration": "30d",
@@ -466,6 +566,7 @@ func TestReadTeamWithNestedTeamInfoResponse(t *testing.T) {
 			})
 		case "/team/permissions_list":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"team_id":                 r.URL.Query().Get("team_id"),
 				"team_member_permissions": []interface{}{"team_member_add", "team_member_delete"},
 			})
 		default:
@@ -661,6 +762,7 @@ func TestReadTeam_RouterSettingsFromAPI(t *testing.T) {
 		switch r.URL.Path {
 		case "/team/info":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"team_id":    "team-456",
 				"team_alias": "fallback-team",
 				"blocked":    false,
 				"router_settings": map[string]interface{}{
@@ -678,6 +780,7 @@ func TestReadTeam_RouterSettingsFromAPI(t *testing.T) {
 			})
 		case "/team/permissions_list":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"team_id":                 r.URL.Query().Get("team_id"),
 				"team_member_permissions": []string{},
 			})
 		default:
@@ -768,11 +871,13 @@ func TestReadTeam_NullRouterSettingsWhenAPIHasNone(t *testing.T) {
 		switch r.URL.Path {
 		case "/team/info":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"team_id":    "team-789",
 				"team_alias": "no-fallback-team",
 				"blocked":    false,
 			})
 		case "/team/permissions_list":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"team_id":                 r.URL.Query().Get("team_id"),
 				"team_member_permissions": []string{},
 			})
 		default:
@@ -813,6 +918,7 @@ func TestReadTeam_DetectsDriftWhenAPIStillHasFallbacks(t *testing.T) {
 		switch r.URL.Path {
 		case "/team/info":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"team_id":    "team-drift",
 				"team_alias": "stale-fallback-team",
 				"blocked":    false,
 				"router_settings": map[string]interface{}{
@@ -825,6 +931,7 @@ func TestReadTeam_DetectsDriftWhenAPIStillHasFallbacks(t *testing.T) {
 			})
 		case "/team/permissions_list":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"team_id":                 r.URL.Query().Get("team_id"),
 				"team_member_permissions": []string{},
 			})
 		default:
