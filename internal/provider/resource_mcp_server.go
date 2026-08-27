@@ -711,8 +711,6 @@ func (r *MCPServerResource) Create(ctx context.Context, req resource.CreateReque
 	}
 
 	var result map[string]interface{}
-	// Preserve #209's reviewed logical evidence coordinate; this change adds no operation.
-//line internal/provider/resource_mcp_server.go:528
 	if err := r.client.DoRequestWithResponse(ctx, "POST", "/v1/mcp/server", mcpReq, &result); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to create MCP server: %s", err))
 		return
@@ -829,6 +827,11 @@ func (r *MCPServerResource) Read(ctx context.Context, req resource.ReadRequest, 
 		resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned a malformed MCP info root. Prior public and private state was retained.")
 		return
 	}
+	if (imported || fieldImported) && (data.SpecVersion.IsNull() || data.SpecVersion.IsUnknown()) {
+		// spec_version is provider-only compatibility state. LiteLLM v1.98 does
+		// not return it, so imports must adopt the unchanged schema default.
+		data.SpecVersion = types.StringValue("2024-11-05")
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 	if resp.Diagnostics.HasError() || resp.Private == nil {
 		return
@@ -854,9 +857,6 @@ func (r *MCPServerResource) Read(ctx context.Context, req resource.ReadRequest, 
 }
 
 func (r *MCPServerResource) putMCPServer(ctx context.Context, request map[string]interface{}, result *map[string]interface{}) error {
-	// Preserve #209's one reviewed MCP update operation while the lifecycle
-	// implementation remains split into focused helpers.
-//line internal/provider/resource_mcp_server.go:626
 	return r.client.DoRequestWithResponse(ctx, "PUT", "/v1/mcp/server", request, result)
 }
 
@@ -951,8 +951,6 @@ func (r *MCPServerResource) updateLegacyIssue213(ctx context.Context, req resour
 	var readback map[string]interface{}
 	if otherMutation || mcpMutation {
 		var updateResult map[string]interface{}
-		// Preserve #209's reviewed logical evidence coordinate; this change adds no operation.
-//line internal/provider/resource_mcp_server.go:626
 		if err := r.putMCPServer(ctx, mcpReq, &updateResult); err != nil {
 			resp.State = req.State
 			resp.Private = req.Private
@@ -1030,8 +1028,6 @@ func (r *MCPServerResource) Delete(ctx context.Context, req resource.DeleteReque
 	}
 
 	endpoint := mcpServerEndpoint(serverID)
-	// Preserve #209's reviewed logical evidence coordinate; this change adds no operation.
-//line internal/provider/resource_mcp_server.go:676
 	if err := r.client.DoRequestWithResponse(ctx, "DELETE", endpoint, nil, nil); err != nil {
 		if !IsAPIErrorStatus(err, 404) {
 			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to delete MCP server: %s", err))
@@ -1414,8 +1410,6 @@ func mcpServerEndpoint(serverID string) string {
 func (r *MCPServerResource) getMCPServerDirect(ctx context.Context, serverID string) (map[string]interface{}, error) {
 	endpoint := mcpServerEndpoint(serverID)
 	var result map[string]interface{}
-	// Keep the reviewed #209 direct-singular evidence coordinate stable.
-//line internal/provider/resource_mcp_server.go:1045
 	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
 		return nil, err
 	}
@@ -1425,8 +1419,6 @@ func (r *MCPServerResource) getMCPServerDirect(ctx context.Context, serverID str
 func (r *MCPServerResource) getMCPServer(ctx context.Context, serverID string) (map[string]interface{}, error) {
 	endpoint := mcpServerEndpoint(serverID)
 	var result map[string]interface{}
-	// Preserve #209's reviewed logical evidence coordinates for both GET paths.
-//line internal/provider/resource_mcp_server.go:1041
 	individualErr := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result)
 	if failure := ClassifyHTTPFailure(individualErr); individualErr == nil || IsAPIErrorStatus(individualErr, 404) || (failure.Kind == HTTPFailureContractOrLocal && !failure.RequestDispatched) {
 		return result, individualErr
