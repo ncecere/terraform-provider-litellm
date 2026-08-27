@@ -1654,7 +1654,7 @@ func addUnifiedAccessGroupCacheWarning(diagnostics interface {
 }
 
 func validateUnifiedAccessGroupResponseCollections(ctx context.Context, result map[string]interface{}) error {
-	for _, field := range []string{"access_model_names", "access_mcp_server_ids", "access_agent_ids", "assigned_team_ids"} {
+	for _, field := range []string{"access_model_names", "access_mcp_server_ids", "access_agent_ids", "assigned_team_ids", "assigned_key_ids"} {
 		_, _, diagnostics := strictAPIStringList(ctx, result, field, path.Root(field))
 		if err := collectionProjectionError(ctx, diagnostics); err != nil {
 			return err

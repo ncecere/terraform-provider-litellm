@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -158,6 +159,12 @@ func TestMCPCollectionProjectionFailureIsTransactional(t *testing.T) {
 
 func TestUnifiedAccessGroupCollectionProjectionIsTransactional(t *testing.T) {
 	t.Parallel()
+	validHash := strings.Repeat("a", 64)
+	if err := validateUnifiedAccessGroupResponseCollections(context.Background(), map[string]interface{}{
+		"assigned_key_ids": []interface{}{validHash, false},
+	}); err == nil {
+		t.Fatal("resource response validation accepted a malformed late assigned-key element")
+	}
 	prior := UnifiedAccessGroupResourceModel{
 		ID:                 types.StringValue("group-id"),
 		AccessGroupID:      types.StringValue("group-id"),
@@ -181,6 +188,38 @@ func TestUnifiedAccessGroupCollectionProjectionIsTransactional(t *testing.T) {
 	}
 	if !reflect.DeepEqual(data, prior) {
 		t.Fatalf("failed unified access-group projection changed state: got=%#v want=%#v", data, prior)
+	}
+}
+
+func TestUnifiedAccessGroupResourceMalformedAssignedKeysRetainPriorState(t *testing.T) {
+	t.Parallel()
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		requests.Add(1)
+		writer.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+			"access_group_id": "group-id", "access_group_name": "changed",
+			"access_model_names": []interface{}{}, "access_mcp_server_ids": []interface{}{},
+			"access_agent_ids": []interface{}{}, "assigned_team_ids": []interface{}{},
+			"assigned_key_ids": []interface{}{strings.Repeat("a", 64), false},
+		})
+	}))
+	defer server.Close()
+	resourceUnderTest := &UnifiedAccessGroupResource{client: &Client{APIBase: server.URL, APIKey: "test", HTTPClient: server.Client()}}
+	prior := UnifiedAccessGroupResourceModel{
+		ID:              types.StringValue("group-id"),
+		AccessGroupID:   types.StringValue("group-id"),
+		AccessGroupName: types.StringValue("prior"),
+	}
+	data := prior
+	if err := resourceUnderTest.readUnifiedAccessGroup(context.Background(), &data); err == nil {
+		t.Fatal("resource read accepted a malformed late assigned-key element")
+	}
+	if !reflect.DeepEqual(data, prior) {
+		t.Fatalf("failed resource read changed prior state: got=%#v want=%#v", data, prior)
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("malformed group response triggered %d requests, want only the direct read", requests.Load())
 	}
 }
 

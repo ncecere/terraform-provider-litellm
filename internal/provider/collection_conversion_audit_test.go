@@ -64,6 +64,13 @@ func propagatedConversions() diagnostics {
 	list, diagnostics := types.ListValue(elementType, elements)
 	return diagnostics
 }
+func reusedDiagnostics() diagnostics {
+	list, diagnostics := types.ListValue(elementType, elements)
+	if diagnostics.HasError() { return diagnostics }
+	mapped, diagnostics = types.MapValue(elementType, entries)
+	_ = diagnostics
+	return nil
+}
 `
 	if err := os.WriteFile(filepath.Join(directory, "fixture.go"), []byte(source), 0o600); err != nil {
 		t.Fatal(err)
@@ -80,7 +87,7 @@ func propagatedConversions() diagnostics {
 		"discarded SetValueFrom constructor diagnostics": 1,
 		"discarded SetValue constructor diagnostics":     1,
 		"discarded MapValue constructor diagnostics":     1,
-		"unchecked MapValue constructor diagnostics":     1,
+		"unchecked MapValue constructor diagnostics":     2,
 		"discarded ObjectValue constructor diagnostics":  1,
 		"production SetValueMust constructor":            1,
 	}
@@ -122,7 +129,6 @@ func scanCollectionConversionFile(filename string, file *ast.File) []collectionA
 		if !ok || function.Body == nil {
 			continue
 		}
-		safeDiagnostics := safelyConsumedDiagnosticIdentifiers(function.Body)
 		symbol := function.Name.Name
 		if function.Recv != nil && len(function.Recv.List) > 0 {
 			symbol = receiverTypeName(function.Recv.List[0].Type) + "." + symbol
@@ -156,7 +162,7 @@ func scanCollectionConversionFile(filename string, file *ast.File) []collectionA
 							violations = append(violations, collectionAuditViolation{File: filename, Symbol: symbol, Kind: "unchecked " + constructor + " constructor diagnostics"})
 						case target.Name == "_":
 							violations = append(violations, collectionAuditViolation{File: filename, Symbol: symbol, Kind: "discarded " + constructor + " constructor diagnostics"})
-						case !safeDiagnostics[target.Name]:
+						case !diagnosticAssignmentSafelyConsumed(function.Body, target.Name, typed.Pos()):
 							violations = append(violations, collectionAuditViolation{File: filename, Symbol: symbol, Kind: "unchecked " + constructor + " constructor diagnostics"})
 						}
 					}
@@ -173,44 +179,65 @@ func scanCollectionConversionFile(filename string, file *ast.File) []collectionA
 	return violations
 }
 
-func safelyConsumedDiagnosticIdentifiers(body *ast.BlockStmt) map[string]bool {
-	consumed := map[string]bool{}
+func diagnosticAssignmentSafelyConsumed(body *ast.BlockStmt, name string, assignment token.Pos) bool {
+	nextAssignment := token.NoPos
+	var safeUses []token.Pos
 	ast.Inspect(body, func(node ast.Node) bool {
+		if node == nil || node.Pos() <= assignment {
+			return true
+		}
 		switch typed := node.(type) {
+		case *ast.AssignStmt:
+			for _, target := range typed.Lhs {
+				if identifier, ok := target.(*ast.Ident); ok && identifier.Name == name {
+					if nextAssignment == token.NoPos || typed.Pos() < nextAssignment {
+						nextAssignment = typed.Pos()
+					}
+				}
+			}
 		case *ast.ReturnStmt:
 			for _, result := range typed.Results {
-				if identifier, ok := result.(*ast.Ident); ok {
-					consumed[identifier.Name] = true
+				if identifier, ok := result.(*ast.Ident); ok && identifier.Name == name {
+					safeUses = append(safeUses, typed.Pos())
 				}
 			}
 		case *ast.CallExpr:
+			safe := false
 			switch function := typed.Fun.(type) {
 			case *ast.SelectorExpr:
 				if function.Sel.Name == "HasError" {
-					if identifier, ok := function.X.(*ast.Ident); ok {
-						consumed[identifier.Name] = true
+					if identifier, ok := function.X.(*ast.Ident); ok && identifier.Name == name {
+						safe = true
 					}
 				}
 				if function.Sel.Name == "Append" {
 					for _, argument := range typed.Args {
-						if identifier, ok := argument.(*ast.Ident); ok {
-							consumed[identifier.Name] = true
+						if identifier, ok := argument.(*ast.Ident); ok && identifier.Name == name {
+							safe = true
 						}
 					}
 				}
 			case *ast.Ident:
 				if function.Name == "len" || function.Name == "collectionProjectionError" {
 					for _, argument := range typed.Args {
-						if identifier, ok := argument.(*ast.Ident); ok {
-							consumed[identifier.Name] = true
+						if identifier, ok := argument.(*ast.Ident); ok && identifier.Name == name {
+							safe = true
 						}
 					}
 				}
 			}
+			if safe {
+				safeUses = append(safeUses, typed.Pos())
+			}
 		}
 		return true
 	})
-	return consumed
+	for _, position := range safeUses {
+		if position > assignment && (nextAssignment == token.NoPos || position < nextAssignment) {
+			return true
+		}
+	}
+	return false
 }
 
 func ignoredConversionCallKind(call *ast.CallExpr) string {
