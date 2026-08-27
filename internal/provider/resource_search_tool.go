@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"net/http"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -167,12 +168,12 @@ func (r *SearchToolResource) Read(ctx context.Context, req resource.ReadRequest,
 	}
 	imported := string(importedMarker) == "true"
 
-	if err := r.readSearchToolWithNumericOwnership(ctx, &data, imported); err != nil {
-		if IsNotFoundError(err) {
+	if err := r.refreshSearchToolWithNumericOwnership(ctx, &data, imported); err != nil {
+		if IsAPIErrorStatus(err, http.StatusNotFound) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read search tool: %s", err))
+		resp.Diagnostics.AddError("Client Error", "Unable to read search tool. Response and request details were omitted.")
 		return
 	}
 
@@ -300,6 +301,8 @@ func (r *SearchToolResource) readSearchTool(ctx context.Context, data *SearchToo
 	return r.readSearchToolWithNumericOwnership(ctx, data, false)
 }
 
+// readSearchToolWithNumericOwnership is reserved for operation-coupled
+// Create/Update confirmation. It deliberately performs one request.
 func (r *SearchToolResource) readSearchToolWithNumericOwnership(ctx context.Context, data *SearchToolResourceModel, imported bool) error {
 	searchToolID := data.SearchToolID.ValueString()
 	if searchToolID == "" {
@@ -307,52 +310,76 @@ func (r *SearchToolResource) readSearchToolWithNumericOwnership(ctx context.Cont
 	}
 
 	endpoint := endpointWithPathSegment("/search_tools/", searchToolID, "")
-
 	var result map[string]interface{}
-	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
+	if err := r.client.DoRequestWithResponse(ctx, http.MethodGet, endpoint, nil, &result); err != nil {
 		return err
 	}
-	if err := validateSearchToolAPIObject(result, searchToolID); err != nil {
+	return projectSearchToolResourceAPIObject(data, result, searchToolID, imported)
+}
+
+// refreshSearchToolWithNumericOwnership is the ordinary Terraform refresh
+// path. Only this singular DB-authoritative GET uses bounded safe-read retries.
+func (r *SearchToolResource) refreshSearchToolWithNumericOwnership(ctx context.Context, data *SearchToolResourceModel, imported bool) error {
+	searchToolID := data.SearchToolID.ValueString()
+	if searchToolID == "" {
+		searchToolID = data.ID.ValueString()
+	}
+
+	endpoint := endpointWithPathSegment("/search_tools/", searchToolID, "")
+	var result map[string]interface{}
+	if err := r.client.DoReadWithResponse(ctx, http.MethodGet, endpoint, nil, &result); err != nil {
 		return err
 	}
+	return projectSearchToolResourceAPIObject(data, result, searchToolID, imported)
+}
 
-	// Update fields from response
-	if stID, ok := result["search_tool_id"].(string); ok {
-		data.SearchToolID = types.StringValue(stID)
-		data.ID = types.StringValue(stID)
-	}
-
-	if searchToolName, ok := result["search_tool_name"].(string); ok {
-		data.SearchToolName = types.StringValue(searchToolName)
-	}
-
-	// Handle litellm_params
-	if litellmParams, ok := result["litellm_params"].(map[string]interface{}); ok {
-		if searchProvider, ok := litellmParams["search_provider"].(string); ok {
-			data.SearchProvider = types.StringValue(searchProvider)
-		}
-		if apiBase, ok := litellmParams["api_base"].(string); ok {
-			data.APIBase = types.StringValue(apiBase)
-		}
-		timeoutOwned := imported || (!data.Timeout.IsNull() && !data.Timeout.IsUnknown())
-		if err := updateFloat64FromAPI(&data.Timeout, litellmParams, timeoutOwned, timeoutOwned, "timeout"); err != nil {
-			return err
-		}
-		retriesOwned := imported || (!data.MaxRetries.IsNull() && !data.MaxRetries.IsUnknown())
-		if err := updateInt64FromAPI(&data.MaxRetries, litellmParams, retriesOwned, retriesOwned, "max_retries"); err != nil {
-			return err
-		}
-		// Note: API key is not read back for security reasons
-	}
-
-	searchToolInfoOwned := imported || (!data.SearchToolInfo.IsNull() && !data.SearchToolInfo.IsUnknown())
-	if err := updateJSONObjectStringState(&data.SearchToolInfo, result, "search_tool_info", searchToolInfoOwned); err != nil {
+// projectSearchToolResourceAPIObject validates and projects atomically so a
+// malformed successful response cannot partially mutate the caller's model.
+func projectSearchToolResourceAPIObject(data *SearchToolResourceModel, result map[string]interface{}, expectedID string, imported bool) error {
+	if err := validateSearchToolAPIObject(result, expectedID); err != nil {
 		return err
 	}
-	if !searchToolInfoOwned && data.SearchToolInfo.IsUnknown() {
-		data.SearchToolInfo = types.StringNull()
+	candidate := *data
+
+	candidate.SearchToolID = types.StringValue(result["search_tool_id"].(string))
+	candidate.ID = candidate.SearchToolID
+	candidate.SearchToolName = types.StringValue(result["search_tool_name"].(string))
+
+	litellmParams := result["litellm_params"].(map[string]interface{})
+	candidate.SearchProvider = types.StringValue(litellmParams["search_provider"].(string))
+	apiBase, apiBasePresence, err := apiValueAt(litellmParams, "api_base")
+	if err != nil {
+		return err
+	}
+	switch apiBasePresence {
+	case apiValueAbsent, apiValueNull:
+		candidate.APIBase = types.StringNull()
+	case apiValuePresent:
+		apiBaseString, ok := apiBase.(string)
+		if !ok {
+			return fmt.Errorf("invalid response field %q: expected a string", "litellm_params.api_base")
+		}
+		candidate.APIBase = types.StringValue(apiBaseString)
+	}
+	timeoutOwned := imported || (!candidate.Timeout.IsNull() && !candidate.Timeout.IsUnknown())
+	if err := updateFloat64FromAPI(&candidate.Timeout, litellmParams, timeoutOwned, timeoutOwned, "timeout"); err != nil {
+		return err
+	}
+	retriesOwned := imported || (!candidate.MaxRetries.IsNull() && !candidate.MaxRetries.IsUnknown())
+	if err := updateInt64FromAPI(&candidate.MaxRetries, litellmParams, retriesOwned, retriesOwned, "max_retries"); err != nil {
+		return err
+	}
+	// API key is intentionally retained because the management read masks it.
+
+	searchToolInfoOwned := imported || (!candidate.SearchToolInfo.IsNull() && !candidate.SearchToolInfo.IsUnknown())
+	if err := updateJSONObjectStringState(&candidate.SearchToolInfo, result, "search_tool_info", searchToolInfoOwned); err != nil {
+		return err
+	}
+	if !searchToolInfoOwned && candidate.SearchToolInfo.IsUnknown() {
+		candidate.SearchToolInfo = types.StringNull()
 	}
 
+	*data = candidate
 	return nil
 }
 

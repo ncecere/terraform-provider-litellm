@@ -11,6 +11,7 @@ CLI_SUPPORTS_111=$(python3 -c 'import sys; p=tuple(int(v) for v in sys.argv[1].s
 # Supplemental/skip controls are assigned only by the exact cases below; an
 # ambient environment cannot suppress evidence or detach a managed address.
 unset SMOKE_SUPPLEMENTAL_ONLY SMOKE_FALLBACK_DELETE_UNSUPPORTED SMOKE_FALLBACK_DELETE_ADDRESS SMOKE_FALLBACK_IMPORT
+unset SMOKE_SEARCH_TOOL_EXTERNAL_DELETE SMOKE_SEARCH_TOOL_DELETE_ADDRESS
 unset SMOKE_DIAGNOSTIC_OUTPUT SMOKE_LOG_OVERRIDE
 
 if [ "$ASSEMBLY_ONLY" != "1" ]; then
@@ -110,6 +111,13 @@ run_agent_lifecycle_case() {
   SMOKE_ASSEMBLY_ONLY=$ASSEMBLY_ONLY SMOKE_AGENT_LIFECYCLE=1 sh "$REPO_ROOT/internal_testing/smoke.sh" "$REPO_ROOT" resources agent_lifecycle_clear.tf
 }
 
+run_search_tool_external_delete_case() {
+  printf '\n===== ACCEPTANCE: search_tool_external_delete =====\n'
+  SMOKE_ASSEMBLY_ONLY=$ASSEMBLY_ONLY SMOKE_SUPPLEMENTAL_ONLY=1 \
+    SMOKE_SEARCH_TOOL_EXTERNAL_DELETE=1 SMOKE_SEARCH_TOOL_DELETE_ADDRESS=litellm_search_tool.minimal \
+    sh "$REPO_ROOT/internal_testing/smoke.sh" "$REPO_ROOT" resources search_tool_minimal.tf
+}
+
 # Explicit coverage table. litellm_project is enterprise-only and intentionally
 # excluded; every other registered resource has a lifecycle case here.
 run_case access_group resources model_access_group.tf,access_group_minimal.tf datasources access_group.tf,access_groups_list.tf
@@ -179,6 +187,7 @@ run_case organization resources organization_minimal.tf datasources organization
 run_case organization_member resources organization_minimal.tf,organization_member_minimal.tf
 run_case prompt resources prompt_minimal.tf datasources prompt.tf,prompts_list.tf
 run_case search_tool resources search_tool_minimal.tf datasources search_tool.tf,search_tools_list.tf
+run_search_tool_external_delete_case
 run_case search_tool_json resources search_tool_full.tf
 run_case tag resources tag_minimal.tf datasources tag.tf,tags_list.tf
 run_case tag_full resources tag_full.tf

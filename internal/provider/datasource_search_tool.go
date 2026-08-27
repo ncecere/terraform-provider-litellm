@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"net/http"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
@@ -103,46 +104,46 @@ func (d *SearchToolDataSource) Read(ctx context.Context, req datasource.ReadRequ
 	}
 	endpoint := endpointWithPathSegment("/search_tools/", searchToolID, "")
 	var result map[string]interface{}
-	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read search tool: %s", err))
+	if err := d.client.DoReadWithResponse(ctx, http.MethodGet, endpoint, nil, &result); err != nil {
+		resp.Diagnostics.AddError("Client Error", "Unable to read search tool. Response and request details were omitted.")
 		return
 	}
-	if err := validateSearchToolAPIObject(result, searchToolID); err != nil {
-		resp.Diagnostics.AddError("Invalid API Response", err.Error())
-		return
-	}
-
-	actualID, err := dataSourceRequiredStringAt(result, "search_tool_id")
-	if err != nil || actualID.ValueString() != searchToolID {
-		resp.Diagnostics.AddError("Invalid API Response", "Search tool response identity did not match the requested search tool.")
-		return
-	}
-	data := SearchToolDataSourceModel{ID: actualID, SearchToolID: config.SearchToolID}
-	if data.SearchToolName, err = dataSourceRequiredStringAt(result, "search_tool_name"); err != nil {
-		resp.Diagnostics.AddError("Invalid API Response", err.Error())
-		return
-	}
-	if data.SearchProvider, err = dataSourceRequiredStringAt(result, "litellm_params", "search_provider"); err != nil {
-		resp.Diagnostics.AddError("Invalid API Response", err.Error())
-		return
-	}
-	if data.APIBase, err = dataSourceNullableStringAt(result, "litellm_params", "api_base"); err != nil {
-		resp.Diagnostics.AddError("Invalid API Response", err.Error())
-		return
-	}
-	if data.Timeout, err = dataSourceNullableFloat64At(result, "litellm_params", "timeout"); err != nil {
-		resp.Diagnostics.AddError("Invalid API Response", err.Error())
-		return
-	}
-	if data.MaxRetries, err = dataSourceNullableInt64At(result, "litellm_params", "max_retries"); err != nil {
-		resp.Diagnostics.AddError("Invalid API Response", err.Error())
-		return
-	}
-	if data.SearchToolInfo, err = dataSourceNullableCanonicalJSONObjectAt(result, "search_tool_info"); err != nil {
-		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+	data, err := projectSearchToolDataSourceAPIObject(config, result, searchToolID)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned a malformed or identity-mismatched search tool response. Response and request details were omitted.")
 		return
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+}
+
+func projectSearchToolDataSourceAPIObject(config SearchToolDataSourceModel, result map[string]interface{}, expectedID string) (SearchToolDataSourceModel, error) {
+	var data SearchToolDataSourceModel
+	if err := validateSearchToolAPIObject(result, expectedID); err != nil {
+		return data, err
+	}
+
+	var err error
+	data.ID = types.StringValue(expectedID)
+	data.SearchToolID = config.SearchToolID
+	if data.SearchToolName, err = dataSourceRequiredStringAt(result, "search_tool_name"); err != nil {
+		return SearchToolDataSourceModel{}, err
+	}
+	if data.SearchProvider, err = dataSourceRequiredStringAt(result, "litellm_params", "search_provider"); err != nil {
+		return SearchToolDataSourceModel{}, err
+	}
+	if data.APIBase, err = dataSourceNullableStringAt(result, "litellm_params", "api_base"); err != nil {
+		return SearchToolDataSourceModel{}, err
+	}
+	if data.Timeout, err = dataSourceNullableFloat64At(result, "litellm_params", "timeout"); err != nil {
+		return SearchToolDataSourceModel{}, err
+	}
+	if data.MaxRetries, err = dataSourceNullableInt64At(result, "litellm_params", "max_retries"); err != nil {
+		return SearchToolDataSourceModel{}, err
+	}
+	if data.SearchToolInfo, err = dataSourceNullableCanonicalJSONObjectAt(result, "search_tool_info"); err != nil {
+		return SearchToolDataSourceModel{}, err
+	}
+	return data, nil
 }
 
 func searchToolDataSourceLookupInvalid(resp *datasource.ReadResponse, searchToolID string) bool {
