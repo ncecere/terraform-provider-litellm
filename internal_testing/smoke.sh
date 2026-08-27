@@ -299,6 +299,52 @@ elif [ "${SMOKE_FALLBACK_IMPORT:-}" = "1" ]; then
   IMPORT_BACKUP=
   STEADY_ARGS='-var=fallback_import_phase=imported'
   CLEANUP_ARGS=$STEADY_ARGS
+elif [ "${SMOKE_MCP_CLEAR_LIFECYCLE:-}" = "1" ]; then
+  echo '=== MCP PRESENCE-AWARE SET TO CLEAR ==='
+  terraform apply -auto-approve -var=mcp_clear_phase=cleared
+  STEADY_ARGS='-var=mcp_clear_phase=cleared'
+  CLEANUP_ARGS=$STEADY_ARGS
+  mcp_clear_id=$(terraform output -raw mcp_clear_lifecycle_id)
+  curl --fail --silent --show-error -H 'Authorization: Bearer sk-testing-key' "http://localhost:4000/v1/mcp/server/$mcp_clear_id" >mcp-cleared.json
+  python3 - mcp-cleared.json <<'PY'
+import json,sys
+value=json.load(open(sys.argv[1],encoding="utf-8"))
+# Credentials are intentionally excluded: v1.98 management reads redact them,
+# so the provider's unit/protocol lane verifies the top-level null wire intent.
+for field in ("alias","description","command","authorization_url","token_url","registration_url"):
+    assert value.get(field) is None,(field,value.get(field))
+for field in ("mcp_access_groups","args","allowed_tools","extra_headers"):
+    assert value.get(field)==[],(field,value.get(field))
+for field in ("env","static_headers"):
+    assert value.get(field)=={},(field,value.get(field))
+assert value.get("allow_all_keys") is False,value.get("allow_all_keys")
+PY
+  for refresh_number in 1 2; do
+    echo "=== MCP CLEAR REFRESH-ONLY $refresh_number ==="
+    terraform apply -refresh-only -auto-approve $STEADY_ARGS
+  done
+  set +e
+  terraform plan -detailed-exitcode $STEADY_ARGS >mcp-clear-no-drift.log 2>&1
+  mcp_clear_plan_status=$?
+  set -e
+  cat mcp-clear-no-drift.log
+  [ "$mcp_clear_plan_status" -eq 0 ] || { echo 'MCP clear did not reach zero drift.' >&3; exit 1; }
+  echo '=== MCP CLEAR IMPORT AND REPEATED REFRESH ==='
+  terraform state rm 'litellm_mcp_server.clear_lifecycle'
+  terraform import $STEADY_ARGS 'litellm_mcp_server.clear_lifecycle' "$mcp_clear_id"
+  for refresh_number in 1 2; do terraform apply -refresh-only -auto-approve $STEADY_ARGS; done
+  set +e
+  terraform plan -detailed-exitcode $STEADY_ARGS >mcp-clear-import-no-drift.log 2>&1
+  mcp_clear_import_status=$?
+  set -e
+  cat mcp-clear-import-no-drift.log
+  [ "$mcp_clear_import_status" -eq 0 ] || { echo 'Imported MCP clear did not remain at zero drift.' >&3; exit 1; }
+  terraform destroy -auto-approve $STEADY_ARGS
+  terraform state list >matrix-final-state.list
+  [ ! -s matrix-final-state.list ] || { echo 'MCP clear cleanup left state.' >&3; exit 1; }
+  SUCCESS=1
+  printf '\nSmoke passed: MCP set-to-clear, exact observable sentinels, no drift, import, repeated refresh, and cleanup succeeded.\n' >&3
+  exit 0
 elif [ "${SMOKE_MCP_IMPORT:-}" = "1" ]; then
   echo '=== MCP IMPORT PROJECTION ==='
   mcp_import_id=$(terraform output -raw mcp_import_seed_id)

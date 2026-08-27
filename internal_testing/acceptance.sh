@@ -99,6 +99,12 @@ run_mcp_import_case() {
     sh "$REPO_ROOT/internal_testing/smoke.sh" "$REPO_ROOT" resources mcp_server_import.tf
 }
 
+run_mcp_clear_lifecycle_case() {
+  printf '\n===== ACCEPTANCE: mcp_presence_aware_clear_lifecycle =====\n'
+  SMOKE_ASSEMBLY_ONLY=$ASSEMBLY_ONLY SMOKE_MCP_CLEAR_LIFECYCLE=1 \
+    sh "$REPO_ROOT/internal_testing/smoke.sh" "$REPO_ROOT" resources mcp_server_clear_lifecycle.tf
+}
+
 run_agent_lifecycle_case() {
   printf '\n===== ACCEPTANCE: agent_lifecycle =====\n'
   SMOKE_ASSEMBLY_ONLY=$ASSEMBLY_ONLY SMOKE_AGENT_LIFECYCLE=1 sh "$REPO_ROOT/internal_testing/smoke.sh" "$REPO_ROOT" resources agent_lifecycle_clear.tf
@@ -161,6 +167,7 @@ else
 fi
 run_case key_block resources key_minimal.tf,key_block_minimal.tf,key_block_hash.tf
 run_case mcp_server resources mcp_server_minimal.tf,mcp_server_json_info.tf datasources mcp_server.tf,mcp_servers_list.tf
+run_mcp_clear_lifecycle_case
 mcp_evidence="$SMOKE_PRIVATE_ROOT/.smoke-logs/mcp-immediate-import-evidence.json"
 rm -f "$mcp_evidence"
 SMOKE_MCP_EVIDENCE=$mcp_evidence run_mcp_import_case

@@ -1,0 +1,494 @@
+package provider
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+)
+
+func mcpFieldDesiredValue(ctx context.Context, data MCPServerResourceModel, fieldPath string) (interface{}, error) {
+	switch fieldPath {
+	case mcpFieldAliasPath:
+		return data.Alias.ValueString(), nil
+	case mcpFieldDescriptionPath:
+		return data.Description.ValueString(), nil
+	case mcpFieldCommandPath:
+		return data.Command.ValueString(), nil
+	case mcpFieldAuthorizationURLPath:
+		return data.AuthorizationURL.ValueString(), nil
+	case mcpFieldTokenURLPath:
+		return data.TokenURL.ValueString(), nil
+	case mcpFieldRegistrationURLPath:
+		return data.RegistrationURL.ValueString(), nil
+	case mcpFieldAllowAllKeysPath:
+		return data.AllowAllKeys.ValueBool(), nil
+	case mcpFieldAccessGroupsPath:
+		return mcpFieldStringList(ctx, data.MCPAccessGroups)
+	case mcpFieldArgsPath:
+		return mcpFieldStringList(ctx, data.Args)
+	case mcpFieldAllowedToolsPath:
+		return mcpFieldStringList(ctx, data.AllowedTools)
+	case mcpFieldExtraHeadersPath:
+		return mcpFieldStringList(ctx, data.ExtraHeaders)
+	case mcpFieldEnvPath:
+		return mcpFieldStringMap(ctx, data.Env)
+	case mcpFieldStaticHeadersPath:
+		return mcpFieldStringMap(ctx, data.StaticHeaders)
+	case mcpFieldCredentialsPath:
+		return mcpFieldStringMap(ctx, data.Credentials)
+	default:
+		return nil, fmt.Errorf("unknown MCP field path")
+	}
+}
+
+func mcpFieldWireName(fieldPath string) string { return fieldPath[1:] }
+
+func mcpFieldRemovalSentinel(fieldPath string) interface{} {
+	switch fieldPath {
+	case mcpFieldAliasPath, mcpFieldDescriptionPath, mcpFieldCommandPath,
+		mcpFieldAuthorizationURLPath, mcpFieldTokenURLPath, mcpFieldRegistrationURLPath,
+		mcpFieldCredentialsPath:
+		return nil
+	case mcpFieldAccessGroupsPath, mcpFieldArgsPath, mcpFieldAllowedToolsPath, mcpFieldExtraHeadersPath:
+		return []string{}
+	case mcpFieldEnvPath, mcpFieldStaticHeadersPath:
+		return map[string]string{}
+	case mcpFieldAllowAllKeysPath:
+		return false
+	default:
+		return nil
+	}
+}
+
+func normalizeMCPWireValue(value interface{}) interface{} {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return value
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var normalized interface{}
+	if decoder.Decode(&normalized) != nil {
+		return value
+	}
+	return normalized
+}
+
+func mcpWireValuesEqual(left, right interface{}) bool {
+	return mcpInfoJSONValuesEqual(normalizeMCPWireValue(left), normalizeMCPWireValue(right))
+}
+
+func (r *MCPServerResource) buildMCPServerCreateRequest(ctx context.Context, plan, config *MCPServerResourceModel, resolvedMCPInfo map[string]interface{}, mcpInfoPresent bool) (map[string]interface{}, error) {
+	request, err := r.buildMCPServerRequest(ctx, plan, resolvedMCPInfo, mcpInfoPresent)
+	if err != nil {
+		return nil, err
+	}
+	presence := mcpFieldConfigPresence(*config)
+	for _, fieldPath := range mcpFieldPaths {
+		if presence[fieldPath] != 1 {
+			continue
+		}
+		value, err := mcpFieldDesiredValue(ctx, *config, fieldPath)
+		if err != nil {
+			return nil, fmt.Errorf("configured MCP collection is invalid")
+		}
+		request[mcpFieldWireName(fieldPath)] = value
+	}
+	return request, nil
+}
+
+func verifyMCPFieldCreateReadback(ctx context.Context, config MCPServerResourceModel, observed map[string]interface{}, ownership mcpFieldOwnership) error {
+	for fieldPath := range ownership.Owned {
+		if fieldPath == mcpFieldCredentialsPath {
+			// Credential values are redacted. A successful write plus an
+			// identity/schema-valid direct read is the only v1.98 evidence.
+			continue
+		}
+		want, err := mcpFieldDesiredValue(ctx, config, fieldPath)
+		if err != nil {
+			return err
+		}
+		got, present := observed[mcpFieldWireName(fieldPath)]
+		if !present || !mcpWireValuesEqual(want, got) {
+			return fmt.Errorf("owned MCP field did not converge")
+		}
+	}
+	return nil
+}
+
+func mcpAuthCredentialClass(authType string) string {
+	if authType == "true_passthrough" || authType == "oauth_delegate" {
+		return "client_forwarded"
+	}
+	return authType
+}
+
+func mcpKnownRawString(result map[string]interface{}, name string) (string, bool) {
+	value, present := result[name]
+	if !present || value == nil {
+		return "", false
+	}
+	resultValue, ok := value.(string)
+	return resultValue, ok
+}
+
+func validateMCPImplicitClearSafety(config MCPServerResourceModel, planned mcpFieldOwnership, hydration map[string]interface{}, delta map[string]interface{}, urlChanged, authClassChanged bool) error {
+	if !urlChanged && !authClassChanged {
+		return nil
+	}
+	presence := mcpFieldConfigPresence(config)
+	for _, fieldPath := range []string{mcpFieldAuthorizationURLPath, mcpFieldTokenURLPath, mcpFieldRegistrationURLPath} {
+		name := mcpFieldWireName(fieldPath)
+		raw, present := hydration[name]
+		// The v1.98 response model omits null optional columns. Omission is an
+		// authoritative null here; malformed present values were rejected by
+		// direct hydration before this preflight.
+		if !present || raw == nil {
+			continue
+		}
+		desired, supplied := delta[name]
+		explicitRemoval := planned.Removals[fieldPath] && supplied && desired == nil
+		explicitChange := planned.Owned[fieldPath] && presence[fieldPath] == 1 && supplied && !mcpWireValuesEqual(desired, raw)
+		if !explicitRemoval && !explicitChange {
+			return fmt.Errorf("an unowned or unchanged OAuth endpoint would be cleared implicitly")
+		}
+	}
+	if authClassChanged {
+		// v1.98 clears credentials on a credential-class change unless a complete
+		// credential intent is supplied in that same PUT. Management responses
+		// redact values, so they are always non-authoritative.
+		if _, supplied := delta["credentials"]; !supplied || presence[mcpFieldCredentialsPath] == 2 {
+			return fmt.Errorf("credential intent is incomplete for an authentication change")
+		}
+	}
+	return nil
+}
+
+func validateMCPFieldCredentialMerge(ctx context.Context, state, config MCPServerResourceModel, committed mcpFieldOwnership) error {
+	if !committed.Owned[mcpFieldCredentialsPath] || config.Credentials.IsNull() || config.Credentials.IsUnknown() || state.Credentials.IsNull() || state.Credentials.IsUnknown() {
+		return nil
+	}
+	prior, err := mcpFieldStringMap(ctx, state.Credentials)
+	if err != nil {
+		return err
+	}
+	desired, err := mcpFieldStringMap(ctx, config.Credentials)
+	if err != nil {
+		return err
+	}
+	for key := range prior {
+		if _, present := desired[key]; !present {
+			return fmt.Errorf("LiteLLM v1.98 merges credential maps; clear credentials first, apply, then re-add the replacement map")
+		}
+	}
+	return nil
+}
+
+func mcpFieldChangedInTerraform(ctx context.Context, state, desired MCPServerResourceModel, fieldPath string) bool {
+	if mcpFieldConfigPresence(state)[fieldPath] != mcpFieldConfigPresence(desired)[fieldPath] {
+		return true
+	}
+	prior, priorErr := mcpFieldDesiredValue(ctx, state, fieldPath)
+	want, wantErr := mcpFieldDesiredValue(ctx, desired, fieldPath)
+	if priorErr != nil || wantErr != nil {
+		return priorErr != wantErr
+	}
+	return !mcpWireValuesEqual(prior, want)
+}
+
+func buildMCPFieldDelta(ctx context.Context, plan, config, state MCPServerResourceModel, committed, candidate mcpFieldOwnership, hydration map[string]interface{}) (map[string]interface{}, error) {
+	if err := validateMCPFieldCredentialMerge(ctx, state, config, committed); err != nil {
+		return nil, err
+	}
+	delta := map[string]interface{}{}
+	presence := mcpFieldConfigPresence(config)
+	for fieldPath := range candidate.Removals {
+		delta[mcpFieldWireName(fieldPath)] = mcpFieldRemovalSentinel(fieldPath)
+	}
+	for fieldPath := range candidate.Owned {
+		if candidate.Removals[fieldPath] {
+			continue
+		}
+		var source MCPServerResourceModel
+		switch presence[fieldPath] {
+		case 1:
+			source = config
+		case 2:
+			source = plan
+		default:
+			continue
+		}
+		desired, err := mcpFieldDesiredValue(ctx, source, fieldPath)
+		if err != nil {
+			return nil, err
+		}
+		name := mcpFieldWireName(fieldPath)
+		if fieldPath == mcpFieldCredentialsPath {
+			// Values cannot be compared to API markers. Existing ownership writes
+			// only on a Terraform value change; initial takeover writes once.
+			if !committed.Owned[fieldPath] || !config.Credentials.Equal(state.Credentials) {
+				delta[name] = desired
+			}
+			continue
+		}
+		remote, present := hydration[name]
+		if mcpFieldChangedInTerraform(ctx, state, source, fieldPath) || !present || !mcpWireValuesEqual(desired, remote) {
+			delta[name] = desired
+		}
+	}
+	return delta, nil
+}
+
+func addMCPBaseDelta(delta map[string]interface{}, plan, state MCPServerResourceModel, hydration map[string]interface{}) {
+	for _, item := range []struct {
+		name       string
+		value      types.String
+		priorValue types.String
+		nullable   bool
+	}{
+		{name: "server_name", value: plan.ServerName, priorValue: state.ServerName},
+		{name: "transport", value: plan.Transport, priorValue: state.Transport},
+		{name: "auth_type", value: plan.AuthType, priorValue: state.AuthType},
+		{name: "url", value: plan.URL, priorValue: state.URL, nullable: true},
+		{name: "spec_path", value: plan.SpecPath, priorValue: state.SpecPath, nullable: true},
+	} {
+		if item.value.IsUnknown() {
+			continue
+		}
+		var desired interface{}
+		if item.value.IsNull() && item.nullable {
+			desired = nil
+		} else if item.value.IsNull() {
+			continue
+		} else {
+			desired = item.value.ValueString()
+		}
+		remote, present := hydration[item.name]
+		if !present {
+			switch item.name {
+			case "server_name":
+				if !state.ServerName.IsNull() && !state.ServerName.IsUnknown() {
+					remote, present = state.ServerName.ValueString(), true
+				}
+			case "auth_type":
+				if !state.AuthType.IsNull() && !state.AuthType.IsUnknown() {
+					remote, present = state.AuthType.ValueString(), true
+				}
+			case "url":
+				if !state.URL.IsNull() && !state.URL.IsUnknown() {
+					remote, present = state.URL.ValueString(), true
+				}
+			case "spec_path":
+				if !state.SpecPath.IsNull() && !state.SpecPath.IsUnknown() {
+					remote, present = state.SpecPath.ValueString(), true
+				}
+			}
+		}
+		changedInTerraform := !item.value.Equal(item.priorValue)
+		if item.name == "auth_type" && !present && (item.priorValue.IsNull() || item.priorValue.IsUnknown()) {
+			changedInTerraform = false
+		}
+		missingNeedsWrite := !present && !item.nullable && item.name != "auth_type"
+		if changedInTerraform || missingNeedsWrite || (present && !mcpWireValuesEqual(desired, remote)) {
+			delta[item.name] = desired
+		}
+	}
+	// Endpoint transitions are supplied as a complete supported endpoint pair.
+	// This satisfies the v1.98 transport validator without projecting unrelated
+	// MCP fields into the delta.
+	_, urlSent := delta["url"]
+	_, specSent := delta["spec_path"]
+	if urlSent || specSent {
+		if !plan.URL.IsNull() && !plan.URL.IsUnknown() {
+			delta["url"] = plan.URL.ValueString()
+		}
+		if !plan.SpecPath.IsNull() && !plan.SpecPath.IsUnknown() {
+			delta["spec_path"] = plan.SpecPath.ValueString()
+		}
+	}
+}
+
+func verifyMCPBaseDeltaReadback(delta, observed map[string]interface{}) error {
+	for _, name := range []string{"server_name", "transport", "auth_type", "url", "spec_path"} {
+		want, sent := delta[name]
+		if !sent {
+			continue
+		}
+		got, present := observed[name]
+		if want == nil {
+			if present && got != nil {
+				return fmt.Errorf("cleared MCP base field did not converge")
+			}
+			continue
+		}
+		if !present || !mcpWireValuesEqual(want, got) {
+			return fmt.Errorf("changed MCP base field did not converge")
+		}
+	}
+	return nil
+}
+
+func verifyMCPFieldUpdateReadback(ctx context.Context, plan, config MCPServerResourceModel, committed, candidate mcpFieldOwnership, baseline, observed, delta map[string]interface{}) error {
+	for _, fieldPath := range mcpFieldPaths {
+		name := mcpFieldWireName(fieldPath)
+		if sent, changed := delta[name]; changed {
+			if fieldPath == mcpFieldCredentialsPath {
+				continue
+			}
+			got, present := observed[name]
+			if !present || !mcpWireValuesEqual(sent, got) {
+				return fmt.Errorf("changed MCP field did not converge")
+			}
+			continue
+		}
+		if committed.Owned[fieldPath] || candidate.Owned[fieldPath] {
+			continue
+		}
+		prior, priorVisible := baseline[name]
+		if !priorVisible || prior == nil {
+			continue
+		}
+		got, present := observed[name]
+		if !present || !mcpWireValuesEqual(prior, got) {
+			return fmt.Errorf("a visible unmanaged MCP field changed")
+		}
+	}
+	return nil
+}
+
+func (r *MCPServerResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	var plan, config, state MCPServerResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	committedInfo, infoDiags := readMCPInfoProvenance(ctx, req.Private)
+	resp.Diagnostics.Append(infoDiags...)
+	committedFields, fieldDiags := readMCPFieldOwnership(ctx, req.Private)
+	resp.Diagnostics.Append(fieldDiags...)
+	if resp.Diagnostics.HasError() {
+		resp.State, resp.Private = req.State, req.Private
+		return
+	}
+	fallbackInfo := deriveMCPInfoPlanProvenance(committedInfo, config, state)
+	plannedInfo, pendingInfoDiags := readPendingMCPInfoProvenance(ctx, req.Private, fallbackInfo)
+	resp.Diagnostics.Append(pendingInfoDiags...)
+	expectedFields := deriveMCPFieldPlanOwnership(committedFields, config)
+	plannedFields, pendingFieldDiags := readPendingMCPFieldOwnership(ctx, req.Private, expectedFields)
+	resp.Diagnostics.Append(pendingFieldDiags...)
+	if resp.Diagnostics.HasError() {
+		resp.State, resp.Private = req.State, req.Private
+		return
+	}
+	plan.ID, plan.ServerID = state.ID, state.ServerID
+
+	hydrated := state
+	_, _, hydration, err := r.readMCPServerWithAllProvenanceDirect(ctx, &hydrated, committedInfo, committedFields, false)
+	if err != nil {
+		resp.State, resp.Private = req.State, req.Private
+		resp.Diagnostics.AddError("MCP Server Hydration Failed", "The direct endpoint did not return an identity-valid, schema-valid authoritative response. No PUT was attempted and prior state/private ownership was retained.")
+		return
+	}
+	baseInfo, infoPresence, err := mcpInfoDocumentFromResponse(hydration)
+	if err != nil {
+		resp.State, resp.Private = req.State, req.Private
+		resp.Diagnostics.AddError("MCP Server Hydration Failed", "The direct endpoint returned malformed MCP info. No PUT was attempted and prior state/private ownership was retained.")
+		return
+	}
+	if infoPresence != apiValuePresent {
+		authoritative, markerDiags := mcpInfoPrivateDocumentAuthoritative(ctx, req.Private)
+		resp.Diagnostics.Append(markerDiags...)
+		if resp.Diagnostics.HasError() || !authoritative || state.MCPInfoJSON.IsNull() || state.MCPInfoJSON.IsUnknown() {
+			resp.State, resp.Private = req.State, req.Private
+			resp.Diagnostics.AddError("Authoritative MCP Info Required", "LiteLLM masked mcp_info and no authoritative complete document is available. No PUT was attempted.")
+			return
+		}
+		baseInfo, err = parseMCPInfoJSONObject(state.MCPInfoJSON.ValueString())
+		if err != nil {
+			resp.State, resp.Private = req.State, req.Private
+			resp.Diagnostics.AddError("Authoritative MCP Info Required", "The prior complete MCP info document is malformed. No PUT was attempted.")
+			return
+		}
+	}
+	resolvedInfo, err := resolveMCPInfoUpdateDocument(ctx, baseInfo, config)
+	if err != nil {
+		resp.State, resp.Private = req.State, req.Private
+		resp.Diagnostics.AddError("Invalid MCP Info Configuration", "The complete MCP info update could not be resolved safely. No PUT was attempted.")
+		return
+	}
+	delta, err := buildMCPFieldDelta(ctx, plan, config, state, committedFields, plannedFields, hydration)
+	if err != nil {
+		resp.State, resp.Private = req.State, req.Private
+		resp.Diagnostics.AddError("Unsafe MCP Field Update", err.Error())
+		return
+	}
+	addMCPBaseDelta(delta, plan, state, hydration)
+	legacyInfoMigration := committedInfo.Versioned && !committedInfo.V2 && plannedInfo.V2
+	fixedInfoOwnershipChange := !mcpInfoOwnershipEqual(committedInfo, plannedInfo) && (committedInfo.Mode == mcpInfoModeSelective || plannedInfo.Mode == mcpInfoModeSelective)
+	if !mcpInfoJSONValuesEqual(baseInfo, resolvedInfo.Document) || legacyInfoMigration || fixedInfoOwnershipChange {
+		// Preserve #213's established complete-document apply behavior. General
+		// field removals never synthesize mcp_info; only #213 ownership intent
+		// can put this member in the delta.
+		delta["mcp_info"] = cloneMCPInfoJSONObject(resolvedInfo.Document)
+	}
+	delta["server_id"] = plan.ServerID.ValueString()
+
+	remoteURL, remoteURLPresent := mcpKnownRawString(hydration, "url")
+	urlChanged := false
+	if desired, sent := delta["url"].(string); sent && remoteURLPresent && desired != remoteURL {
+		urlChanged = true
+	}
+	remoteAuth, remoteAuthPresent := mcpKnownRawString(hydration, "auth_type")
+	if !remoteAuthPresent && !state.AuthType.IsNull() && !state.AuthType.IsUnknown() {
+		remoteAuth = state.AuthType.ValueString()
+	}
+	desiredAuth, authSent := delta["auth_type"].(string)
+	authClassChanged := authSent && mcpAuthCredentialClass(remoteAuth) != mcpAuthCredentialClass(desiredAuth)
+	if err := validateMCPImplicitClearSafety(config, plannedFields, hydration, delta, urlChanged, authClassChanged); err != nil {
+		resp.State, resp.Private = req.State, req.Private
+		resp.Diagnostics.AddError("Unsafe MCP URL or Authentication Update", "LiteLLM v1.98 would implicitly clear an unowned, unknown, or unchanged OAuth/credential value ("+err.Error()+"). Configure every affected value with a genuinely changed or cleared complete intent in one apply. No PUT was attempted; restorative PUTs are never used.")
+		return
+	}
+
+	desiredPlan := plan
+	mutation := len(delta) > 1
+	readback := hydration
+	if mutation {
+		var updateResult map[string]interface{}
+		if err := r.putMCPServer(ctx, delta, &updateResult); err != nil {
+			resp.State, resp.Private = req.State, req.Private
+			resp.Diagnostics.AddError("Client Error", "LiteLLM did not confirm the MCP server update. Prior public and private state was retained.")
+			return
+		}
+		if len(updateResult) > 0 && validateMCPServerResponse(updateResult, plan.ServerID.ValueString()) != nil {
+			resp.State, resp.Private = req.State, req.Private
+			resp.Diagnostics.AddError("Invalid Update Response", "LiteLLM accepted the update but returned a malformed response. Prior state/private ownership was retained.")
+			return
+		}
+		_, _, readback, err = r.readMCPServerWithAllProvenanceDirect(ctx, &plan, plannedInfo, committedMCPFieldOwnership(plannedFields), false)
+	} else {
+		err = r.readMCPServerResultProjection(ctx, &plan, readback, plannedInfo, committedMCPFieldOwnership(plannedFields), false, mcpInfoLeafSet{}, cloneMCPInfoLeafSet(plannedInfo.API))
+	}
+	if err != nil {
+		resp.State, resp.Private = req.State, req.Private
+		resp.Diagnostics.AddError("Read Error", "Authoritative direct readback failed. Prior public and private state was retained.")
+		return
+	}
+	observedInfo, observedInfoPresence, infoErr := mcpInfoDocumentFromResponse(readback)
+	if infoErr != nil || observedInfoPresence != apiValuePresent || mcpOwnedEndpointReadbackMismatch(&desiredPlan, &plan, &state) || verifyMCPInfoReadback(baseInfo, resolvedInfo.Document, observedInfo, plannedInfo) != nil || verifyMCPBaseDeltaReadback(delta, readback) != nil || verifyMCPFieldUpdateReadback(ctx, plan, config, committedFields, plannedFields, hydration, readback, delta) != nil {
+		resp.State, resp.Private = req.State, req.Private
+		resp.Diagnostics.AddError("Inconsistent MCP Server Readback", "LiteLLM did not confirm all changed owned values, clear sentinels, and visible unmanaged values. Prior public and private state was retained.")
+		return
+	}
+	plan.FieldOwnershipGeneration = types.Int64Value(plannedFields.Generation)
+	resolveUnknownMCPServerState(&plan, &state)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+	if !resp.Diagnostics.HasError() && resp.Private != nil {
+		resp.Diagnostics.Append(writeMCPInfoProvenance(ctx, resp.Private, plannedInfo)...)
+		resp.Diagnostics.Append(writeMCPInfoPrivateDocumentAuthoritative(ctx, resp.Private, true)...)
+		resp.Diagnostics.Append(writeMCPFieldOwnership(ctx, resp.Private, committedMCPFieldOwnership(plannedFields))...)
+	}
+}
