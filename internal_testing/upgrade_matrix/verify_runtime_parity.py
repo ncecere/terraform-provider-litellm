@@ -117,6 +117,16 @@ REVIEWED_ISSUE202_PHASE2_PATHS = (
 REVIEWED_ISSUE202_PHASE2_RUNTIME_DIFF_SHA256 = (
     "76315bef756afdc23bc2aaf69c46bb18b4dfc7b8eaa1696667a2233ee9a7b63e"
 )
+REVIEWED_ISSUE202_SEARCH_TOOL_BASE = "c958a0e594ba39eb2e689692160a905964f96ef4"
+REVIEWED_ISSUE202_SEARCH_TOOL_PATHS = (
+    "internal/provider/datasource_search_tool.go",
+    "internal/provider/resource_search_tool.go",
+    "internal/provider/search_tool_safe_read_protocol_test.go",
+    "internal/provider/search_tool_safe_read_test.go",
+)
+REVIEWED_ISSUE202_SEARCH_TOOL_RUNTIME_DIFF_SHA256 = (
+    "07fc4c980e17501188b0d9195e67ec80af1a881dc65432e16447f15d1dca1f3b"
+)
 REVIEWED_ISSUE212_BASE = "de485aa3c038c055c81a518b1104c2d075116742"
 REVIEWED_ISSUE212_PATHS = (
     "internal/provider/mcp_audit_blockers_protocol_test.go",
@@ -295,6 +305,12 @@ def main() -> int:
             and digest == REVIEWED_ISSUE202_PHASE2_RUNTIME_DIFF_SHA256
         ):
             reviewed = "issue202-phase2"
+        elif (
+            comparison == REVIEWED_ISSUE202_SEARCH_TOOL_BASE
+            and changed_paths == REVIEWED_ISSUE202_SEARCH_TOOL_PATHS
+            and digest == REVIEWED_ISSUE202_SEARCH_TOOL_RUNTIME_DIFF_SHA256
+        ):
+            reviewed = "issue202-search-tool"
         elif (
             comparison == REVIEWED_ISSUE212_BASE
             and changed_paths == REVIEWED_ISSUE212_PATHS
