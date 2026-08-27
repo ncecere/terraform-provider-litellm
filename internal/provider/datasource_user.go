@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/url"
 
-	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -122,16 +121,17 @@ func (d *UserDataSource) Configure(ctx context.Context, req datasource.Configure
 }
 
 func (d *UserDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
-	var data UserDataSourceModel
-
-	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
+	var config UserDataSourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
-	userID := data.UserID.ValueString()
-	query := url.Values{"user_id": []string{userID}}
-	endpoint := endpointWithQuery("/user/info", query)
+	userID := config.UserID.ValueString()
+	if config.UserID.IsNull() || config.UserID.IsUnknown() || userID == "" {
+		resp.Diagnostics.AddError("Invalid User Lookup", "user_id must be known and nonempty")
+		return
+	}
+	endpoint := endpointWithQuery("/user/info", url.Values{"user_id": []string{userID}})
 
 	var result map[string]interface{}
 	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
@@ -139,92 +139,68 @@ func (d *UserDataSource) Read(ctx context.Context, req datasource.ReadRequest, r
 		return
 	}
 
-	// Set ID
-	data.ID = data.UserID
-
-	// The /user/info endpoint may return user_info nested
 	userInfo := result
-	if ui, ok := result["user_info"].(map[string]interface{}); ok {
-		userInfo = ui
-	}
-
-	// Update fields from response
-	if alias, ok := userInfo["user_alias"].(string); ok {
-		data.UserAlias = types.StringValue(alias)
-	}
-	if email, ok := userInfo["user_email"].(string); ok {
-		data.UserEmail = types.StringValue(email)
-	}
-	if role, ok := userInfo["user_role"].(string); ok {
-		data.UserRole = types.StringValue(role)
-	}
-	if budgetDuration, ok := userInfo["budget_duration"].(string); ok {
-		data.BudgetDuration = types.StringValue(budgetDuration)
-	}
-
-	// Numeric fields
-	for _, field := range []struct {
-		name   string
-		target *types.Float64
-	}{
-		{"max_budget", &data.MaxBudget},
-		{"spend", &data.Spend},
-	} {
-		if err := updateFloat64FromAPI(field.target, userInfo, true, true, field.name); err != nil {
-			resp.Diagnostics.AddError("Invalid API Response", err.Error())
-			return
-		}
-	}
-	for _, field := range []struct {
-		name   string
-		target *types.Int64
-	}{
-		{"tpm_limit", &data.TPMLimit},
-		{"rpm_limit", &data.RPMLimit},
-	} {
-		if err := updateInt64FromAPI(field.target, userInfo, true, true, field.name); err != nil {
-			resp.Diagnostics.AddError("Invalid API Response", err.Error())
+	if raw, presence, err := apiValueAt(result, "user_info"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	} else if presence == apiValuePresent {
+		var ok bool
+		userInfo, ok = raw.(map[string]interface{})
+		if !ok {
+			resp.Diagnostics.AddError("Invalid API Response", dataSourceShapeError([]string{"user_info"}, "an object or null").Error())
 			return
 		}
 	}
 
-	// Handle teams list
-	if teams, ok := userInfo["teams"].([]interface{}); ok {
-		teamsList := make([]attr.Value, len(teams))
-		for i, t := range teams {
-			if str, ok := t.(string); ok {
-				teamsList[i] = types.StringValue(str)
-			}
-		}
-		data.Teams, _ = types.ListValue(types.StringType, teamsList)
-	} else {
-		data.Teams, _ = types.ListValue(types.StringType, []attr.Value{})
+	actualUserID, err := dataSourceRequiredStringAt(userInfo, "user_id")
+	if err != nil || actualUserID.ValueString() != userID {
+		resp.Diagnostics.AddError("Invalid API Response", "User response identity did not match the requested user.")
+		return
 	}
-
-	// Handle models list
-	if models, ok := userInfo["models"].([]interface{}); ok {
-		modelsList := make([]attr.Value, len(models))
-		for i, m := range models {
-			if str, ok := m.(string); ok {
-				modelsList[i] = types.StringValue(str)
-			}
-		}
-		data.Models, _ = types.ListValue(types.StringType, modelsList)
-	} else {
-		data.Models, _ = types.ListValue(types.StringType, []attr.Value{})
+	data := UserDataSourceModel{ID: actualUserID, UserID: config.UserID}
+	if data.UserAlias, err = dataSourceRoleRedactedNullableStringAt(userInfo, "user_alias"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
 	}
-
-	// Handle metadata map
-	if metadata, ok := userInfo["metadata"].(map[string]interface{}); ok {
-		metaMap := make(map[string]attr.Value)
-		for k, v := range metadata {
-			if str, ok := v.(string); ok {
-				metaMap[k] = types.StringValue(str)
-			}
-		}
-		data.Metadata, _ = types.MapValue(types.StringType, metaMap)
-	} else {
-		data.Metadata, _ = types.MapValue(types.StringType, map[string]attr.Value{})
+	if data.UserEmail, err = dataSourceRoleRedactedNullableStringAt(userInfo, "user_email"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+	if data.UserRole, err = dataSourceRoleRedactedNullableStringAt(userInfo, "user_role"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+	if data.Teams, err = dataSourceRoleRedactedNullableStringListAt(userInfo, "teams"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+	if data.Models, err = dataSourceRoleRedactedNullableStringListAt(userInfo, "models"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+	if data.MaxBudget, err = dataSourceRoleRedactedNullableFloat64At(userInfo, "max_budget"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+	if data.BudgetDuration, err = dataSourceRoleRedactedNullableStringAt(userInfo, "budget_duration"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+	if data.TPMLimit, err = dataSourceRoleRedactedNullableInt64At(userInfo, "tpm_limit"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+	if data.RPMLimit, err = dataSourceRoleRedactedNullableInt64At(userInfo, "rpm_limit"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+	if data.Metadata, err = dataSourceRoleRedactedNullableStringMapAt(userInfo, "metadata"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+	if data.Spend, err = dataSourceRoleRedactedNullableFloat64At(userInfo, "spend"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
