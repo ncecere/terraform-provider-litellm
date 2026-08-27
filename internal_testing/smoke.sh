@@ -542,6 +542,49 @@ if [ "$plan_status" -ne 0 ]; then
 fi
 terraform show -json matrix-steady.tfplan >matrix-steady-plan.json
 
+if [ "${SMOKE_SEARCH_TOOL_EXTERNAL_DELETE:-}" = "1" ]; then
+  echo '=== SEARCH TOOL EXTERNAL DELETE AND AUTHORITATIVE 404 REFRESH ==='
+  search_tool_delete_address=${SMOKE_SEARCH_TOOL_DELETE_ADDRESS:-}
+  [ "$search_tool_delete_address" = "litellm_search_tool.minimal" ] || {
+    echo 'Search Tool external-delete mode requires the reviewed minimal resource address.' >&3
+    exit 1
+  }
+  [ -f resource_search_tool_minimal.tf ] || {
+    echo 'Search Tool external-delete mode requires only the minimal resource fixture.' >&3
+    exit 1
+  }
+  search_tool_delete_id=$(terraform output -raw search_tool_minimal_id)
+  search_tool_delete_url=$(python3 - "$search_tool_delete_id" <<'PY'
+import sys, urllib.parse
+identity=sys.argv[1]
+if not identity or "/" in identity:
+    raise SystemExit(1)
+print("http://localhost:4000/search_tools/" + urllib.parse.quote(identity, safe=""))
+PY
+)
+  curl --fail --silent --show-error -X DELETE \
+    -H 'Authorization: Bearer sk-testing-key' \
+    "$search_tool_delete_url" >/dev/null
+  terraform apply -refresh-only -auto-approve >search-tool-external-delete-refresh.log 2>&1
+  cat search-tool-external-delete-refresh.log
+  terraform state list >matrix-final-state.list
+  if grep -Fxq "$search_tool_delete_address" matrix-final-state.list; then
+    echo 'Exact 404 refresh retained the externally deleted Search Tool address.' >&3
+    exit 1
+  fi
+  [ ! -s matrix-final-state.list ] || {
+    echo 'Search Tool external-delete refresh left unexpected managed state.' >&3
+    exit 1
+  }
+  [ "$(wc -c <"$SMOKE_LOG")" -le 10485760 ] || {
+    echo 'Search Tool smoke log exceeded its private bound.' >&3
+    exit 1
+  }
+  SUCCESS=1
+  printf '\nSmoke passed: Search Tool create/refresh, direct delete, and exact-404 state removal succeeded.\n' >&3
+  exit 0
+fi
+
 fallback_delete_unconfirmed=0
 fallback_delete_succeeded=0
 if [ "${SMOKE_FALLBACK_DELETE_UNSUPPORTED:-}" = "1" ]; then
