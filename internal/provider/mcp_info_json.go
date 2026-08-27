@@ -20,6 +20,7 @@ var (
 	errMCPInfoJSONValue        = errors.New("MCP info contains an unsupported JSON value")
 	errMCPInfoJSONLimit        = errors.New("MCP info JSON exceeds a safety limit")
 	errMCPInfoJSONCanonical    = errors.New("MCP info JSON cannot be canonicalized")
+	errMCPInfoJSONTraversal    = errors.New("MCP info override cannot traverse a non-object value")
 	errMCPInfoClearPointer     = errors.New("MCP info clear pointer is invalid")
 	errMCPInfoClearPointerRoot = errors.New("MCP info clear pointer cannot select the document root")
 	errMCPInfoClearConflict    = errors.New("MCP info clear pointers conflict")
@@ -199,7 +200,31 @@ func overlayMCPInfoJSONObjects(base, configured map[string]interface{}) (map[str
 	if err := validateMCPInfoJSONValue(configured); err != nil {
 		return nil, err
 	}
+	if err := validateMCPInfoOverlayTraversal(base, configured); err != nil {
+		return nil, err
+	}
 	return overlayMCPInfoJSONObjectUnchecked(base, configured), nil
+}
+
+func validateMCPInfoOverlayTraversal(base, configured map[string]interface{}) error {
+	for name, configuredValue := range configured {
+		configuredObject, configuredIsObject := configuredValue.(map[string]interface{})
+		if !configuredIsObject || len(configuredObject) == 0 {
+			continue
+		}
+		baseValue, exists := base[name]
+		if !exists {
+			continue
+		}
+		baseObject, baseIsObject := baseValue.(map[string]interface{})
+		if !baseIsObject {
+			return errMCPInfoJSONTraversal
+		}
+		if err := validateMCPInfoOverlayTraversal(baseObject, configuredObject); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func overlayMCPInfoJSONObjectUnchecked(base, configured map[string]interface{}) map[string]interface{} {

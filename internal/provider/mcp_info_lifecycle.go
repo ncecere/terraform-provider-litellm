@@ -110,6 +110,14 @@ func mcpInfoDocumentFromResponse(result map[string]interface{}) (map[string]inte
 		if err := validateMCPInfoJSONValue(document); err != nil {
 			return nil, presence, err
 		}
+		// LiteLLM v1.98 masks arbitrary MCP info for restricted virtual keys as
+		// this exact singleton. It is observationally equivalent to a masked
+		// parent, never a complete document suitable for refresh or import.
+		if len(document) == 1 {
+			if isPublic, ok := document["is_public"].(bool); ok && isPublic {
+				return nil, apiValueNull, nil
+			}
+		}
 	}
 	return document, presence, nil
 }

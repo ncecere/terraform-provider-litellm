@@ -63,6 +63,45 @@ func TestMCPInfoStage3ImportTwoRefreshesAndNoConfigNoDriftProtocol(t *testing.T)
 	}
 }
 
+func TestMCPInfoStage3MaskedDataSourcesPublishTypedNullProtocol(t *testing.T) {
+	ctx := context.Background()
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		if request.URL.Path == "/v1/mcp/server/masked" {
+			_, _ = writer.Write([]byte(`{"server_id":"masked","transport":"http","mcp_info":{"is_public":true}}`))
+			return
+		}
+		_, _ = writer.Write([]byte(`[{"server_id":"masked","transport":"http","mcp_info":{"is_public":true}}]`))
+	}))
+	defer server.Close()
+	protocolServer, schemas := configuredImportProtocolServer(t, ctx, server.URL)
+
+	singleSchema := schemas.DataSourceSchemas["litellm_mcp_server"]
+	singleConfig := accessGroupProtocolDynamicValue(t, singleSchema, organizationProjectProtocolValue(t, singleSchema, map[string]interface{}{"server_id": "masked"}))
+	single, err := protocolServer.ReadDataSource(ctx, &tfprotov6.ReadDataSourceRequest{TypeName: "litellm_mcp_server", Config: singleConfig})
+	if err != nil || accessGroupProtocolDiagnosticsHaveError(single.Diagnostics) {
+		t.Fatalf("single masked read: %v %s", err, agentProtocolDiagnosticsText(single.Diagnostics))
+	}
+	if !protocolAttributeMap(t, singleSchema, single.State)["mcp_info_json"].IsNull() {
+		t.Fatal("singular data source published a masked MCP info subset")
+	}
+
+	listSchema := schemas.DataSourceSchemas["litellm_mcp_servers"]
+	listConfig := accessGroupProtocolDynamicValue(t, listSchema, organizationProjectProtocolValue(t, listSchema, map[string]interface{}{}))
+	list, err := protocolServer.ReadDataSource(ctx, &tfprotov6.ReadDataSourceRequest{TypeName: "litellm_mcp_servers", Config: listConfig})
+	if err != nil || accessGroupProtocolDiagnosticsHaveError(list.Diagnostics) {
+		t.Fatalf("list masked read: %v %s", err, agentProtocolDiagnosticsText(list.Diagnostics))
+	}
+	var items []tftypes.Value
+	if err := protocolAttributeMap(t, listSchema, list.State)["mcp_servers"].As(&items); err != nil || len(items) != 1 {
+		t.Fatalf("masked list items: %v len=%d", err, len(items))
+	}
+	item := map[string]tftypes.Value{}
+	if err := items[0].As(&item); err != nil || !item["mcp_info_json"].IsNull() {
+		t.Fatalf("list data source published a masked MCP info subset: %v", err)
+	}
+}
+
 func TestMCPInfoStage3ListDataSourceLosslessProtocol(t *testing.T) {
 	ctx := context.Background()
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

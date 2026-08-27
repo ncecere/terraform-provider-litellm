@@ -138,6 +138,67 @@ func TestMCPInfoStage3MaskedHydrationFailsBeforePUTProtocol(t *testing.T) {
 	}
 }
 
+func TestMCPInfoStage3RecursiveOverrideRejectsScalarBeforePUTProtocol(t *testing.T) {
+	ctx := context.Background()
+	puts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		if request.Method == http.MethodPut {
+			puts++
+		}
+		_, _ = writer.Write([]byte(`{"server_id":"scalar","server_name":"top","url":"https://mcp.example.test","transport":"http","auth_type":"none","mcp_info":{"owner":"legacy"}}`))
+	}))
+	defer server.Close()
+	protocolServer, schemas := configuredImportProtocolServer(t, ctx, server.URL)
+	schema := schemas.ResourceSchemas["litellm_mcp_server"]
+	state := accessGroupProtocolDynamicValue(t, schema, organizationProjectProtocolValue(t, schema, map[string]interface{}{
+		"id": "scalar", "server_id": "scalar", "server_name": "top", "url": "https://mcp.example.test", "transport": "http", "auth_type": "none",
+		"mcp_info_json": `{"owner":{"contact":"old"}}`, "mcp_info_ownership_generation": int64(0),
+	}))
+	config := protocolMCPStage2Config(t, schema, map[string]interface{}{"mcp_info_overrides_json": `{"owner":{"contact":"ops"}}`})
+	proposed := organizationProjectProtocolReplace(t, schema, state, map[string]interface{}{
+		"mcp_info_overrides_json": `{"owner":{"contact":"ops"}}`, "mcp_info_ownership_generation": tftypes.UnknownValue,
+	})
+	planned, err := protocolServer.PlanResourceChange(ctx, &tfprotov6.PlanResourceChangeRequest{TypeName: "litellm_mcp_server", Config: config, PriorState: state, ProposedNewState: proposed})
+	if err != nil || accessGroupProtocolDiagnosticsHaveError(planned.Diagnostics) {
+		t.Fatalf("plan: %v %s", err, agentProtocolDiagnosticsText(planned.Diagnostics))
+	}
+	applied, err := protocolServer.ApplyResourceChange(ctx, &tfprotov6.ApplyResourceChangeRequest{TypeName: "litellm_mcp_server", Config: config, PriorState: state, PlannedState: planned.PlannedState, PlannedPrivate: planned.PlannedPrivate})
+	if err != nil || !accessGroupProtocolDiagnosticsHaveError(applied.Diagnostics) || puts != 0 {
+		t.Fatalf("scalar traversal mutation: %v %s puts=%d", err, agentProtocolDiagnosticsText(applied.Diagnostics), puts)
+	}
+	priorValue, _ := state.Unmarshal(schema.ValueType())
+	appliedValue, _ := applied.NewState.Unmarshal(schema.ValueType())
+	if !priorValue.Equal(appliedValue) {
+		t.Fatal("failed scalar traversal changed prior state")
+	}
+}
+
+func TestMCPInfoIsPublicSingletonIsMasked(t *testing.T) {
+	for name, raw := range map[string]interface{}{
+		"restricted singleton": map[string]interface{}{"is_public": true},
+		"null parent":          nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			document, presence, err := mcpInfoDocumentFromResponse(map[string]interface{}{"mcp_info": raw})
+			if err != nil || presence == apiValuePresent || document != nil {
+				t.Fatalf("masked MCP info became authoritative: document=%#v presence=%v err=%v", document, presence, err)
+			}
+		})
+	}
+	for name, raw := range map[string]interface{}{
+		"public false":        map[string]interface{}{"is_public": false},
+		"public with sibling": map[string]interface{}{"is_public": true, "owner": "visible"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			document, presence, err := mcpInfoDocumentFromResponse(map[string]interface{}{"mcp_info": raw})
+			if err != nil || presence != apiValuePresent || document == nil {
+				t.Fatalf("complete MCP info was masked: document=%#v presence=%v err=%v", document, presence, err)
+			}
+		})
+	}
+}
+
 func TestMCPInfoDataSourceSchemaIsComputedSensitive(t *testing.T) {
 	var resourceResponse resource.SchemaResponse
 	(&MCPServerResource{}).Schema(context.Background(), resource.SchemaRequest{}, &resourceResponse)

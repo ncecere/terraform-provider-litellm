@@ -148,6 +148,25 @@ func TestOverlayMCPInfoJSONObjects(t *testing.T) {
 	if err != nil || !mcpInfoJSONValuesEqual(emptyRoot, base) {
 		t.Fatalf("empty root patch did not preserve base: %#v, %v", emptyRoot, err)
 	}
+	if _, err := overlayMCPInfoJSONObjects(
+		map[string]interface{}{"owner": "legacy"},
+		map[string]interface{}{"owner": map[string]interface{}{"contact": "ops"}},
+	); !errors.Is(err, errMCPInfoJSONTraversal) {
+		t.Fatalf("recursive override traversed an unowned scalar: %v", err)
+	}
+	if _, err := overlayMCPInfoJSONObjects(
+		map[string]interface{}{"owner": nil},
+		map[string]interface{}{"owner": map[string]interface{}{"contact": "ops"}},
+	); !errors.Is(err, errMCPInfoJSONTraversal) {
+		t.Fatalf("recursive override traversed an unowned null: %v", err)
+	}
+	createdParent, err := overlayMCPInfoJSONObjects(
+		map[string]interface{}{},
+		map[string]interface{}{"owner": map[string]interface{}{"contact": "ops"}},
+	)
+	if err != nil || createdParent["owner"].(map[string]interface{})["contact"] != "ops" {
+		t.Fatalf("recursive override could not create a missing parent: %#v, %v", createdParent, err)
+	}
 
 	overlaid["owner"].(map[string]interface{})["team"] = "mutated"
 	if base["owner"].(map[string]interface{})["team"] != "security" || configured["owner"].(map[string]interface{})["team"] != "platform" {
