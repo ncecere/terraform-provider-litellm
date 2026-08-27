@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -94,13 +95,13 @@ func mcpWireValuesEqual(left, right interface{}) bool {
 	return mcpInfoJSONValuesEqual(normalizeMCPWireValue(left), normalizeMCPWireValue(right))
 }
 
-func mcpAliasIsKnownEmpty(value types.String) bool {
-	return !value.IsNull() && !value.IsUnknown() && value.ValueString() == ""
+func mcpAliasIntentCannotConverge(value types.String) bool {
+	return !value.IsNull() && !value.IsUnknown() && (value.ValueString() == "" || strings.Contains(value.ValueString(), " "))
 }
 
 func (r *MCPServerResource) buildMCPServerCreateRequest(ctx context.Context, plan, config *MCPServerResourceModel, resolvedMCPInfo map[string]interface{}, mcpInfoPresent bool) (map[string]interface{}, error) {
-	if mcpAliasIsKnownEmpty(config.Alias) {
-		return nil, fmt.Errorf("configured alias must be non-empty")
+	if mcpAliasIntentCannotConverge(config.Alias) {
+		return nil, fmt.Errorf("configured alias must be non-empty and must not require LiteLLM normalization")
 	}
 	request, err := r.buildMCPServerRequest(ctx, plan, resolvedMCPInfo, mcpInfoPresent)
 	if err != nil {
@@ -333,6 +334,64 @@ func addMCPBaseDelta(delta map[string]interface{}, plan, state MCPServerResource
 	}
 }
 
+func completeMCPUpdateDelta(ctx context.Context, delta map[string]interface{}, plan MCPServerResourceModel, hydration map[string]interface{}) error {
+	if _, serverNameSent := delta["server_name"]; serverNameSent {
+		if alias, aliasSent := delta["alias"]; aliasSent {
+			aliasString, ok := alias.(string)
+			if !ok || aliasString == "" || strings.Contains(aliasString, " ") {
+				return fmt.Errorf("alias intent cannot converge with a server name change")
+			}
+		} else {
+			alias, ok := hydration["alias"].(string)
+			if !ok || alias == "" || strings.Contains(alias, " ") {
+				return fmt.Errorf("a stable authoritative alias is required for a server name change")
+			}
+			delta["alias"] = alias
+		}
+	}
+
+	transportValue, transportSent := delta["transport"]
+	if !transportSent {
+		return nil
+	}
+	transport, ok := transportValue.(string)
+	if !ok {
+		return fmt.Errorf("transport update dependencies are invalid")
+	}
+	switch transport {
+	case "http", "sse":
+		endpointKnown := false
+		if mcpKnownNonEmptyString(plan.URL) {
+			delta["url"] = plan.URL.ValueString()
+			endpointKnown = true
+		}
+		if mcpKnownNonEmptyString(plan.SpecPath) {
+			delta["spec_path"] = plan.SpecPath.ValueString()
+			endpointKnown = true
+		}
+		if !endpointKnown {
+			return fmt.Errorf("a known non-empty endpoint is required for an HTTP or SSE transport update")
+		}
+	case "stdio":
+		if !mcpKnownNonEmptyString(plan.Command) {
+			return fmt.Errorf("a known non-empty command is required for a stdio transport update")
+		}
+		command := plan.Command.ValueString()
+		if _, allowed := mcpStdioAllowedCommandsV198[mcpStdioCommandBaseV198(command)]; !allowed {
+			return fmt.Errorf("the stdio command is not safe for a transport update")
+		}
+		args, err := mcpFieldStringList(ctx, plan.Args)
+		if err != nil || len(args) == 0 {
+			return fmt.Errorf("known non-empty string arguments are required for a stdio transport update")
+		}
+		delta["command"] = command
+		delta["args"] = args
+	default:
+		return fmt.Errorf("transport update dependencies are invalid")
+	}
+	return nil
+}
+
 func verifyMCPCreateEndpointReadback(planned MCPServerResourceModel, observed map[string]interface{}) error {
 	intent := map[string]interface{}{"transport": planned.Transport.ValueString()}
 	if !planned.URL.IsNull() && !planned.URL.IsUnknown() {
@@ -415,9 +474,9 @@ func (r *MCPServerResource) Update(ctx context.Context, req resource.UpdateReque
 		resp.State, resp.Private = req.State, req.Private
 		return
 	}
-	if mcpAliasIsKnownEmpty(config.Alias) {
+	if mcpAliasIntentCannotConverge(config.Alias) {
 		resp.State, resp.Private = req.State, req.Private
-		resp.Diagnostics.AddError("Invalid MCP Alias Configuration", "Configured alias must be non-empty. No update was attempted; prior public and private state was retained.")
+		resp.Diagnostics.AddError("Invalid MCP Alias Configuration", "Configured alias must be non-empty and must not require LiteLLM normalization. No update was attempted; prior public and private state was retained.")
 		return
 	}
 	plan.ID, plan.ServerID = state.ID, state.ServerID
@@ -463,6 +522,11 @@ func (r *MCPServerResource) Update(ctx context.Context, req resource.UpdateReque
 		return
 	}
 	addMCPBaseDelta(delta, plan, state, hydration)
+	if err := completeMCPUpdateDelta(ctx, delta, plan, hydration); err != nil {
+		resp.State, resp.Private = req.State, req.Private
+		resp.Diagnostics.AddError("Unsafe MCP Update", err.Error()+". No PUT was attempted; prior public and private state was retained.")
+		return
+	}
 	legacyInfoMigration := committedInfo.Versioned && !committedInfo.V2 && plannedInfo.V2
 	fixedInfoOwnershipChange := !mcpInfoOwnershipEqual(committedInfo, plannedInfo) && (committedInfo.Mode == mcpInfoModeSelective || plannedInfo.Mode == mcpInfoModeSelective)
 	if !mcpInfoJSONValuesEqual(baseInfo, resolvedInfo.Document) || legacyInfoMigration || fixedInfoOwnershipChange {
