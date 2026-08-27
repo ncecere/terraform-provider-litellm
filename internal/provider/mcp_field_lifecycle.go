@@ -223,6 +223,37 @@ func validateMCPFieldCredentialMerge(ctx context.Context, state, config MCPServe
 	return nil
 }
 
+func mcpAmbiguousEmptyCollectionNeedsWrite(ctx context.Context, fieldPath string, desired, remote interface{}, state MCPServerResourceModel, committed mcpFieldOwnership) bool {
+	switch fieldPath {
+	case mcpFieldAccessGroupsPath, mcpFieldArgsPath, mcpFieldAllowedToolsPath, mcpFieldExtraHeadersPath,
+		mcpFieldEnvPath, mcpFieldStaticHeadersPath:
+	default:
+		return false
+	}
+	isEmptyCollection := func(value interface{}) bool {
+		switch normalized := normalizeMCPWireValue(value).(type) {
+		case []interface{}:
+			return len(normalized) == 0
+		case map[string]interface{}:
+			return len(normalized) == 0
+		default:
+			return false
+		}
+	}
+	if !isEmptyCollection(desired) || !isEmptyCollection(remote) {
+		return false
+	}
+	// Empty lists/maps are LiteLLM's restricted-role masking sentinels. An
+	// initial takeover must establish explicit emptiness with a PUT. Existing
+	// ownership can skip the PUT only when prior state already proves the same
+	// empty intent; a non-empty→empty transition must still be sent.
+	if !committed.Owned[fieldPath] {
+		return true
+	}
+	prior, err := mcpFieldDesiredValue(ctx, state, fieldPath)
+	return err != nil || !mcpWireValuesEqual(desired, prior)
+}
+
 func buildMCPFieldDelta(ctx context.Context, _ MCPServerResourceModel, config, state MCPServerResourceModel, committed, candidate mcpFieldOwnership, hydration map[string]interface{}) (map[string]interface{}, error) {
 	if err := validateMCPFieldCredentialMerge(ctx, state, config, committed); err != nil {
 		return nil, err
@@ -257,8 +288,9 @@ func buildMCPFieldDelta(ctx context.Context, _ MCPServerResourceModel, config, s
 		}
 		remote, present := hydration[name]
 		// An authoritative equal remote value is sufficient for an ownership
-		// takeover even when Terraform's prior public value differs.
-		if !present || !mcpWireValuesEqual(desired, remote) {
+		// takeover even when Terraform's prior public value differs. Restricted-
+		// role empty collection sentinels are not authoritative equality.
+		if !present || !mcpWireValuesEqual(desired, remote) || mcpAmbiguousEmptyCollectionNeedsWrite(ctx, fieldPath, desired, remote, state, committed) {
 			delta[name] = desired
 		}
 	}

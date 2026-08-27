@@ -250,6 +250,71 @@ func TestMCPServerEqualRemoteOwnershipTakeoverAndUnknownRetentionProtocol(t *tes
 	})
 }
 
+func TestMCPServerMaskedEmptyCollectionsRequireEstablishingPUTProtocol(t *testing.T) {
+	emptyList := protocolMCPStringList()
+	emptyMap := map[string]tftypes.Value{}
+	configuredEmpty := map[string]interface{}{
+		"mcp_access_groups": emptyList, "args": emptyList, "allowed_tools": emptyList, "extra_headers": emptyList,
+		"env": emptyMap, "static_headers": emptyMap,
+	}
+	masked := map[string]interface{}{
+		"server_id": "empty-collections", "server_name": "empty-collections", "transport": "http", "auth_type": "none",
+		"url": "https://known.invalid/mcp", "mcp_access_groups": []string{}, "args": []string{}, "allowed_tools": []string{}, "extra_headers": []string{},
+		"env": map[string]string{}, "static_headers": map[string]string{}, "mcp_info": map[string]interface{}{},
+	}
+	tracked := map[string]bool{
+		mcpFieldAccessGroupsPath: true, mcpFieldArgsPath: true, mcpFieldAllowedToolsPath: true,
+		mcpFieldExtraHeadersPath: true, mcpFieldEnvPath: true, mcpFieldStaticHeadersPath: true,
+	}
+	for _, test := range []struct {
+		name      string
+		state     map[string]interface{}
+		ownership mcpFieldOwnership
+	}{
+		{
+			name: "initial empty takeover",
+			state: map[string]interface{}{
+				"id": "empty-collections", "server_id": "empty-collections", "server_name": "empty-collections",
+				"transport": "http", "auth_type": "none", "url": "https://known.invalid/mcp", "spec_version": "2024-11-05",
+			},
+			ownership: emptyMCPFieldOwnership(),
+		},
+		{
+			name: "owned non-empty to empty",
+			state: map[string]interface{}{
+				"id": "empty-collections", "server_id": "empty-collections", "server_name": "empty-collections",
+				"transport": "http", "auth_type": "none", "url": "https://known.invalid/mcp", "spec_version": "2024-11-05", "field_ownership_generation": int64(2),
+				"mcp_access_groups": protocolMCPStringList("group"), "args": protocolMCPStringList("arg"), "allowed_tools": protocolMCPStringList("tool"), "extra_headers": protocolMCPStringList("X-Known"),
+				"env": map[string]tftypes.Value{"KNOWN": tftypes.NewValue(tftypes.String, "value")}, "static_headers": map[string]tftypes.Value{"X-Known": tftypes.NewValue(tftypes.String, "value")},
+			},
+			ownership: mcpFieldOwnership{Owned: tracked, Removals: map[string]bool{}, Generation: 2, Versioned: true},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			config := map[string]interface{}{"server_name": "empty-collections", "transport": "http", "url": "https://known.invalid/mcp"}
+			changes := map[string]interface{}{}
+			for name, value := range configuredEmpty {
+				config[name], changes[name] = value, value
+			}
+			result := runMCPUpdateCompletionProtocol(t, test.state, config, changes, masked, masked, protocolMCPFieldPrivate(t, test.ownership))
+			if accessGroupProtocolDiagnosticsHaveError(result.applied.Diagnostics) || result.puts != 1 {
+				t.Fatalf("masked empty collection intent was not established: puts=%d diagnostics=%v", result.puts, result.applied.Diagnostics)
+			}
+			for _, name := range []string{"mcp_access_groups", "args", "allowed_tools", "extra_headers", "env", "static_headers"} {
+				if value, present := result.body[name]; !present || !mcpWireValuesEqual(value, masked[name]) {
+					t.Fatalf("PUT omitted explicit empty %s: %#v", name, result.body)
+				}
+			}
+			ownership := protocolCommittedMCPFieldOwnership(t, result.applied.Private)
+			for fieldPath := range tracked {
+				if !ownership.Owned[fieldPath] {
+					t.Fatalf("empty collection ownership was not committed: %#v", ownership)
+				}
+			}
+		})
+	}
+}
+
 func TestMCPServerEmptyAliasRejectedBeforeMutationProtocol(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
