@@ -16,7 +16,7 @@
   "provider_golden": {
     "operation_count": 108,
     "path": "internal/contractapi/testdata/provider-operations.golden.json",
-    "sha256": "6d40eef34e3c4fa94415dfb083547e642c1c9bb5fde07e1b43922ac8a47b1fc7"
+    "sha256": "d1812e43c6f4f1388ecd60bf7184b2447e4614b7d27ae594976ce915d4d65ff7"
   },
   "provider_operations": [
     {
@@ -504,7 +504,7 @@
         },
         {
           "file": "internal/provider/resource_unified_access_group.go",
-          "line": 928
+          "line": 939
         }
       ],
       "method": "GET",
@@ -526,7 +526,7 @@
         },
         {
           "file": "internal/provider/resource_unified_access_group.go",
-          "line": 1171
+          "line": 1182
         }
       ],
       "method": "GET",
@@ -575,7 +575,7 @@
         },
         {
           "file": "internal/provider/resource_unified_access_group.go",
-          "line": 561
+          "line": 564
         }
       ],
       "method": "POST",
@@ -1411,7 +1411,7 @@
         },
         {
           "file": "internal/provider/resource_unified_access_group.go",
-          "line": 1526
+          "line": 1540
         }
       ],
       "method": "GET",
@@ -1435,7 +1435,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_unified_access_group.go",
-          "line": 639
+          "line": 650
         }
       ],
       "method": "DELETE",
@@ -1453,15 +1453,15 @@
         },
         {
           "file": "internal/provider/resource_unified_access_group.go",
-          "line": 436
+          "line": 439
         },
         {
           "file": "internal/provider/resource_unified_access_group.go",
-          "line": 463
+          "line": 466
         },
         {
           "file": "internal/provider/resource_unified_access_group.go",
-          "line": 656
+          "line": 667
         }
       ],
       "method": "GET",
@@ -1475,11 +1475,11 @@
       "evidence": [
         {
           "file": "internal/provider/resource_unified_access_group.go",
-          "line": 495
+          "line": 498
         },
         {
           "file": "internal/provider/resource_unified_access_group.go",
-          "line": 526
+          "line": 529
         }
       ],
       "method": "PUT",

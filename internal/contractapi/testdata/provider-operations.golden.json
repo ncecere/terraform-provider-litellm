@@ -490,7 +490,7 @@
       },
       {
         "file": "internal/provider/resource_unified_access_group.go",
-        "line": 928
+        "line": 939
       }
     ]
   },
@@ -519,7 +519,7 @@
       },
       {
         "file": "internal/provider/resource_unified_access_group.go",
-        "line": 1171
+        "line": 1182
       }
     ]
   },
@@ -559,7 +559,7 @@
       },
       {
         "file": "internal/provider/resource_unified_access_group.go",
-        "line": 561
+        "line": 564
       }
     ]
   },
@@ -1395,7 +1395,7 @@
       },
       {
         "file": "internal/provider/resource_unified_access_group.go",
-        "line": 1526
+        "line": 1540
       }
     ]
   },
@@ -1421,7 +1421,7 @@
     "evidence": [
       {
         "file": "internal/provider/resource_unified_access_group.go",
-        "line": 639
+        "line": 650
       }
     ]
   },
@@ -1439,15 +1439,15 @@
       },
       {
         "file": "internal/provider/resource_unified_access_group.go",
-        "line": 436
+        "line": 439
       },
       {
         "file": "internal/provider/resource_unified_access_group.go",
-        "line": 463
+        "line": 466
       },
       {
         "file": "internal/provider/resource_unified_access_group.go",
-        "line": 656
+        "line": 667
       }
     ]
   },
@@ -1461,11 +1461,11 @@
     "evidence": [
       {
         "file": "internal/provider/resource_unified_access_group.go",
-        "line": 495
+        "line": 498
       },
       {
         "file": "internal/provider/resource_unified_access_group.go",
-        "line": 526
+        "line": 529
       }
     ]
   },
