@@ -71,6 +71,14 @@ func reusedDiagnostics() diagnostics {
 	_ = diagnostics
 	return nil
 }
+func observedOnly() {
+	list, diagnostics := types.ListValue(elementType, elements)
+	diagnostics.HasError()
+}
+func lengthOnly() {
+	list, diagnostics := types.ListValue(elementType, elements)
+	_ = len(diagnostics)
+}
 `
 	if err := os.WriteFile(filepath.Join(directory, "fixture.go"), []byte(source), 0o600); err != nil {
 		t.Fatal(err)
@@ -84,6 +92,7 @@ func reusedDiagnostics() diagnostics {
 		"ignored ElementsAs diagnostics":                 1,
 		"ignored Object.As diagnostics":                  1,
 		"discarded ListValue constructor diagnostics":    1,
+		"unchecked ListValue constructor diagnostics":    2,
 		"discarded SetValueFrom constructor diagnostics": 1,
 		"discarded SetValue constructor diagnostics":     1,
 		"discarded MapValue constructor diagnostics":     1,
@@ -180,6 +189,7 @@ func scanCollectionConversionFile(filename string, file *ast.File) []collectionA
 }
 
 func diagnosticAssignmentSafelyConsumed(body *ast.BlockStmt, name string, assignment token.Pos) bool {
+	parents := collectionAuditParentMap(body)
 	nextAssignment := token.NoPos
 	var safeUses []token.Pos
 	ast.Inspect(body, func(node ast.Node) bool {
@@ -203,11 +213,12 @@ func diagnosticAssignmentSafelyConsumed(body *ast.BlockStmt, name string, assign
 			}
 		case *ast.CallExpr:
 			safe := false
+			requiresControlFlow := false
 			switch function := typed.Fun.(type) {
 			case *ast.SelectorExpr:
 				if function.Sel.Name == "HasError" {
 					if identifier, ok := function.X.(*ast.Ident); ok && identifier.Name == name {
-						safe = true
+						safe, requiresControlFlow = true, true
 					}
 				}
 				if function.Sel.Name == "Append" {
@@ -221,12 +232,12 @@ func diagnosticAssignmentSafelyConsumed(body *ast.BlockStmt, name string, assign
 				if function.Name == "len" || function.Name == "collectionProjectionError" {
 					for _, argument := range typed.Args {
 						if identifier, ok := argument.(*ast.Ident); ok && identifier.Name == name {
-							safe = true
+							safe, requiresControlFlow = true, true
 						}
 					}
 				}
 			}
-			if safe {
+			if safe && (!requiresControlFlow || collectionDiagnosticCallControlsExit(typed, parents)) {
 				safeUses = append(safeUses, typed.Pos())
 			}
 		}
@@ -235,6 +246,42 @@ func diagnosticAssignmentSafelyConsumed(body *ast.BlockStmt, name string, assign
 	for _, position := range safeUses {
 		if position > assignment && (nextAssignment == token.NoPos || position < nextAssignment) {
 			return true
+		}
+	}
+	return false
+}
+
+func collectionAuditParentMap(root ast.Node) map[ast.Node]ast.Node {
+	parents := map[ast.Node]ast.Node{}
+	stack := []ast.Node{}
+	ast.Inspect(root, func(node ast.Node) bool {
+		if node == nil {
+			stack = stack[:len(stack)-1]
+			return true
+		}
+		if len(stack) > 0 {
+			parents[node] = stack[len(stack)-1]
+		}
+		stack = append(stack, node)
+		return true
+	})
+	return parents
+}
+
+func collectionDiagnosticCallControlsExit(call *ast.CallExpr, parents map[ast.Node]ast.Node) bool {
+	for node := ast.Node(call); node != nil; node = parents[node] {
+		switch typed := node.(type) {
+		case *ast.ReturnStmt:
+			return true
+		case *ast.IfStmt:
+			for _, statement := range typed.Body.List {
+				if _, ok := statement.(*ast.ReturnStmt); ok {
+					return true
+				}
+			}
+			return false
+		case *ast.ExprStmt:
+			return false
 		}
 	}
 	return false
