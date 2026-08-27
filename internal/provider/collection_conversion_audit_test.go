@@ -47,6 +47,8 @@ func TestCollectionConversionSafetyAuditRecognizesNewViolations(t *testing.T) {
 	directory := t.TempDir()
 	source := `package fixture
 import "github.com/hashicorp/terraform-plugin-framework/types"
+var packageList, packageListDiagnostics = types.ListValue(elementType, elements)
+var packageMust = types.SetValueMust(elementType, elements)
 func ignoredConversions() {
 	value.ElementsAs(ctx, &items, false)
 	_ = object.As(ctx, &decoded, options)
@@ -54,6 +56,12 @@ func ignoredConversions() {
 	_ = elementDiagnostics
 	objectDiagnostics := object.As(ctx, &decoded, options)
 	_ = objectDiagnostics
+	var declaredElements = value.ElementsAs(ctx, &items, false)
+	_ = declaredElements
+	var declaredObject = object.As(ctx, &decoded, options)
+	_ = declaredObject
+	var declaredList, declaredListDiagnostics = types.ListValue(elementType, elements)
+	_ = declaredListDiagnostics
 	list, _ := types.ListValue(elementType, elements)
 	from, _ := types.SetValueFrom(ctx, elementType, values)
 	named, diagnostics := types.MapValue(elementType, entries)
@@ -158,17 +166,17 @@ func shadowedDestination() diagnostics {
 	counts := countCollectionAuditViolations(violations)
 	want := map[string]int{
 		"ignored ElementsAs diagnostics":                 1,
-		"unchecked ElementsAs diagnostics":               1,
+		"unchecked ElementsAs diagnostics":               2,
 		"ignored Object.As diagnostics":                  1,
-		"unchecked Object.As diagnostics":                1,
+		"unchecked Object.As diagnostics":                2,
 		"discarded ListValue constructor diagnostics":    1,
-		"unchecked ListValue constructor diagnostics":    12,
+		"unchecked ListValue constructor diagnostics":    14,
 		"discarded SetValueFrom constructor diagnostics": 1,
 		"discarded SetValue constructor diagnostics":     1,
 		"discarded MapValue constructor diagnostics":     1,
 		"unchecked MapValue constructor diagnostics":     2,
 		"discarded ObjectValue constructor diagnostics":  1,
-		"production SetValueMust constructor":            1,
+		"production SetValueMust constructor":            2,
 	}
 	got := make(map[string]int)
 	for violation, count := range counts {
@@ -204,6 +212,31 @@ func scanCollectionConversionViolations(directory string) ([]collectionAuditViol
 func scanCollectionConversionFile(filename string, file *ast.File) []collectionAuditViolation {
 	var violations []collectionAuditViolation
 	for _, declaration := range file.Decls {
+		if general, ok := declaration.(*ast.GenDecl); ok {
+			for _, specification := range general.Specs {
+				value, valueOK := specification.(*ast.ValueSpec)
+				if !valueOK || len(value.Values) != 1 {
+					continue
+				}
+				call, callOK := value.Values[0].(*ast.CallExpr)
+				if callOK {
+					targets := make([]ast.Expr, len(value.Names))
+					for index, name := range value.Names {
+						targets[index] = name
+					}
+					violations = append(violations, collectionCallAssignmentViolations(filename, "<package>", &ast.BlockStmt{}, targets, call, value.Pos())...)
+				}
+				ast.Inspect(value, func(node ast.Node) bool {
+					if nested, ok := node.(*ast.CallExpr); ok {
+						if must := collectionValueMustName(nested); must != "" {
+							violations = append(violations, collectionAuditViolation{File: filename, Symbol: "<package>", Kind: "production " + must + " constructor"})
+						}
+					}
+					return true
+				})
+			}
+			continue
+		}
 		function, ok := declaration.(*ast.FuncDecl)
 		if !ok || function.Body == nil {
 			continue
@@ -221,37 +254,19 @@ func scanCollectionConversionFile(filename string, file *ast.File) []collectionA
 					}
 				}
 			case *ast.AssignStmt:
-				if len(typed.Rhs) != 1 {
-					break
-				}
-				call, ok := typed.Rhs[0].(*ast.CallExpr)
-				if !ok {
-					break
-				}
-				if len(typed.Lhs) == 1 {
-					if kind := ignoredConversionCallKind(call); kind != "" {
-						target, identifier := typed.Lhs[0].(*ast.Ident)
-						switch {
-						case !identifier:
-							violations = append(violations, collectionAuditViolation{File: filename, Symbol: symbol, Kind: strings.Replace(kind, "ignored ", "unchecked ", 1)})
-						case target.Name == "_":
-							violations = append(violations, collectionAuditViolation{File: filename, Symbol: symbol, Kind: kind})
-						case !diagnosticAssignmentSafelyConsumed(function.Body, target, typed.Pos()):
-							violations = append(violations, collectionAuditViolation{File: filename, Symbol: symbol, Kind: strings.Replace(kind, "ignored ", "unchecked ", 1)})
-						}
+				if len(typed.Rhs) == 1 {
+					if call, ok := typed.Rhs[0].(*ast.CallExpr); ok {
+						violations = append(violations, collectionCallAssignmentViolations(filename, symbol, function.Body, typed.Lhs, call, typed.Pos())...)
 					}
 				}
-				if len(typed.Lhs) >= 2 {
-					if constructor := collectionConstructorName(call); constructor != "" {
-						target, identifier := typed.Lhs[len(typed.Lhs)-1].(*ast.Ident)
-						switch {
-						case !identifier:
-							violations = append(violations, collectionAuditViolation{File: filename, Symbol: symbol, Kind: "unchecked " + constructor + " constructor diagnostics"})
-						case target.Name == "_":
-							violations = append(violations, collectionAuditViolation{File: filename, Symbol: symbol, Kind: "discarded " + constructor + " constructor diagnostics"})
-						case !diagnosticAssignmentSafelyConsumed(function.Body, target, typed.Pos()):
-							violations = append(violations, collectionAuditViolation{File: filename, Symbol: symbol, Kind: "unchecked " + constructor + " constructor diagnostics"})
+			case *ast.ValueSpec:
+				if len(typed.Values) == 1 {
+					if call, ok := typed.Values[0].(*ast.CallExpr); ok {
+						targets := make([]ast.Expr, len(typed.Names))
+						for index, name := range typed.Names {
+							targets[index] = name
 						}
+						violations = append(violations, collectionCallAssignmentViolations(filename, symbol, function.Body, targets, call, typed.Pos())...)
 					}
 				}
 			}
@@ -262,6 +277,37 @@ func scanCollectionConversionFile(filename string, file *ast.File) []collectionA
 			}
 			return true
 		})
+	}
+	return violations
+}
+
+func collectionCallAssignmentViolations(filename, symbol string, body *ast.BlockStmt, targets []ast.Expr, call *ast.CallExpr, position token.Pos) []collectionAuditViolation {
+	var violations []collectionAuditViolation
+	if len(targets) == 1 {
+		if kind := ignoredConversionCallKind(call); kind != "" {
+			target, identifier := targets[0].(*ast.Ident)
+			switch {
+			case !identifier:
+				violations = append(violations, collectionAuditViolation{File: filename, Symbol: symbol, Kind: strings.Replace(kind, "ignored ", "unchecked ", 1)})
+			case target.Name == "_":
+				violations = append(violations, collectionAuditViolation{File: filename, Symbol: symbol, Kind: kind})
+			case !diagnosticAssignmentSafelyConsumed(body, target, position):
+				violations = append(violations, collectionAuditViolation{File: filename, Symbol: symbol, Kind: strings.Replace(kind, "ignored ", "unchecked ", 1)})
+			}
+		}
+	}
+	if len(targets) >= 2 {
+		if constructor := collectionConstructorName(call); constructor != "" {
+			target, identifier := targets[len(targets)-1].(*ast.Ident)
+			switch {
+			case !identifier:
+				violations = append(violations, collectionAuditViolation{File: filename, Symbol: symbol, Kind: "unchecked " + constructor + " constructor diagnostics"})
+			case target.Name == "_":
+				violations = append(violations, collectionAuditViolation{File: filename, Symbol: symbol, Kind: "discarded " + constructor + " constructor diagnostics"})
+			case !diagnosticAssignmentSafelyConsumed(body, target, position):
+				violations = append(violations, collectionAuditViolation{File: filename, Symbol: symbol, Kind: "unchecked " + constructor + " constructor diagnostics"})
+			}
+		}
 	}
 	return violations
 }
