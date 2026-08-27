@@ -30,6 +30,7 @@ type MCPServerListItem struct {
 	Transport    types.String `tfsdk:"transport"`
 	SpecVersion  types.String `tfsdk:"spec_version"`
 	AuthType     types.String `tfsdk:"auth_type"`
+	MCPInfoJSON  types.String `tfsdk:"mcp_info_json"`
 	Status       types.String `tfsdk:"status"`
 	AllowAllKeys types.Bool   `tfsdk:"allow_all_keys"`
 	CreatedAt    types.String `tfsdk:"created_at"`
@@ -94,6 +95,11 @@ func (d *MCPServersListDataSource) Schema(ctx context.Context, req datasource.Sc
 						"auth_type": schema.StringAttribute{
 							Description: "Authentication type reported by LiteLLM.",
 							Computed:    true,
+						},
+						"mcp_info_json": schema.StringAttribute{
+							Description: "Sensitive canonical complete MCP info JSON object, or null when LiteLLM masks or omits it.",
+							Computed:    true,
+							Sensitive:   true,
 						},
 						"status": schema.StringAttribute{
 							Description: "Current status of the MCP server.",
@@ -169,7 +175,20 @@ func (d *MCPServersListDataSource) Read(ctx context.Context, req datasource.Read
 			return
 		}
 
-		item := MCPServerListItem{ServerID: types.StringValue(serverID)}
+		item := MCPServerListItem{ServerID: types.StringValue(serverID), MCPInfoJSON: types.StringNull()}
+		mcpInfo, presence, err := mcpInfoDocumentFromResponse(serverMap)
+		if err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned a malformed non-object MCP info value.")
+			return
+		}
+		if presence == apiValuePresent {
+			canonical, err := canonicalMCPInfoJSONObject(mcpInfo)
+			if err != nil {
+				resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned MCP info that could not be represented safely.")
+				return
+			}
+			item.MCPInfoJSON = types.StringValue(canonical)
+		}
 		if serverName, ok := serverMap["server_name"].(string); ok {
 			item.ServerName = types.StringValue(serverName)
 		}

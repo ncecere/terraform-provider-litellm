@@ -67,6 +67,7 @@ The following attributes are exported:
   * `transport` - Transport type (http, sse, stdio).
   * `spec_version` - Deprecated compatibility field; LiteLLM v1.98 does not return an MCP specification version.
   * `auth_type` - Authentication type.
+  * `mcp_info_json` - Sensitive canonical complete MCP info JSON object, or null when the parent is omitted or masked. Present non-object values reject the read.
   * `status` - Current status.
   * `allow_all_keys` - Whether all keys are allowed.
   * `created_at` - Creation timestamp.

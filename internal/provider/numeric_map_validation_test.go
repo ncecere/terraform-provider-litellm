@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -91,7 +92,12 @@ func TestNumericMapRequestBuildersRejectNullAndUnknownElements(t *testing.T) {
 			return err
 		}},
 		{"MCP null cost", "tool_name_to_cost_per_query", func() error {
-			_, err := (&MCPServerResource{}).buildMCPServerRequest(context.Background(), &MCPServerResourceModel{MCPInfo: &MCPInfoModel{MCPServerCostInfo: &MCPServerCostInfoModel{ToolNameToCostPerQuery: nullFloat}}})
+			data := MCPServerResourceModel{MCPInfo: &MCPInfoModel{MCPServerCostInfo: &MCPServerCostInfoModel{ToolNameToCostPerQuery: nullFloat}}}
+			resolved, err := resolveMCPInfoCreateDocument(context.Background(), data)
+			if err != nil {
+				return fmt.Errorf("mcp_info.mcp_server_cost_info.tool_name_to_cost_per_query: %w", err)
+			}
+			_, err = (&MCPServerResource{}).buildMCPServerRequest(context.Background(), &data, resolved.Document, resolved.Present)
 			return err
 		}},
 	}

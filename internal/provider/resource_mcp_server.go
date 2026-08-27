@@ -111,21 +111,25 @@ type MCPInfoModel struct {
 }
 
 type MCPServerResourceModel struct {
-	ID              types.String  `tfsdk:"id"`
-	ServerID        types.String  `tfsdk:"server_id"`
-	ServerName      types.String  `tfsdk:"server_name"`
-	Alias           types.String  `tfsdk:"alias"`
-	Description     types.String  `tfsdk:"description"`
-	URL             types.String  `tfsdk:"url"`
-	SpecPath        types.String  `tfsdk:"spec_path"`
-	Transport       types.String  `tfsdk:"transport"`
-	SpecVersion     types.String  `tfsdk:"spec_version"`
-	AuthType        types.String  `tfsdk:"auth_type"`
-	MCPAccessGroups types.List    `tfsdk:"mcp_access_groups"`
-	Command         types.String  `tfsdk:"command"`
-	Args            types.List    `tfsdk:"args"`
-	Env             types.Map     `tfsdk:"env"`
-	MCPInfo         *MCPInfoModel `tfsdk:"mcp_info"`
+	ID                         types.String  `tfsdk:"id"`
+	ServerID                   types.String  `tfsdk:"server_id"`
+	ServerName                 types.String  `tfsdk:"server_name"`
+	Alias                      types.String  `tfsdk:"alias"`
+	Description                types.String  `tfsdk:"description"`
+	URL                        types.String  `tfsdk:"url"`
+	SpecPath                   types.String  `tfsdk:"spec_path"`
+	Transport                  types.String  `tfsdk:"transport"`
+	SpecVersion                types.String  `tfsdk:"spec_version"`
+	AuthType                   types.String  `tfsdk:"auth_type"`
+	MCPAccessGroups            types.List    `tfsdk:"mcp_access_groups"`
+	Command                    types.String  `tfsdk:"command"`
+	Args                       types.List    `tfsdk:"args"`
+	Env                        types.Map     `tfsdk:"env"`
+	MCPInfo                    *MCPInfoModel `tfsdk:"mcp_info"`
+	MCPInfoJSON                types.String  `tfsdk:"mcp_info_json"`
+	MCPInfoOverridesJSON       types.String  `tfsdk:"mcp_info_overrides_json"`
+	MCPInfoClearPaths          types.List    `tfsdk:"mcp_info_clear_paths"`
+	MCPInfoOwnershipGeneration types.Int64   `tfsdk:"mcp_info_ownership_generation"`
 	// New fields for expanded API support
 	Credentials       types.Map    `tfsdk:"credentials"`
 	AllowedTools      types.List   `tfsdk:"allowed_tools"`
@@ -148,8 +152,29 @@ func (r *MCPServerResource) Metadata(ctx context.Context, req resource.MetadataR
 func (r *MCPServerResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		Description: "Manages a LiteLLM MCP (Model Context Protocol) server.",
-		Version:     1,
+		Version:     2,
 		Attributes: map[string]schema.Attribute{
+			"mcp_info_json": schema.StringAttribute{
+				Description: "Sensitive complete MCP info JSON object. The root must be a non-null object; {} explicitly owns and clears the whole document. Authoritative reads expose the complete object without dropping unknown members or exact JSON numbers.",
+				Optional:    true,
+				Computed:    true,
+				Sensitive:   true,
+			},
+			"mcp_info_overrides_json": schema.StringAttribute{
+				Description: "Sensitive recursive selective MCP info JSON object. Nested null is data and a nested empty object atomically replaces that member.",
+				Optional:    true,
+				Sensitive:   true,
+			},
+			"mcp_info_clear_paths": schema.ListAttribute{
+				Description: "Sensitive list of canonical RFC 6901 object-member pointers to clear. Root and array traversal are not supported.",
+				Optional:    true,
+				Sensitive:   true,
+				ElementType: types.StringType,
+			},
+			"mcp_info_ownership_generation": schema.Int64Attribute{
+				Description: "Internal non-sensitive generation of MCP info ownership intent.",
+				Computed:    true,
+			},
 			"id": schema.StringAttribute{
 				Description: "The unique identifier for this MCP server (same as server_id).",
 				Computed:    true,
@@ -346,6 +371,7 @@ func (r *MCPServerResource) ValidateConfig(ctx context.Context, req resource.Val
 			)
 		}
 	}
+	validateMCPInfoJSONConfig(data, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() || data.Transport.IsNull() || data.Transport.IsUnknown() {
 		return
 	}
@@ -422,6 +448,13 @@ func (r *MCPServerResource) ModifyPlan(ctx context.Context, req resource.ModifyP
 			return
 		}
 	}
+	// Re-run ownership validation from Config at resource plan time. This is
+	// intentionally not based on ProposedNewState, where Optional+Computed
+	// values can contain prior state.
+	validateMCPInfoJSONConfig(config, &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 
 	unsupportedSpecVersion := !plan.SpecVersion.IsNull() && !plan.SpecVersion.IsUnknown() && plan.SpecVersion.ValueString() != "2024-11-05"
 	unchangedSpecVersion := hasState && !state.SpecVersion.IsUnknown() && state.SpecVersion.Equal(plan.SpecVersion)
@@ -446,7 +479,29 @@ func (r *MCPServerResource) ModifyPlan(ctx context.Context, req resource.ModifyP
 		return
 	}
 
-	candidate := deriveMCPInfoPlanProvenance(prior, config, state)
+	candidate, ownershipDiags := deriveMCPInfoJSONPlanProvenance(ctx, prior, config, state)
+	resp.Diagnostics.Append(ownershipDiags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	effectiveJSON, setEffectiveJSON, effectiveDiags := planEffectiveMCPInfoJSON(ctx, hasState, state, config)
+	resp.Diagnostics.Append(effectiveDiags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if setEffectiveJSON {
+		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("mcp_info_json"), effectiveJSON)...)
+	}
+	plannedGeneration := types.Int64Value(candidate.Generation)
+	if hasState && state.MCPInfoOwnershipGeneration.IsNull() && mcpInfoOwnershipEqual(prior, candidate) {
+		// Direct protocol callers may bypass state upgrading. Preserve their
+		// historical typed null on a true ownership no-op.
+		plannedGeneration = types.Int64Null()
+	}
+	resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("mcp_info_ownership_generation"), plannedGeneration)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 
 	// Preserve each imported API-owned cost leaf while that exact HCL leaf is
 	// omitted. A configured parent, string sibling, or other cost sibling must
@@ -504,24 +559,12 @@ func (r *MCPServerResource) ModifyPlan(ctx context.Context, req resource.ModifyP
 			}
 		}
 	}
-	if resp.Private != nil {
-		if !prior.Versioned {
-			// A plan may stage pending ownership only after establishing a complete
-			// canonical committed pair. Legacy public strings are not evidence;
-			// only omitted visible legacy costs receive the conservative baseline.
-			baseline := deriveMCPInfoPlanProvenance(prior, MCPServerResourceModel{}, state)
-			resp.Diagnostics.Append(writeMCPInfoProvenance(ctx, resp.Private, baseline)...)
-		}
-		if !resp.Diagnostics.HasError() {
-			resp.Diagnostics.Append(writePendingMCPInfoProvenance(ctx, resp.Private, candidate)...)
-		}
+	if resp.Private != nil && !resp.Diagnostics.HasError() {
+		resp.Diagnostics.Append(writePendingMCPInfoProvenance(ctx, resp.Private, candidate)...)
 	}
 
-	// Provenance changes, including equal-value takeover and removal after an API
-	// null, must pass through Apply so they are committed only after confirmation.
-	if hasState && (!mcpInfoLeafSetsEqual(prior.Terraform, candidate.Terraform) || !mcpInfoLeafSetsEqual(prior.API, candidate.API)) {
-		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("id"), types.StringUnknown())...)
-	}
+	// The public generation, rather than identity churn, forces Apply for
+	// ownership-only changes such as equal-value takeover.
 }
 
 func validateMCPServerOptionalResponseFields(result map[string]interface{}, stringFields, boolFields, stringListFields, stringMapFields []string) error {
@@ -605,17 +648,21 @@ func (r *MCPServerResource) Configure(ctx context.Context, req resource.Configur
 
 func (r *MCPServerResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var data, config MCPServerResourceModel
-
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
 	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
-	plannedOwnership := deriveMCPInfoPlanProvenance(mcpInfoProvenance{Terraform: mcpInfoLeafSet{}, API: mcpInfoLeafSet{}}, config, MCPServerResourceModel{})
+	plannedOwnership, ownershipDiags := deriveMCPInfoJSONPlanProvenance(ctx, emptyMCPInfoProvenance(), config, MCPServerResourceModel{})
+	resp.Diagnostics.Append(ownershipDiags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
-	mcpReq, err := r.buildMCPServerRequest(ctx, &data)
+	resolved, err := resolveMCPInfoCreateDocument(ctx, config)
 	if err != nil {
-		resp.Diagnostics.AddError("Invalid MCP Numeric Map", err.Error())
+		resp.Diagnostics.AddError("Invalid MCP Info Configuration", "The complete MCP info document could not be resolved safely; no create was attempted.")
+		return
+	}
+	mcpReq, err := r.buildMCPServerRequest(ctx, &data, resolved.Document, resolved.Present)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid MCP Request", err.Error())
 		return
 	}
 
@@ -626,62 +673,77 @@ func (r *MCPServerResource) Create(ctx context.Context, req resource.CreateReque
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to create MCP server: %s", err))
 		return
 	}
-
 	serverID, ok := result["server_id"].(string)
 	if !ok || serverID == "" {
-		resp.Diagnostics.AddError("Invalid Create Response", "LiteLLM accepted the MCP server create but returned a malformed required response shape.")
+		resp.Diagnostics.AddError("Invalid Create Response", "LiteLLM accepted the MCP server create but did not return a usable identity.")
 		return
 	}
 	data.ServerID = types.StringValue(serverID)
 	data.ID = types.StringValue(serverID)
-	if err := validateMCPServerResponse(result, serverID); err != nil {
-		partial := partialMCPServerState(serverID)
-		resp.Diagnostics.Append(resp.State.Set(ctx, &partial)...)
-		resp.Diagnostics.AddError("Invalid Create Response", "LiteLLM accepted the MCP server create but returned a malformed required response shape. Only the confirmed identity was retained for recovery.")
-		return
+	// CreateRequest does not carry PlannedPrivate. Re-establish the pending v2
+	// bundle as soon as the POST confirms identity, then replace it with the
+	// committed bundle only after successful direct readback.
+	if resp.Private != nil {
+		resp.Diagnostics.Append(writePendingMCPInfoProvenance(ctx, resp.Private, plannedOwnership)...)
+		if resp.Diagnostics.HasError() {
+			partial := partialMCPServerState(serverID)
+			resp.Diagnostics.Append(resp.State.Set(ctx, &partial)...)
+			return
+		}
 	}
-
-	// Require authoritative post-create confirmation. A successful POST with a
-	// failed or inconsistent read retains only the confirmed identity so the
-	// remote object remains recoverable without publishing planned endpoint data.
 	planned := data
-	confirmedLeaves, _, err := r.readMCPServerWithProvenance(ctx, &data, plannedOwnership, false)
+	_, _, readback, err := r.readMCPServerWithProvenanceDirect(ctx, &data, plannedOwnership, false)
 	if err != nil {
 		partial := partialMCPServerState(serverID)
 		resp.Diagnostics.Append(resp.State.Set(ctx, &partial)...)
-		resp.Diagnostics.AddError("MCP Server Readback Not Confirmed", "LiteLLM accepted the create, but authoritative readback failed. Only the confirmed identity was retained for recovery.")
+		resp.Diagnostics.AddError("MCP Server Readback Not Confirmed", "LiteLLM accepted the create, but direct authoritative readback failed. Only the confirmed identity was retained for recovery.")
 		return
 	}
-	if mcpOwnedEndpointReadbackMismatch(&planned, &data, nil) || mcpInfoReadbackMismatch(planned, data, plannedOwnership, confirmedLeaves) {
+	observed, presence, err := mcpInfoDocumentFromResponse(readback)
+	if err != nil || (resolved.Present && presence != apiValuePresent) {
+		partial := partialMCPServerState(serverID)
+		resp.Diagnostics.Append(resp.State.Set(ctx, &partial)...)
+		resp.Diagnostics.AddError("MCP Server Readback Not Confirmed", "LiteLLM accepted the create, but direct readback did not return a valid MCP info object. Only the confirmed identity was retained for recovery.")
+		return
+	}
+	if mcpOwnedEndpointReadbackMismatch(&planned, &data, nil) {
 		partial := partialMCPServerState(serverID)
 		resp.Diagnostics.Append(resp.State.Set(ctx, &partial)...)
 		resp.Diagnostics.AddError("Inconsistent MCP Endpoint Readback", "LiteLLM accepted the create but did not persist the requested endpoint or transport. Only the confirmed identity was retained for recovery.")
 		return
 	}
+	if resolved.Present {
+		if err := verifyMCPInfoReadback(map[string]interface{}{}, resolved.Document, observed, plannedOwnership); err != nil {
+			partial := partialMCPServerState(serverID)
+			resp.Diagnostics.Append(resp.State.Set(ctx, &partial)...)
+			resp.Diagnostics.AddError("Inconsistent MCP Info Readback", "LiteLLM accepted the create but did not confirm the requested MCP info document. Only the confirmed identity was retained for recovery.")
+			return
+		}
+	}
 	resolveUnknownMCPServerState(&data, nil)
-
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 	if !resp.Diagnostics.HasError() && resp.Private != nil {
 		resp.Diagnostics.Append(writeMCPInfoProvenance(ctx, resp.Private, plannedOwnership)...)
+		resp.Diagnostics.Append(writeMCPInfoPrivateDocumentAuthoritative(ctx, resp.Private, presence == apiValuePresent)...)
 	}
 }
 
 func (r *MCPServerResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	var data MCPServerResourceModel
-
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
 	importedMarker, privateDiags := req.Private.GetKey(ctx, numericImportedPrivateKey)
 	resp.Diagnostics.Append(privateDiags...)
 	ownership, ownershipDiags := readMCPInfoProvenance(ctx, req.Private)
 	resp.Diagnostics.Append(ownershipDiags...)
+	hasPendingOwnership, pendingOwnershipDiags := mcpInfoPrivateHasPending(ctx, req.Private)
+	resp.Diagnostics.Append(pendingOwnershipDiags...)
 	if resp.Diagnostics.HasError() {
 		resp.State = req.State
 		resp.Private = req.Private
 		return
 	}
 	imported := string(importedMarker) == "true"
-
-	_, adoptedAPI, err := r.readMCPServerWithProvenance(ctx, &data, ownership, imported)
+	_, adoptedAPI, result, err := r.readMCPServerWithProvenanceResult(ctx, &data, ownership, imported)
 	if err != nil {
 		if IsAPIErrorStatus(err, 404) {
 			resp.State.RemoveResource(ctx)
@@ -692,28 +754,35 @@ func (r *MCPServerResource) Read(ctx context.Context, req resource.ReadRequest, 
 		resp.Diagnostics.AddError("Client Error", "Unable to read MCP server because LiteLLM did not return an authoritative response. Prior public and private state was retained.")
 		return
 	}
-
+	_, presence, err := mcpInfoDocumentFromResponse(result)
+	if err != nil {
+		resp.State = req.State
+		resp.Private = req.Private
+		resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned a malformed MCP info root. Prior public and private state was retained.")
+		return
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
-	if !resp.Diagnostics.HasError() && resp.Private != nil && imported {
+	if resp.Diagnostics.HasError() || resp.Private == nil {
+		return
+	}
+	if presence == apiValuePresent {
+		// This marker records document hydration only. It neither commits nor
+		// discards pending ownership from ModifyPlan.
+		resp.Diagnostics.Append(writeMCPInfoPrivateDocumentAuthoritative(ctx, resp.Private, true)...)
+	}
+	if imported && !hasPendingOwnership && presence == apiValuePresent {
 		ownership.API = adoptedAPI
 		ownership.Versioned = true
 		resp.Diagnostics.Append(writeMCPInfoProvenance(ctx, resp.Private, ownership)...)
+		resp.Diagnostics.Append(writeMCPInfoPrivateDocumentAuthoritative(ctx, resp.Private, true)...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, nil)...)
 	}
 }
 
 func (r *MCPServerResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var data, config MCPServerResourceModel
-
+	var data, config, state MCPServerResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
 	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
-	if resp.Diagnostics.HasError() {
-		resp.State = req.State
-		resp.Private = req.Private
-		return
-	}
-
-	var state MCPServerResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	committed, privateDiags := readMCPInfoProvenance(ctx, req.Private)
 	resp.Diagnostics.Append(privateDiags...)
@@ -729,16 +798,55 @@ func (r *MCPServerResource) Update(ctx context.Context, req resource.UpdateReque
 		resp.Private = req.Private
 		return
 	}
-
-	// Preserve the server ID
 	data.ID = state.ID
 	data.ServerID = state.ServerID
 
-	mcpReq, err := r.buildMCPServerRequest(ctx, &data)
+	// Mutation authority is only the direct singular endpoint. Hydration and
+	// exact identity validation happen before request construction or PUT.
+	hydrated := state
+	_, _, hydrationResult, err := r.readMCPServerWithProvenanceDirect(ctx, &hydrated, plannedOwnership, false)
 	if err != nil {
 		resp.State = req.State
 		resp.Private = req.Private
-		resp.Diagnostics.AddError("Invalid MCP Numeric Map", err.Error())
+		resp.Diagnostics.AddError("MCP Info Hydration Failed", "The direct MCP server endpoint did not return an authoritative, identity-matching response. No update was attempted and prior state was retained.")
+		return
+	}
+	base, presence, err := mcpInfoDocumentFromResponse(hydrationResult)
+	if err != nil {
+		resp.State = req.State
+		resp.Private = req.Private
+		resp.Diagnostics.AddError("MCP Info Hydration Failed", "The direct MCP server endpoint returned a malformed MCP info root. No update was attempted and prior state was retained.")
+		return
+	}
+	if presence != apiValuePresent {
+		authoritative, markerDiags := mcpInfoPrivateDocumentAuthoritative(ctx, req.Private)
+		resp.Diagnostics.Append(markerDiags...)
+		if resp.Diagnostics.HasError() || !authoritative || state.MCPInfoJSON.IsNull() || state.MCPInfoJSON.IsUnknown() {
+			resp.State = req.State
+			resp.Private = req.Private
+			resp.Diagnostics.AddError("Authoritative MCP Info Required", "LiteLLM masked mcp_info and no previously authoritative complete document is available. No update was attempted and prior state was retained.")
+			return
+		}
+		base, err = parseMCPInfoJSONObject(state.MCPInfoJSON.ValueString())
+		if err != nil {
+			resp.State = req.State
+			resp.Private = req.Private
+			resp.Diagnostics.AddError("Authoritative MCP Info Required", "The previously hydrated complete MCP info document is malformed. No update was attempted and prior state was retained.")
+			return
+		}
+	}
+	resolved, err := resolveMCPInfoUpdateDocument(ctx, base, config)
+	if err != nil {
+		resp.State = req.State
+		resp.Private = req.Private
+		resp.Diagnostics.AddError("Invalid MCP Info Configuration", "The complete MCP info update could not be resolved safely. No update was attempted and prior state was retained.")
+		return
+	}
+	mcpReq, err := r.buildMCPServerRequest(ctx, &data, resolved.Document, true)
+	if err != nil {
+		resp.State = req.State
+		resp.Private = req.Private
+		resp.Diagnostics.AddError("Invalid MCP Request", err.Error())
 		return
 	}
 	mcpReq["server_id"] = data.ServerID.ValueString()
@@ -748,55 +856,73 @@ func (r *MCPServerResource) Update(ctx context.Context, req resource.UpdateReque
 	if !state.SpecPath.IsNull() && !state.SpecPath.IsUnknown() && data.SpecPath.IsNull() {
 		mcpReq["spec_path"] = nil
 	}
-
-	var updateResult map[string]interface{}
-	// Preserve #209's reviewed logical evidence coordinate; this change adds no operation.
-//line internal/provider/resource_mcp_server.go:626
-	if err := r.client.DoRequestWithResponse(ctx, "PUT", "/v1/mcp/server", mcpReq, &updateResult); err != nil {
-		resp.State = req.State
-		resp.Private = req.Private
-		resp.Diagnostics.AddError("Client Error", "LiteLLM did not confirm the MCP server update. Prior public and private state was retained.")
-		return
-	}
-	if len(updateResult) > 0 {
-		if err := validateMCPServerResponse(updateResult, data.ServerID.ValueString()); err != nil {
-			resp.State = req.State
-			resp.Private = req.Private
-			resp.Diagnostics.AddError("Invalid Update Response", "LiteLLM accepted the MCP server update but returned a malformed required response shape. Prior public and private state was retained.")
-			return
-		}
-	}
-
-	// The partial PUT response is not sufficient to prove convergence. A failed
-	// or malformed authoritative read preserves prior state instead of publishing
-	// requested values as confirmed.
-	planned := data
-	// A planned null after prior ownership is an explicit clear. Probe that
-	// field authoritatively even though it will be unowned after convergence.
-	if mcpEndpointWasCleared(state.URL, planned.URL) {
-		data.URL = types.StringUnknown()
-	}
-	if mcpEndpointWasCleared(state.SpecPath, planned.SpecPath) {
-		data.SpecPath = types.StringUnknown()
-	}
-	confirmedLeaves, _, err := r.readMCPServerWithProvenance(ctx, &data, plannedOwnership, false)
+	priorReq, err := r.buildMCPServerRequest(ctx, &state, nil, false)
 	if err != nil {
 		resp.State = req.State
 		resp.Private = req.Private
-		resp.Diagnostics.AddError("Read Error", "The MCP server update was accepted, but authoritative readback failed. Prior public and private state was retained.")
+		resp.Diagnostics.AddError("Invalid Prior MCP State", "The prior MCP server request projection is malformed. No update was attempted.")
 		return
 	}
-	if mcpOwnedEndpointReadbackMismatch(&planned, &data, &state) || mcpInfoReadbackMismatch(planned, data, plannedOwnership, confirmedLeaves) {
+	otherMutation := !mcpInfoJSONValuesEqual(mcpInfoRequestWithoutDocument(priorReq), mcpInfoRequestWithoutDocument(mcpReq))
+	mcpMutation := !mcpInfoJSONValuesEqual(base, resolved.Document)
+
+	planned := data
+	var readback map[string]interface{}
+	if otherMutation || mcpMutation {
+		var updateResult map[string]interface{}
+		// Preserve #209's reviewed logical evidence coordinate; this change adds no operation.
+//line internal/provider/resource_mcp_server.go:626
+		if err := r.client.DoRequestWithResponse(ctx, "PUT", "/v1/mcp/server", mcpReq, &updateResult); err != nil {
+			resp.State = req.State
+			resp.Private = req.Private
+			resp.Diagnostics.AddError("Client Error", "LiteLLM did not confirm the MCP server update. Prior public and private state was retained.")
+			return
+		}
+		if len(updateResult) > 0 {
+			if err := validateMCPServerResponse(updateResult, data.ServerID.ValueString()); err != nil {
+				resp.State = req.State
+				resp.Private = req.Private
+				resp.Diagnostics.AddError("Invalid Update Response", "LiteLLM accepted the MCP server update but returned a malformed required response shape. Prior public and private state was retained.")
+				return
+			}
+		}
+		if mcpEndpointWasCleared(state.URL, planned.URL) {
+			data.URL = types.StringUnknown()
+		}
+		if mcpEndpointWasCleared(state.SpecPath, planned.SpecPath) {
+			data.SpecPath = types.StringUnknown()
+		}
+		_, _, readback, err = r.readMCPServerWithProvenanceDirect(ctx, &data, plannedOwnership, false)
+	} else {
+		// Equal-value takeover still requires the authoritative GET above, but it
+		// commits provenance without a needless PUT.
+		readback = hydrationResult
+		err = r.readMCPServerResultProjection(ctx, &data, readback, plannedOwnership, false, mcpInfoLeafSet{}, cloneMCPInfoLeafSet(plannedOwnership.API))
+	}
+	if err != nil {
 		resp.State = req.State
 		resp.Private = req.Private
-		resp.Diagnostics.AddError("Inconsistent MCP Endpoint Readback", "LiteLLM accepted the update but did not confirm the requested owned values. Prior public and private state was retained for recovery.")
+		resp.Diagnostics.AddError("Read Error", "Authoritative direct readback failed. Prior public and private state was retained.")
+		return
+	}
+	observed, observedPresence, err := mcpInfoDocumentFromResponse(readback)
+	if err != nil || observedPresence != apiValuePresent {
+		resp.State = req.State
+		resp.Private = req.Private
+		resp.Diagnostics.AddError("Inconsistent MCP Info Readback", "The direct endpoint did not return a complete authoritative MCP info object. Prior public and private state was retained.")
+		return
+	}
+	if mcpOwnedEndpointReadbackMismatch(&planned, &data, &state) || verifyMCPInfoReadback(base, resolved.Document, observed, plannedOwnership) != nil {
+		resp.State = req.State
+		resp.Private = req.Private
+		resp.Diagnostics.AddError("Inconsistent MCP Info Readback", "LiteLLM did not confirm every owned, cleared, and preserved MCP info value. Prior public and private state was retained.")
 		return
 	}
 	resolveUnknownMCPServerState(&data, &state)
-
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 	if !resp.Diagnostics.HasError() && resp.Private != nil {
 		resp.Diagnostics.Append(writeMCPInfoProvenance(ctx, resp.Private, plannedOwnership)...)
+		resp.Diagnostics.Append(writeMCPInfoPrivateDocumentAuthoritative(ctx, resp.Private, true)...)
 	}
 }
 
@@ -836,36 +962,27 @@ func (r *MCPServerResource) ImportState(ctx context.Context, req resource.Import
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("server_id"), req.ID)...)
 	if resp.Private != nil {
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, []byte("true"))...)
-		resp.Diagnostics.Append(writeMCPInfoProvenance(ctx, resp.Private, mcpInfoProvenance{Terraform: mcpInfoLeafSet{}, API: mcpInfoLeafSet{}, Versioned: true})...)
+		resp.Diagnostics.Append(writeMCPInfoProvenance(ctx, resp.Private, emptyMCPInfoProvenance())...)
 	}
 }
 
-// UpgradeState handles state migrations from older schema versions.
-// Version 0 → 1: extra_headers changed from map(string) to list(string)
-// to match the LiteLLM API/OpenAPI schema. Existing map keys become the
-// list of header names.
+// UpgradeState handles both historical shapes directly so Terraform 1.1 does
+// not need to understand an intermediate schema. Version 0 also converts the
+// old extra_headers map; versions 0 and 1 receive the complete version 2 JSON
+// control shape without changing any pre-existing value or nested block.
 func (r *MCPServerResource) UpgradeState(ctx context.Context) map[int64]resource.StateUpgrader {
-	return map[int64]resource.StateUpgrader{
-		0: {
-			PriorSchema: nil,
-			StateUpgrader: func(ctx context.Context, req resource.UpgradeStateRequest, resp *resource.UpgradeStateResponse) {
-				if req.RawState == nil {
-					resp.Diagnostics.AddError(
-						"Unable to Upgrade State",
-						"RawState is nil. This is a bug in the provider.",
-					)
-					return
-				}
-
-				var priorState map[string]json.RawMessage
-				if err := json.Unmarshal(req.RawState.JSON, &priorState); err != nil {
-					resp.Diagnostics.AddError(
-						"Unable to Upgrade State",
-						fmt.Sprintf("Failed to unmarshal prior state JSON: %s", err),
-					)
-					return
-				}
-
+	upgrade := func(convertExtraHeaders bool) resource.StateUpgrader {
+		return resource.StateUpgrader{PriorSchema: nil, StateUpgrader: func(ctx context.Context, req resource.UpgradeStateRequest, resp *resource.UpgradeStateResponse) {
+			if req.RawState == nil {
+				resp.Diagnostics.AddError("Unable to Upgrade State", "RawState is nil. This is a bug in the provider.")
+				return
+			}
+			var priorState map[string]json.RawMessage
+			if err := json.Unmarshal(req.RawState.JSON, &priorState); err != nil {
+				resp.Diagnostics.AddError("Unable to Upgrade State", fmt.Sprintf("Failed to unmarshal prior state JSON: %s", err))
+				return
+			}
+			if convertExtraHeaders {
 				if raw, ok := priorState["extra_headers"]; ok && string(raw) != "null" {
 					var oldMap map[string]string
 					if err := json.Unmarshal(raw, &oldMap); err != nil {
@@ -879,31 +996,28 @@ func (r *MCPServerResource) UpgradeState(ctx context.Context) map[int64]resource
 					sort.Strings(headers)
 					converted, err := json.Marshal(headers)
 					if err != nil {
-						resp.Diagnostics.AddError(
-							"Unable to Upgrade State",
-							fmt.Sprintf("Failed to marshal upgraded extra_headers: %s", err),
-						)
+						resp.Diagnostics.AddError("Unable to Upgrade State", "Failed to encode upgraded extra_headers.")
 						return
 					}
 					priorState["extra_headers"] = converted
 				}
-
-				upgradedJSON, err := json.Marshal(priorState)
-				if err != nil {
-					resp.Diagnostics.AddError(
-						"Unable to Upgrade State",
-						fmt.Sprintf("Failed to marshal upgraded state: %s", err),
-					)
-					return
-				}
-
-				resp.DynamicValue = &tfprotov6.DynamicValue{JSON: upgradedJSON}
-			},
-		},
+			}
+			priorState["mcp_info_json"] = json.RawMessage("null")
+			priorState["mcp_info_overrides_json"] = json.RawMessage("null")
+			priorState["mcp_info_clear_paths"] = json.RawMessage("null")
+			priorState["mcp_info_ownership_generation"] = json.RawMessage("0")
+			upgradedJSON, err := json.Marshal(priorState)
+			if err != nil {
+				resp.Diagnostics.AddError("Unable to Upgrade State", "Failed to marshal upgraded state.")
+				return
+			}
+			resp.DynamicValue = &tfprotov6.DynamicValue{JSON: upgradedJSON}
+		}}
 	}
+	return map[int64]resource.StateUpgrader{0: upgrade(true), 1: upgrade(false)}
 }
 
-func (r *MCPServerResource) buildMCPServerRequest(ctx context.Context, data *MCPServerResourceModel) (map[string]interface{}, error) {
+func (r *MCPServerResource) buildMCPServerRequest(ctx context.Context, data *MCPServerResourceModel, resolvedMCPInfo map[string]interface{}, mcpInfoPresent bool) (map[string]interface{}, error) {
 	mcpReq := map[string]interface{}{
 		"server_name": data.ServerName.ValueString(),
 		"transport":   data.Transport.ValueString(),
@@ -999,44 +1113,14 @@ func (r *MCPServerResource) buildMCPServerRequest(ctx context.Context, data *MCP
 		}
 	}
 
-	// Handle mcp_info block
-	if data.MCPInfo != nil {
-		mcpInfo := map[string]interface{}{}
-
-		if !data.MCPInfo.ServerName.IsNull() && !data.MCPInfo.ServerName.IsUnknown() && data.MCPInfo.ServerName.ValueString() != "" {
-			mcpInfo["server_name"] = data.MCPInfo.ServerName.ValueString()
+	if mcpInfoPresent {
+		if resolvedMCPInfo == nil {
+			return nil, fmt.Errorf("resolved mcp_info must be a complete object")
 		}
-		if !data.MCPInfo.Description.IsNull() && !data.MCPInfo.Description.IsUnknown() && data.MCPInfo.Description.ValueString() != "" {
-			mcpInfo["description"] = data.MCPInfo.Description.ValueString()
+		if err := validateMCPInfoJSONValue(resolvedMCPInfo); err != nil {
+			return nil, fmt.Errorf("resolved mcp_info is invalid")
 		}
-		if !data.MCPInfo.LogoURL.IsNull() && !data.MCPInfo.LogoURL.IsUnknown() && data.MCPInfo.LogoURL.ValueString() != "" {
-			mcpInfo["logo_url"] = data.MCPInfo.LogoURL.ValueString()
-		}
-
-		if data.MCPInfo.MCPServerCostInfo != nil {
-			costInfo := map[string]interface{}{}
-
-			if !data.MCPInfo.MCPServerCostInfo.DefaultCostPerQuery.IsNull() && !data.MCPInfo.MCPServerCostInfo.DefaultCostPerQuery.IsUnknown() {
-				costInfo["default_cost_per_query"] = data.MCPInfo.MCPServerCostInfo.DefaultCostPerQuery.ValueFloat64()
-			}
-			if !data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery.IsNull() && !data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery.IsUnknown() {
-				toolCosts, err := float64RequestMap(data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery, "mcp_info.mcp_server_cost_info.tool_name_to_cost_per_query")
-				if err != nil {
-					return nil, err
-				}
-				if len(toolCosts) > 0 {
-					costInfo["tool_name_to_cost_per_query"] = toolCosts
-				}
-			}
-
-			if len(costInfo) > 0 {
-				mcpInfo["mcp_server_cost_info"] = costInfo
-			}
-		}
-
-		if len(mcpInfo) > 0 {
-			mcpReq["mcp_info"] = mcpInfo
-		}
+		mcpReq["mcp_info"] = cloneMCPInfoJSONObject(resolvedMCPInfo)
 	}
 
 	return mcpReq, nil
@@ -1100,15 +1184,19 @@ func mcpInfoReadbackMismatch(planned, observed MCPServerResourceModel, ownership
 
 func partialMCPServerState(serverID string) MCPServerResourceModel {
 	return MCPServerResourceModel{
-		ID:              types.StringValue(serverID),
-		ServerID:        types.StringValue(serverID),
-		MCPAccessGroups: types.ListNull(types.StringType),
-		Args:            types.ListNull(types.StringType),
-		Env:             types.MapNull(types.StringType),
-		Credentials:     types.MapNull(types.StringType),
-		AllowedTools:    types.ListNull(types.StringType),
-		ExtraHeaders:    types.ListNull(types.StringType),
-		StaticHeaders:   types.MapNull(types.StringType),
+		ID:                         types.StringValue(serverID),
+		ServerID:                   types.StringValue(serverID),
+		MCPAccessGroups:            types.ListNull(types.StringType),
+		Args:                       types.ListNull(types.StringType),
+		Env:                        types.MapNull(types.StringType),
+		Credentials:                types.MapNull(types.StringType),
+		AllowedTools:               types.ListNull(types.StringType),
+		ExtraHeaders:               types.ListNull(types.StringType),
+		StaticHeaders:              types.MapNull(types.StringType),
+		MCPInfoJSON:                types.StringNull(),
+		MCPInfoOverridesJSON:       types.StringNull(),
+		MCPInfoClearPaths:          types.ListNull(types.StringType),
+		MCPInfoOwnershipGeneration: types.Int64Value(0),
 	}
 }
 
@@ -1180,6 +1268,16 @@ func resolveUnknownMCPServerState(data *MCPServerResourceModel, previous *MCPSer
 	data.Env = resolveStringMap(data.Env, prior.Env)
 	data.Credentials = resolveStringMap(data.Credentials, prior.Credentials)
 	data.StaticHeaders = resolveStringMap(data.StaticHeaders, prior.StaticHeaders)
+	data.MCPInfoJSON = resolveString(data.MCPInfoJSON, prior.MCPInfoJSON)
+	data.MCPInfoOverridesJSON = resolveString(data.MCPInfoOverridesJSON, prior.MCPInfoOverridesJSON)
+	data.MCPInfoClearPaths = resolveList(data.MCPInfoClearPaths, prior.MCPInfoClearPaths)
+	if data.MCPInfoOwnershipGeneration.IsUnknown() {
+		if previous != nil && !prior.MCPInfoOwnershipGeneration.IsUnknown() {
+			data.MCPInfoOwnershipGeneration = prior.MCPInfoOwnershipGeneration
+		} else {
+			data.MCPInfoOwnershipGeneration = types.Int64Value(0)
+		}
+	}
 
 	if data.MCPInfo != nil {
 		var priorInfo MCPInfoModel
@@ -1215,6 +1313,15 @@ func resolveUnknownMCPServerState(data *MCPServerResourceModel, previous *MCPSer
 
 func mcpServerEndpoint(serverID string) string {
 	return endpointWithPathSegment("/v1/mcp/server/", serverID, "")
+}
+
+func (r *MCPServerResource) getMCPServerDirect(ctx context.Context, serverID string) (map[string]interface{}, error) {
+	endpoint := mcpServerEndpoint(serverID)
+	var result map[string]interface{}
+	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func (r *MCPServerResource) getMCPServer(ctx context.Context, serverID string) (map[string]interface{}, error) {
@@ -1306,15 +1413,50 @@ func (r *MCPServerResource) readMCPServerWithProvenance(ctx context.Context, dat
 	return confirmed, adoptedAPI, err
 }
 
+func (r *MCPServerResource) readMCPServerWithProvenanceResult(ctx context.Context, data *MCPServerResourceModel, ownership mcpInfoProvenance, imported bool) (mcpInfoLeafSet, mcpInfoLeafSet, map[string]interface{}, error) {
+	confirmed := mcpInfoLeafSet{}
+	adoptedAPI := cloneMCPInfoLeafSet(ownership.API)
+	serverID := data.ID.ValueString()
+	if serverID == "" {
+		serverID = data.ServerID.ValueString()
+	}
+	result, err := r.getMCPServer(ctx, serverID)
+	if err == nil {
+		err = r.readMCPServerResultProjection(ctx, data, result, ownership, imported, confirmed, adoptedAPI)
+	}
+	return confirmed, adoptedAPI, result, err
+}
+
+func (r *MCPServerResource) readMCPServerWithProvenanceDirect(ctx context.Context, data *MCPServerResourceModel, ownership mcpInfoProvenance, imported bool) (mcpInfoLeafSet, mcpInfoLeafSet, map[string]interface{}, error) {
+	confirmed := mcpInfoLeafSet{}
+	adoptedAPI := cloneMCPInfoLeafSet(ownership.API)
+	serverID := data.ID.ValueString()
+	if serverID == "" {
+		serverID = data.ServerID.ValueString()
+	}
+	result, err := r.getMCPServerDirect(ctx, serverID)
+	if err == nil {
+		err = r.readMCPServerResultProjection(ctx, data, result, ownership, imported, confirmed, adoptedAPI)
+	}
+	return confirmed, adoptedAPI, result, err
+}
+
 func (r *MCPServerResource) readMCPServerProjection(ctx context.Context, data *MCPServerResourceModel, ownership mcpInfoProvenance, imported bool, confirmed, adoptedAPI mcpInfoLeafSet) error {
 	serverID := data.ID.ValueString()
 	if serverID == "" {
 		serverID = data.ServerID.ValueString()
 	}
-
 	result, err := r.getMCPServer(ctx, serverID)
 	if err != nil {
 		return err
+	}
+	return r.readMCPServerResultProjection(ctx, data, result, ownership, imported, confirmed, adoptedAPI)
+}
+
+func (r *MCPServerResource) readMCPServerResultProjection(_ context.Context, data *MCPServerResourceModel, result map[string]interface{}, ownership mcpInfoProvenance, imported bool, confirmed, adoptedAPI mcpInfoLeafSet) error {
+	serverID := data.ID.ValueString()
+	if serverID == "" {
+		serverID = data.ServerID.ValueString()
 	}
 	if err := validateMCPServerResponse(result, serverID); err != nil {
 		return err
@@ -1472,112 +1614,114 @@ func (r *MCPServerResource) readMCPServerProjection(ctx context.Context, data *M
 		data.AllowAllKeys = types.BoolValue(allowAllKeys)
 	}
 
-	// mcp_info is reconciled only through exact private leaf provenance. Public
-	// values and structural shells are never evidence of ownership.
-	mcpInfoRaw, mcpInfoPresence, err := apiJSONObject(result, "mcp_info")
+	// A present object is the sole authoritative complete MCP-info snapshot.
+	// Absence or null is role masking and leaves every public projection intact.
+	mcpInfoRaw, mcpInfoPresence, err := mcpInfoDocumentFromResponse(result)
 	if err != nil {
-		return fmt.Errorf("invalid MCP server response: mcp_info must be an object or null")
+		return fmt.Errorf("invalid MCP server response: mcp_info must be a JSON object or null")
 	}
-	var costInfoRaw map[string]interface{}
-	costInfoPresence := apiValueAbsent
-	defaultPresence, toolsPresence := apiValueAbsent, apiValueAbsent
-	if mcpInfoPresence == apiValuePresent {
-		for _, field := range []string{"server_name", "description", "logo_url"} {
-			if raw, present := mcpInfoRaw[field]; present && raw != nil {
-				if _, ok := raw.(string); !ok {
-					return fmt.Errorf("invalid MCP server response: mcp_info contains a malformed optional string field")
-				}
-			}
-		}
-		costInfoRaw, costInfoPresence, err = apiJSONObject(mcpInfoRaw, "mcp_server_cost_info")
-		if err != nil {
-			return fmt.Errorf("invalid MCP server response: mcp_info.mcp_server_cost_info must be an object or null")
-		}
-		if costInfoPresence == apiValuePresent {
-			_, defaultPresence, err = apiFloat64At(costInfoRaw, "default_cost_per_query")
-			if err != nil {
-				return err
-			}
-			_, toolsPresence, err = apiFloat64MapAt(costInfoRaw, "tool_name_to_cost_per_query")
-			if err != nil {
-				return err
-			}
-		}
+	if mcpInfoPresence != apiValuePresent {
+		return nil
+	}
+	if err := setCompleteMCPInfoJSONState(data, mcpInfoRaw); err != nil {
+		return fmt.Errorf("invalid MCP server response: mcp_info could not be represented")
 	}
 
-	if imported {
-		if defaultPresence == apiValuePresent {
-			adoptedAPI[mcpInfoDefaultCostLeaf] = true
+	costRaw, _ := mcpInfoRaw["mcp_server_cost_info"].(map[string]interface{})
+	if imported && costRaw != nil {
+		if raw, present := costRaw["default_cost_per_query"]; present {
+			if _, compatible := mcpInfoCompatibleFloat(raw); compatible {
+				adoptedAPI[mcpInfoDefaultCostLeaf] = true
+			}
 		}
-		if toolsPresence == apiValuePresent {
-			adoptedAPI[mcpInfoToolCostsLeaf] = true
+		if raw, present := costRaw["tool_name_to_cost_per_query"]; present {
+			if _, compatible := mcpInfoCompatibleFloatMap(raw); compatible {
+				adoptedAPI[mcpInfoToolCostsLeaf] = true
+			}
 		}
 	}
 	leafOwned := func(leaf string) bool {
 		return ownership.Terraform[leaf] || ownership.API[leaf] || adoptedAPI[leaf]
 	}
-	ensureInfo := func() *MCPInfoModel {
-		if data.MCPInfo == nil {
-			data.MCPInfo = &MCPInfoModel{}
-		}
-		return data.MCPInfo
+	anyOwned := false
+	for _, leaf := range mcpInfoAllLeaves {
+		anyOwned = anyOwned || leafOwned(leaf)
 	}
-	ensureCosts := func() *MCPServerCostInfoModel {
-		info := ensureInfo()
-		if info.MCPServerCostInfo == nil {
-			info.MCPServerCostInfo = &MCPServerCostInfoModel{
-				DefaultCostPerQuery:    types.Float64Null(),
-				ToolNameToCostPerQuery: types.MapNull(types.Float64Type),
-			}
-		}
-		return info.MCPServerCostInfo
+	if !anyOwned {
+		data.MCPInfo = nil
+		return nil
 	}
-
-	// A missing or null parent is role sanitization in the v1.98 response and
-	// preserves every tracked leaf uniformly. Only a present child null clears
-	// its public value, while provenance remains intact for later reappearance.
-	if mcpInfoPresence == apiValuePresent {
-		for _, field := range []struct {
-			name string
-			leaf string
-			set  func(*MCPInfoModel, types.String)
-		}{
-			{name: "server_name", leaf: mcpInfoServerNameLeaf, set: func(info *MCPInfoModel, value types.String) { info.ServerName = value }},
-			{name: "description", leaf: mcpInfoDescriptionLeaf, set: func(info *MCPInfoModel, value types.String) { info.Description = value }},
-			{name: "logo_url", leaf: mcpInfoLogoURLLeaf, set: func(info *MCPInfoModel, value types.String) { info.LogoURL = value }},
-		} {
-			if !leafOwned(field.leaf) {
-				continue
-			}
-			raw, present := mcpInfoRaw[field.name]
-			if !present {
-				continue
-			}
-			confirmed[field.leaf] = true
-			if raw == nil {
-				field.set(ensureInfo(), types.StringNull())
-			} else {
-				field.set(ensureInfo(), types.StringValue(raw.(string)))
-			}
+	priorInfo := data.MCPInfo
+	info := &MCPInfoModel{ServerName: types.StringNull(), Description: types.StringNull(), LogoURL: types.StringNull()}
+	if priorInfo != nil {
+		info.ServerName = priorInfo.ServerName
+		info.Description = priorInfo.Description
+		info.LogoURL = priorInfo.LogoURL
+	}
+	for _, field := range []struct {
+		name string
+		leaf string
+		set  func(types.String)
+	}{
+		{name: "server_name", leaf: mcpInfoServerNameLeaf, set: func(value types.String) { info.ServerName = value }},
+		{name: "description", leaf: mcpInfoDescriptionLeaf, set: func(value types.String) { info.Description = value }},
+		{name: "logo_url", leaf: mcpInfoLogoURLLeaf, set: func(value types.String) { info.LogoURL = value }},
+	} {
+		if !leafOwned(field.leaf) {
+			continue
 		}
+		confirmed[field.leaf] = true
+		raw, present := mcpInfoRaw[field.name]
+		if !present {
+			continue
+		}
+		if raw == nil {
+			field.set(types.StringNull())
+			continue
+		}
+		value, ok := raw.(string)
+		if !ok {
+			return fmt.Errorf("invalid MCP server response: an owned fixed MCP info string has an incompatible type")
+		}
+		field.set(types.StringValue(value))
 	}
 
-	if mcpInfoPresence == apiValuePresent && costInfoPresence == apiValuePresent {
-		if leafOwned(mcpInfoDefaultCostLeaf) && defaultPresence != apiValueAbsent {
+	if leafOwned(mcpInfoDefaultCostLeaf) || leafOwned(mcpInfoToolCostsLeaf) {
+		costs := &MCPServerCostInfoModel{DefaultCostPerQuery: types.Float64Null(), ToolNameToCostPerQuery: types.MapNull(types.Float64Type)}
+		if priorInfo != nil && priorInfo.MCPServerCostInfo != nil {
+			costs.DefaultCostPerQuery = priorInfo.MCPServerCostInfo.DefaultCostPerQuery
+			costs.ToolNameToCostPerQuery = priorInfo.MCPServerCostInfo.ToolNameToCostPerQuery
+		}
+		if leafOwned(mcpInfoDefaultCostLeaf) {
 			confirmed[mcpInfoDefaultCostLeaf] = true
-			costs := ensureCosts()
-			if err := updateFloat64FromAPI(&costs.DefaultCostPerQuery, costInfoRaw, false, true, "default_cost_per_query"); err != nil {
-				return err
+			if raw, present := costRaw["default_cost_per_query"]; present && raw == nil {
+				costs.DefaultCostPerQuery = types.Float64Null()
+			} else if present {
+				value, ok := mcpInfoCompatibleFloat(raw)
+				if !ok {
+					return fmt.Errorf("invalid MCP server response: an owned fixed MCP info cost has an incompatible type")
+				}
+				costs.DefaultCostPerQuery = types.Float64Value(value)
 			}
 		}
-		if leafOwned(mcpInfoToolCostsLeaf) && toolsPresence != apiValueAbsent {
+		if leafOwned(mcpInfoToolCostsLeaf) {
 			confirmed[mcpInfoToolCostsLeaf] = true
-			costs := ensureCosts()
-			if err := updateFloat64MapFromAPI(&costs.ToolNameToCostPerQuery, costInfoRaw, false, true, "tool_name_to_cost_per_query"); err != nil {
-				return err
+			if raw, present := costRaw["tool_name_to_cost_per_query"]; present && raw == nil {
+				costs.ToolNameToCostPerQuery = types.MapNull(types.Float64Type)
+			} else if present {
+				values, ok := mcpInfoCompatibleFloatMap(raw)
+				if !ok {
+					return fmt.Errorf("invalid MCP server response: an owned fixed MCP info cost map has an incompatible type")
+				}
+				elements := make(map[string]attr.Value, len(values))
+				for name, value := range values {
+					elements[name] = types.Float64Value(value)
+				}
+				costs.ToolNameToCostPerQuery, _ = types.MapValue(types.Float64Type, elements)
 			}
 		}
+		info.MCPServerCostInfo = costs
 	}
-
+	data.MCPInfo = info
 	return nil
 }

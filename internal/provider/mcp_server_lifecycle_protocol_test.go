@@ -91,7 +91,7 @@ func TestMCPServerMalformedCreateRetainsOnlyConfirmedIdentityProtocol(t *testing
 		TypeName: "litellm_mcp_server", Config: config, PriorState: nullState,
 		PlannedState: planned.PlannedState, PlannedPrivate: planned.PlannedPrivate,
 	})
-	if err != nil || !accessGroupProtocolDiagnosticsHaveError(applied.Diagnostics) || reads.Load() != 0 {
+	if err != nil || !accessGroupProtocolDiagnosticsHaveError(applied.Diagnostics) || reads.Load() != 1 {
 		t.Fatalf("malformed create: err=%v diagnostics=%v reads=%d", err, applied.Diagnostics, reads.Load())
 	}
 	assertMCPServerIdentityOnlyState(t, schema, applied.NewState, "malformed-create")
@@ -155,7 +155,7 @@ func TestMCPServerUpdateEndpointTransitionsSendExplicitNullProtocol(t *testing.T
 		t.Run(test.name, func(t *testing.T) {
 			ctx := context.Background()
 			var putBody map[string]interface{}
-			response := map[string]interface{}{"server_id": "transition", "server_name": "transition", "transport": "http", "description": "changed"}
+			response := map[string]interface{}{"server_id": "transition", "server_name": "transition", "transport": "http", "description": "changed", "mcp_info": map[string]interface{}{}}
 			if test.desiredURL != nil {
 				response["url"] = test.desiredURL
 			}
@@ -239,11 +239,13 @@ func TestMCPServerUpdateFailuresDoNotPublishPlanProtocol(t *testing.T) {
 					}
 					return
 				}
-				reads.Add(1)
-				if failure == "read failure" {
+				readNumber := reads.Add(1)
+				if readNumber == 1 {
+					_, _ = writer.Write([]byte(`{"server_id":"failure","server_name":"failure","description":"old","transport":"http","url":"https://configured.invalid/mcp","mcp_info":{}}`))
+				} else if failure == "read failure" {
 					http.Error(writer, `{"error":"unavailable"}`, http.StatusInternalServerError)
 				} else {
-					_, _ = writer.Write([]byte(`{"server_id":"failure","description":"changed","url":"https://configured.invalid/mcp"}`))
+					_, _ = writer.Write([]byte(`{"server_id":"failure","description":"changed","url":"https://configured.invalid/mcp","mcp_info":{}}`))
 				}
 			}))
 			defer server.Close()
@@ -273,7 +275,7 @@ func TestMCPServerUpdateFailuresDoNotPublishPlanProtocol(t *testing.T) {
 			if err != nil || !accessGroupProtocolDiagnosticsHaveError(applied.Diagnostics) {
 				t.Fatalf("failed update: err=%v diagnostics=%v", err, applied.Diagnostics)
 			}
-			if failure == "malformed update response" && reads.Load() != 0 {
+			if failure == "malformed update response" && reads.Load() != 1 {
 				t.Fatalf("malformed update response triggered %d reads", reads.Load())
 			}
 			assertMCPServerFailedUpdateRetainsPriorState(t, schema, state, applied.NewState)
@@ -355,7 +357,7 @@ func TestMCPServerCreateAndUpdateReadbackExposeOwnedEndpointOmissionProtocol(t *
 				puts.Add(1)
 				_ = json.NewEncoder(writer).Encode(map[string]interface{}{})
 			case http.MethodGet:
-				_, _ = writer.Write([]byte(`{"server_id":"update-omission","server_name":"update","description":"changed","transport":"http","spec_path":"/remote/unowned.json"}`))
+				_, _ = writer.Write([]byte(`{"server_id":"update-omission","server_name":"update","description":"changed","transport":"http","spec_path":"/remote/unowned.json","mcp_info":{}}`))
 			default:
 				http.NotFound(writer, request)
 			}
@@ -396,7 +398,7 @@ func TestMCPServerCreateAndUpdateReadbackExposeOwnedEndpointOmissionProtocol(t *
 			writer.Header().Set("Content-Type", "application/json")
 			remote := map[string]interface{}{
 				"server_id": "clear-failure", "server_name": "clear", "transport": "http",
-				"url": "https://old.invalid/mcp", "spec_path": "/new/spec.json",
+				"url": "https://old.invalid/mcp", "spec_path": "/new/spec.json", "mcp_info": map[string]interface{}{},
 			}
 			if request.Method == http.MethodPut {
 				_ = json.NewDecoder(request.Body).Decode(&putBody)

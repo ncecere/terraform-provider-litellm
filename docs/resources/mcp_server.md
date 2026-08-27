@@ -4,7 +4,7 @@ Manages MCP (Model Context Protocol) server configurations in LiteLLM. MCP serve
 
 > **Note:** Server names and aliases **cannot contain hyphens** (`-`). The LiteLLM API rejects them. Use underscores (`_`) instead.
 >
-> The provider falls back to LiteLLM's MCP server collection endpoint if the individual server read returns an unexpected error. If all read-back paths fail after LiteLLM has already accepted a create or update, Terraform retains a recoverable state with known values and reports a warning instead of emitting cascading unknown-value errors.
+> Ordinary refresh can fall back to LiteLLM's MCP server collection endpoint if the individual read returns an unexpected error. Create and Update verification use only the direct singular endpoint as mutation authority. A committed create without confirmed readback retains only the server identity; a failed Update or readback retains the complete prior state.
 
 ## Example Usage
 
@@ -165,6 +165,13 @@ The following arguments are supported:
 - `registration_url` - (String) OAuth2 dynamic client registration URL (used with `oauth2` auth type).
 - `allow_all_keys` - (Bool) Whether all API keys are allowed to access this MCP server.
 - `skip_url_validation` - (Bool, Deprecated) Compatibility-only attribute retained for existing HCL and state. LiteLLM v1.98 does not accept it, so the provider does not send it. New or changed `true` values are rejected; an unchanged historical `true` remains plannable so unrelated updates and destroy continue to work. Remove the argument (`false` remains a safe migration no-op).
+- `mcp_info_json` - (String, Optional, Computed, Sensitive) A complete non-null JSON object for whole-document MCP info ownership. The empty object (`{}`) means an explicit whole-document clear. It conflicts with `mcp_info`, `mcp_info_overrides_json`, and `mcp_info_clear_paths`.
+- `mcp_info_overrides_json` - (String, Optional, Sensitive) A recursively selective non-null JSON object. Scalars, arrays, nested `null`, and nested empty objects are atomic owned values; a non-empty nested object owns only its recursively selected members.
+- `mcp_info_clear_paths` - (List of String, Optional, Sensitive) Canonical RFC 6901 object-member pointers that record explicit tombstones. Root pointers, array traversal, duplicates, equal paths, and ancestor/descendant conflicts are rejected.
+
+> Removing fixed fields or selective overrides relinquishes Terraform ownership; it does not request remote deletion. Only an explicit clear path, or whole-document `{}`, expresses deletion intent. Fixed fields can be combined with disjoint overrides and clears. Ownership paths may not overlap or contain one another.
+>
+> The provider hydrates the complete remote object before Update and sends a complete `mcp_info` document whenever an Update is required. Unknown access-control flags, nested objects, arrays, nulls, and exact JSON numbers are preserved. A null or omitted API parent is treated as role masking, not an empty object: Update can proceed only from a previously authoritative complete JSON snapshot. Post-write direct readback must confirm owned values, clears, fixed fields, and every preserved unowned path before state or ownership generation is committed. Equal-value ownership takeover commits provenance without a PUT.
 
 ### Nested Blocks
 
@@ -191,6 +198,7 @@ In addition to all arguments above, the following attributes are exported:
 - `server_id` - The server identifier assigned by LiteLLM.
 - `created_at` - Timestamp of when the MCP server was created.
 - `created_by` - The user or system that created the MCP server.
+- `mcp_info_ownership_generation` - A non-sensitive computed generation that changes when MCP info ownership intent changes, including equal-value takeover. It forces Apply without making the resource ID unknown.
 
 ## Migrating to the v1.98 transport contract
 
@@ -213,7 +221,7 @@ MCP servers can be imported using their server ID:
 terraform import litellm_mcp_server.example <server-id>
 ```
 
-On the first read after import, the provider adopts visible numeric cost fields exactly, including `mcp_info.mcp_server_cost_info`. An API `mcp_info` object alone does not create the optional block, and a cost-only import shell does not adopt sibling `server_name`, `description`, or `logo_url` values. Configure those display leaves explicitly when Terraform must own them. Exact private leaf provenance keeps Terraform-owned display/cost leaves separate from API-owned imported costs. Role-sanitized parent null or omission preserves tracked leaves; an explicit child null clears its public value without relinquishing ownership, so a later authoritative value can reappear.
+On the first authoritative read after import, the provider records the complete visible object in sensitive `mcp_info_json`, adopts representable numeric cost leaves in `mcp_info.mcp_server_cost_info`, and leaves display leaves unowned. Arbitrarily typed known or unknown members remain lossless in JSON even when they cannot be projected into the fixed block. The import marker is retained while the parent is null or omitted and is cleared only after an authoritative object read. Subsequent refreshes preserve semantically equivalent JSON spelling and do not infer ownership from public values.
 
 ## Transport Types
 
