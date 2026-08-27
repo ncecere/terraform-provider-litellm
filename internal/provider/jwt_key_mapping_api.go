@@ -179,7 +179,7 @@ func readJWTKeyMappingWithConnection(ctx context.Context, client *Client, id str
 	if fresh {
 		err = client.doFreshRequestWithResponse(ctx, http.MethodGet, jwtKeyMappingInfoEndpoint(id), nil, &raw)
 	} else {
-		err = client.DoRequestWithResponse(ctx, http.MethodGet, jwtKeyMappingInfoEndpoint(id), nil, &raw)
+		err = client.DoReadWithResponse(ctx, http.MethodGet, jwtKeyMappingInfoEndpoint(id), nil, &raw)
 	}
 	if err != nil {
 		return jwtKeyMappingObject{}, err

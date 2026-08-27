@@ -54,8 +54,8 @@ func defaultSafeReadRetryHooks() safeReadRetryHooks {
 
 // DoReadWithResponse performs a bounded, cancellable retry of a GET or HEAD
 // request. It retries only safe transient transport failures and exact HTTP
-// 408, 429, or 5xx responses. Existing resource and data-source reads continue
-// to use the single-attempt API until a later issue #202 migration phase.
+// 408, 429, or 5xx responses. Resource and data-source reads use this API only
+// after a deliberately scoped issue #202 migration.
 func (c *Client) DoReadWithResponse(ctx context.Context, method, requestPath string, body interface{}, result interface{}) error {
 	return c.doReadWithResponsePolicy(ctx, method, requestPath, body, result, defaultSafeReadRetryPolicy, defaultSafeReadRetryHooks())
 }
