@@ -189,7 +189,7 @@ func TestMCPServerEqualRemoteOwnershipTakeoverAndUnknownRetentionProtocol(t *tes
 		}
 	})
 
-	t.Run("unknown scalar and bool retain state and ownership", func(t *testing.T) {
+	t.Run("unknown owned values survive role masking", func(t *testing.T) {
 		t.Parallel()
 		ctx := context.Background()
 		var puts atomic.Int64
@@ -198,21 +198,37 @@ func TestMCPServerEqualRemoteOwnershipTakeoverAndUnknownRetentionProtocol(t *tes
 			if request.Method == http.MethodPut {
 				puts.Add(1)
 			}
-			_, _ = writer.Write([]byte(`{"server_id":"unknown-fields","server_name":"unknown-fields","transport":"http","auth_type":"none","url":null,"mcp_info":{}}`))
+			_, _ = writer.Write([]byte(`{"server_id":"unknown-fields","server_name":"unknown-fields","alias":"retained_alias","description":"retained","transport":"http","auth_type":"none","url":null,"spec_path":null,"command":null,"authorization_url":null,"token_url":null,"registration_url":null,"mcp_access_groups":[],"args":[],"allowed_tools":[],"extra_headers":[],"env":{},"static_headers":{},"credentials":null,"allow_all_keys":true,"mcp_info":{}}`))
 		}))
 		defer server.Close()
 		protocolServer, schemas := configuredImportProtocolServer(t, ctx, server.URL)
 		schema := schemas.ResourceSchemas["litellm_mcp_server"]
 		state := accessGroupProtocolDynamicValue(t, schema, organizationProjectProtocolValue(t, schema, map[string]interface{}{
-			"id": "unknown-fields", "server_id": "unknown-fields", "server_name": "unknown-fields", "description": "retained", "allow_all_keys": true,
-			"transport": "http", "auth_type": "none", "url": "https://known.invalid/mcp", "spec_version": "2024-11-05", "mcp_info_json": "{}",
+			"id": "unknown-fields", "server_id": "unknown-fields", "server_name": "unknown-fields", "alias": "retained_alias", "description": "retained",
+			"transport": "http", "auth_type": "none", "url": "https://known.invalid/mcp", "spec_path": "/known/spec.json", "command": "node",
+			"authorization_url": "https://known.invalid/authorize", "token_url": "https://known.invalid/token", "registration_url": "https://known.invalid/register",
+			"mcp_access_groups": protocolMCPStringList("group"), "args": protocolMCPStringList("server.js"), "allowed_tools": protocolMCPStringList("tool"), "extra_headers": protocolMCPStringList("X-Known"),
+			"env": map[string]tftypes.Value{"KNOWN": tftypes.NewValue(tftypes.String, "value")}, "static_headers": map[string]tftypes.Value{"X-Known": tftypes.NewValue(tftypes.String, "value")},
+			"credentials": map[string]tftypes.Value{"secret": tftypes.NewValue(tftypes.String, "value")}, "allow_all_keys": true,
+			"spec_version": "2024-11-05", "mcp_info_json": "{}", "field_ownership_generation": int64(2),
 		}))
-		config := accessGroupProtocolDynamicValue(t, schema, organizationProjectProtocolValue(t, schema, map[string]interface{}{
-			"server_name": "unknown-fields", "description": tftypes.UnknownValue, "allow_all_keys": tftypes.UnknownValue,
-			"transport": "http", "url": "https://known.invalid/mcp",
-		}))
-		proposed := organizationProjectProtocolReplace(t, schema, state, map[string]interface{}{"description": tftypes.UnknownValue, "allow_all_keys": tftypes.UnknownValue})
-		committed := mcpFieldOwnership{Owned: map[string]bool{mcpFieldDescriptionPath: true, mcpFieldAllowAllKeysPath: true}, Removals: map[string]bool{}, Generation: 2, Versioned: true}
+		unknowns := map[string]interface{}{
+			"alias": tftypes.UnknownValue, "description": tftypes.UnknownValue, "url": tftypes.UnknownValue, "spec_path": tftypes.UnknownValue, "command": tftypes.UnknownValue,
+			"authorization_url": tftypes.UnknownValue, "token_url": tftypes.UnknownValue, "registration_url": tftypes.UnknownValue,
+			"mcp_access_groups": tftypes.UnknownValue, "args": tftypes.UnknownValue, "allowed_tools": tftypes.UnknownValue, "extra_headers": tftypes.UnknownValue,
+			"env": tftypes.UnknownValue, "static_headers": tftypes.UnknownValue, "credentials": tftypes.UnknownValue, "allow_all_keys": tftypes.UnknownValue,
+		}
+		configValues := map[string]interface{}{"server_name": "unknown-fields", "transport": "http"}
+		for name, value := range unknowns {
+			configValues[name] = value
+		}
+		config := accessGroupProtocolDynamicValue(t, schema, organizationProjectProtocolValue(t, schema, configValues))
+		proposed := organizationProjectProtocolReplace(t, schema, state, unknowns)
+		owned := map[string]bool{}
+		for _, fieldPath := range mcpFieldPaths {
+			owned[fieldPath] = true
+		}
+		committed := mcpFieldOwnership{Owned: owned, Removals: map[string]bool{}, Generation: 2, Versioned: true}
 		private := protocolMCPFieldPrivate(t, committed)
 		planned, err := protocolServer.PlanResourceChange(ctx, &tfprotov6.PlanResourceChangeRequest{TypeName: "litellm_mcp_server", Config: config, PriorState: state, ProposedNewState: proposed, PriorPrivate: private})
 		if err != nil || accessGroupProtocolDiagnosticsHaveError(planned.Diagnostics) {
@@ -222,13 +238,10 @@ func TestMCPServerEqualRemoteOwnershipTakeoverAndUnknownRetentionProtocol(t *tes
 		if err != nil || accessGroupProtocolDiagnosticsHaveError(applied.Diagnostics) || puts.Load() != 0 {
 			t.Fatalf("unknown retention: err=%v diagnostics=%v puts=%d", err, applied.Diagnostics, puts.Load())
 		}
-		attributes := protocolAttributeMap(t, schema, applied.NewState)
-		if got := protocolString(t, attributes["description"]); got != "retained" {
-			t.Fatalf("unknown scalar became %q", got)
-		}
-		var allow bool
-		if err := attributes["allow_all_keys"].As(&allow); err != nil || !allow {
-			t.Fatalf("unknown bool did not survive: value=%s err=%v", attributes["allow_all_keys"], err)
+		before, _ := state.Unmarshal(schema.ValueType())
+		after, _ := applied.NewState.Unmarshal(schema.ValueType())
+		if !before.Equal(after) {
+			t.Fatalf("unknown owned values were replaced by masking sentinels: before=%s after=%s", before, after)
 		}
 		ownership := protocolCommittedMCPFieldOwnership(t, applied.Private)
 		if ownership.Generation != 2 || !mcpFieldSetsEqual(ownership.Owned, committed.Owned) {

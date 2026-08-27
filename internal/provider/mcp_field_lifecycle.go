@@ -537,13 +537,23 @@ func (r *MCPServerResource) Update(ctx context.Context, req resource.UpdateReque
 	}
 	delta["server_id"] = plan.ServerID.ValueString()
 
-	remoteURL, remoteURLPresent := mcpKnownRawString(hydration, "url")
-	if !remoteURLPresent && !state.URL.IsNull() && !state.URL.IsUnknown() {
-		remoteURL, remoteURLPresent = state.URL.ValueString(), true
+	remoteURL, remoteURLKnown := hydration["url"]
+	if !remoteURLKnown || remoteURL == nil {
+		switch {
+		case !state.URL.IsNull() && !state.URL.IsUnknown():
+			remoteURL, remoteURLKnown = state.URL.ValueString(), true
+		case state.URL.IsNull():
+			remoteURL, remoteURLKnown = nil, true
+		default:
+			remoteURLKnown = false
+		}
 	}
 	urlChanged := false
-	if desired, sent := delta["url"]; sent && remoteURLPresent && !mcpWireValuesEqual(desired, remoteURL) {
-		urlChanged = true
+	if desired, sent := delta["url"]; sent {
+		// v1.98 treats null→value and value→null as URL changes too. If the
+		// previous endpoint is unknown, assume a change and run every implicit-
+		// clear preflight before allowing the PUT.
+		urlChanged = !remoteURLKnown || !mcpWireValuesEqual(desired, remoteURL)
 	}
 	remoteAuth, remoteAuthPresent := mcpKnownRawString(hydration, "auth_type")
 	if !remoteAuthPresent && !state.AuthType.IsNull() && !state.AuthType.IsUnknown() {
@@ -558,6 +568,11 @@ func (r *MCPServerResource) Update(ctx context.Context, req resource.UpdateReque
 	}
 
 	desiredPlan := plan
+	// Unknown configuration retains ownership but is not mutation intent. Seed
+	// proposed unknowns from prior state before projecting role-masked readback,
+	// otherwise null/empty sanitizers could replace known owned values before
+	// the final unknown-state reconciliation has a chance to restore them.
+	resolveUnknownMCPServerState(&plan, &state)
 	mutation := len(delta) > 1
 	readback := hydration
 	if mutation {

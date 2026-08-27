@@ -164,6 +164,26 @@ func TestMCPServerNameAndAliasRemovalHasZeroPUTProtocol(t *testing.T) {
 	}
 }
 
+func TestMCPServerNullToValueURLRunsImplicitClearPreflightProtocol(t *testing.T) {
+	private := protocolMCPFieldPrivate(t, emptyMCPFieldOwnership())
+	state := map[string]interface{}{
+		"id": "url-null-change", "server_id": "url-null-change", "server_name": "url-null-change",
+		"transport": "http", "url": nil, "spec_path": "/known/spec.json", "auth_type": "none", "spec_version": "2024-11-05",
+	}
+	config := map[string]interface{}{
+		"server_name": "url-null-change", "transport": "http", "url": "https://new.invalid/mcp", "spec_path": "/known/spec.json",
+	}
+	before := map[string]interface{}{
+		"server_id": "url-null-change", "server_name": "url-null-change", "transport": "http", "url": nil,
+		"spec_path": "/known/spec.json", "auth_type": "none", "issuer": "https://issuer.invalid", "mcp_info": map[string]interface{}{},
+	}
+	result := runMCPUpdateCompletionProtocol(t, state, config, map[string]interface{}{"url": "https://new.invalid/mcp"}, before, before, private)
+	if !accessGroupProtocolDiagnosticsHaveError(result.applied.Diagnostics) || result.puts != 0 {
+		t.Fatalf("null-to-value URL bypassed implicit-clear preflight: puts=%d diagnostics=%v", result.puts, result.applied.Diagnostics)
+	}
+	assertMCPServerFailedUpdateRetainsPriorState(t, result.schema, result.state, result.applied.NewState)
+}
+
 func TestMCPServerTransportUpdateCompletesEndpointPayloadProtocol(t *testing.T) {
 	for _, test := range []struct {
 		name          string
