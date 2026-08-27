@@ -315,6 +315,63 @@ func TestMCPServerMaskedEmptyCollectionsRequireEstablishingPUTProtocol(t *testin
 	}
 }
 
+func TestMCPServerUnsupportedCredentialKeysRejectedBeforeMutationProtocol(t *testing.T) {
+	ctx := context.Background()
+	unsupported := map[string]tftypes.Value{"bogus": tftypes.NewValue(tftypes.String, "value")}
+
+	t.Run("create", func(t *testing.T) {
+		var requests atomic.Int64
+		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			requests.Add(1)
+			http.NotFound(writer, request)
+		}))
+		defer server.Close()
+		protocolServer, schemas := configuredImportProtocolServer(t, ctx, server.URL)
+		schema := schemas.ResourceSchemas["litellm_mcp_server"]
+		configValues := map[string]interface{}{
+			"server_name": "unsupported-credentials", "transport": "http", "url": "https://known.invalid/mcp", "auth_type": "none", "credentials": unsupported,
+		}
+		config := accessGroupProtocolDynamicValue(t, schema, organizationProjectProtocolValue(t, schema, configValues))
+		proposedValues := map[string]interface{}{}
+		for name, value := range configValues {
+			proposedValues[name] = value
+		}
+		proposedValues["id"], proposedValues["server_id"] = tftypes.UnknownValue, tftypes.UnknownValue
+		proposed := accessGroupProtocolDynamicValue(t, schema, organizationProjectProtocolValue(t, schema, proposedValues))
+		nullState := accessGroupProtocolDynamicValue(t, schema, tftypes.NewValue(schema.ValueType(), nil))
+		planned, err := protocolServer.PlanResourceChange(ctx, &tfprotov6.PlanResourceChangeRequest{TypeName: "litellm_mcp_server", Config: config, PriorState: nullState, ProposedNewState: proposed})
+		if err != nil || accessGroupProtocolDiagnosticsHaveError(planned.Diagnostics) {
+			t.Fatalf("plan: err=%v diagnostics=%v", err, planned.Diagnostics)
+		}
+		applied, err := protocolServer.ApplyResourceChange(ctx, &tfprotov6.ApplyResourceChangeRequest{TypeName: "litellm_mcp_server", Config: config, PriorState: nullState, PlannedState: planned.PlannedState, PlannedPrivate: planned.PlannedPrivate})
+		if err != nil || !accessGroupProtocolDiagnosticsHaveError(applied.Diagnostics) || requests.Load() != 0 {
+			t.Fatalf("unsupported create credentials: err=%v diagnostics=%v requests=%d", err, applied.Diagnostics, requests.Load())
+		}
+		if strings.Contains(fmtDiagnostics(applied.Diagnostics), "bogus") {
+			t.Fatal("credential diagnostic exposed an unsupported configured key")
+		}
+	})
+
+	t.Run("update", func(t *testing.T) {
+		state := map[string]interface{}{
+			"id": "unsupported-credentials", "server_id": "unsupported-credentials", "server_name": "unsupported-credentials",
+			"transport": "http", "url": "https://known.invalid/mcp", "auth_type": "none", "spec_version": "2024-11-05",
+		}
+		config := map[string]interface{}{
+			"server_name": "unsupported-credentials", "transport": "http", "url": "https://known.invalid/mcp", "auth_type": "none", "credentials": unsupported,
+		}
+		before := map[string]interface{}{
+			"server_id": "unsupported-credentials", "server_name": "unsupported-credentials", "transport": "http",
+			"url": "https://known.invalid/mcp", "auth_type": "none", "credentials": nil, "mcp_info": map[string]interface{}{},
+		}
+		result := runMCPUpdateCompletionProtocol(t, state, config, map[string]interface{}{"credentials": unsupported}, before, before, protocolMCPFieldPrivate(t, emptyMCPFieldOwnership()))
+		if !accessGroupProtocolDiagnosticsHaveError(result.applied.Diagnostics) || result.puts != 0 {
+			t.Fatalf("unsupported update credentials: puts=%d diagnostics=%v", result.puts, result.applied.Diagnostics)
+		}
+		assertMCPServerFailedUpdateRetainsPriorState(t, result.schema, result.state, result.applied.NewState)
+	})
+}
+
 func TestMCPServerEmptyAliasCreateRejectedAndUpdateConvergesProtocol(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

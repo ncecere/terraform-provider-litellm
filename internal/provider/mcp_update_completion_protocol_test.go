@@ -279,6 +279,26 @@ func TestMCPServerInitialEmptyCredentialsTakeoverHasZeroPUTProtocol(t *testing.T
 	assertMCPServerFailedUpdateRetainsPriorState(t, result.schema, result.state, result.applied.NewState)
 }
 
+func TestMCPServerInitialNonEmptyCredentialsSameClassHasZeroPUTProtocol(t *testing.T) {
+	state := map[string]interface{}{
+		"id": "nonempty-credentials", "server_id": "nonempty-credentials", "server_name": "nonempty-credentials",
+		"transport": "http", "url": "https://known.invalid/mcp", "auth_type": "api_key", "spec_version": "2024-11-05",
+	}
+	credentials := map[string]tftypes.Value{"auth_value": tftypes.NewValue(tftypes.String, "configured")}
+	config := map[string]interface{}{
+		"server_name": "nonempty-credentials", "transport": "http", "url": "https://known.invalid/mcp", "auth_type": "api_key", "credentials": credentials,
+	}
+	before := map[string]interface{}{
+		"server_id": "nonempty-credentials", "server_name": "nonempty-credentials", "transport": "http",
+		"url": "https://known.invalid/mcp", "auth_type": "api_key", "credentials": nil, "mcp_info": map[string]interface{}{},
+	}
+	result := runMCPUpdateCompletionProtocol(t, state, config, map[string]interface{}{"credentials": credentials}, before, before, protocolMCPFieldPrivate(t, emptyMCPFieldOwnership()))
+	if !accessGroupProtocolDiagnosticsHaveError(result.applied.Diagnostics) || result.puts != 0 {
+		t.Fatalf("non-empty merge-only credential takeover was not rejected: puts=%d diagnostics=%v", result.puts, result.applied.Diagnostics)
+	}
+	assertMCPServerFailedUpdateRetainsPriorState(t, result.schema, result.state, result.applied.NewState)
+}
+
 func TestMCPServerInitialEmptyCredentialsClassReplacementProtocol(t *testing.T) {
 	state := map[string]interface{}{
 		"id": "replace-empty-credentials", "server_id": "replace-empty-credentials", "server_name": "replace-empty-credentials",

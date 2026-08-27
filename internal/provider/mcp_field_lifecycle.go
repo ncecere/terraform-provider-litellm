@@ -11,6 +11,28 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
+var mcpCredentialStringKeysV198 = map[string]bool{
+	"auth_value": true, "client_id": true, "client_secret": true,
+	"aws_access_key_id": true, "aws_secret_access_key": true, "aws_session_token": true,
+	"aws_region_name": true, "aws_service_name": true, "aws_role_name": true, "aws_session_name": true,
+	"audience": true, "token_exchange_endpoint": true, "subject_token_type": true,
+	"id_jag_resource_token_endpoint": true, "id_jag_resource": true, "upstream_resource": true,
+	"client_private_key": true, "client_private_key_id": true, "client_assertion_signing_alg": true,
+	"token_endpoint_auth_method": true, "token_exchange_profile": true,
+}
+
+func validateMCPCredentialStringMapV198(credentials map[string]string) error {
+	for name, value := range credentials {
+		if !mcpCredentialStringKeysV198[name] {
+			return fmt.Errorf("credentials contain a key that LiteLLM v1.98 cannot represent through this schema")
+		}
+		if name == "token_endpoint_auth_method" && value != "client_secret_basic" && value != "client_secret_post" {
+			return fmt.Errorf("credentials contain an unsupported token endpoint authentication method")
+		}
+	}
+	return nil
+}
+
 func mcpFieldDesiredValue(ctx context.Context, data MCPServerResourceModel, fieldPath string) (interface{}, error) {
 	stringValue := func(value types.String) (interface{}, error) {
 		if value.IsNull() || value.IsUnknown() {
@@ -52,7 +74,14 @@ func mcpFieldDesiredValue(ctx context.Context, data MCPServerResourceModel, fiel
 	case mcpFieldStaticHeadersPath:
 		return mcpFieldStringMap(ctx, data.StaticHeaders)
 	case mcpFieldCredentialsPath:
-		return mcpFieldStringMap(ctx, data.Credentials)
+		credentials, err := mcpFieldStringMap(ctx, data.Credentials)
+		if err != nil {
+			return nil, err
+		}
+		if err := validateMCPCredentialStringMapV198(credentials); err != nil {
+			return nil, err
+		}
+		return credentials, nil
 	default:
 		return nil, fmt.Errorf("unknown MCP field path")
 	}
@@ -334,8 +363,8 @@ func buildMCPFieldDelta(ctx context.Context, plan MCPServerResourceModel, config
 			if !committed.Owned[fieldPath] {
 				credentials, validCredentials := desired.(map[string]string)
 				replacesCredentialClass := mcpCredentialClassWillReplace(plan, state, hydration)
-				if !validCredentials || (len(credentials) == 0 && !replacesCredentialClass) {
-					return nil, fmt.Errorf("empty credentials cannot be adopted safely through LiteLLM's merge-only update")
+				if !validCredentials || !replacesCredentialClass {
+					return nil, fmt.Errorf("credentials cannot be adopted safely through LiteLLM's merge-only update without a credential-class replacement")
 				}
 				delta[name] = desired
 				addLiftedCredentialIntent(credentials)

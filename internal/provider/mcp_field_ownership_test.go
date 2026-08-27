@@ -167,7 +167,8 @@ func TestMCPFieldDeltaEmitsAllAndOnlyV198RemovalSentinels(t *testing.T) {
 	}
 	committed := mcpFieldOwnership{Owned: owned, Removals: map[string]bool{}, Generation: 4, Versioned: true}
 	candidate := deriveMCPFieldPlanOwnership(committed, MCPServerResourceModel{})
-	delta, err := buildMCPFieldDelta(ctx, MCPServerResourceModel{}, MCPServerResourceModel{}, MCPServerResourceModel{}, committed, candidate, map[string]interface{}{})
+	state := MCPServerResourceModel{Credentials: types.MapValueMust(types.StringType, map[string]attr.Value{})}
+	delta, err := buildMCPFieldDelta(ctx, MCPServerResourceModel{}, MCPServerResourceModel{}, state, committed, candidate, map[string]interface{}{})
 	if err != nil {
 		t.Fatal(err)
 	}
