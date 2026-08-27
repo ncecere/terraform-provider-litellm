@@ -622,14 +622,29 @@ PYNS
   fi
   (cd "$producer" && run_cli destroy -auto-approve) >>"$LOG" 2>&1 || fail 'producer-owned import cleanup failed'
   [ -z "$(cd "$producer" && run_cli state list 2>>"$LOG")" ] || fail 'producer state was not empty after cleanup'
-  # An authoritative re-import after producer destroy must fail. This checks
-  # absence without issuing a delete or adopting anything.
-  set +e
-  (cd "$importer" && run_cli import "$address" "$(cat "$SCRATCH/import-id")") >"$SCRATCH/import-absence.out" 2>&1
-  absence_status=$?
-  set -e
-  cat "$SCRATCH/import-absence.out" >>"$LOG"
-  [ "$absence_status" -ne 0 ] || fail 'destroyed import target remained authoritative'
+  # An authoritative re-import after producer destroy must fail. LiteLLM's
+  # worker caches can briefly serve the just-deleted object, so retry only this
+  # read-only import observation. Every transiently imported address is
+  # detached before the next bounded attempt; no retry issues another delete.
+  absence_attempt=1
+  absence_status=0
+  while [ "$absence_attempt" -le 5 ]; do
+    attempt_evidence="$SCRATCH/import-absence-$absence_attempt.out"
+    set +e
+    (cd "$importer" && run_cli import "$address" "$(cat "$SCRATCH/import-id")") >"$attempt_evidence" 2>&1
+    absence_status=$?
+    set -e
+    cat "$attempt_evidence" >>"$LOG"
+    if [ "$absence_status" -ne 0 ]; then
+      cp "$attempt_evidence" "$SCRATCH/import-absence.out"
+      break
+    fi
+    (cd "$importer" && run_cli state rm "$address") >>"$LOG" 2>&1 || \
+      fail 'transient post-destroy import could not be detached'
+    [ "$absence_attempt" -lt 5 ] || fail 'destroyed import target remained authoritative after bounded retries'
+    absence_attempt=$((absence_attempt + 1))
+    sleep 1
+  done
   assert_authoritative_not_found "$SCRATCH/import-absence.out" "$resource_type"
   CLEANUP_MODE=none
   rm -rf "$producer" "$importer"

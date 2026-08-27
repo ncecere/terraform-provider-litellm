@@ -30,6 +30,8 @@ grep -q 'upgrade-private-plan-trigger-migration' "$SCRIPT_DIR/run.sh"
 grep -q 'upgrade-reviewed-private-migration' "$SCRIPT_DIR/harness.py"
 grep -q '"litellm_agent": \["id"\]' "$SCRIPT_DIR/matrix.json"
 grep -q 'terraform validate' "$REPO_ROOT/internal_testing/smoke.sh"
+grep -q 'while \[ "$absence_attempt" -le 5 \]' "$SCRIPT_DIR/run.sh"
+grep -q 'transient post-destroy import could not be detached' "$SCRIPT_DIR/run.sh"
 if grep -q 'litellm_api_base=http://127.0.0.1:1' "$SCRIPT_DIR/run.sh"; then
   echo 'failure recovery uses a dead base URL instead of the controlled proxy' >&2
   exit 1
