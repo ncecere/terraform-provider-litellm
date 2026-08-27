@@ -77,7 +77,7 @@ func TestImportedLegacyProjectionNeverBecomesWireType(t *testing.T) {
 	config := emptyKnownAgentResourceModel()
 	config.AgentName = types.StringValue("Agent")
 	config.LiteLLMParams = stringMapValue(map[string]string{"text": "configured"})
-	request, err := resource.buildAgentUpdateRequest(&plan, &state, &config, agentFieldSet{
+	request, err := resource.buildAgentUpdateRequest(context.Background(), &plan, &state, &config, agentFieldSet{
 		agentFieldParamsJSON:                  true,
 		agentLeaf(agentFieldParams, "number"): true,
 		agentLeaf(agentFieldParams, "flag"):   true,
@@ -147,7 +147,7 @@ func TestAgentSkillSecurityAndSignaturesWirePreserveOrderDuplicates(t *testing.T
 			{Protected: types.StringValue("p"), Signature: types.StringValue("s"), Header: types.StringNull()},
 		},
 	}
-	request, err := resource.buildAgentRequest(&model)
+	request, err := resource.buildAgentRequest(context.Background(), &model)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +195,7 @@ func TestAgentDataSourceSchemaParityAndProjection(t *testing.T) {
 		"litellm_params":    map[string]interface{}{"text": "001", "flag": false, "nested": map[string]interface{}{"empty": []interface{}{}}},
 		"object_permission": map[string]interface{}{"mcp_tool_permissions": map[string]interface{}{"server": []interface{}{"a", "a"}}},
 	}
-	projected, err := projectAgentData(item, "agent")
+	projected, err := projectAgentData(context.Background(), item, "agent")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,13 +207,13 @@ func TestAgentDataSourceSchemaParityAndProjection(t *testing.T) {
 	}
 
 	malformed := map[string]interface{}{"agent_id": "agent", "agent_name": "Agent", "agent_card_params": map[string]interface{}{"signatures": []interface{}{map[string]interface{}{"protected": true}}}}
-	if _, err := projectAgentData(malformed, "agent"); err == nil {
+	if _, err := projectAgentData(context.Background(), malformed, "agent"); err == nil {
 		t.Fatal("malformed present signature accepted")
 	}
-	if _, err := projectAgentData(item, "other"); err == nil {
+	if _, err := projectAgentData(context.Background(), item, "other"); err == nil {
 		t.Fatal("identity mismatch accepted")
 	}
-	roleOmitted, err := projectAgentData(map[string]interface{}{
+	roleOmitted, err := projectAgentData(context.Background(), map[string]interface{}{
 		"agent_id": "agent", "agent_name": "Agent",
 		"agent_card_params": map[string]interface{}{"description": "endpoint-observable partial card", "signatures": []interface{}{map[string]interface{}{"header": nil}}},
 	}, "agent")
@@ -248,16 +248,16 @@ func TestAgentAuthoritativeParamsOverlayPreservesUnownedWireValues(t *testing.T)
 		t.Fatalf("lossy parameter overlay: %#v", patch)
 	}
 	evidence := &agentPatchPreservation{paramsBase: base, paramsPatch: patch}
-	if !evidence.matches(map[string]interface{}{"litellm_params": patch}) {
+	if !evidence.matches(context.Background(), map[string]interface{}{"litellm_params": patch}) {
 		t.Fatal("unchanged unowned values did not confirm")
 	}
 	drifted := cloneAgentWireObject(patch)
 	drifted["api_large"] = json.Number("9007199254740992")
-	if evidence.matches(map[string]interface{}{"litellm_params": drifted}) {
+	if evidence.matches(context.Background(), map[string]interface{}{"litellm_params": drifted}) {
 		t.Fatal("changed unowned exact number confirmed")
 	}
 	delete(drifted, "api_null")
-	if evidence.matches(map[string]interface{}{"litellm_params": drifted}) {
+	if evidence.matches(context.Background(), map[string]interface{}{"litellm_params": drifted}) {
 		t.Fatal("changed unowned null presence confirmed")
 	}
 }
@@ -284,7 +284,7 @@ func TestAgentRawCardOverlayPreservesNullAndOmission(t *testing.T) {
 	for id, raw := range agentSkillRawByID(base) {
 		markAgentSkillWireLeaves(imported, id, raw)
 	}
-	patch, err := overlayAgentCardRaw(base, plan, prior, config, imported)
+	patch, err := overlayAgentCardRaw(context.Background(), base, plan, prior, config, imported)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,19 +292,19 @@ func TestAgentRawCardOverlayPreservesNullAndOmission(t *testing.T) {
 		t.Fatalf("lossy card overlay: %#v", patch)
 	}
 	evidence := &agentPatchPreservation{cardBase: base, cardPatch: patch}
-	if !evidence.matches(map[string]interface{}{"agent_card_params": patch}) {
+	if !evidence.matches(context.Background(), map[string]interface{}{"agent_card_params": patch}) {
 		t.Fatal("preserved card did not confirm")
 	}
 	drifted := cloneAgentWireObject(patch)
 	signatures := drifted["signatures"].([]interface{})
 	delete(signatures[0].(map[string]interface{}), "header")
-	if evidence.matches(map[string]interface{}{"agent_card_params": drifted}) {
+	if evidence.matches(context.Background(), map[string]interface{}{"agent_card_params": drifted}) {
 		t.Fatal("header null-to-omitted drift confirmed")
 	}
 	drifted = cloneAgentWireObject(patch)
 	skills := drifted["skills"].([]interface{})
 	skills[1].(map[string]interface{})["security"] = nil
-	if evidence.matches(map[string]interface{}{"agent_card_params": drifted}) {
+	if evidence.matches(context.Background(), map[string]interface{}{"agent_card_params": drifted}) {
 		t.Fatal("security omitted-to-null drift confirmed")
 	}
 }
@@ -328,7 +328,7 @@ func TestAgentSignatureLeafOverlayPreservesUnownedHeader(t *testing.T) {
 		agentSignatureLeaf(1, "protected"): true, agentSignatureLeaf(1, "signature"): true,
 		agentScopeCardSignatures: true,
 	}
-	patch, err := overlayAgentCardRaw(base, plan, prior, config, imported)
+	patch, err := overlayAgentCardRaw(context.Background(), base, plan, prior, config, imported)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -343,12 +343,12 @@ func TestAgentSignatureLeafOverlayPreservesUnownedHeader(t *testing.T) {
 		t.Fatalf("API-owned trailing signature changed: %#v", signatures[1])
 	}
 	evidence := &agentPatchPreservation{cardBase: base, cardPatch: patch}
-	if !evidence.matches(map[string]interface{}{"agent_card_params": patch}) {
+	if !evidence.matches(context.Background(), map[string]interface{}{"agent_card_params": patch}) {
 		t.Fatal("signature leaf preservation did not confirm")
 	}
 	drifted := cloneAgentWireObject(patch)
 	delete(drifted["signatures"].([]interface{})[0].(map[string]interface{}), "header")
-	if evidence.matches(map[string]interface{}{"agent_card_params": drifted}) {
+	if evidence.matches(context.Background(), map[string]interface{}{"agent_card_params": drifted}) {
 		t.Fatal("unowned header omission confirmed")
 	}
 }
@@ -361,7 +361,7 @@ func TestAgentExplicitNullJSONBridges(t *testing.T) {
 		Signatures: []AgentCardSignatureModel{{Protected: types.StringValue("p"), Signature: types.StringValue("s"), Header: types.StringNull(), HeaderJSON: types.StringValue("null")}},
 		Skills:     []AgentSkillModel{{ID: types.StringValue("skill"), Name: types.StringValue("Skill"), Security: types.ListNull(types.MapType{ElemType: types.ListType{ElemType: types.StringType}}), SecurityJSON: types.StringValue("null")}},
 	}
-	request, err := (&AgentResource{}).buildAgentRequest(&model)
+	request, err := (&AgentResource{}).buildAgentRequest(context.Background(), &model)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -373,12 +373,12 @@ func TestAgentExplicitNullJSONBridges(t *testing.T) {
 		t.Fatal("explicit null security was not emitted")
 	}
 	model.AgentCard.Signatures[0].Header = types.StringValue(`{}`)
-	if _, err := (&AgentResource{}).buildAgentRequest(&model); err == nil {
+	if _, err := (&AgentResource{}).buildAgentRequest(context.Background(), &model); err == nil {
 		t.Fatal("header/header_json conflict accepted")
 	}
 	model.AgentCard.Signatures[0].Header = types.StringNull()
 	model.AgentCard.Skills[0].SecurityJSON = types.StringValue(`[{"oauth":[1]}]`)
-	if _, err := (&AgentResource{}).buildAgentRequest(&model); err == nil {
+	if _, err := (&AgentResource{}).buildAgentRequest(context.Background(), &model); err == nil {
 		t.Fatal("malformed security_json accepted")
 	}
 }
@@ -411,7 +411,7 @@ func TestAgentConfiguredChildrenDoNotClaimFreshHeaderOrSecurity(t *testing.T) {
 	}
 	plan, config := cloneAgentResourceModel(prior), cloneAgentResourceModel(prior)
 	plan.AgentCard.Description, config.AgentCard.Description = types.StringValue("changed"), types.StringValue("changed")
-	patch, err := overlayAgentCardRaw(base, plan, prior, config, agentFieldSet{})
+	patch, err := overlayAgentCardRaw(context.Background(), base, plan, prior, config, agentFieldSet{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -433,7 +433,7 @@ func TestAgentRemoveOwnedSkillsPreservesAPISiblings(t *testing.T) {
 	}}
 	plan, config := cloneAgentResourceModel(prior), cloneAgentResourceModel(prior)
 	plan.AgentCard.Skills, config.AgentCard.Skills = nil, nil
-	patch, err := overlayAgentCardRaw(base, plan, prior, config, agentFieldSet{agentScopeCardSkills: true, agentSkillLeaf("imported", "id"): true})
+	patch, err := overlayAgentCardRaw(context.Background(), base, plan, prior, config, agentFieldSet{agentScopeCardSkills: true, agentSkillLeaf("imported", "id"): true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -444,12 +444,15 @@ func TestAgentRemoveOwnedSkillsPreservesAPISiblings(t *testing.T) {
 	observedSkills := agentWireModelsForSkillsForTest(byID)
 	unconfirmed := append(append([]AgentSkillModel(nil), observedSkills...), AgentSkillModel{ID: types.StringValue("owned"), Name: types.StringValue("Owned")})
 	ownership := agentFieldSet{agentScopeCardSkills: true, agentSkillLeaf("imported", "id"): true}
-	if agentSkillsMutationMatch(nil, prior.AgentCard, nil, unconfirmed, ownership) {
+	if agentSkillsMutationMatch(context.Background(), nil, prior.AgentCard, nil, unconfirmed, ownership) {
 		t.Fatal("unconfirmed owned skill removal accepted")
 	}
 	observed := cloneAgentResourceModel(plan)
 	observed.AgentCard.Skills = observedSkills
-	confirmed := reconcileConfirmedAgentState(plan, observed, config, prior, ownership)
+	confirmed, err := reconcileConfirmedAgentState(context.Background(), plan, observed, config, prior, ownership)
+	if err != nil {
+		t.Fatal(err)
+	}
 	confirmedByID := map[string]bool{}
 	for _, skill := range confirmed.AgentCard.Skills {
 		confirmedByID[skill.ID.ValueString()] = true
@@ -522,7 +525,7 @@ func TestAgentMergedLifecycleFixtureClearOverlay(t *testing.T) {
 		},
 		"security": []interface{}{}, "securitySchemes": map[string]interface{}{}, "supportedInterfaces": []interface{}{},
 	}
-	patch, err := overlayAgentCardRaw(base, plan, prior, config, agentFieldSet{})
+	patch, err := overlayAgentCardRaw(context.Background(), base, plan, prior, config, agentFieldSet{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -602,11 +605,11 @@ func TestAgentCardStrictPresentShapesAndPartialAbsence(t *testing.T) {
 		{"securitySchemes": map[string]interface{}{"key": map[string]interface{}{"type": "http", "scheme": nil}}},
 	}
 	for _, card := range malformed {
-		if validateAgentCardResponse(card, false) == nil {
+		if validateAgentCardResponse(context.Background(), card, false) == nil {
 			t.Fatalf("malformed present field accepted: %#v", card)
 		}
 	}
-	if err := validateAgentCardResponse(map[string]interface{}{"signatures": []interface{}{map[string]interface{}{"header": nil}}}, false); err != nil {
+	if err := validateAgentCardResponse(context.Background(), map[string]interface{}{"signatures": []interface{}{map[string]interface{}{"header": nil}}}, false); err != nil {
 		t.Fatalf("valid role-partial card rejected: %v", err)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"reflect"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
@@ -282,61 +283,74 @@ func reconcileAgentJSONObject(current types.String, remote map[string]interface{
 	return types.StringValue(canonical), nil
 }
 
-func decodeAgentSecurity(value types.List) ([]map[string][]string, error) {
-	if value.IsNull() || value.IsUnknown() {
-		return nil, nil
-	}
-	result := make([]map[string][]string, 0, len(value.Elements()))
-	for _, raw := range value.Elements() {
-		mapping, ok := raw.(types.Map)
-		if !ok || mapping.IsNull() || mapping.IsUnknown() {
-			return nil, errors.New("security must contain known maps")
-		}
-		item := make(map[string][]string, len(mapping.Elements()))
-		for name, scopesRaw := range mapping.Elements() {
-			scopes, ok := scopesRaw.(types.List)
-			if !ok || scopes.IsNull() || scopes.IsUnknown() {
-				return nil, errors.New("security scopes must be known string lists")
-			}
-			item[name] = listToStringSlice(scopes)
-		}
-		result = append(result, item)
-	}
-	return result, nil
+func readAgentSecurity(raw interface{}) (types.List, error) {
+	return readAgentSecurityContext(context.Background(), raw)
 }
 
-func readAgentSecurity(raw interface{}) (types.List, error) {
+func readAgentSecurityContext(ctx context.Context, raw interface{}) (types.List, error) {
+	resultType := types.MapType{ElemType: types.ListType{ElemType: types.StringType}}
+	if err := ctx.Err(); err != nil {
+		return types.ListNull(resultType), err
+	}
 	items, ok := raw.([]interface{})
 	if !ok {
-		return types.ListNull(types.MapType{ElemType: types.ListType{ElemType: types.StringType}}), errors.New("security must be a list")
+		return types.ListNull(resultType), errors.New("security must be a list")
 	}
-	values := make([]attr.Value, 0, len(items))
+	// Pass one validates the complete recursive shape. No Terraform value is
+	// constructed until every late element and nested scope is known valid.
 	for _, rawItem := range items {
-		item, ok := rawItem.(map[string]interface{})
-		if !ok {
-			return types.ListNull(types.MapType{ElemType: types.ListType{ElemType: types.StringType}}), errors.New("security must contain objects")
+		if err := ctx.Err(); err != nil {
+			return types.ListNull(resultType), err
 		}
-		mapped := map[string]attr.Value{}
-		for name, rawScopes := range item {
+		item, ok := rawItem.(map[string]interface{})
+		if !ok || item == nil {
+			return types.ListNull(resultType), errors.New("security must contain objects")
+		}
+		for _, rawScopes := range item {
 			scopes, ok := rawScopes.([]interface{})
 			if !ok {
-				return types.ListNull(types.MapType{ElemType: types.ListType{ElemType: types.StringType}}), errors.New("security scopes must be string lists")
+				return types.ListNull(resultType), errors.New("security scopes must be string lists")
 			}
-			list := make([]attr.Value, 0, len(scopes))
 			for _, rawScope := range scopes {
-				scope, ok := rawScope.(string)
-				if !ok {
-					return types.ListNull(types.MapType{ElemType: types.ListType{ElemType: types.StringType}}), errors.New("security scopes must be string lists")
+				if _, ok := rawScope.(string); !ok {
+					return types.ListNull(resultType), errors.New("security scopes must be string lists")
 				}
-				list = append(list, types.StringValue(scope))
 			}
-			mapped[name] = types.ListValueMust(types.StringType, list)
 		}
-		values = append(values, types.MapValueMust(types.ListType{ElemType: types.StringType}, mapped))
 	}
-	result, diagnostics := types.ListValue(types.MapType{ElemType: types.ListType{ElemType: types.StringType}}, values)
-	if diagnostics.HasError() {
-		return types.ListNull(types.MapType{ElemType: types.ListType{ElemType: types.StringType}}), errors.New("security could not be represented")
+
+	// Pass two constructs only from the fully validated source.
+	values := make([]attr.Value, 0, len(items))
+	for _, rawItem := range items {
+		if err := ctx.Err(); err != nil {
+			return types.ListNull(resultType), err
+		}
+		item := rawItem.(map[string]interface{})
+		mapped := make(map[string]attr.Value, len(item))
+		for name, rawScopes := range item {
+			scopes := rawScopes.([]interface{})
+			list := make([]attr.Value, len(scopes))
+			for index, rawScope := range scopes {
+				list[index] = types.StringValue(rawScope.(string))
+			}
+			value, diagnostics := checkedStringListValue(ctx, list, path.Root("agent_card").AtName("skills"))
+			if diagnostics.HasError() {
+				return types.ListNull(resultType), errors.New("security could not be represented")
+			}
+			mapped[name] = value
+		}
+		value, diagnostics := types.MapValue(types.ListType{ElemType: types.StringType}, mapped)
+		if len(diagnostics) != 0 {
+			return types.ListNull(resultType), errors.New("security could not be represented")
+		}
+		values = append(values, value)
+	}
+	result, diagnostics := types.ListValue(resultType, values)
+	if len(diagnostics) != 0 {
+		return types.ListNull(resultType), errors.New("security could not be represented")
+	}
+	if err := ctx.Err(); err != nil {
+		return types.ListNull(resultType), err
 	}
 	return result, nil
 }

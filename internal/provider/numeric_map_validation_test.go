@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -72,12 +73,18 @@ func TestNumericMapRequestBuildersRejectNullAndUnknownElements(t *testing.T) {
 		build       func() error
 	}{
 		{"key null float", "model_max_budget", func() error {
-			_, err := (&KeyResource{}).buildKeyRequest(context.Background(), &KeyResourceModel{ModelMaxBudget: nullFloat})
-			return err
+			_, diagnostics := (&KeyResource{}).buildKeyRequest(context.Background(), &KeyResourceModel{ModelMaxBudget: nullFloat})
+			if diagnostics.HasError() {
+				return errors.New("invalid model_max_budget")
+			}
+			return nil
 		}},
 		{"key unknown integer", "model_rpm_limit", func() error {
-			_, err := (&KeyResource{}).buildKeyRequest(context.Background(), &KeyResourceModel{ModelRPMLimit: unknownInt})
-			return err
+			_, diagnostics := (&KeyResource{}).buildKeyRequest(context.Background(), &KeyResourceModel{ModelRPMLimit: unknownInt})
+			if diagnostics.HasError() {
+				return errors.New("invalid model_rpm_limit")
+			}
+			return nil
 		}},
 		{"team null integer", "model_rpm_limit", func() error {
 			_, err := (&TeamResource{}).buildTeamRequest(context.Background(), &TeamResourceModel{TeamAlias: types.StringValue("team"), ModelRPMLimit: nullInt}, "team-1")

@@ -1235,59 +1235,84 @@ func (r *MCPServerResource) buildMCPServerRequest(ctx context.Context, data *MCP
 		mcpReq["allow_all_keys"] = data.AllowAllKeys.ValueBool()
 	}
 
-	// List fields - check IsNull, IsUnknown, and len > 0
+	convertList := func(value types.List, name string) ([]string, error) {
+		converted, _, diagnostics := strictTerraformStringList(ctx, value, path.Root(name))
+		if diagnostics.HasError() {
+			return nil, fmt.Errorf("invalid MCP string-list collection")
+		}
+		return converted, nil
+	}
+	convertMap := func(value types.Map, name string, sensitive bool) (map[string]string, error) {
+		converted, _, diagnostics := strictTerraformStringMap(ctx, value, path.Root(name), sensitive)
+		if diagnostics.HasError() {
+			return nil, fmt.Errorf("invalid MCP string-map collection")
+		}
+		return converted, nil
+	}
+
+	// List fields - check IsNull, IsUnknown, and len > 0.
 	if !data.MCPAccessGroups.IsNull() && !data.MCPAccessGroups.IsUnknown() {
-		var groups []string
-		data.MCPAccessGroups.ElementsAs(ctx, &groups, false)
+		groups, err := convertList(data.MCPAccessGroups, "mcp_access_groups")
+		if err != nil {
+			return nil, err
+		}
 		if len(groups) > 0 {
 			mcpReq["mcp_access_groups"] = groups
 		}
 	}
-
 	if !data.Args.IsNull() && !data.Args.IsUnknown() {
-		var args []string
-		data.Args.ElementsAs(ctx, &args, false)
+		args, err := convertList(data.Args, "args")
+		if err != nil {
+			return nil, err
+		}
 		if len(args) > 0 {
 			mcpReq["args"] = args
 		}
 	}
-
 	if !data.AllowedTools.IsNull() && !data.AllowedTools.IsUnknown() {
-		var allowedTools []string
-		data.AllowedTools.ElementsAs(ctx, &allowedTools, false)
+		allowedTools, err := convertList(data.AllowedTools, "allowed_tools")
+		if err != nil {
+			return nil, err
+		}
 		if len(allowedTools) > 0 {
 			mcpReq["allowed_tools"] = allowedTools
 		}
 	}
 
-	// Map fields - check IsNull, IsUnknown, and len > 0
+	// Map fields - check IsNull, IsUnknown, and len > 0. Sensitive maps never
+	// include a key in conversion diagnostics.
 	if !data.Env.IsNull() && !data.Env.IsUnknown() {
-		var env map[string]string
-		data.Env.ElementsAs(ctx, &env, false)
+		env, err := convertMap(data.Env, "env", true)
+		if err != nil {
+			return nil, err
+		}
 		if len(env) > 0 {
 			mcpReq["env"] = env
 		}
 	}
-
 	if !data.Credentials.IsNull() && !data.Credentials.IsUnknown() {
-		var credentials map[string]string
-		data.Credentials.ElementsAs(ctx, &credentials, false)
+		credentials, err := convertMap(data.Credentials, "credentials", true)
+		if err != nil {
+			return nil, err
+		}
 		if len(credentials) > 0 {
 			mcpReq["credentials"] = credentials
 		}
 	}
-
 	if !data.ExtraHeaders.IsNull() && !data.ExtraHeaders.IsUnknown() {
-		var extraHeaders []string
-		data.ExtraHeaders.ElementsAs(ctx, &extraHeaders, false)
+		extraHeaders, err := convertList(data.ExtraHeaders, "extra_headers")
+		if err != nil {
+			return nil, err
+		}
 		if len(extraHeaders) > 0 {
 			mcpReq["extra_headers"] = extraHeaders
 		}
 	}
-
 	if !data.StaticHeaders.IsNull() && !data.StaticHeaders.IsUnknown() {
-		var staticHeaders map[string]string
-		data.StaticHeaders.ElementsAs(ctx, &staticHeaders, false)
+		staticHeaders, err := convertMap(data.StaticHeaders, "static_headers", true)
+		if err != nil {
+			return nil, err
+		}
 		if len(staticHeaders) > 0 {
 			mcpReq["static_headers"] = staticHeaders
 		}
@@ -1660,6 +1685,36 @@ func (r *MCPServerResource) readMCPServerResultProjection(ctx context.Context, d
 		return err
 	}
 
+	// Stage the complete model and mutable provenance sets. A late malformed
+	// collection must not leak a partial projection to callers that retain
+	// public or private state on readback failure.
+	target := data
+	next := *data
+	data = &next
+	targetConfirmed := confirmed
+	targetAdoptedAPI := adoptedAPI
+	confirmed = cloneMCPInfoLeafSet(confirmed)
+	adoptedAPI = cloneMCPInfoLeafSet(adoptedAPI)
+	commit := func() {
+		*target = *data
+		if targetConfirmed != nil {
+			for key := range targetConfirmed {
+				delete(targetConfirmed, key)
+			}
+			for key, value := range confirmed {
+				targetConfirmed[key] = value
+			}
+		}
+		if targetAdoptedAPI != nil {
+			for key := range targetAdoptedAPI {
+				delete(targetAdoptedAPI, key)
+			}
+			for key, value := range adoptedAPI {
+				targetAdoptedAPI[key] = value
+			}
+		}
+	}
+
 	// Update fields from response
 	if serverID, ok := result["server_id"].(string); ok {
 		data.ServerID = types.StringValue(serverID)
@@ -1747,44 +1802,56 @@ func (r *MCPServerResource) readMCPServerResultProjection(ctx context.Context, d
 	if createdBy, ok := result["created_by"].(string); ok {
 		data.CreatedBy = types.StringValue(createdBy)
 	}
-	projectList := func(fieldPath, name string, current *types.List) {
-		raw, present := result[name]
-		items, visible := raw.([]interface{})
+	projectList := func(fieldPath, name string, current *types.List) error {
+		observed, presence, diagnostics := strictAPIStringList(ctx, result, name, path.Root(name))
+		if diagnostics.HasError() {
+			return collectionProjectionError(ctx, diagnostics)
+		}
 		projected := fieldOwnership.Owned[fieldPath] || imported || !current.IsNull()
-		if !present || raw == nil || !visible || len(items) == 0 || !projected {
+		if presence != apiValuePresent || len(observed.Elements()) == 0 || !projected {
 			if current.IsUnknown() {
-				*current, _ = types.ListValue(types.StringType, []attr.Value{})
+				empty, emptyDiagnostics := checkedStringListValue(ctx, []attr.Value{}, path.Root(name))
+				if emptyDiagnostics.HasError() {
+					return collectionProjectionError(ctx, emptyDiagnostics)
+				}
+				*current = empty
 			}
-			return
+			return nil
 		}
-		values := make([]attr.Value, len(items))
-		for index, item := range items {
-			values[index] = types.StringValue(item.(string))
-		}
-		*current, _ = types.ListValue(types.StringType, values)
+		*current = observed
+		return nil
 	}
-	projectMap := func(fieldPath, name string, current *types.Map) {
-		raw, present := result[name]
-		items, visible := raw.(map[string]interface{})
+	projectMap := func(fieldPath, name string, current *types.Map) error {
+		observed, presence, diagnostics := strictAPIStringMap(ctx, result, name, path.Root(name), true)
+		if diagnostics.HasError() {
+			return collectionProjectionError(ctx, diagnostics)
+		}
 		projected := fieldOwnership.Owned[fieldPath] || imported || !current.IsNull()
-		if !present || raw == nil || !visible || len(items) == 0 || !projected {
+		if presence != apiValuePresent || len(observed.Elements()) == 0 || !projected {
 			if current.IsUnknown() {
-				*current, _ = types.MapValue(types.StringType, map[string]attr.Value{})
+				empty, emptyDiagnostics := checkedStringMapValue(ctx, map[string]attr.Value{}, path.Root(name), true)
+				if emptyDiagnostics.HasError() {
+					return collectionProjectionError(ctx, emptyDiagnostics)
+				}
+				*current = empty
 			}
-			return
+			return nil
 		}
-		values := make(map[string]attr.Value, len(items))
-		for name, item := range items {
-			values[name] = types.StringValue(item.(string))
-		}
-		*current, _ = types.MapValue(types.StringType, values)
+		*current = observed
+		return nil
 	}
-	projectList(mcpFieldAccessGroupsPath, "mcp_access_groups", &data.MCPAccessGroups)
-	projectList(mcpFieldArgsPath, "args", &data.Args)
-	projectMap(mcpFieldEnvPath, "env", &data.Env)
-	projectList(mcpFieldAllowedToolsPath, "allowed_tools", &data.AllowedTools)
-	projectList(mcpFieldExtraHeadersPath, "extra_headers", &data.ExtraHeaders)
-	projectMap(mcpFieldStaticHeadersPath, "static_headers", &data.StaticHeaders)
+	for _, projection := range []func() error{
+		func() error { return projectList(mcpFieldAccessGroupsPath, "mcp_access_groups", &data.MCPAccessGroups) },
+		func() error { return projectList(mcpFieldArgsPath, "args", &data.Args) },
+		func() error { return projectMap(mcpFieldEnvPath, "env", &data.Env) },
+		func() error { return projectList(mcpFieldAllowedToolsPath, "allowed_tools", &data.AllowedTools) },
+		func() error { return projectList(mcpFieldExtraHeadersPath, "extra_headers", &data.ExtraHeaders) },
+		func() error { return projectMap(mcpFieldStaticHeadersPath, "static_headers", &data.StaticHeaders) },
+	} {
+		if err := projection(); err != nil {
+			return err
+		}
+	}
 
 	// Credential values are never authoritative in the management response.
 	// Keep configured sensitive values through redaction and keep imports null.
@@ -1815,7 +1882,11 @@ func (r *MCPServerResource) readMCPServerResultProjection(ctx context.Context, d
 			for name, value := range priorCredentials {
 				values[name] = types.StringValue(value)
 			}
-			data.Credentials = types.MapValueMust(types.StringType, values)
+			credentials, diagnostics := checkedStringMapValue(ctx, values, path.Root("credentials"), true)
+			if diagnostics.HasError() {
+				return collectionProjectionError(ctx, diagnostics)
+			}
+			data.Credentials = credentials
 		}
 	}
 
@@ -1845,6 +1916,7 @@ func (r *MCPServerResource) readMCPServerResultProjection(ctx context.Context, d
 		return fmt.Errorf("invalid MCP server response: mcp_info must be a JSON object or null")
 	}
 	if mcpInfoPresence != apiValuePresent {
+		commit()
 		return nil
 	}
 	if err := setCompleteMCPInfoJSONState(data, mcpInfoRaw); err != nil {
@@ -1873,6 +1945,7 @@ func (r *MCPServerResource) readMCPServerResultProjection(ctx context.Context, d
 	}
 	if !anyOwned {
 		data.MCPInfo = nil
+		commit()
 		return nil
 	}
 	priorInfo := data.MCPInfo
@@ -1941,11 +2014,16 @@ func (r *MCPServerResource) readMCPServerResultProjection(ctx context.Context, d
 				for name, value := range values {
 					elements[name] = types.Float64Value(value)
 				}
-				costs.ToolNameToCostPerQuery, _ = types.MapValue(types.Float64Type, elements)
+				projectedCosts, diagnostics := types.MapValue(types.Float64Type, elements)
+				if diagnostics.HasError() {
+					return fmt.Errorf("invalid MCP server response: an owned fixed MCP info cost map could not be represented")
+				}
+				costs.ToolNameToCostPerQuery = projectedCosts
 			}
 		}
 		info.MCPServerCostInfo = costs
 	}
 	data.MCPInfo = info
+	commit()
 	return nil
 }

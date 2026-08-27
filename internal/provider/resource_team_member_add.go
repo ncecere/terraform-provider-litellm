@@ -252,7 +252,7 @@ func (r *TeamMemberAddResource) ValidateConfig(ctx context.Context, req resource
 		return
 	}
 
-	members, parseDiags := batchMembersFromSet(data.Members, false)
+	members, parseDiags := batchMembersFromSet(ctx, data.Members, false)
 	resp.Diagnostics.Append(parseDiags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -293,7 +293,7 @@ func (r *TeamMemberAddResource) Create(ctx context.Context, req resource.CreateR
 	// operations below are allowed to populate it.
 	resp.State.RemoveResource(ctx)
 
-	members, parseDiags := batchMembersFromSet(planned.Members, true)
+	members, parseDiags := batchMembersFromSet(ctx, planned.Members, true)
 	resp.Diagnostics.Append(parseDiags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -450,7 +450,7 @@ func (r *TeamMemberAddResource) Read(ctx context.Context, req resource.ReadReque
 		return
 	}
 
-	members, parseDiags := batchMembersFromSet(state.Members, false)
+	members, parseDiags := batchMembersFromSet(ctx, state.Members, false)
 	resp.Diagnostics.Append(parseDiags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -555,8 +555,8 @@ func (r *TeamMemberAddResource) Update(ctx context.Context, req resource.UpdateR
 		return
 	}
 
-	desired, desiredDiags := batchMembersFromSet(planned.Members, true)
-	ownedBefore, stateDiags := batchMembersFromSet(prior.Members, false)
+	desired, desiredDiags := batchMembersFromSet(ctx, planned.Members, true)
+	ownedBefore, stateDiags := batchMembersFromSet(ctx, prior.Members, false)
 	resp.Diagnostics.Append(desiredDiags...)
 	resp.Diagnostics.Append(stateDiags...)
 	if resp.Diagnostics.HasError() {
@@ -932,7 +932,7 @@ func (r *TeamMemberAddResource) Delete(ctx context.Context, req resource.DeleteR
 		return
 	}
 
-	owned, parseDiags := batchMembersFromSet(state.Members, false)
+	owned, parseDiags := batchMembersFromSet(ctx, state.Members, false)
 	resp.Diagnostics.Append(parseDiags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -1929,23 +1929,50 @@ func ensureUniqueMatches(snapshot *teamMemberAddSnapshot, members []batchMember)
 	return nil
 }
 
-func batchMembersFromSet(value types.Set, requireKnownRole bool) ([]batchMember, diag.Diagnostics) {
+func batchMembersFromSet(ctx context.Context, value types.Set, requireKnownRole bool) ([]batchMember, diag.Diagnostics) {
+	memberPath := path.Root("member")
+	if diagnostics := canceledCollectionDiagnostics(ctx, memberPath); diagnostics.HasError() {
+		return nil, diagnostics
+	}
 	var diagnostics diag.Diagnostics
 	if value.IsNull() {
 		return nil, diagnostics
 	}
 	if value.IsUnknown() {
-		diagnostics.AddError("Unknown Batch Members", "The member set must be known before the batch membership lifecycle can run.")
+		diagnostics.AddAttributeError(memberPath, "Unknown Batch Members", "The member set must be known before the batch membership lifecycle can run.")
 		return nil, diagnostics
 	}
 
-	var models []MemberModel
-	diagnostics.Append(value.ElementsAs(context.Background(), &models, false)...)
+	elements := value.Elements()
+	models := make([]MemberModel, len(elements))
+	for index, element := range elements {
+		if canceled := canceledCollectionDiagnostics(ctx, memberPath); canceled.HasError() {
+			return nil, canceled
+		}
+		object, ok := element.(types.Object)
+		if !ok || object.IsNull() || object.IsUnknown() {
+			diagnostics.AddAttributeError(memberPath, "Invalid Batch Members", "Every member must be a known object containing only representable identity and role fields. No member was converted.")
+			continue
+		}
+		attributes := object.Attributes()
+		userID, userIDOK := attributes["user_id"].(types.String)
+		userEmail, userEmailOK := attributes["user_email"].(types.String)
+		role, roleOK := attributes["role"].(types.String)
+		if !userIDOK || !userEmailOK || !roleOK {
+			diagnostics.AddAttributeError(memberPath, "Invalid Batch Members", "Every member must be a known object containing only representable identity and role fields. No member was converted.")
+			continue
+		}
+		models[index] = MemberModel{UserID: userID, UserEmail: userEmail, Role: role}
+	}
 	if diagnostics.HasError() {
 		return nil, diagnostics
 	}
+
 	members := make([]batchMember, 0, len(models))
 	for _, model := range models {
+		if canceled := canceledCollectionDiagnostics(ctx, memberPath); canceled.HasError() {
+			return nil, canceled
+		}
 		member := batchMember{}
 		if !model.UserID.IsNull() && !model.UserID.IsUnknown() {
 			member.UserID = model.UserID.ValueString()
@@ -1959,11 +1986,17 @@ func batchMembersFromSet(value types.Set, requireKnownRole bool) ([]batchMember,
 			member.Role = model.Role.ValueString()
 			member.RoleKnown = true
 		} else if requireKnownRole {
-			diagnostics.AddError("Unknown Batch Member Role", "Every member role must be known before mutation.")
+			diagnostics.AddAttributeError(memberPath, "Unknown Batch Member Role", "Every member role must be known before mutation.")
 		}
 		members = append(members, member)
 	}
-	return members, diagnostics
+	if diagnostics.HasError() {
+		return nil, diagnostics
+	}
+	if canceled := canceledCollectionDiagnostics(ctx, memberPath); canceled.HasError() {
+		return nil, canceled
+	}
+	return members, nil
 }
 
 func validateBatchMemberIdentities(members []batchMember, requireNonEmpty bool) error {

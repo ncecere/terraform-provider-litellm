@@ -8,6 +8,14 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
+func stringMapToInterfaceMap(values map[string]string) map[string]interface{} {
+	result := make(map[string]interface{}, len(values))
+	for key, value := range values {
+		result[key] = value
+	}
+	return result
+}
+
 func nullableVectorStoreString(raw interface{}) types.String {
 	if text, ok := raw.(string); ok && text != "" {
 		return types.StringValue(text)
@@ -149,5 +157,9 @@ func vectorStoreStringMap(raw interface{}, prior types.Map, filterToPrior, rejec
 			values[key] = value
 		}
 	}
-	return types.MapValueMust(types.StringType, values), nil
+	result, diagnostics := types.MapValue(types.StringType, values)
+	if diagnostics.HasError() {
+		return types.MapNull(types.StringType), fmt.Errorf("vector store response field %q could not be represented safely", field)
+	}
+	return result, nil
 }

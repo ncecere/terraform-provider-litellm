@@ -235,17 +235,17 @@ func TestUnifiedAccessGroupNormalizesRequestsAndPreservesEquivalentListRepresent
 	b := strings.Repeat("b", 64)
 	configured := unifiedAccessGroupStringList("SHA256:"+strings.ToUpper(b), "sha256:"+a, a, "sha256:"+a)
 	request := map[string]interface{}{}
-	if err := addAssignedKeyListToRequest(request, configured); err != nil {
-		t.Fatalf("normalize request: %v", err)
+	if diagnostics := addAssignedKeyListToRequest(context.Background(), request, configured); diagnostics.HasError() {
+		t.Fatalf("normalize request: %v", diagnostics)
 	}
 	if got, want := request["assigned_key_ids"], []string{a, b}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("request hashes = %#v, want sorted deduplicated bare hashes %#v", got, want)
 	}
 	actual := map[string]bool{a: true, b: true}
-	if reconciled := reconcileUnifiedAccessGroupKeyMembership(configured, types.ListNull(types.StringType), actual); !reconciled.Equal(configured) {
+	if reconciled := reconcileUnifiedAccessGroupKeyMembership(context.Background(), configured, types.ListNull(types.StringType), actual); !reconciled.Equal(configured) {
 		t.Fatalf("equivalent membership changed list order, duplicates, or representation: %#v", reconciled)
 	}
-	drifted := reconcileUnifiedAccessGroupKeyMembership(configured, types.ListNull(types.StringType), map[string]bool{b: true})
+	drifted := reconcileUnifiedAccessGroupKeyMembership(context.Background(), configured, types.ListNull(types.StringType), map[string]bool{b: true})
 	if got, want := unifiedAccessGroupListStrings(t, drifted), []string{b}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("real membership drift = %#v, want deterministic bare hashes %#v", got, want)
 	}
@@ -260,8 +260,8 @@ func TestUnifiedAccessGroupAcceptsGeneratedStatefulAndWriteOnlyKeyIDs(t *testing
 		hashKeyForID("sk-write-only-predefined-key"),
 	}
 	request := map[string]interface{}{}
-	if err := addAssignedKeyListToRequest(request, unifiedAccessGroupStringList(managementIDs...)); err != nil {
-		t.Fatalf("normalize current litellm_key IDs: %v", err)
+	if diagnostics := addAssignedKeyListToRequest(context.Background(), request, unifiedAccessGroupStringList(managementIDs...)); diagnostics.HasError() {
+		t.Fatalf("normalize current litellm_key IDs: %v", diagnostics)
 	}
 	got := request["assigned_key_ids"].([]string)
 	want := make([]string, 0, len(managementIDs))
@@ -1650,19 +1650,35 @@ func TestUnifiedAccessGroupMissingPriorKeySurfacesAuthoritativeRemoval(t *testin
 func TestUnifiedAccessGroupPartialSynchronizationAndDataSourceLeakageFiltering(t *testing.T) {
 	t.Parallel()
 
+	masked := types.ListUnknown(types.StringType)
+	if err := setSafeAssignedKeyListFromResponse(context.Background(), &masked, nil); err != nil {
+		t.Fatalf("role-masked assigned keys failed: %v", err)
+	}
+	if got := unifiedAccessGroupListStrings(t, masked); len(got) != 0 {
+		t.Fatalf("role-masked assigned keys = %#v, want known empty compatibility state", got)
+	}
+
 	valid := strings.Repeat("d", 64)
 	value := types.ListUnknown(types.StringType)
-	setSafeAssignedKeyListFromResponse(&value, []interface{}{
+	if err := setSafeAssignedKeyListFromResponse(context.Background(), &value, []interface{}{
 		"sha256:" + strings.ToUpper(valid),
 		valid,
 		"sk-never-publish#raw-suffix",
 		"malformed",
 		float64(1),
-	})
-	if got, want := unifiedAccessGroupListStrings(t, value), []string{"sha256:" + strings.ToUpper(valid), valid}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("data-source filtered assignments = %#v, want only hash representations %#v", got, want)
+	}); err == nil {
+		t.Fatal("data-source accepted a malformed late assigned-key value")
 	}
-	if strings.Contains(strings.Join(unifiedAccessGroupListStrings(t, value), ","), "suffix") {
-		t.Fatal("data-source state published a suffix identifier")
+	if !value.IsUnknown() {
+		t.Fatalf("failed assigned-key projection changed state: %#v", value)
+	}
+	if err := setSafeAssignedKeyListFromResponse(context.Background(), &value, []interface{}{
+		"sha256:" + strings.ToUpper(valid),
+		valid,
+	}); err != nil {
+		t.Fatalf("valid hash-only assignments failed: %v", err)
+	}
+	if got, want := unifiedAccessGroupListStrings(t, value), []string{"sha256:" + strings.ToUpper(valid), valid}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("data-source assignments = %#v, want hash representations %#v", got, want)
 	}
 }

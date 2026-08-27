@@ -216,7 +216,7 @@ func TestProjectTeamPermissionsRequiresMatchingIdentity(t *testing.T) {
 		"null permissions":    {"team_id": "team-projection", "team_member_permissions": nil},
 	} {
 		t.Run(name, func(t *testing.T) {
-			projected, err := projectTeamPermissions(prior, response, "team-projection")
+			projected, err := projectTeamPermissions(context.Background(), prior, response, "team-projection")
 			if err == nil || !projected.Equal(prior) {
 				t.Fatalf("permissions identity was accepted: projected=%v err=%v", projected, err)
 			}

@@ -192,7 +192,7 @@ func (r *AgentResource) sampleFreshAgentUpdateBase(ctx context.Context, state Ag
 			raw, present := result["agent_card_params"]
 			var ok bool
 			card, ok = raw.(map[string]interface{})
-			if !present || !ok || card == nil || validateAgentCardResponse(card, true) != nil {
+			if !present || !ok || card == nil || validateAgentCardResponse(ctx, card, true) != nil {
 				err = fmt.Errorf("fresh agent card is not an authoritative object")
 			}
 		}
@@ -319,7 +319,7 @@ func agentImportedFieldsFromWire(data AgentResourceModel, raw map[string]interfa
 	return fields
 }
 
-func overlayAgentCardRaw(base map[string]interface{}, plan, prior, config AgentResourceModel, imported agentFieldSet) (map[string]interface{}, error) {
+func overlayAgentCardRaw(ctx context.Context, base map[string]interface{}, plan, prior, config AgentResourceModel, imported agentFieldSet) (map[string]interface{}, error) {
 	patch := cloneAgentWireObject(base)
 	if plan.AgentCard == nil || config.AgentCard == nil {
 		return patch, nil
@@ -328,7 +328,7 @@ func overlayAgentCardRaw(base map[string]interface{}, plan, prior, config AgentR
 	model := cloneAgentResourceModel(plan)
 	model.LiteLLMParams = types.MapNull(types.StringType)
 	model.LiteLLMParamsJSON = types.StringNull()
-	built, err := builder.buildAgentRequest(&model)
+	built, err := builder.buildAgentRequest(ctx, &model)
 	if err != nil {
 		return nil, err
 	}
@@ -610,7 +610,10 @@ func agentHiddenCollectionsFromRaw(raw map[string]interface{}, public AgentResou
 	return result
 }
 
-func (e *agentPatchPreservation) matches(raw map[string]interface{}) bool {
+func (e *agentPatchPreservation) matches(ctx context.Context, raw map[string]interface{}) bool {
+	if ctx.Err() != nil {
+		return false
+	}
 	if e == nil {
 		return true
 	}
@@ -622,7 +625,7 @@ func (e *agentPatchPreservation) matches(raw map[string]interface{}) bool {
 	}
 	if e.cardBase != nil {
 		rawCard, ok := raw["agent_card_params"].(map[string]interface{})
-		if !ok || validateAgentCardResponse(rawCard, true) != nil || !agentPreservedValueMatches(e.cardBase, e.cardPatch, rawCard, "agent_card_params") {
+		if !ok || validateAgentCardResponse(ctx, rawCard, true) != nil || !agentPreservedValueMatches(e.cardBase, e.cardPatch, rawCard, "agent_card_params") {
 			return false
 		}
 	}

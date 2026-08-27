@@ -97,7 +97,7 @@ func TestBuildAgentRequestConvertsMCPToolPermissionsToNativeArrays(t *testing.T)
 			}),
 		},
 	}
-	request, err := resource.buildAgentRequest(data)
+	request, err := resource.buildAgentRequest(context.Background(), data)
 	if err != nil {
 		t.Fatalf("build request: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestBuildAgentRequestConvertsMCPToolPermissionsToNativeArrays(t *testing.T)
 	}
 
 	data.ObjectPermission.MCPToolPermissions = types.MapValueMust(types.StringType, map[string]attr.Value{})
-	request, err = resource.buildAgentRequest(data)
+	request, err = resource.buildAgentRequest(context.Background(), data)
 	if err != nil {
 		t.Fatalf("build empty-map clear: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestBuildAgentRequestRejectsMalformedLegacyMCPToolPermissionState(t *testin
 			MCPToolPermissions: stringMapValue(map[string]string{"private-server": "[old invalid rendering]"}),
 		},
 	}
-	if _, err := (&AgentResource{}).buildAgentRequest(data); err == nil {
+	if _, err := (&AgentResource{}).buildAgentRequest(context.Background(), data); err == nil {
 		t.Fatal("malformed old state reached request builder")
 	} else if strings.Contains(err.Error(), "private-server") || strings.Contains(err.Error(), "old invalid rendering") {
 		t.Fatal("request error leaked permission content")

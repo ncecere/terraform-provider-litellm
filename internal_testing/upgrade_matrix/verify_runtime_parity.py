@@ -147,6 +147,59 @@ REVIEWED_ISSUE214_PATHS = (
 REVIEWED_ISSUE214_RUNTIME_DIFF_SHA256 = (
     "765751cedc125b6d52c6995ba5fa7ebef5ef14331e00bc36fddc95f22cc33421"
 )
+REVIEWED_ISSUE224_BASE = "92a474ce027fddf362b844100f020adb278428b6"
+REVIEWED_ISSUE224_PATHS = (
+    "internal/provider/agent_collection_block_projection_protocol_test.go",
+    "internal/provider/agent_mcp_tool_permissions_test.go",
+    "internal/provider/agent_patch.go",
+    "internal/provider/agent_structured.go",
+    "internal/provider/agent_structured_test.go",
+    "internal/provider/build_request_test.go",
+    "internal/provider/collection_conversion.go",
+    "internal/provider/collection_conversion_audit_test.go",
+    "internal/provider/collection_conversion_test.go",
+    "internal/provider/datasource_agent.go",
+    "internal/provider/datasource_agents_list.go",
+    "internal/provider/datasource_fallback.go",
+    "internal/provider/datasource_organization.go",
+    "internal/provider/datasource_tag.go",
+    "internal/provider/datasource_tags_list.go",
+    "internal/provider/datasource_unified_access_group.go",
+    "internal/provider/invite_email_test.go",
+    "internal/provider/numeric_map_validation_test.go",
+    "internal/provider/request_enum_validators_test.go",
+    "internal/provider/resource_agent.go",
+    "internal/provider/resource_agent_lifecycle.go",
+    "internal/provider/resource_agent_lifecycle_test.go",
+    "internal/provider/resource_agent_test.go",
+    "internal/provider/resource_fallback.go",
+    "internal/provider/resource_fallback_test.go",
+    "internal/provider/resource_key.go",
+    "internal/provider/resource_mcp_server.go",
+    "internal/provider/resource_model.go",
+    "internal/provider/resource_organization.go",
+    "internal/provider/resource_organization_member.go",
+    "internal/provider/resource_tag.go",
+    "internal/provider/resource_team.go",
+    "internal/provider/resource_team_member_add.go",
+    "internal/provider/resource_team_member_add_test.go",
+    "internal/provider/resource_unified_access_group.go",
+    "internal/provider/resource_unified_access_group_test.go",
+    "internal/provider/resource_user.go",
+    "internal/provider/resource_user_test.go",
+    "internal/provider/resource_vector_store.go",
+    "internal/provider/strict_collection_request_builders_test.go",
+    "internal/provider/strict_collection_response_stage4_test.go",
+    "internal/provider/strict_collection_stage3_test.go",
+    "internal/provider/strict_collection_team_mcp_test.go",
+    "internal/provider/team_response.go",
+    "internal/provider/team_response_test.go",
+    "internal/provider/vector_store_contract_test.go",
+    "internal/provider/vector_store_helpers.go",
+)
+REVIEWED_ISSUE224_RUNTIME_DIFF_SHA256 = (
+    "f2136661a605f837a1502520a3fc09d86cf34bf10164d677bb05264dbd422772"
+)
 
 
 def git(*args: str) -> str:
@@ -236,6 +289,12 @@ def main() -> int:
             and digest == REVIEWED_ISSUE214_RUNTIME_DIFF_SHA256
         ):
             reviewed = "issue214"
+        elif (
+            comparison == REVIEWED_ISSUE224_BASE
+            and changed_paths == REVIEWED_ISSUE224_PATHS
+            and digest == REVIEWED_ISSUE224_RUNTIME_DIFF_SHA256
+        ):
+            reviewed = "issue224"
         if reviewed is not None:
             print(
                 f"Provider runtime parity verified: reviewed={reviewed} "

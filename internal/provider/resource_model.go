@@ -15,6 +15,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework-validators/mapvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -519,7 +520,12 @@ func (r *ModelResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanR
 	// A non-imported, previously configured value is owned and omission clears it.
 	if config.AccessGroups.IsNull() && !state.AccessGroups.IsNull() && !state.AccessGroups.IsUnknown() && len(state.AccessGroups.Elements()) > 0 {
 		if _, imported := importedFields["access_groups"]; !imported {
-			plan.AccessGroups = types.ListValueMust(types.StringType, []attr.Value{})
+			empty, diagnostics := checkedStringListValue(ctx, nil, path.Root("access_groups"))
+			resp.Diagnostics.Append(diagnostics...)
+			if resp.Diagnostics.HasError() {
+				return
+			}
+			plan.AccessGroups = empty
 		}
 	}
 
@@ -570,6 +576,11 @@ func (r *ModelResource) Create(ctx context.Context, req resource.CreateRequest, 
 	}
 	data.AdditionalModelInfoConfigured = types.BoolValue(!configuredModelInfo.IsNull() && !configuredModelInfo.IsUnknown())
 
+	resp.Diagnostics.Append(validateModelRequestCollections(ctx, data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	// Normalise numeric strings in string-map attributes so that planned values
 	// use the same canonical form as their API read-back values.
 	data.AdditionalLiteLLMParams = normalizeAdditionalParams(ctx, data.AdditionalLiteLLMParams)
@@ -590,7 +601,10 @@ func (r *ModelResource) Create(ctx context.Context, req resource.CreateRequest, 
 	// request. Additional thinking still wins when both forms are configured.
 	ownership := modelReadOwnership{topThinkingOwned: topThinkingOwned}
 	if err := r.readModelWithRetryOwnership(ctx, &data, 8, ownership); err != nil {
-		finalizeModelComputedDefaults(&data)
+		if finalizeErr := finalizeModelComputedDefaults(ctx, &data); finalizeErr != nil {
+			resp.Diagnostics.AddError("Model State Projection Failed", finalizeErr.Error())
+			return
+		}
 		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Model created but failed to read back: %s", err))
 	}
 	reassertPlannedCosts(&data, &planned)
@@ -703,6 +717,11 @@ func (r *ModelResource) Update(ctx context.Context, req resource.UpdateRequest, 
 	}
 	data.AdditionalModelInfoConfigured = types.BoolValue(!configuredModelInfo.IsNull() && !configuredModelInfo.IsUnknown())
 
+	resp.Diagnostics.Append(validateModelRequestCollections(ctx, data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	// Normalise numeric strings in string-map attributes so that planned values
 	// use the same canonical form as their API read-back values.
 	data.AdditionalLiteLLMParams = normalizeAdditionalParams(ctx, data.AdditionalLiteLLMParams)
@@ -794,7 +813,38 @@ func (r *ModelResource) ImportState(ctx context.Context, req resource.ImportStat
 	}
 }
 
+type modelRequestCollections struct {
+	accessGroups            []string
+	additionalLiteLLMParams map[string]string
+	additionalModelInfo     map[string]string
+}
+
+func convertModelRequestCollections(ctx context.Context, data ModelResourceModel) (modelRequestCollections, diag.Diagnostics) {
+	var result modelRequestCollections
+	var diagnostics diag.Diagnostics
+	var converted diag.Diagnostics
+	result.accessGroups, _, converted = strictTerraformStringList(ctx, data.AccessGroups, path.Root("access_groups"))
+	diagnostics.Append(converted...)
+	result.additionalLiteLLMParams, _, converted = strictTerraformStringMap(ctx, data.AdditionalLiteLLMParams, path.Root("additional_litellm_params"), false)
+	diagnostics.Append(converted...)
+	result.additionalModelInfo, _, converted = strictTerraformStringMap(ctx, data.AdditionalModelInfo, path.Root("additional_model_info"), false)
+	diagnostics.Append(converted...)
+	if diagnostics.HasError() {
+		return modelRequestCollections{}, diagnostics
+	}
+	return result, diagnostics
+}
+
+func validateModelRequestCollections(ctx context.Context, data ModelResourceModel) diag.Diagnostics {
+	_, diagnostics := convertModelRequestCollections(ctx, data)
+	return diagnostics
+}
+
 func (r *ModelResource) createOrUpdateModel(ctx context.Context, data *ModelResourceModel, modelID string, isUpdate bool) error {
+	collections, diagnostics := convertModelRequestCollections(ctx, *data)
+	if diagnostics.HasError() {
+		return fmt.Errorf("model request collection conversion failed")
+	}
 	customLLMProvider := data.CustomLLMProvider.ValueString()
 	baseModel := data.BaseModel.ValueString()
 	modelName := fmt.Sprintf("%s/%s", customLLMProvider, baseModel)
@@ -894,9 +944,7 @@ func (r *ModelResource) createOrUpdateModel(ctx context.Context, data *ModelReso
 	// Values are strings in Terraform but converted to native types (int, float, bool, JSON)
 	// for the API. This allows users to pass any litellm_params not covered by top-level attributes.
 	if !data.AdditionalLiteLLMParams.IsNull() && !data.AdditionalLiteLLMParams.IsUnknown() {
-		elements := make(map[string]string)
-		data.AdditionalLiteLLMParams.ElementsAs(ctx, &elements, false)
-		for key, value := range elements {
+		for key, value := range collections.additionalLiteLLMParams {
 			litellmParams[key] = convertStringValue(value)
 		}
 	}
@@ -921,19 +969,15 @@ func (r *ModelResource) createOrUpdateModel(ctx context.Context, data *ModelReso
 
 	// Add access_groups to model_info if specified
 	if !data.AccessGroups.IsNull() {
-		var accessGroups []string
-		data.AccessGroups.ElementsAs(ctx, &accessGroups, false)
-		if len(accessGroups) > 0 {
-			modelInfo["access_groups"] = accessGroups
+		if len(collections.accessGroups) > 0 {
+			modelInfo["access_groups"] = collections.accessGroups
 		}
 	}
 
 	// Add additional_model_info to the request. Like additional_litellm_params,
 	// values are strings in Terraform but converted to native types for the API.
 	if !data.AdditionalModelInfo.IsNull() && !data.AdditionalModelInfo.IsUnknown() {
-		elements := make(map[string]string)
-		data.AdditionalModelInfo.ElementsAs(ctx, &elements, false)
-		for key, value := range elements {
+		for key, value := range collections.additionalModelInfo {
 			modelInfo[key] = convertStringValue(value)
 		}
 	}
@@ -1034,6 +1078,9 @@ func (r *ModelResource) readModelWithOwnership(ctx context.Context, data *ModelR
 			return err
 		}
 	}
+	original := data
+	next := *data
+	data = &next
 
 	// Update data from response while preserving sensitive values.
 	// For team-scoped models, LiteLLM rewrites top-level model_name to an internal
@@ -1223,7 +1270,11 @@ func (r *ModelResource) readModelWithOwnership(ctx context.Context, data *ModelR
 		stateKeys := make(map[string]struct{})
 		priorStrings := make(map[string]string)
 		if filterByState {
-			data.AdditionalLiteLLMParams.ElementsAs(ctx, &priorStrings, false)
+			var diagnostics diag.Diagnostics
+			priorStrings, _, diagnostics = strictTerraformStringMap(ctx, data.AdditionalLiteLLMParams, path.Root("additional_litellm_params"), true)
+			if err := collectionProjectionError(ctx, diagnostics); err != nil {
+				return err
+			}
 			for k := range data.AdditionalLiteLLMParams.Elements() {
 				stateKeys[k] = struct{}{}
 			}
@@ -1333,9 +1384,17 @@ func (r *ModelResource) readModelWithOwnership(ctx context.Context, data *ModelR
 
 		// Set additional_litellm_params from API response to detect drift
 		// for keys that the user configured.
-		data.AdditionalLiteLLMParams, _ = types.MapValue(types.StringType, additionalParams)
+		value, diagnostics := checkedStringMapValue(ctx, additionalParams, path.Root("additional_litellm_params"), true)
+		if err := collectionProjectionError(ctx, diagnostics); err != nil {
+			return err
+		}
+		data.AdditionalLiteLLMParams = value
 	} else {
-		data.AdditionalLiteLLMParams, _ = types.MapValue(types.StringType, map[string]attr.Value{})
+		value, diagnostics := checkedStringMapValue(ctx, nil, path.Root("additional_litellm_params"), true)
+		if err := collectionProjectionError(ctx, diagnostics); err != nil {
+			return err
+		}
+		data.AdditionalLiteLLMParams = value
 	}
 
 	if hasModelInfo {
@@ -1359,27 +1418,29 @@ func (r *ModelResource) readModelWithOwnership(ctx context.Context, data *ModelR
 		// The API may not echo back access_groups, so only update if the API
 		// actually returns them. If the API is silent, preserve the current value.
 		_, accessGroupsDurablyCleared := ownership.durablyClearedFields["access_groups"]
-		if accessGroups, ok := modelInfo["access_groups"].([]interface{}); ok && len(accessGroups) > 0 && !accessGroupsDurablyCleared {
-			groupStrings := make([]string, 0, len(accessGroups))
-			for _, g := range accessGroups {
-				if groupStr, ok := g.(string); ok {
-					groupStrings = append(groupStrings, groupStr)
-				}
-			}
-			if len(groupStrings) > 0 && (ownership.imported || (!data.AccessGroups.IsNull() && !data.AccessGroups.IsUnknown())) {
-				listValue, diags := types.ListValueFrom(ctx, types.StringType, groupStrings)
-				if !diags.HasError() {
-					data.AccessGroups = listValue
-				}
+		accessGroups, accessGroupsPresence, diagnostics := strictAPIStringList(ctx, modelInfo, "access_groups", path.Root("access_groups"))
+		if err := collectionProjectionError(ctx, diagnostics); err != nil {
+			return err
+		}
+		if accessGroupsPresence == apiValuePresent && len(accessGroups.Elements()) > 0 && !accessGroupsDurablyCleared {
+			if ownership.imported || (!data.AccessGroups.IsNull() && !data.AccessGroups.IsUnknown()) {
+				data.AccessGroups = accessGroups
 			}
 		} else if data.AccessGroups.IsUnknown() {
-			// Resolve unknown to empty list
-			data.AccessGroups, _ = types.ListValue(types.StringType, []attr.Value{})
+			empty, diagnostics := checkedStringListValue(ctx, nil, path.Root("access_groups"))
+			if err := collectionProjectionError(ctx, diagnostics); err != nil {
+				return err
+			}
+			data.AccessGroups = empty
 		}
 		// If the API didn't return access_groups and we already have a concrete
 		// value (from config/state), leave it as-is.
 	} else if data.AccessGroups.IsUnknown() {
-		data.AccessGroups, _ = types.ListValue(types.StringType, []attr.Value{})
+		empty, diagnostics := checkedStringListValue(ctx, nil, path.Root("access_groups"))
+		if err := collectionProjectionError(ctx, diagnostics); err != nil {
+			return err
+		}
+		data.AccessGroups = empty
 	}
 
 	// Read back additional_model_info. Only keys configured in state are
@@ -1405,9 +1466,17 @@ func (r *ModelResource) readModelWithOwnership(ctx context.Context, data *ModelR
 				infoValues[key] = value
 			}
 		}
-		data.AdditionalModelInfo, _ = types.MapValue(types.StringType, infoValues)
+		value, diagnostics := checkedStringMapValue(ctx, infoValues, path.Root("additional_model_info"), false)
+		if err := collectionProjectionError(ctx, diagnostics); err != nil {
+			return err
+		}
+		data.AdditionalModelInfo = value
 	} else {
-		data.AdditionalModelInfo, _ = types.MapValue(types.StringType, map[string]attr.Value{})
+		value, diagnostics := checkedStringMapValue(ctx, nil, path.Root("additional_model_info"), false)
+		if err := collectionProjectionError(ctx, diagnostics); err != nil {
+			return err
+		}
+		data.AdditionalModelInfo = value
 	}
 
 	// Ensure mode is never Unknown after a Read. Terraform requires all
@@ -1415,7 +1484,9 @@ func (r *ModelResource) readModelWithOwnership(ctx context.Context, data *ModelR
 	// Wildcard routes (e.g. openai/*) may not have a mode set in the API
 	// response, which would leave the attribute Unknown and cause:
 	//   "provider still indicated an unknown value for litellm_model.*.mode"
-	finalizeModelComputedDefaults(data)
+	if err := finalizeModelComputedDefaults(ctx, data); err != nil {
+		return err
+	}
 	if data.ThinkingEnabled.IsNull() || data.ThinkingEnabled.IsUnknown() {
 		data.ThinkingEnabled = types.BoolValue(false)
 	}
@@ -1423,6 +1494,7 @@ func (r *ModelResource) readModelWithOwnership(ctx context.Context, data *ModelR
 		data.ThinkingBudgetTokens = types.Int64Value(1024)
 	}
 
+	*original = *data
 	return nil
 }
 
@@ -1575,7 +1647,7 @@ func modelImportedFieldsFromState(data ModelResourceModel) map[string]struct{} {
 	return fields
 }
 
-func finalizeModelComputedDefaults(data *ModelResourceModel) {
+func finalizeModelComputedDefaults(ctx context.Context, data *ModelResourceModel) error {
 	for _, target := range []*types.String{
 		&data.ModelAPIBase, &data.APIVersion, &data.ReasoningEffort,
 		&data.TeamID, &data.Mode, &data.LiteLLMCredentialName, &data.AWSRegionName,
@@ -1599,14 +1671,27 @@ func finalizeModelComputedDefaults(data *ModelResourceModel) {
 		}
 	}
 	if data.AccessGroups.IsUnknown() {
-		data.AccessGroups, _ = types.ListValue(types.StringType, []attr.Value{})
+		value, diagnostics := checkedStringListValue(ctx, nil, path.Root("access_groups"))
+		if err := collectionProjectionError(ctx, diagnostics); err != nil {
+			return err
+		}
+		data.AccessGroups = value
 	}
 	if data.AdditionalLiteLLMParams.IsUnknown() {
-		data.AdditionalLiteLLMParams, _ = types.MapValue(types.StringType, map[string]attr.Value{})
+		value, diagnostics := checkedStringMapValue(ctx, nil, path.Root("additional_litellm_params"), true)
+		if err := collectionProjectionError(ctx, diagnostics); err != nil {
+			return err
+		}
+		data.AdditionalLiteLLMParams = value
 	}
 	if data.AdditionalModelInfo.IsUnknown() {
-		data.AdditionalModelInfo, _ = types.MapValue(types.StringType, map[string]attr.Value{})
+		value, diagnostics := checkedStringMapValue(ctx, nil, path.Root("additional_model_info"), false)
+		if err := collectionProjectionError(ctx, diagnostics); err != nil {
+			return err
+		}
+		data.AdditionalModelInfo = value
 	}
+	return nil
 }
 
 func (r *ModelResource) readModelWithRetry(ctx context.Context, data *ModelResourceModel, maxRetries int) error {
@@ -1944,6 +2029,10 @@ func setModelPatchCost(target map[string]interface{}, key string, planned, prior
 
 // patchModel uses the PATCH /model/{model_id}/update endpoint for partial updates.
 func (r *ModelResource) patchModel(ctx context.Context, data, prior *ModelResourceModel, topThinkingOwned, priorTopThinkingOwned bool) (map[string]interface{}, error) {
+	collections, diagnostics := convertModelRequestCollections(ctx, *data)
+	if diagnostics.HasError() {
+		return nil, fmt.Errorf("model request collection conversion failed")
+	}
 	modelID := data.ID.ValueString()
 	customLLMProvider := data.CustomLLMProvider.ValueString()
 	baseModel := data.BaseModel.ValueString()
@@ -2011,9 +2100,7 @@ func (r *ModelResource) patchModel(ctx context.Context, data, prior *ModelResour
 	// Parameters removed from config will NOT be removed from the API.
 	// To fully remove a parameter, the model must be recreated (e.g. terraform apply -replace=...).
 	if !data.AdditionalLiteLLMParams.IsNull() && !data.AdditionalLiteLLMParams.IsUnknown() {
-		elements := make(map[string]string)
-		data.AdditionalLiteLLMParams.ElementsAs(ctx, &elements, false)
-		for key, value := range elements {
+		for key, value := range collections.additionalLiteLLMParams {
 			litellmParams[key] = convertStringValue(value)
 		}
 	}
@@ -2034,17 +2121,13 @@ func (r *ModelResource) patchModel(ctx context.Context, data, prior *ModelResour
 
 	// Empty access_groups is the endpoint-supported authorization clear.
 	if !data.AccessGroups.IsNull() && !data.AccessGroups.IsUnknown() {
-		var accessGroups []string
-		data.AccessGroups.ElementsAs(ctx, &accessGroups, false)
-		modelInfo["access_groups"] = accessGroups
+		modelInfo["access_groups"] = collections.accessGroups
 	}
 
 	// Add additional_model_info to the request. Like additional_litellm_params,
 	// values are strings in Terraform but converted to native types for the API.
 	if !data.AdditionalModelInfo.IsNull() && !data.AdditionalModelInfo.IsUnknown() {
-		elements := make(map[string]string)
-		data.AdditionalModelInfo.ElementsAs(ctx, &elements, false)
-		for key, value := range elements {
+		for key, value := range collections.additionalModelInfo {
 			modelInfo[key] = convertStringValue(value)
 		}
 	}
@@ -2218,16 +2301,18 @@ func containsMaskedValue(value interface{}) bool {
 // normalizeAdditionalParams returns a new MapValue where every numeric string
 // has been normalised to decimal notation.
 func normalizeAdditionalParams(ctx context.Context, m types.Map) types.Map {
-	if m.IsNull() || m.IsUnknown() {
+	elements, state, diagnostics := strictTerraformStringMap(ctx, m, path.Root("additional_params"), false)
+	if diagnostics.HasError() || state == collectionValueNull || state == collectionValueUnknown {
 		return m
 	}
-	elements := make(map[string]string)
-	m.ElementsAs(ctx, &elements, false)
 	normalised := make(map[string]attr.Value, len(elements))
 	for k, v := range elements {
 		normalised[k] = types.StringValue(normalizeNumericString(v))
 	}
-	result, _ := types.MapValue(types.StringType, normalised)
+	result, constructorDiagnostics := types.MapValue(types.StringType, normalised)
+	if constructorDiagnostics.HasError() {
+		return m
+	}
 	return result
 }
 

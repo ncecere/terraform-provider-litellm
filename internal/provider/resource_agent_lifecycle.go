@@ -592,7 +592,12 @@ func (r *AgentResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanR
 				}
 			}
 		}
-		*target = types.MapValueMust(types.StringType, values)
+		value, diagnostics := checkedStringMapValue(ctx, values, path.Root(prefix), true)
+		resp.Diagnostics.Append(diagnostics...)
+		if diagnostics.HasError() {
+			return false
+		}
+		*target = value
 		return !original.Equal(*target)
 	}
 	paramsMerged := false
@@ -602,6 +607,11 @@ func (r *AgentResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanR
 	headersMerged := false
 	if config.StaticHeaders.IsNull() || config.StaticHeaders.IsUnknown() {
 		headersMerged = mergeAPIMapLeavesIntoPlan(&plan.StaticHeaders, state.StaticHeaders, agentFieldStaticHeaders)
+	}
+	if resp.Diagnostics.HasError() {
+		resp.Private = req.Private
+		resp.Plan.Raw = req.State.Raw
+		return
 	}
 	configured := agentConfiguredFields(config)
 	pending := cloneAgentFieldSet(imported)
@@ -613,7 +623,7 @@ func (r *AgentResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanR
 		// the remote value is preserved while Terraform safely prunes it from
 		// public state.
 	}
-	if err := validateAgentUpdateClears(plan, state, config, imported); err != nil {
+	if err := validateAgentUpdateClears(ctx, plan, state, config, imported); err != nil {
 		resp.Diagnostics.AddError("Unsupported Agent Clear", err.Error())
 		return
 	}
@@ -782,7 +792,10 @@ func copyAgentField(target *AgentResourceModel, source AgentResourceModel, field
 	}
 }
 
-func validateAgentCardSourceShape(card map[string]interface{}) error {
+func validateAgentCardSourceShape(ctx context.Context, card map[string]interface{}) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	malformed := func() error { return fmt.Errorf("agent read response contains a malformed agent card") }
 	stringValue := func(object map[string]interface{}, field string, nullable bool) bool {
 		value, present := object[field]
@@ -886,7 +899,7 @@ func validateAgentCardSourceShape(card map[string]interface{}) error {
 		if raw == nil {
 			return true
 		}
-		_, err := readAgentSecurity(raw)
+		_, err := readAgentSecurityContext(ctx, raw)
 		return err == nil
 	}
 	if raw, present := card["security"]; present && !validateSecurity(raw) {
@@ -998,8 +1011,11 @@ func validateAgentCardSourceShape(card map[string]interface{}) error {
 	return nil
 }
 
-func validateAgentCardResponse(card map[string]interface{}, requiredIdentity bool) error {
-	if err := validateAgentCardSourceShape(card); err != nil {
+func validateAgentCardResponse(ctx context.Context, card map[string]interface{}, requiredIdentity bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := validateAgentCardSourceShape(ctx, card); err != nil {
 		return err
 	}
 	if requiredIdentity {
@@ -1128,7 +1144,7 @@ func validateAgentCardResponse(card map[string]interface{}, requiredIdentity boo
 				}
 			}
 			if value, present := skill["security"]; present && value != nil {
-				if _, err := readAgentSecurity(value); err != nil {
+				if _, err := readAgentSecurityContext(ctx, value); err != nil {
 					return fmt.Errorf("agent read response contains a malformed agent card")
 				}
 			}
@@ -1222,7 +1238,7 @@ func (r *AgentResource) recoverCreatedAgent(ctx context.Context, planned, config
 		return "", fmt.Errorf("agent create recovery was inconclusive")
 	}
 	resolveAgentUnknowns(&observed)
-	if validateAgentModelSkillIdentities(candidatePlan, config, observed) != nil || len(agentMutationMismatches(candidatePlan, AgentResourceModel{}, config, nil, observed)) != 0 || agentResourceHasUnknowns(observed) {
+	if validateAgentModelSkillIdentities(candidatePlan, config, observed) != nil || len(agentMutationMismatches(ctx, candidatePlan, AgentResourceModel{}, config, nil, observed)) != 0 || agentResourceHasUnknowns(observed) {
 		return "", fmt.Errorf("agent create recovery was inconclusive")
 	}
 	return id, nil
@@ -1255,17 +1271,32 @@ func agentStringMapSemanticallyEqual(left, right types.Map) bool {
 	return true
 }
 
-func agentStringListSetEqual(left, right types.List) bool {
+func agentStringListSetEqual(ctx context.Context, left, right types.List) bool {
+	if ctx.Err() != nil {
+		return false
+	}
 	if left.IsNull() || left.IsUnknown() || right.IsNull() || right.IsUnknown() {
 		return left.Equal(right)
 	}
-	l, r := listToStringSlice(left), listToStringSlice(right)
+	l, _, leftDiagnostics := strictTerraformStringList(ctx, left, path.Root("agent_collection"))
+	r, _, rightDiagnostics := strictTerraformStringList(ctx, right, path.Root("agent_collection"))
+	if leftDiagnostics.HasError() || rightDiagnostics.HasError() {
+		if ctx.Err() != nil {
+			return false
+		}
+		// Unknown or malformed elements are never partially compared. Exact
+		// Terraform value equality is the only safe answer until they resolve.
+		return left.Equal(right)
+	}
 	slices.Sort(l)
 	slices.Sort(r)
-	return slices.Equal(l, r)
+	return ctx.Err() == nil && slices.Equal(l, r)
 }
 
-func validateAgentUpdateClears(plan, state, config AgentResourceModel, imported agentFieldSet) error {
+func validateAgentUpdateClears(ctx context.Context, plan, state, config AgentResourceModel, imported agentFieldSet) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := validateAgentModelSkillIdentities(plan, state, config); err != nil {
 		return err
 	}
@@ -1362,10 +1393,13 @@ func validateAgentUpdateClears(plan, state, config AgentResourceModel, imported 
 			return fmt.Errorf("LiteLLM v1.98 replaces an empty agent-card provider with proxy-owned provider metadata, so the complete provider block cannot be cleared safely.")
 		}
 	}
-	return nil
+	return ctx.Err()
 }
 
-func agentCardUpdateTouched(plan, state, config AgentResourceModel, imported agentFieldSet) bool {
+func agentCardUpdateTouched(ctx context.Context, plan, state, config AgentResourceModel, imported agentFieldSet) bool {
+	if ctx.Err() != nil {
+		return false
+	}
 	if plan.AgentCard == nil || state.AgentCard == nil {
 		return plan.AgentCard != state.AgentCard
 	}
@@ -1392,7 +1426,7 @@ func agentCardUpdateTouched(plan, state, config AgentResourceModel, imported age
 	if !reflect.DeepEqual(plan.AgentCard.Signatures, state.AgentCard.Signatures) && (config.AgentCard != nil && config.AgentCard.Signatures != nil || prior[agentFieldCardSignatures]) {
 		return true
 	}
-	if !agentSkillsEqual(plan.AgentCard.Skills, state.AgentCard.Skills) && (config.AgentCard != nil && config.AgentCard.Skills != nil || prior[agentFieldCardSkills]) {
+	if !agentSkillsEqual(ctx, plan.AgentCard.Skills, state.AgentCard.Skills) && (config.AgentCard != nil && config.AgentCard.Skills != nil || prior[agentFieldCardSkills]) {
 		return true
 	}
 	boolValue := func(card *AgentCardModel, field string) types.Bool {
@@ -1593,7 +1627,7 @@ func overlayAgentCardWire(fresh, plan, state, config AgentResourceModel, importe
 	return wire
 }
 
-func (r *AgentResource) buildAgentUpdateRequest(plan, state, config *AgentResourceModel, imported agentFieldSet, includeCard ...bool) (map[string]interface{}, error) {
+func (r *AgentResource) buildAgentUpdateRequest(ctx context.Context, plan, state, config *AgentResourceModel, imported agentFieldSet, includeCard ...bool) (map[string]interface{}, error) {
 	req := map[string]interface{}{"agent_name": plan.AgentName.ValueString()}
 	configured := agentConfiguredFields(*config)
 	stateFields := agentConfiguredFields(*state)
@@ -1640,9 +1674,17 @@ func (r *AgentResource) buildAgentUpdateRequest(plan, state, config *AgentResour
 		wirePlan.LiteLLMParams = types.MapNull(types.StringType)
 		wirePlan.LiteLLMParamsJSON = types.StringValue(encoded)
 	}
-	full, err := r.buildAgentRequest(&wirePlan)
+	full, err := r.buildAgentRequest(ctx, &wirePlan)
 	if err != nil {
 		return nil, err
+	}
+	planCollections, diagnostics := convertAgentRequestCollections(ctx, *plan)
+	if diagnostics.HasError() {
+		return nil, fmt.Errorf("agent update collection conversion failed")
+	}
+	wireCollections, diagnostics := convertAgentRequestCollections(ctx, wirePlan)
+	if diagnostics.HasError() {
+		return nil, fmt.Errorf("agent update collection conversion failed")
 	}
 	sendCard := config.AgentCard != nil
 	if len(includeCard) > 0 {
@@ -1683,18 +1725,16 @@ func (r *AgentResource) buildAgentUpdateRequest(plan, state, config *AgentResour
 		}
 	}
 	if configured[agentFieldStaticHeaders] {
-		headers := map[string]interface{}{}
-		for key, value := range wirePlan.StaticHeaders.Elements() {
-			if stringValue, ok := value.(types.String); ok {
-				headers[key] = stringValue.ValueString()
-			}
+		headers := make(map[string]interface{}, len(wireCollections.staticHeaders))
+		for key, value := range wireCollections.staticHeaders {
+			headers[key] = value
 		}
 		req["static_headers"] = headers
 	} else if cleared(agentFieldStaticHeaders) {
 		req["static_headers"] = map[string]interface{}{}
 	}
 	if configured[agentFieldExtraHeaders] {
-		req["extra_headers"] = listToStringSlice(plan.ExtraHeaders)
+		req["extra_headers"] = planCollections.extraHeaders
 	} else if cleared(agentFieldExtraHeaders) {
 		req["extra_headers"] = []string{}
 	}
@@ -1702,7 +1742,7 @@ func (r *AgentResource) buildAgentUpdateRequest(plan, state, config *AgentResour
 	permission := map[string]interface{}{}
 	addList := func(field, wire string, value types.List) {
 		if configured[field] {
-			permission[wire] = listToStringSlice(value)
+			permission[wire] = planCollections.permissionLists[wire]
 		} else if cleared(field) {
 			permission[wire] = []string{}
 		}
@@ -1752,9 +1792,12 @@ func (r *AgentResource) confirmAgentMutationWithPreservation(ctx context.Context
 		err := r.readAgentWithOwnershipTransportCapture(ctx, &observed, true, nil, true, &raw)
 		if err == nil {
 			resolveAgentUnknowns(&observed)
-			if validateAgentModelSkillIdentities(observed) == nil && preservation.matches(raw) && len(agentMutationMismatches(planned, prior, config, imported, observed)) == 0 && !agentResourceHasUnknowns(observed) {
+			if validateAgentModelSkillIdentities(observed) == nil && preservation.matches(ctx, raw) && len(agentMutationMismatches(ctx, planned, prior, config, imported, observed)) == 0 && !agentResourceHasUnknowns(observed) {
 				consecutive++
-				lastConfirmed = reconcileConfirmedAgentState(planned, observed, config, prior, imported)
+				lastConfirmed, err = reconcileConfirmedAgentState(ctx, planned, observed, config, prior, imported)
+				if err != nil {
+					return AgentResourceModel{}, err
+				}
 				if preservation != nil {
 					preservation.confirmedRaw = cloneAgentWireObject(raw)
 				}
@@ -1787,10 +1830,17 @@ func (r *AgentResource) confirmAgentMutationWithPreservation(ctx context.Context
 	return AgentResourceModel{}, fmt.Errorf("agent mutation did not converge")
 }
 
-func agentMapMutationMatches(planned, prior, config, observed types.Map, imported agentFieldSet, prefix string) bool {
+func agentMapMutationMatches(ctx context.Context, planned, prior, config, observed types.Map, imported agentFieldSet, prefix string) bool {
 	plannedValues, priorValues, configValues, observedValues := map[string]string{}, map[string]string{}, map[string]string{}, map[string]string{}
 	decode := func(value types.Map, target *map[string]string) bool {
-		return value.IsNull() || value.IsUnknown() || !value.ElementsAs(context.Background(), target, false).HasError()
+		converted, _, diagnostics := strictTerraformStringMap(ctx, value, path.Root(prefix), true)
+		if diagnostics.HasError() {
+			return false
+		}
+		if converted != nil {
+			*target = converted
+		}
+		return true
 	}
 	if !decode(planned, &plannedValues) || !decode(prior, &priorValues) || !decode(config, &configValues) || !decode(observed, &observedValues) {
 		return false
@@ -1812,7 +1862,7 @@ func agentMapMutationMatches(planned, prior, config, observed types.Map, importe
 	return true
 }
 
-func agentMutationMismatches(planned, prior, config AgentResourceModel, imported agentFieldSet, observed AgentResourceModel) []string {
+func agentMutationMismatches(ctx context.Context, planned, prior, config AgentResourceModel, imported agentFieldSet, observed AgentResourceModel) []string {
 	mismatches := []string{}
 	configured := agentConfiguredFields(config)
 	priorFields := agentConfiguredFields(prior)
@@ -1823,7 +1873,7 @@ func agentMutationMismatches(planned, prior, config AgentResourceModel, imported
 		}
 	}
 	check("agent_name", planned.AgentName.Equal(observed.AgentName), false)
-	if !agentMapMutationMatches(planned.LiteLLMParams, prior.LiteLLMParams, config.LiteLLMParams, observed.LiteLLMParams, imported, agentFieldParams) {
+	if !agentMapMutationMatches(ctx, planned.LiteLLMParams, prior.LiteLLMParams, config.LiteLLMParams, observed.LiteLLMParams, imported, agentFieldParams) {
 		mismatches = append(mismatches, agentFieldParams)
 	}
 	if configured[agentFieldParamsJSON] {
@@ -1852,18 +1902,18 @@ func agentMutationMismatches(planned, prior, config AgentResourceModel, imported
 	check(agentFieldSessionRPM, planned.SessionRPMLimit.Equal(observed.SessionRPMLimit), observed.SessionRPMLimit.IsNull())
 	staticClear := observed.StaticHeaders.IsNull() || len(observed.StaticHeaders.Elements()) == 0
 	plannedStaticClear := planned.StaticHeaders.IsNull() || (!planned.StaticHeaders.IsUnknown() && len(planned.StaticHeaders.Elements()) == 0)
-	if !(plannedStaticClear && staticClear) && !agentMapMutationMatches(planned.StaticHeaders, prior.StaticHeaders, config.StaticHeaders, observed.StaticHeaders, imported, agentFieldStaticHeaders) {
+	if !(plannedStaticClear && staticClear) && !agentMapMutationMatches(ctx, planned.StaticHeaders, prior.StaticHeaders, config.StaticHeaders, observed.StaticHeaders, imported, agentFieldStaticHeaders) {
 		mismatches = append(mismatches, agentFieldStaticHeaders)
 	}
 	extraClear := observed.ExtraHeaders.IsNull() || len(observed.ExtraHeaders.Elements()) == 0
 	plannedExtraClear := planned.ExtraHeaders.IsNull() || (!planned.ExtraHeaders.IsUnknown() && len(planned.ExtraHeaders.Elements()) == 0)
 	check(agentFieldExtraHeaders, planned.ExtraHeaders.Equal(observed.ExtraHeaders) || (plannedExtraClear && extraClear), extraClear)
-	compareAgentCard(&mismatches, planned, prior, config, imported, observed)
-	compareAgentPermissions(&mismatches, planned, prior, config, imported, observed)
+	compareAgentCard(ctx, &mismatches, planned, prior, config, imported, observed)
+	compareAgentPermissions(ctx, &mismatches, planned, prior, config, imported, observed)
 	return mismatches
 }
 
-func compareAgentCard(mismatches *[]string, planned, prior, config AgentResourceModel, imported agentFieldSet, observed AgentResourceModel) {
+func compareAgentCard(ctx context.Context, mismatches *[]string, planned, prior, config AgentResourceModel, imported agentFieldSet, observed AgentResourceModel) {
 	if config.AgentCard == nil {
 		return
 	}
@@ -1930,7 +1980,7 @@ func compareAgentCard(mismatches *[]string, planned, prior, config AgentResource
 	}
 	providerCheck(agentFieldCardProviderOrg, plannedProvider.Organization, observedProvider.Organization)
 	providerCheck(agentFieldCardProviderURL, plannedProvider.URL, observedProvider.URL)
-	if (config.AgentCard.Skills != nil || (prior.AgentCard != nil && prior.AgentCard.Skills != nil)) && !agentSkillsMutationMatch(planned.AgentCard.Skills, prior.AgentCard, config.AgentCard.Skills, observed.AgentCard.Skills, imported) {
+	if (config.AgentCard.Skills != nil || (prior.AgentCard != nil && prior.AgentCard.Skills != nil)) && !agentSkillsMutationMatch(ctx, planned.AgentCard.Skills, prior.AgentCard, config.AgentCard.Skills, observed.AgentCard.Skills, imported) {
 		*mismatches = append(*mismatches, agentFieldCardSkills)
 	}
 }
@@ -1966,7 +2016,7 @@ func agentSignaturesMutationMatch(planned []AgentCardSignatureModel, priorCard *
 	return true
 }
 
-func agentSkillsMutationMatch(planned []AgentSkillModel, priorCard *AgentCardModel, config, observed []AgentSkillModel, imported agentFieldSet) bool {
+func agentSkillsMutationMatch(ctx context.Context, planned []AgentSkillModel, priorCard *AgentCardModel, config, observed []AgentSkillModel, imported agentFieldSet) bool {
 	byID := func(skills []AgentSkillModel) map[string]AgentSkillModel {
 		result := map[string]AgentSkillModel{}
 		for _, skill := range skills {
@@ -1992,7 +2042,7 @@ func agentSkillsMutationMatch(planned []AgentSkillModel, priorCard *AgentCardMod
 		if configured[agentSkillLeaf(id, "description")] && !pv.Description.Equal(ov.Description) {
 			return false
 		}
-		if configured[agentSkillLeaf(id, "tags")] && !agentStringListSetEqual(pv.Tags, ov.Tags) {
+		if configured[agentSkillLeaf(id, "tags")] && !agentStringListSetEqual(ctx, pv.Tags, ov.Tags) {
 			return false
 		}
 		if configured[agentSkillLeaf(id, "examples")] && !pv.Examples.Equal(ov.Examples) {
@@ -2028,7 +2078,7 @@ func agentSkillsMutationMatch(planned []AgentSkillModel, priorCard *AgentCardMod
 	return true
 }
 
-func compareAgentPermissions(mismatches *[]string, planned, prior, config AgentResourceModel, imported agentFieldSet, observed AgentResourceModel) {
+func compareAgentPermissions(ctx context.Context, mismatches *[]string, planned, prior, config AgentResourceModel, imported agentFieldSet, observed AgentResourceModel) {
 	configured := agentConfiguredFields(config)
 	priorFields := agentConfiguredFields(prior)
 	var p, o AgentObjectPermissionModel
@@ -2040,7 +2090,7 @@ func compareAgentPermissions(mismatches *[]string, planned, prior, config AgentR
 	}
 	checkList := func(field string, plannedValue, observedValue types.List) {
 		clear := observedValue.IsNull() || len(observedValue.Elements()) == 0
-		if (configured[field] && !agentStringListSetEqual(plannedValue, observedValue)) || (priorFields[field] && !configured[field] && !imported[field] && !clear) {
+		if (configured[field] && !agentStringListSetEqual(ctx, plannedValue, observedValue)) || (priorFields[field] && !configured[field] && !imported[field] && !clear) {
 			*mismatches = append(*mismatches, field)
 		}
 	}
@@ -2078,7 +2128,7 @@ func agentSignaturesEqual(left, right []AgentCardSignatureModel) bool {
 	return true
 }
 
-func agentSkillsEqual(left, right []AgentSkillModel) bool {
+func agentSkillsEqual(ctx context.Context, left, right []AgentSkillModel) bool {
 	if len(left) != len(right) {
 		return false
 	}
@@ -2103,21 +2153,24 @@ func agentSkillsEqual(left, right []AgentSkillModel) bool {
 		seenLeft[l.ID.ValueString()] = struct{}{}
 		r, ok := rightByID[l.ID.ValueString()]
 		if !ok || !l.Name.Equal(r.Name) || !l.Description.Equal(r.Description) ||
-			!agentStringListSetEqual(l.Tags, r.Tags) || !l.Examples.Equal(r.Examples) || !l.InputModes.Equal(r.InputModes) || !l.OutputModes.Equal(r.OutputModes) || !l.Security.Equal(r.Security) || !agentOptionalJSONEqual(l.SecurityJSON, r.SecurityJSON) {
+			!agentStringListSetEqual(ctx, l.Tags, r.Tags) || !l.Examples.Equal(r.Examples) || !l.InputModes.Equal(r.InputModes) || !l.OutputModes.Equal(r.OutputModes) || !l.Security.Equal(r.Security) || !agentOptionalJSONEqual(l.SecurityJSON, r.SecurityJSON) {
 			return false
 		}
 	}
 	return true
 }
 
-func reconcileConfirmedAgentState(planned, observed, config, prior AgentResourceModel, imported agentFieldSet) AgentResourceModel {
+func reconcileConfirmedAgentState(ctx context.Context, planned, observed, config, prior AgentResourceModel, imported agentFieldSet) (AgentResourceModel, error) {
+	if err := ctx.Err(); err != nil {
+		return AgentResourceModel{}, err
+	}
 	result := cloneAgentResourceModel(planned)
 	result.ID, result.AgentName = observed.ID, observed.AgentName
 	result.CreatedAt, result.UpdatedAt = observed.CreatedAt, observed.UpdatedAt
 	result.CreatedBy, result.UpdatedBy = observed.CreatedBy, observed.UpdatedBy
 	// API-owned Optional+Computed map keys stay adopted; configured keys remain
 	// exactly planned so semantically equal JSON keeps the user's spelling.
-	mergeMap := func(target *types.Map, remote types.Map, prefix string) {
+	mergeMap := func(target *types.Map, remote types.Map, prefix string) error {
 		values := map[string]attr.Value{}
 		if !target.IsNull() && !target.IsUnknown() {
 			for k, v := range target.Elements() {
@@ -2132,12 +2185,19 @@ func reconcileConfirmedAgentState(planned, observed, config, prior AgentResource
 			}
 		}
 		if len(values) == 0 {
-			return
+			return ctx.Err()
 		}
-		*target = types.MapValueMust(types.StringType, values)
+		value, diagnostics := checkedStringMapValue(ctx, values, path.Root(prefix), true)
+		if diagnostics.HasError() {
+			return collectionProjectionError(ctx, diagnostics)
+		}
+		*target = value
+		return nil
 	}
 	if config.LiteLLMParams.IsNull() || config.LiteLLMParams.IsUnknown() {
-		mergeMap(&result.LiteLLMParams, observed.LiteLLMParams, agentFieldParams)
+		if err := mergeMap(&result.LiteLLMParams, observed.LiteLLMParams, agentFieldParams); err != nil {
+			return AgentResourceModel{}, err
+		}
 	} else {
 		result.LiteLLMParams = config.LiteLLMParams
 	}
@@ -2148,7 +2208,9 @@ func reconcileConfirmedAgentState(planned, observed, config, prior AgentResource
 		result.LiteLLMParamsJSON = observed.LiteLLMParamsJSON
 	}
 	if config.StaticHeaders.IsNull() || config.StaticHeaders.IsUnknown() {
-		mergeMap(&result.StaticHeaders, observed.StaticHeaders, agentFieldStaticHeaders)
+		if err := mergeMap(&result.StaticHeaders, observed.StaticHeaders, agentFieldStaticHeaders); err != nil {
+			return AgentResourceModel{}, err
+		}
 	} else {
 		result.StaticHeaders = config.StaticHeaders
 	}
@@ -2160,7 +2222,10 @@ func reconcileConfirmedAgentState(planned, observed, config, prior AgentResource
 	_ = imported
 	_ = config
 	resolveAgentUnknowns(&result)
-	return result
+	if err := ctx.Err(); err != nil {
+		return AgentResourceModel{}, err
+	}
+	return result, nil
 }
 
 func emptyKnownAgentResourceModel() AgentResourceModel {

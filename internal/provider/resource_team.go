@@ -11,6 +11,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -413,7 +414,7 @@ func (r *TeamResource) Create(ctx context.Context, req resource.CreateRequest, r
 	data.TeamID = types.StringValue(teamID)
 	teamReq, err := r.buildTeamRequest(ctx, &data, teamID)
 	if err != nil {
-		resp.Diagnostics.AddError("Invalid Team Numeric Map", err.Error())
+		resp.Diagnostics.AddError("Invalid Team Configuration", err.Error())
 		return
 	}
 
@@ -496,9 +497,19 @@ func (r *TeamResource) Update(ctx context.Context, req resource.UpdateRequest, r
 	if data.TeamID.IsNull() || data.TeamID.IsUnknown() {
 		data.TeamID = state.ID
 	}
+	permissionsChanged := !data.TeamMemberPermissions.Equal(state.TeamMemberPermissions)
+	var permissions []string
+	if permissionsChanged {
+		var permissionDiagnostics diag.Diagnostics
+		permissions, _, permissionDiagnostics = strictTerraformStringList(ctx, data.TeamMemberPermissions, path.Root("team_member_permissions"))
+		resp.Diagnostics.Append(permissionDiagnostics...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+	}
 	teamReq, err := r.buildTeamUpdateRequest(ctx, &data, data.ID.ValueString())
 	if err != nil {
-		resp.Diagnostics.AddError("Invalid Team Numeric Map", err.Error())
+		resp.Diagnostics.AddError("Invalid Team Configuration", err.Error())
 		return
 	}
 	applyTeamNullableClears(teamReq, &state, &data)
@@ -523,10 +534,9 @@ func (r *TeamResource) Update(ctx context.Context, req resource.UpdateRequest, r
 		return
 	}
 
-	// Update permissions if changed
-	if !data.TeamMemberPermissions.Equal(state.TeamMemberPermissions) {
-		var permissions []string
-		data.TeamMemberPermissions.ElementsAs(ctx, &permissions, false)
+	// Update permissions only after their complete collection was validated
+	// before either mutation.
+	if permissionsChanged {
 		permReq := map[string]interface{}{
 			"team_id":                 data.ID.ValueString(),
 			"team_member_permissions": permissions,
@@ -581,6 +591,27 @@ func (r *TeamResource) buildTeamRequest(ctx context.Context, data *TeamResourceM
 		"team_id":    teamID,
 		"team_alias": data.TeamAlias.ValueString(),
 	}
+	convertList := func(value types.List, name string) ([]string, error) {
+		converted, _, diagnostics := strictTerraformStringList(ctx, value, path.Root(name))
+		if diagnostics.HasError() {
+			return nil, fmt.Errorf("invalid team string-list collection")
+		}
+		return converted, nil
+	}
+	convertSet := func(value types.Set, name string) ([]string, error) {
+		converted, _, diagnostics := strictTerraformStringSet(ctx, value, path.Root(name))
+		if diagnostics.HasError() {
+			return nil, fmt.Errorf("invalid team string-set collection")
+		}
+		return converted, nil
+	}
+	convertMap := func(value types.Map, name string) (map[string]string, error) {
+		converted, _, diagnostics := strictTerraformStringMap(ctx, value, path.Root(name), true)
+		if diagnostics.HasError() {
+			return nil, fmt.Errorf("invalid team string-map collection")
+		}
+		return converted, nil
+	}
 
 	// String fields - check IsNull, IsUnknown, and empty string
 	if !data.OrganizationID.IsNull() && !data.OrganizationID.IsUnknown() && data.OrganizationID.ValueString() != "" {
@@ -597,8 +628,10 @@ func (r *TeamResource) buildTeamRequest(ctx context.Context, data *TeamResourceM
 	}
 
 	if !data.AccessGroupIDs.IsNull() && !data.AccessGroupIDs.IsUnknown() {
-		var accessGroupIDs []string
-		data.AccessGroupIDs.ElementsAs(ctx, &accessGroupIDs, false)
+		accessGroupIDs, err := convertSet(data.AccessGroupIDs, "access_group_ids")
+		if err != nil {
+			return nil, err
+		}
 		teamReq["access_group_ids"] = accessGroupIDs
 	}
 
@@ -630,49 +663,41 @@ func (r *TeamResource) buildTeamRequest(ctx context.Context, data *TeamResourceM
 		teamReq["blocked"] = data.Blocked.ValueBool()
 	}
 
-	// List fields - check IsNull, IsUnknown, and len > 0
-	if !data.Models.IsNull() && !data.Models.IsUnknown() {
-		var models []string
-		data.Models.ElementsAs(ctx, &models, false)
-		if len(models) > 0 {
-			teamReq["models"] = models
+	// List fields - check IsNull, IsUnknown, and len > 0.
+	for _, field := range []struct {
+		name  string
+		value types.List
+	}{
+		{name: "models", value: data.Models},
+		{name: "tags", value: data.Tags},
+		{name: "guardrails", value: data.Guardrails},
+		{name: "prompts", value: data.Prompts},
+	} {
+		if field.value.IsNull() || field.value.IsUnknown() {
+			continue
+		}
+		converted, err := convertList(field.value, field.name)
+		if err != nil {
+			return nil, err
+		}
+		if len(converted) > 0 {
+			teamReq[field.name] = converted
 		}
 	}
-
-	if !data.Tags.IsNull() && !data.Tags.IsUnknown() {
-		var tags []string
-		data.Tags.ElementsAs(ctx, &tags, false)
-		if len(tags) > 0 {
-			teamReq["tags"] = tags
-		}
-	}
-
-	if !data.Guardrails.IsNull() && !data.Guardrails.IsUnknown() {
-		var guardrails []string
-		data.Guardrails.ElementsAs(ctx, &guardrails, false)
-		if len(guardrails) > 0 {
-			teamReq["guardrails"] = guardrails
-		}
-	}
-
-	if !data.Prompts.IsNull() && !data.Prompts.IsUnknown() {
-		var prompts []string
-		data.Prompts.ElementsAs(ctx, &prompts, false)
-		if len(prompts) > 0 {
-			teamReq["prompts"] = prompts
-		}
-	}
-
 	if !data.TeamMemberPermissions.IsNull() && !data.TeamMemberPermissions.IsUnknown() {
-		var permissions []string
-		data.TeamMemberPermissions.ElementsAs(ctx, &permissions, false)
+		permissions, err := convertList(data.TeamMemberPermissions, "team_member_permissions")
+		if err != nil {
+			return nil, err
+		}
 		teamReq["team_member_permissions"] = permissions
 	}
 
-	// Map fields - check IsNull, IsUnknown, and len > 0
+	// Map fields - check IsNull, IsUnknown, and len > 0.
 	if !data.ModelAliases.IsNull() && !data.ModelAliases.IsUnknown() {
-		var modelAliases map[string]string
-		data.ModelAliases.ElementsAs(ctx, &modelAliases, false)
+		modelAliases, err := convertMap(data.ModelAliases, "model_aliases")
+		if err != nil {
+			return nil, err
+		}
 		if len(modelAliases) > 0 {
 			teamReq["model_aliases"] = modelAliases
 		}
@@ -695,8 +720,10 @@ func (r *TeamResource) buildTeamRequest(ctx context.Context, data *TeamResourceM
 	}
 
 	if !data.Metadata.IsNull() && !data.Metadata.IsUnknown() {
-		var metadata map[string]string
-		data.Metadata.ElementsAs(ctx, &metadata, false)
+		metadata, err := convertMap(data.Metadata, "metadata")
+		if err != nil {
+			return nil, err
+		}
 		if len(metadata) > 0 {
 			metadataPayload := convertMetadataToNative(metadata)
 			delete(metadataPayload, "model_rpm_limit")
@@ -708,7 +735,11 @@ func (r *TeamResource) buildTeamRequest(ctx context.Context, data *TeamResourceM
 	}
 
 	if !data.RouterSettings.IsNull() && !data.RouterSettings.IsUnknown() {
-		teamReq["router_settings"] = buildRouterSettingsPayload(ctx, data.RouterSettings)
+		routerSettings, err := buildRouterSettingsPayload(ctx, data.RouterSettings)
+		if err != nil {
+			return nil, err
+		}
+		teamReq["router_settings"] = routerSettings
 	} else if data.RouterSettings.IsNull() {
 		teamReq["router_settings"] = map[string]interface{}{}
 	}
@@ -784,37 +815,65 @@ func applyTeamNullableClears(teamReq map[string]interface{}, state, plan *TeamRe
 // buildRouterSettingsPayload converts the Terraform router_settings object into
 // the LiteLLM API wire format where each fallback entry is a single-key dict:
 // [{"primary_model": ["fallback1", "fallback2"]}]
-func buildRouterSettingsPayload(ctx context.Context, obj types.Object) map[string]interface{} {
+func buildRouterSettingsPayload(ctx context.Context, obj types.Object) (map[string]interface{}, error) {
+	if diagnostics := canceledCollectionDiagnostics(ctx, path.Root("router_settings")); diagnostics.HasError() {
+		return nil, fmt.Errorf("invalid team router-settings object")
+	}
 	var rs RouterSettingsModel
-	obj.As(ctx, &rs, basetypes.ObjectAsOptions{})
+	if diagnostics := obj.As(ctx, &rs, basetypes.ObjectAsOptions{}); diagnostics.HasError() {
+		return nil, fmt.Errorf("invalid team router-settings object")
+	}
 
 	payload := map[string]interface{}{}
-
-	if !rs.Fallbacks.IsNull() && !rs.Fallbacks.IsUnknown() {
-		payload["fallbacks"] = fallbackEntriesToAPIFormat(ctx, rs.Fallbacks)
+	for _, field := range []struct {
+		name  string
+		value types.List
+	}{
+		{name: "fallbacks", value: rs.Fallbacks},
+		{name: "context_window_fallbacks", value: rs.ContextWindowFallbacks},
+	} {
+		if field.value.IsNull() || field.value.IsUnknown() {
+			continue
+		}
+		converted, err := fallbackEntriesToAPIFormat(ctx, field.value, path.Root("router_settings").AtName(field.name))
+		if err != nil {
+			return nil, err
+		}
+		payload[field.name] = converted
 	}
-	if !rs.ContextWindowFallbacks.IsNull() && !rs.ContextWindowFallbacks.IsUnknown() {
-		payload["context_window_fallbacks"] = fallbackEntriesToAPIFormat(ctx, rs.ContextWindowFallbacks)
+	if diagnostics := canceledCollectionDiagnostics(ctx, path.Root("router_settings")); diagnostics.HasError() {
+		return nil, fmt.Errorf("invalid team router-settings object")
 	}
-
-	return payload
+	return payload, nil
 }
 
 // fallbackEntriesToAPIFormat transforms a Terraform list of FallbackEntryModel
-// objects into the LiteLLM wire format: [{"model_name": ["fb1", "fb2"]}, ...]
-func fallbackEntriesToAPIFormat(ctx context.Context, list types.List) []map[string][]string {
-	var entries []FallbackEntryModel
-	list.ElementsAs(ctx, &entries, false)
-
-	result := make([]map[string][]string, 0, len(entries))
-	for _, e := range entries {
-		var fbModels []string
-		e.FallbackModels.ElementsAs(ctx, &fbModels, false)
-		result = append(result, map[string][]string{
-			e.Model.ValueString(): fbModels,
-		})
+// objects into the LiteLLM wire format: [{"model_name": ["fb1", "fb2"]}, ...].
+// Every entry is validated before any result is returned.
+func fallbackEntriesToAPIFormat(ctx context.Context, list types.List, valuePath path.Path) ([]map[string][]string, error) {
+	if diagnostics := canceledCollectionDiagnostics(ctx, valuePath); diagnostics.HasError() {
+		return nil, fmt.Errorf("invalid team fallback collection")
 	}
-	return result
+	var entries []FallbackEntryModel
+	if diagnostics := list.ElementsAs(ctx, &entries, false); diagnostics.HasError() {
+		return nil, fmt.Errorf("invalid team fallback collection")
+	}
+
+	result := make([]map[string][]string, len(entries))
+	for index, entry := range entries {
+		if entry.Model.IsNull() || entry.Model.IsUnknown() {
+			return nil, fmt.Errorf("invalid team fallback collection")
+		}
+		fallbacks, _, diagnostics := strictTerraformStringList(ctx, entry.FallbackModels, valuePath.AtListIndex(index).AtName("fallback_models"))
+		if diagnostics.HasError() {
+			return nil, fmt.Errorf("invalid team fallback collection")
+		}
+		result[index] = map[string][]string{entry.Model.ValueString(): fallbacks}
+	}
+	if diagnostics := canceledCollectionDiagnostics(ctx, valuePath); diagnostics.HasError() {
+		return nil, fmt.Errorf("invalid team fallback collection")
+	}
+	return result, nil
 }
 
 func (r *TeamResource) readTeam(ctx context.Context, data *TeamResourceModel) error {
@@ -912,7 +971,7 @@ func (r *TeamResource) readTeamWithNumericOwnership(ctx context.Context, data *T
 	if err := r.client.DoRequestWithResponse(ctx, "GET", permissionEndpoint, nil, &permissionResult); err != nil {
 		return fmt.Errorf("team permissions response could not be authoritatively validated: %w", err)
 	}
-	permissions, err := projectTeamPermissions(data.TeamMemberPermissions, permissionResult, data.ID.ValueString())
+	permissions, err := projectTeamPermissions(ctx, data.TeamMemberPermissions, permissionResult, data.ID.ValueString())
 	if err != nil {
 		return err
 	}
@@ -920,57 +979,4 @@ func (r *TeamResource) readTeamWithNumericOwnership(ctx context.Context, data *T
 
 	*data = projected
 	return nil
-}
-
-// parseRouterSettingsFromAPI converts the LiteLLM API router_settings response
-// back into a Terraform types.Object matching the schema.
-func parseRouterSettingsFromAPI(rs map[string]interface{}) types.Object {
-	rsAttrs := map[string]attr.Value{}
-
-	if fb, ok := rs["fallbacks"].([]interface{}); ok {
-		rsAttrs["fallbacks"] = apiFormatToFallbackEntries(fb)
-	} else {
-		rsAttrs["fallbacks"] = types.ListNull(types.ObjectType{AttrTypes: fallbackEntryAttrTypes})
-	}
-
-	if cwf, ok := rs["context_window_fallbacks"].([]interface{}); ok {
-		rsAttrs["context_window_fallbacks"] = apiFormatToFallbackEntries(cwf)
-	} else {
-		rsAttrs["context_window_fallbacks"] = types.ListNull(types.ObjectType{AttrTypes: fallbackEntryAttrTypes})
-	}
-
-	obj, _ := types.ObjectValue(routerSettingsAttrTypes, rsAttrs)
-	return obj
-}
-
-// apiFormatToFallbackEntries transforms the LiteLLM wire format
-// [{"model_name": ["fb1", "fb2"]}, ...] into a Terraform list of fallback entry objects.
-func apiFormatToFallbackEntries(items []interface{}) basetypes.ListValue {
-	entries := make([]attr.Value, 0, len(items))
-	for _, item := range items {
-		dict, ok := item.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		for model, fbRaw := range dict {
-			fbSlice, ok := fbRaw.([]interface{})
-			if !ok {
-				continue
-			}
-			fbModels := make([]attr.Value, 0, len(fbSlice))
-			for _, m := range fbSlice {
-				if s, ok := m.(string); ok {
-					fbModels = append(fbModels, types.StringValue(s))
-				}
-			}
-			fbList, _ := types.ListValue(types.StringType, fbModels)
-			entryObj, _ := types.ObjectValue(fallbackEntryAttrTypes, map[string]attr.Value{
-				"model":           types.StringValue(model),
-				"fallback_models": fbList,
-			})
-			entries = append(entries, entryObj)
-		}
-	}
-	list, _ := types.ListValue(types.ObjectType{AttrTypes: fallbackEntryAttrTypes}, entries)
-	return list
 }

@@ -433,12 +433,12 @@ func TestLimitAndRoleRequestBuildersPreserveValidatedLiterals(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	keyRequest, err := (&KeyResource{}).buildKeyRequest(ctx, &KeyResourceModel{
+	keyRequest, keyDiagnostics := (&KeyResource{}).buildKeyRequest(ctx, &KeyResourceModel{
 		TPMLimitType: types.StringValue("dynamic"),
 		RPMLimitType: types.StringValue("guaranteed_throughput"),
 	})
-	if err != nil {
-		t.Fatalf("build key request: %v", err)
+	if keyDiagnostics.HasError() {
+		t.Fatalf("build key request: %v", keyDiagnostics)
 	}
 	if got := keyRequest["tpm_limit_type"]; got != "dynamic" {
 		t.Errorf("key tpm_limit_type = %#v, want dynamic", got)
@@ -462,9 +462,12 @@ func TestLimitAndRoleRequestBuildersPreserveValidatedLiterals(t *testing.T) {
 		t.Errorf("team rpm_limit_type = %#v, want guaranteed_throughput", got)
 	}
 
-	userRequest := (&UserResource{}).buildUserRequest(ctx, &UserResourceModel{
+	userRequest, diagnostics := (&UserResource{}).buildUserRequest(ctx, &UserResourceModel{
 		UserRole: types.StringValue("internal_user_viewer"),
 	})
+	if diagnostics.HasError() {
+		t.Fatalf("build user request: %v", diagnostics)
+	}
 	if got := userRequest["user_role"]; got != "internal_user_viewer" {
 		t.Errorf("user_role = %#v, want internal_user_viewer", got)
 	}

@@ -10,7 +10,8 @@ import (
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
-	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
@@ -127,7 +128,11 @@ func (r *FallbackResource) Create(ctx context.Context, req resource.CreateReques
 		return
 	}
 
-	fallbackReq := r.buildFallbackRequest(ctx, &data)
+	fallbackReq, conversionDiagnostics := r.buildFallbackRequest(ctx, &data)
+	resp.Diagnostics.Append(conversionDiagnostics...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	if err := r.writeFallbackWithRetry(ctx, fallbackReq, 5); err != nil {
 		resp.Diagnostics.AddError("Fallback Create Error", fallbackOperationDiagnostic("create", err))
 		return
@@ -166,7 +171,11 @@ func (r *FallbackResource) Update(ctx context.Context, req resource.UpdateReques
 		return
 	}
 
-	fallbackReq := r.buildFallbackRequest(ctx, &data)
+	fallbackReq, conversionDiagnostics := r.buildFallbackRequest(ctx, &data)
+	resp.Diagnostics.Append(conversionDiagnostics...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	if err := r.writeFallbackWithRetry(ctx, fallbackReq, 5); err != nil {
 		resp.Diagnostics.AddError("Fallback Update Error", fallbackOperationDiagnostic("update", err))
 		return
@@ -272,14 +281,16 @@ func fallbackOperationDiagnostic(operation string, err error) string {
 	return detail
 }
 
-func (r *FallbackResource) buildFallbackRequest(ctx context.Context, data *FallbackResourceModel) map[string]interface{} {
-	var models []string
-	data.FallbackModels.ElementsAs(ctx, &models, false)
+func (r *FallbackResource) buildFallbackRequest(ctx context.Context, data *FallbackResourceModel) (map[string]interface{}, diag.Diagnostics) {
+	models, _, diagnostics := strictTerraformStringList(ctx, data.FallbackModels, path.Root("fallback_models"))
+	if diagnostics.HasError() {
+		return nil, diagnostics
+	}
 	return map[string]interface{}{
 		"model":           data.Model.ValueString(),
 		"fallback_models": models,
 		"fallback_type":   data.FallbackType.ValueString(),
-	}
+	}, nil
 }
 
 func (r *FallbackResource) writeFallbackWithRetry(ctx context.Context, fallbackReq map[string]interface{}, maxRetries int) error {
@@ -426,13 +437,14 @@ func (r *FallbackResource) readFallback(ctx context.Context, data *FallbackResou
 	if err := validateFallbackReadResponse(result, data.Model.ValueString(), data.FallbackType.ValueString()); err != nil {
 		return err
 	}
-	fallbackModels := result["fallback_models"].([]interface{})
-	list := make([]attr.Value, 0, len(fallbackModels))
-	for _, model := range fallbackModels {
-		list = append(list, types.StringValue(model.(string)))
+	models, _, diagnostics := strictAPIStringList(ctx, result, "fallback_models", path.Root("fallback_models"))
+	if err := collectionProjectionError(ctx, diagnostics); err != nil {
+		return err
 	}
-	data.FallbackModels, _ = types.ListValue(types.StringType, list)
-	data.ID = types.StringValue(data.Model.ValueString() + ":" + data.FallbackType.ValueString())
+	next := *data
+	next.FallbackModels = models
+	next.ID = types.StringValue(data.Model.ValueString() + ":" + data.FallbackType.ValueString())
+	*data = next
 	return nil
 }
 

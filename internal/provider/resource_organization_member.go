@@ -443,6 +443,8 @@ func (r *OrganizationMemberResource) readOrganizationMemberWithNumericOwnership(
 		return false, false, fmt.Errorf("organization info response is missing the members array")
 	}
 
+	// Validate the complete member collection before selecting or projecting a
+	// match. A malformed late element must not be hidden by an earlier match.
 	for _, member := range response.Members {
 		if err := validateOrganizationMember(member); err != nil {
 			return false, false, fmt.Errorf("organization info response contains an invalid member: %w", err)
@@ -450,6 +452,8 @@ func (r *OrganizationMemberResource) readOrganizationMemberWithNumericOwnership(
 		if member.OrganizationID != organizationID {
 			return false, false, fmt.Errorf("organization info response contains a member for another organization")
 		}
+	}
+	for _, member := range response.Members {
 		memberEmail := ""
 		if member.UserEmail != nil {
 			memberEmail = *member.UserEmail

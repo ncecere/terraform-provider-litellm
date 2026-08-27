@@ -8,6 +8,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -117,7 +118,12 @@ func (d *TagsListDataSource) Read(ctx context.Context, req datasource.ReadReques
 			for _, model := range modelNames {
 				items = append(items, types.StringValue(model))
 			}
-			tag.Models, _ = types.ListValue(types.StringType, items)
+			projectedModels, diagnostics := checkedStringListValue(ctx, items, path.Root("tags").AtListIndex(len(tags)).AtName("models"))
+			resp.Diagnostics.Append(diagnostics...)
+			if resp.Diagnostics.HasError() {
+				return
+			}
+			tag.Models = projectedModels
 		}
 		table, budgetErr := parseBudgetTable(object)
 		if budgetErr == nil {

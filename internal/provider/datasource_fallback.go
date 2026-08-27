@@ -7,9 +7,9 @@ import (
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
-	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
@@ -121,12 +121,14 @@ func (d *FallbackDataSource) readFallback(ctx context.Context, data *FallbackDat
 		return err
 	}
 	data.ID = types.StringValue(data.Model.ValueString() + ":" + data.FallbackType.ValueString())
-	fallbackModels := result["fallback_models"].([]interface{})
-	list := make([]attr.Value, 0, len(fallbackModels))
-	for _, model := range fallbackModels {
-		list = append(list, types.StringValue(model.(string)))
+	fallbackModels, presence, diagnostics := strictAPIStringList(ctx, result, "fallback_models", path.Root("fallback_models"))
+	if diagnostics.HasError() {
+		return collectionProjectionError(ctx, diagnostics)
 	}
-	data.FallbackModels, _ = types.ListValue(types.StringType, list)
+	if presence != apiValuePresent {
+		return fmt.Errorf("fallback response omitted its models collection")
+	}
+	data.FallbackModels = fallbackModels
 
 	return nil
 }

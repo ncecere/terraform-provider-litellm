@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -243,7 +244,11 @@ func (r *VectorStoreResource) Create(ctx context.Context, req resource.CreateReq
 	data.VectorStoreID = types.StringValue(vsID)
 	data.ID = types.StringValue(vsID)
 
-	vsReq := r.buildVectorStoreRequest(ctx, &data)
+	vsReq, conversionDiagnostics := r.buildVectorStoreRequest(ctx, &data)
+	resp.Diagnostics.Append(conversionDiagnostics...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	vsReq["vector_store_id"] = vsID
 
 	var result map[string]interface{}
@@ -316,7 +321,11 @@ func (r *VectorStoreResource) Update(ctx context.Context, req resource.UpdateReq
 	data.VectorStoreID = state.VectorStoreID
 
 	planned := data
-	vsReq := r.buildVectorStoreUpdateRequest(ctx, &data, &state)
+	vsReq, conversionDiagnostics := r.buildVectorStoreUpdateRequest(ctx, &data, &state)
+	resp.Diagnostics.Append(conversionDiagnostics...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	mutationErr := r.client.DoRequestWithResponse(ctx, "POST", "/vector_store/update", vsReq, nil)
 
 	// The v1.98 endpoint can persist a mutation and then return an error while
@@ -377,7 +386,7 @@ func (r *VectorStoreResource) ImportState(ctx context.Context, req resource.Impo
 	}
 }
 
-func (r *VectorStoreResource) buildVectorStoreRequest(ctx context.Context, data *VectorStoreResourceModel) map[string]interface{} {
+func (r *VectorStoreResource) buildVectorStoreRequest(ctx context.Context, data *VectorStoreResourceModel) (map[string]interface{}, diag.Diagnostics) {
 	vsReq := map[string]interface{}{
 		"vector_store_name":   data.VectorStoreName.ValueString(),
 		"custom_llm_provider": data.CustomLLMProvider.ValueString(),
@@ -392,42 +401,32 @@ func (r *VectorStoreResource) buildVectorStoreRequest(ctx context.Context, data 
 		vsReq["litellm_credential_name"] = data.LiteLLMCredentialName.ValueString()
 	}
 
-	// Map fields - check IsNull, IsUnknown, and len > 0
+	// Map fields retain their historical omission and empty-map behavior.
 	if !data.VectorStoreMetadata.IsNull() && !data.VectorStoreMetadata.IsUnknown() {
-		var metadata map[string]string
-		data.VectorStoreMetadata.ElementsAs(ctx, &metadata, false)
+		metadata, _, diagnostics := strictTerraformStringMap(ctx, data.VectorStoreMetadata, path.Root("vector_store_metadata"), false)
+		if diagnostics.HasError() {
+			return nil, diagnostics
+		}
 		if len(metadata) > 0 {
-			// Convert to map[string]interface{} for JSON
-			metadataInterface := make(map[string]interface{})
-			for k, v := range metadata {
-				metadataInterface[k] = v
-			}
-			vsReq["vector_store_metadata"] = metadataInterface
+			vsReq["vector_store_metadata"] = stringMapToInterfaceMap(metadata)
 		}
 	}
 
 	if !data.LiteLLMParams.IsNull() && !data.LiteLLMParams.IsUnknown() {
-		var params map[string]string
-		data.LiteLLMParams.ElementsAs(ctx, &params, false)
-		if len(params) > 0 {
-			// Convert to map[string]interface{} for JSON
-			paramsInterface := make(map[string]interface{})
-			for k, v := range params {
-				paramsInterface[k] = v
-			}
-			vsReq["litellm_params"] = paramsInterface
-		} else {
-			vsReq["litellm_params"] = map[string]interface{}{}
+		params, _, diagnostics := strictTerraformStringMap(ctx, data.LiteLLMParams, path.Root("litellm_params"), true)
+		if diagnostics.HasError() {
+			return nil, diagnostics
 		}
+		vsReq["litellm_params"] = stringMapToInterfaceMap(params)
 	} else {
-		// API requires litellm_params even if empty
+		// API requires litellm_params even if empty.
 		vsReq["litellm_params"] = map[string]interface{}{}
 	}
 
-	return vsReq
+	return vsReq, nil
 }
 
-func (r *VectorStoreResource) buildVectorStoreUpdateRequest(ctx context.Context, data, prior *VectorStoreResourceModel) map[string]interface{} {
+func (r *VectorStoreResource) buildVectorStoreUpdateRequest(ctx context.Context, data, prior *VectorStoreResourceModel) (map[string]interface{}, diag.Diagnostics) {
 	request := map[string]interface{}{
 		"vector_store_id":     data.VectorStoreID.ValueString(),
 		"vector_store_name":   data.VectorStoreName.ValueString(),
@@ -445,11 +444,13 @@ func (r *VectorStoreResource) buildVectorStoreUpdateRequest(ctx context.Context,
 			request["vector_store_metadata"] = map[string]string{}
 		}
 	} else if !data.VectorStoreMetadata.IsUnknown() {
-		metadata := map[string]string{}
-		data.VectorStoreMetadata.ElementsAs(ctx, &metadata, false)
+		metadata, _, diagnostics := strictTerraformStringMap(ctx, data.VectorStoreMetadata, path.Root("vector_store_metadata"), false)
+		if diagnostics.HasError() {
+			return nil, diagnostics
+		}
 		request["vector_store_metadata"] = metadata
 	}
-	return request
+	return request, nil
 }
 
 func vectorStoreCreateMatches(planned, observed VectorStoreResourceModel) bool {

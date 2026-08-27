@@ -35,7 +35,10 @@ func TestFallbackBuildFallbackRequest(t *testing.T) {
 		FallbackType:   types.StringValue("general"),
 	}
 
-	req := r.buildFallbackRequest(ctx, data)
+	req, diagnostics := r.buildFallbackRequest(ctx, data)
+	if diagnostics.HasError() {
+		t.Fatalf("build fallback request: %v", diagnostics)
+	}
 
 	if req["model"] != "gpt-3.5-turbo" {
 		t.Errorf("model = %v, want gpt-3.5-turbo", req["model"])
@@ -561,7 +564,10 @@ func TestFallbackCreateSendsCorrectBody(t *testing.T) {
 		FallbackType:   types.StringValue("general"),
 	}
 
-	req := res.buildFallbackRequest(ctx, &plan)
+	req, diagnostics := res.buildFallbackRequest(ctx, &plan)
+	if diagnostics.HasError() {
+		t.Fatalf("build fallback request: %v", diagnostics)
+	}
 	if err := res.client.DoRequestWithResponse(ctx, "POST", "/fallback", req, nil); err != nil {
 		t.Fatalf("POST /fallback: %v", err)
 	}
