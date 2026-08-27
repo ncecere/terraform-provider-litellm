@@ -24,9 +24,12 @@ var _ resource.Resource = &FallbackResource{}
 var _ resource.ResourceWithImportState = &FallbackResource{}
 
 const (
-	fallbackReadMaxAttempts  = 5
-	fallbackReadInitialDelay = time.Second
-	fallbackReadMaxDelay     = 10 * time.Second
+	fallbackReadMaxAttempts    = 5
+	fallbackReadInitialDelay   = time.Second
+	fallbackReadMaxDelay       = 10 * time.Second
+	fallbackDeleteMaxAttempts  = 5
+	fallbackDeleteInitialDelay = 250 * time.Millisecond
+	fallbackDeleteMaxDelay     = 2 * time.Second
 )
 
 var supportedFallbackTypes = []string{"general", "context_window", "content_policy"}
@@ -36,10 +39,13 @@ func NewFallbackResource() resource.Resource {
 }
 
 type FallbackResource struct {
-	client           *Client
-	readMaxAttempts  int
-	readInitialDelay time.Duration
-	readMaxDelay     time.Duration
+	client             *Client
+	readMaxAttempts    int
+	readInitialDelay   time.Duration
+	readMaxDelay       time.Duration
+	deleteMaxAttempts  int
+	deleteInitialDelay time.Duration
+	deleteMaxDelay     time.Duration
 }
 
 type FallbackResourceModel struct {
@@ -176,11 +182,19 @@ func (r *FallbackResource) Delete(ctx context.Context, req resource.DeleteReques
 	}
 
 	endpoint := fallbackEndpoint(data.Model.ValueString(), data.FallbackType.ValueString())
-	if err := r.client.DoRequestWithResponse(ctx, http.MethodDelete, endpoint, nil, nil); err != nil {
-		if !IsNotFoundError(err) {
-			resp.Diagnostics.AddError("Fallback Delete Error", fallbackOperationDiagnostic("delete", err))
-			return
+	deleteErr := r.client.DoRequestWithResponse(ctx, http.MethodDelete, endpoint, nil, nil)
+
+	// LiteLLM v1.98 can return DELETE 404 while its authoritative GET still
+	// returns the fallback. Never interpret the DELETE status alone as absence:
+	// doing so would remove Terraform state while leaving live routing config.
+	if confirmationErr := r.confirmFallbackDeleted(ctx, &data, fallbackDeleteMaxAttempts); confirmationErr != nil {
+		diagnosticErr := confirmationErr
+		operation := "confirm deletion of"
+		if deleteErr != nil && !IsNotFoundError(deleteErr) {
+			diagnosticErr = deleteErr
+			operation = "delete"
 		}
+		resp.Diagnostics.AddError("Fallback Delete Unconfirmed", fallbackOperationDiagnostic(operation, diagnosticErr))
 	}
 }
 
@@ -289,6 +303,52 @@ func (r *FallbackResource) writeFallbackWithRetry(ctx context.Context, fallbackR
 
 func shouldRetryFallbackWriteError(err error) bool {
 	return IsNotFoundError(err) || isFallbackNotReadyError(err)
+}
+
+func (r *FallbackResource) confirmFallbackDeleted(ctx context.Context, data *FallbackResourceModel, maxAttempts int) error {
+	initialDelay, maxDelay := fallbackDeleteInitialDelay, fallbackDeleteMaxDelay
+	if r.deleteMaxAttempts > 0 {
+		maxAttempts = r.deleteMaxAttempts
+		initialDelay = r.deleteInitialDelay
+		maxDelay = r.deleteMaxDelay
+	}
+	if maxAttempts < 1 {
+		return fmt.Errorf("fallback deletion confirmation requires at least one attempt")
+	}
+
+	delay := initialDelay
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		observed := *data
+		err := r.readFallback(ctx, &observed)
+		if IsNotFoundError(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if attempt == maxAttempts-1 {
+			return fmt.Errorf("fallback remained present after the bounded deletion confirmation")
+		}
+		if delay > 0 {
+			timer := time.NewTimer(delay)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			}
+		}
+		if delay < maxDelay {
+			delay *= 2
+			if delay > maxDelay {
+				delay = maxDelay
+			}
+		}
+	}
+	return fmt.Errorf("fallback deletion confirmation exhausted unexpectedly")
 }
 
 func (r *FallbackResource) readFallbackWithRetry(ctx context.Context, data *FallbackResourceModel, maxAttempts int) error {
