@@ -1650,6 +1650,14 @@ func TestUnifiedAccessGroupMissingPriorKeySurfacesAuthoritativeRemoval(t *testin
 func TestUnifiedAccessGroupPartialSynchronizationAndDataSourceLeakageFiltering(t *testing.T) {
 	t.Parallel()
 
+	masked := types.ListUnknown(types.StringType)
+	if err := setSafeAssignedKeyListFromResponse(context.Background(), &masked, nil); err != nil {
+		t.Fatalf("role-masked assigned keys failed: %v", err)
+	}
+	if got := unifiedAccessGroupListStrings(t, masked); len(got) != 0 {
+		t.Fatalf("role-masked assigned keys = %#v, want known empty compatibility state", got)
+	}
+
 	valid := strings.Repeat("d", 64)
 	value := types.ListUnknown(types.StringType)
 	if err := setSafeAssignedKeyListFromResponse(context.Background(), &value, []interface{}{

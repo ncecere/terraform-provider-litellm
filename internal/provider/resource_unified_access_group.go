@@ -1745,6 +1745,16 @@ func resolveUnifiedAccessGroupUnknownsStrict(ctx context.Context, data *UnifiedA
 }
 
 func setSafeAssignedKeyListFromResponse(ctx context.Context, target *types.List, raw interface{}) error {
+	if raw == nil {
+		if target.IsUnknown() {
+			empty, diagnostics := checkedStringListValue(ctx, nil, path.Root("assigned_key_ids"))
+			if diagnostics.HasError() {
+				return collectionProjectionError(ctx, diagnostics)
+			}
+			*target = empty
+		}
+		return nil
+	}
 	values, invalid, err := rawUnifiedAccessGroupAssignedKeyRepresentations(raw)
 	if err != nil || invalid != 0 {
 		return fmt.Errorf("assigned key response contains a malformed or unsafe collection value")
