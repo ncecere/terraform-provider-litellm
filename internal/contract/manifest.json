@@ -16,7 +16,7 @@
   "provider_golden": {
     "operation_count": 108,
     "path": "internal/contractapi/testdata/provider-operations.golden.json",
-    "sha256": "40a985554ba845326e7dd7ee9d1e0c5f3a102c99f1fb6bee4810538ede72c980"
+    "sha256": "d28c670c063acdbfa8db8e5e55008bb4f64f6993309c5545f6eed49cf762d663"
   },
   "provider_operations": [
     {
@@ -680,7 +680,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_organization.go",
-          "line": 293
+          "line": 625
         }
       ],
       "method": "DELETE",
@@ -696,11 +696,15 @@
         },
         {
           "file": "internal/provider/resource_organization.go",
-          "line": 416
+          "line": 779
         },
         {
           "file": "internal/provider/resource_organization.go",
-          "line": 486
+          "line": 813
+        },
+        {
+          "file": "internal/provider/resource_organization.go",
+          "line": 890
         },
         {
           "file": "internal/provider/resource_organization_member.go",
@@ -772,7 +776,11 @@
       "evidence": [
         {
           "file": "internal/provider/resource_organization.go",
-          "line": 153
+          "line": 248
+        },
+        {
+          "file": "internal/provider/resource_organization.go",
+          "line": 250
         }
       ],
       "method": "POST",
@@ -1687,11 +1695,11 @@
       "evidence": [
         {
           "file": "internal/provider/resource_organization.go",
-          "line": 175
+          "line": 292
         },
         {
           "file": "internal/provider/resource_organization.go",
-          "line": 252
+          "line": 544
         }
       ],
       "method": "PATCH",

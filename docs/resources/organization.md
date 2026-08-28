@@ -39,6 +39,41 @@ resource "litellm_organization" "full" {
 }
 ```
 
+### Lossless structured metadata
+
+Use `metadata_json` when organization metadata contains native booleans, numbers, nulls, arrays, or nested objects. The legacy `metadata` map remains `map(string)` and retains its existing behavior.
+
+```hcl
+resource "litellm_organization" "structured" {
+  # Semantic metadata requires a caller-selected identity so an accepted create
+  # can be recovered after response loss.
+  organization_id    = "org-production-platform"
+  organization_alias = "production-platform"
+
+  metadata = {
+    owner = "platform"
+  }
+
+  metadata_json = jsonencode({
+    deployment = {
+      production = true
+      revision   = 9007199254740993
+      owner      = null
+      regions    = ["us-east", "us-west"]
+      options    = {}
+    }
+  })
+}
+```
+
+`metadata_json` is sensitive and owns only its recursively configured JSON leaves. It cannot overlap top-level keys in `metadata` or the dedicated `model_rpm_limit` and `model_tpm_limit` roots. Arrays, scalars, null, and empty objects are atomic leaves. Terraform null leaves the semantic sibling unmanaged; `{}` manages an explicitly empty semantic object.
+
+Before a metadata update, the provider performs one fresh exact-identity read, removes previously owned leaves, overlays the configured legacy, dedicated, and semantic values, and sends the complete metadata column. Unowned API siblings are preserved. If removal readback is interrupted, prior state and value-free recovery metadata are retained until a later refresh confirms either the complete new shape or the complete prior shape; partial transitions fail closed.
+
+LiteLLM v1.98 exposes no ETag, revision, or compare-and-swap field for organization metadata. A concurrent writer can therefore win or be overwritten between hydration and PATCH. Post-write verification detects divergence but cannot eliminate that bounded last-writer-wins window.
+
+Imports and upgraded states leave `metadata_json` null and unmanaged. Explicit configuration performs takeover on a later apply. Organization data sources do not expose a semantic sibling because doing so would persist arbitrary API-owned metadata, including potential credentials, into Terraform state.
+
 ### Deprecated Compatibility Defaults
 
 ```hcl
@@ -72,7 +107,8 @@ Do not configure `blocked = true` or non-empty `tags`. LiteLLM v1.98 has no orga
 - `model_rpm_limit` - (Map of Int64) Per-model RPM limits stored in organization metadata.
 - `model_tpm_limit` - (Map of Int64) Per-model TPM limits stored in organization metadata.
 - `budget_duration` - (String) Reset duration such as `"30d"`, `"1h"`, or `"7d"`.
-- `metadata` - (Map of String) Organization metadata. Use `jsonencode()` for complex values.
+- `metadata` - (Map of String) Organization metadata. Use `jsonencode()` for complex object or array values; scalar-looking strings retain string identity.
+- `metadata_json` - (String, Sensitive) Non-null JSON object for lossless heterogeneous metadata. Top-level keys cannot overlap `metadata`, `model_rpm_limit`, or `model_tpm_limit`. Configuring it during create requires `organization_id`.
 - `blocked` - (Bool, Deprecated) Compatibility-only. `false` is a no-op; new `true` configuration is rejected.
 - `tags` - (List of String, Deprecated) Compatibility-only. `[]` is a no-op; new non-empty configuration is rejected.
 
@@ -87,7 +123,7 @@ Do not configure `blocked = true` or non-empty `tags`. LiteLLM v1.98 has no orga
 terraform import litellm_organization.example <organization-id>
 ```
 
-The first authoritative import read adopts visible nested budget values, including `budget_id` and exact integer limits above `2^53`. The imported `budget_id` may remain omitted from configuration without producing a plan. After it is explicitly configured and successfully applied, even to the same value, its import omission permission is consumed and later omission is rejected as an unsupported configured removal. Normal lifecycle reads do not adopt unconfigured API defaults.
+The first authoritative import read adopts visible nested budget values, including `budget_id` and exact integer limits above `2^53`. The imported `budget_id` may remain omitted from configuration without producing a plan. After it is explicitly configured and successfully applied, even to the same value, its import omission permission is consumed and later omission is rejected as an unsupported configured removal. Normal lifecycle reads do not adopt unconfigured API defaults. Imports never adopt remote values into `metadata_json`; it remains null until explicitly configured.
 
 ## Budget and Drift Semantics
 
