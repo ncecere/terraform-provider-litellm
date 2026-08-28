@@ -712,6 +712,10 @@ func TestReadPromptWithRetrySucceedsFirstTry(t *testing.T) {
 			"litellm_params": map[string]interface{}{
 				"prompt_integration": "langfuse",
 			},
+			"prompt_info": map[string]interface{}{
+				"prompt_type": "db",
+				"environment": "development",
+			},
 		},
 	})
 	defer server.Close()

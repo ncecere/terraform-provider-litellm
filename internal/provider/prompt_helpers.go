@@ -66,7 +66,7 @@ func parsePromptImportID(value string) (promptID, environment string, err error)
 }
 
 func isPromptAbsentError(err error) bool {
-	return IsNotFoundError(err) || IsAPIErrorStatus(err, http.StatusBadRequest)
+	return IsAPIErrorStatus(err, http.StatusNotFound) || IsAPIErrorStatus(err, http.StatusBadRequest)
 }
 
 func promptScopedExists(ctx context.Context, client *Client, promptID, environment string) (bool, error) {
