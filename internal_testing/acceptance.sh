@@ -192,7 +192,7 @@ run_search_tool_external_delete_case
 run_case search_tool_json resources search_tool_full.tf
 run_case tag resources tag_minimal.tf datasources tag.tf,tags_list.tf
 run_case tag_full resources tag_full.tf
-run_case team resources team_minimal.tf datasources team.tf,teams_list.tf
+run_case team resources team_minimal.tf,team_semantic_json.tf datasources team.tf,teams_list.tf
 run_case team_block resources team_minimal.tf,team_block_minimal.tf
 run_case team_member resources team_minimal.tf,team_member_minimal.tf
 run_case team_member_add resources team_minimal.tf,team_member_add_minimal.tf

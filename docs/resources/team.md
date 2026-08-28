@@ -89,6 +89,42 @@ resource "litellm_team" "full" {
 }
 ```
 
+### Lossless structured metadata
+
+Use `metadata_json` when team metadata contains native booleans, numbers, nulls, arrays, or nested objects. The legacy `metadata` map remains `map(string)` and retains its existing behavior.
+
+```hcl
+resource "litellm_team" "structured" {
+  team_alias = "structured-metadata"
+
+  metadata = {
+    owner = "platform"
+  }
+
+  metadata_json = jsonencode({
+    deployment = {
+      production = true
+      revision   = 9007199254740993
+      owner      = null
+      regions    = ["us-east", "us-west"]
+      options    = {}
+    }
+  })
+}
+```
+
+`metadata_json` is sensitive and owns only its recursively configured JSON leaves. It cannot overlap top-level keys in `metadata` or the dedicated `tags`, `guardrails`, `prompts`, `model_rpm_limit`, `model_tpm_limit`, `rpm_limit_type`, and `tpm_limit_type` roots. The server-owned `team_member_budget_id` root is also reserved. Arrays, scalars, null, and empty objects are atomic leaves. Terraform null leaves the semantic sibling unmanaged; `{}` manages an explicitly empty semantic object.
+
+Before a metadata update, the provider performs one fresh exact-identity read, removes previously owned leaves, overlays the configured legacy, dedicated, and semantic values, and sends the complete metadata column. Unowned API siblings are preserved. Interrupted updates retain prior state and value-free recovery metadata until a later refresh confirms the complete new or prior shape; partial transitions fail closed.
+
+LiteLLM stores sensitive callback variables as ciphertext. The provider can preserve exact owned callback leaves from prior plaintext state, but it blocks complete metadata replacement when unowned or structurally ambiguous ciphertext would need to be replayed. Avoid managing the same `logging` or `callback_settings` subtree through both this resource and LiteLLM callback endpoints.
+
+LiteLLM owns `team_member_budget_id`. If that root exists remotely, a metadata update is allowed only when the same team update includes a non-null member-default value that makes LiteLLM reinsert the relation. The provider never sends the ID as caller metadata and blocks metadata updates combined only with member-default clears.
+
+LiteLLM v1.98 exposes no ETag, revision, or compare-and-swap field for team metadata. A concurrent writer can therefore win or be overwritten between hydration and update. Post-write verification detects divergence but cannot eliminate that bounded last-writer-wins window.
+
+Imports and upgraded states leave `metadata_json` null and unmanaged. Explicit configuration performs takeover on a later apply. Team data sources do not expose a semantic sibling because doing so would persist arbitrary API-owned metadata into Terraform state.
+
 ### With Router Settings (Fallbacks)
 
 Configure team-level fallback chains that override global fallback settings. When a request uses a key belonging to this team, these fallbacks take precedence over the global configuration. The resolution order is **Key > Team > Global**.
@@ -142,7 +178,8 @@ The following arguments are supported:
 * `team_member_budget_duration` - (Optional) Recurring reset interval for the default member budget. Use a positive integer followed by `s`, `m`, `h`, `d`, or `w` (for example, `30d`, `24h`, or `1w`); one of the exact aliases `hourly`, `daily`, `weekly`, or `monthly`; or exactly `1mo`. Zero values, other month counts such as `2mo` or `12mo`, case variants, and malformed aliases or units are rejected. LiteLLM applies it to new/default membership budgets and may backfill memberships without a budget; private member overrides are preserved. Configure `litellm_team_member.budget_duration` for per-member control.
 * `team_member_rpm_limit` - (Optional) Default requests per minute limit for each team member.
 * `team_member_tpm_limit` - (Optional) Default tokens per minute limit for each team member.
-* `metadata` - (Optional) A map of metadata pairs for the team. Values are strings; use `jsonencode()` for complex values (objects, arrays) — they will be sent as native JSON to the API.
+* `metadata` - (Optional) Legacy metadata map. Values are strings; use `jsonencode()` for historically supported objects and arrays.
+* `metadata_json` - (Optional, Sensitive) Non-null JSON object for lossless heterogeneous metadata. Its top-level keys cannot overlap legacy, dedicated, or server-owned metadata roots.
 * `model_aliases` - (Optional) A map of alias names to model names.
 * `model_rpm_limit` - (Optional) A map of model names to per-model RPM limits.
 * `model_tpm_limit` - (Optional) A map of model names to per-model TPM limits.
@@ -163,6 +200,7 @@ In addition to the arguments above, the following attributes are exported:
 The following attributes are both Optional and Computed (they are read back from the API if not explicitly set):
 
 * `metadata`
+* `metadata_json`
 * `access_group_ids`
 * `models`
 * `model_aliases`
@@ -176,7 +214,7 @@ The following attributes are both Optional and Computed (they are read back from
 
 ## Import
 
-Teams can be imported using the team ID:
+Teams can be imported using the team ID. Imports never adopt remote values into `metadata_json`; it remains null until explicitly configured.
 
 ```shell
 terraform import litellm_team.example <team-id>

@@ -24,6 +24,10 @@ var teamManagedMetadataKeys = map[string]struct{}{
 // without mutating prior. Keeping projection transactional is important: a
 // malformed nested relation must not publish a partially refreshed state.
 func projectTeamInfoResponse(ctx context.Context, prior TeamResourceModel, result map[string]interface{}, imported bool) (TeamResourceModel, error) {
+	return projectTeamInfoResponseWithSemantic(ctx, prior, result, imported, teamSemanticOwnership{provenance: teamUnconfiguredSemanticProvenance()})
+}
+
+func projectTeamInfoResponseWithSemantic(ctx context.Context, prior TeamResourceModel, result map[string]interface{}, imported bool, ownership teamSemanticOwnership) (TeamResourceModel, error) {
 	teamInfo, wrapped, err := unwrapTeamInfoResponse(result)
 	if err != nil {
 		return prior, err
@@ -80,6 +84,30 @@ func projectTeamInfoResponse(ctx context.Context, prior TeamResourceModel, resul
 	metadata, metadataPresence, err := optionalObjectAt(teamInfo, "metadata")
 	if err != nil {
 		return prior, err
+	}
+	if metadataPresence != apiValuePresent {
+		metadata = map[string]interface{}{}
+	}
+	semanticMode := ownership.fresh || ownership.provenance.Configured || ownership.acceptedCreate || ownership.pending.any()
+	if semanticMode && (validateSemanticDictionaryValue(ctx, metadata) != nil || validateModelSemanticDictionaryNumbers(ctx, metadata) != nil) {
+		return prior, errSemanticDictionaryTraversal
+	}
+	if ownership.expectMemberBudgetID {
+		value, present := metadata["team_member_budget_id"]
+		text, ok := value.(string)
+		if !present || !ok || text == "" {
+			return prior, fmt.Errorf("invalid team response: server-owned member budget relation was not reinserted")
+		}
+	}
+	if ownership.pending.any() {
+		var reconcile keySemanticPendingReconcile
+		ownership, reconcile, err = resolveTeamSemanticPending(ctx, metadata, ownership)
+		if err != nil {
+			return prior, errSemanticDictionaryTraversal
+		}
+		if ownership.reconcile != nil {
+			*ownership.reconcile = reconcile
+		}
 	}
 	modelTable, modelTablePresence, err := optionalObjectAt(teamInfo, "litellm_model_table")
 	if err != nil {
@@ -207,11 +235,24 @@ func projectTeamInfoResponse(ctx context.Context, prior TeamResourceModel, resul
 		*field.target = projectTeamList(field.prior, value, fieldPresence)
 	}
 
-	metadataState, err := projectTeamMetadata(ctx, prior.Metadata, metadata, metadataPresence, imported)
+	var metadataState types.Map
+	if semanticMode {
+		metadataState, err = projectTeamLegacyMetadataWithSemantic(ctx, prior.Metadata, metadata, ownership, imported)
+	} else {
+		metadataState, err = projectTeamMetadata(ctx, prior.Metadata, metadata, metadataPresence, imported)
+	}
 	if err != nil {
 		return prior, err
 	}
+	metadataJSON := types.StringNull()
+	if semanticMode {
+		metadataJSON, err = projectTeamSemanticMetadata(ctx, prior.MetadataJSON, metadata, ownership)
+		if err != nil {
+			return prior, err
+		}
+	}
 	next.Metadata = metadataState
+	next.MetadataJSON = metadataJSON
 
 	aliases, aliasesPresence, err := teamModelAliases(ctx, modelTable, modelTablePresence)
 	if err != nil {
@@ -226,6 +267,19 @@ func projectTeamInfoResponse(ctx context.Context, prior TeamResourceModel, resul
 	modelTPMOwned := imported || knownTeamMap(prior.ModelTPMLimit)
 	if err := updateInt64MapFromAPI(&next.ModelTPMLimit, teamInfo, modelTPMOwned, modelTPMOwned, "metadata", "model_tpm_limit"); err != nil {
 		return prior, err
+	}
+
+	if ownership.pendingMemberFields["team_member_budget"] {
+		next.TeamMemberBudget = prior.TeamMemberBudget
+	}
+	if ownership.pendingMemberFields["team_member_budget_duration"] {
+		next.MemberBudgetDuration = prior.MemberBudgetDuration
+	}
+	if ownership.pendingMemberFields["team_member_rpm_limit"] {
+		next.TeamMemberRPMLimit = prior.TeamMemberRPMLimit
+	}
+	if ownership.pendingMemberFields["team_member_tpm_limit"] {
+		next.TeamMemberTPMLimit = prior.TeamMemberTPMLimit
 	}
 
 	routerSettings, routerPresence, err := optionalObjectAt(teamInfo, "router_settings")
