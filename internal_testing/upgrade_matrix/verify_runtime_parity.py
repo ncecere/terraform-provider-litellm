@@ -305,6 +305,16 @@ REVIEWED_ISSUE218_TEAM_PATHS = (
 REVIEWED_ISSUE218_TEAM_RUNTIME_DIFF_SHA256 = (
     "d63312ad12f026c12b3b865ae17ee74bacce960dfe7bae7ed72a2b75a32b68ad"
 )
+REVIEWED_ISSUE202_ACCESS_GROUP_BASE = "7ae6611f4cc83be6d9b1b3756faf2bcbbb77ccc9"
+REVIEWED_ISSUE202_ACCESS_GROUP_PATHS = (
+    "internal/provider/access_group_safe_read_protocol_test.go",
+    "internal/provider/access_group_safe_read_test.go",
+    "internal/provider/datasource_access_group.go",
+    "internal/provider/resource_access_group.go",
+)
+REVIEWED_ISSUE202_ACCESS_GROUP_RUNTIME_DIFF_SHA256 = (
+    "fce5c422ec5dcd9859337d8a2376193d4f6f8b0337f397a2d82bfbf7c4e391ae"
+)
 
 
 def git(*args: str) -> str:
@@ -454,6 +464,12 @@ def main() -> int:
             and digest == REVIEWED_ISSUE218_TEAM_RUNTIME_DIFF_SHA256
         ):
             reviewed = "issue218-team"
+        elif (
+            comparison == REVIEWED_ISSUE202_ACCESS_GROUP_BASE
+            and changed_paths == REVIEWED_ISSUE202_ACCESS_GROUP_PATHS
+            and digest == REVIEWED_ISSUE202_ACCESS_GROUP_RUNTIME_DIFF_SHA256
+        ):
+            reviewed = "issue202-access-group"
         if reviewed is not None:
             print(
                 f"Provider runtime parity verified: reviewed={reviewed} "
