@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
@@ -107,6 +108,32 @@ func TestPromptOrdinaryRefreshRetriesTransientSequenceAndProjectsAtomically(t *t
 func TestPromptSafeReadStatusAndProjectionSequences(t *testing.T) {
 	const id, environment = "prompt-sequence", "production"
 	policy := testReadPolicy(4)
+
+	t.Run("retry after is bounded", func(t *testing.T) {
+		var calls atomic.Int32
+		var waited []time.Duration
+		client := testRetryClient(func(request *http.Request) (*http.Response, error) {
+			if calls.Add(1) == 1 {
+				return searchToolTestResponse(request, http.StatusTooManyRequests, []byte(`{"detail":"throttled-secret"}`), http.Header{"Retry-After": []string{"60"}}), nil
+			}
+			return searchToolTestResponse(request, http.StatusOK, promptSafeReadBody(t, id, environment), nil), nil
+		})
+		hooks := safeReadRetryHooks{
+			now: time.Now,
+			sleep: func(_ context.Context, duration time.Duration) error {
+				waited = append(waited, duration)
+				return nil
+			},
+			randomUnit: func() float64 { return 0 },
+		}
+		data := promptSafeReadModel(id, environment)
+		if err := refreshPromptWithTestPolicy(context.Background(), client, &data, false, policy, hooks); err != nil {
+			t.Fatal(err)
+		}
+		if calls.Load() != 2 || len(waited) != 1 || waited[0] != policy.maxRetryAfter {
+			t.Fatalf("calls=%d waited=%v max=%v", calls.Load(), waited, policy.maxRetryAfter)
+		}
+	})
 
 	t.Run("incomplete 404 retries", func(t *testing.T) {
 		var calls atomic.Int32
