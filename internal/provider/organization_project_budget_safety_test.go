@@ -195,7 +195,7 @@ func TestOrganizationProjectStructuredModelBudgetSurfaceIsDeferred(t *testing.T)
 	var organizationSchema, projectSchema resource.SchemaResponse
 	(&OrganizationResource{}).Schema(context.Background(), resource.SchemaRequest{}, &organizationSchema)
 	(&ProjectResource{}).Schema(context.Background(), resource.SchemaRequest{}, &projectSchema)
-	if organizationSchema.Schema.Version != 0 || projectSchema.Schema.Version != 0 {
+	if organizationSchema.Schema.Version != 1 || projectSchema.Schema.Version != 0 {
 		t.Fatalf("schema versions changed: organization=%d project=%d", organizationSchema.Schema.Version, projectSchema.Schema.Version)
 	}
 	for name, response := range map[string]resource.SchemaResponse{"organization": organizationSchema, "project": projectSchema} {

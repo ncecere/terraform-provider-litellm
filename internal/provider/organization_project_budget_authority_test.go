@@ -381,7 +381,7 @@ func typedOrganizationBudgetModel() OrganizationResourceModel {
 	return OrganizationResourceModel{
 		ID: types.StringNull(), OrganizationID: types.StringNull(), OrganizationAlias: types.StringValue("acme"), Models: types.ListNull(types.StringType), BudgetID: types.StringNull(),
 		MaxBudget: types.Float64Null(), SoftBudget: types.Float64Null(), TPMLimit: types.Int64Null(), RPMLimit: types.Int64Null(), MaxParallelRequests: types.Int64Null(),
-		ModelRPMLimit: types.MapNull(types.Int64Type), ModelTPMLimit: types.MapNull(types.Int64Type), BudgetDuration: types.StringNull(), Metadata: types.MapNull(types.StringType),
+		ModelRPMLimit: types.MapNull(types.Int64Type), ModelTPMLimit: types.MapNull(types.Int64Type), BudgetDuration: types.StringNull(), Metadata: types.MapNull(types.StringType), MetadataJSON: types.StringNull(),
 		Blocked: types.BoolNull(), Tags: types.ListNull(types.StringType), CreatedAt: types.StringNull(),
 	}
 }

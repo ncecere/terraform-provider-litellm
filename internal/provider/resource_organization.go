@@ -3,10 +3,12 @@ package provider
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"net/url"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/mapvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -14,11 +16,13 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
 )
 
 var _ resource.Resource = &OrganizationResource{}
 var _ resource.ResourceWithImportState = &OrganizationResource{}
 var _ resource.ResourceWithModifyPlan = &OrganizationResource{}
+var _ resource.ResourceWithUpgradeState = &OrganizationResource{}
 
 func NewOrganizationResource() resource.Resource { return &OrganizationResource{} }
 
@@ -39,6 +43,7 @@ type OrganizationResourceModel struct {
 	ModelTPMLimit       types.Map     `tfsdk:"model_tpm_limit"`
 	BudgetDuration      types.String  `tfsdk:"budget_duration"`
 	Metadata            types.Map     `tfsdk:"metadata"`
+	MetadataJSON        types.String  `tfsdk:"metadata_json"`
 	Blocked             types.Bool    `tfsdk:"blocked"`
 	Tags                types.List    `tfsdk:"tags"`
 	CreatedAt           types.String  `tfsdk:"created_at"`
@@ -51,6 +56,7 @@ func (r *OrganizationResource) Metadata(_ context.Context, req resource.Metadata
 func (r *OrganizationResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		Description: "Manages a LiteLLM organization. Budget controls are read authoritatively from LiteLLM v1.98's nested litellm_budget_table relation.",
+		Version:     1,
 		Attributes: map[string]schema.Attribute{
 			"id":                    schema.StringAttribute{Description: "The unique identifier for this organization (same as organization_id).", Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
 			"organization_id":       schema.StringAttribute{Description: "The organization ID. If not specified, one will be generated.", Optional: true, Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown(), stringplanmodifier.RequiresReplace()}},
@@ -66,6 +72,7 @@ func (r *OrganizationResource) Schema(_ context.Context, _ resource.SchemaReques
 			"model_tpm_limit":       schema.MapAttribute{Description: "The TPM limit per model. Updated through v1.98's transactional complete-metadata replacement so owned keys can clear safely.", Optional: true, Computed: true, ElementType: types.Int64Type, Validators: []validator.Map{mapvalidator.NoNullValues()}},
 			"budget_duration":       schema.StringAttribute{Description: "Budget reset duration (for example, '30d' or '1h').", Optional: true},
 			"metadata":              schema.MapAttribute{Description: "Metadata for the organization.", Optional: true, Computed: true, ElementType: types.StringType},
+			"metadata_json":         schema.StringAttribute{Description: "Additional organization metadata as a semantic JSON object.", Optional: true, Computed: true, Sensitive: true, Validators: []validator.String{keySemanticDictionaryValidator{}}},
 			"blocked":               schema.BoolAttribute{Description: "Deprecated compatibility field. LiteLLM v1.98 has no persistent organization blocked column; false is accepted as a no-op and true is rejected.", Optional: true, Computed: true, DeprecationMessage: "LiteLLM v1.98 does not persist organization blocked state. Remove this argument; use supported team/project controls instead."},
 			"tags":                  schema.ListAttribute{Description: "Deprecated compatibility field. LiteLLM v1.98 has no persistent organization tags column; an empty list is accepted as a no-op and non-empty values are rejected.", Optional: true, Computed: true, ElementType: types.StringType, DeprecationMessage: "LiteLLM v1.98 does not persist organization tags. Remove this argument or store labels in metadata."},
 			"created_at":            schema.StringAttribute{Description: "Timestamp when the organization was created.", Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
@@ -114,6 +121,49 @@ func (r *OrganizationResource) ModifyPlan(ctx context.Context, req resource.Modi
 			importedBudget = string(marker) == "true"
 		}
 		preserveOrganizationProjectBudgetID(ctx, "Organization", state.BudgetID, config.BudgetID, plan.BudgetID, importedBudget, resp)
+		if config.BudgetID.IsNull() {
+			plan.BudgetID = state.BudgetID
+		}
+
+		raw, diagnostics := req.Private.GetKey(ctx, organizationMetadataJSONProvenancePrivateKey)
+		resp.Diagnostics.Append(diagnostics...)
+		provenance, err := decodeOrganizationSemanticProvenance(ctx, raw, state.MetadataJSON)
+		if err != nil {
+			resp.Diagnostics.AddAttributeError(path.Root("metadata_json"), "Invalid Semantic Dictionary Provenance", "Private ownership state is missing, malformed, or inconsistent with public state. No organization plan was produced.")
+			return
+		}
+		if config.MetadataJSON.IsUnknown() {
+			plan.MetadataJSON = types.StringUnknown()
+		} else {
+			prepared, err := prepareOrganizationSemanticDictionary(ctx, config.MetadataJSON, config.Metadata)
+			if err != nil {
+				resp.Diagnostics.AddAttributeError(path.Root("metadata_json"), "Invalid Semantic Organization Dictionary", "The JSON object is malformed, overlaps another managed organization metadata surface, or cannot be persisted exactly. No organization plan was produced.")
+				return
+			}
+			changed, err := organizationSemanticNeedsChange(ctx, config.MetadataJSON, state.MetadataJSON, provenance)
+			if err != nil {
+				resp.Diagnostics.AddAttributeError(path.Root("metadata_json"), "Invalid Semantic Organization Dictionary", "The semantic value or private ownership could not be compared safely. No organization plan was produced.")
+				return
+			}
+			if !provenance.Configured && config.MetadataJSON.IsNull() {
+				plan.MetadataJSON = types.StringNull()
+			}
+			if !changed && provenance.Configured && knownString(config.MetadataJSON) {
+				plan.MetadataJSON = state.MetadataJSON
+			}
+			if changed && config.MetadataJSON.IsNull() {
+				plan.MetadataJSON = types.StringUnknown()
+			}
+			if prepared.object != nil && config.Metadata.IsNull() {
+				filtered, filterErr := excludeKeyLegacyJSONTopLevelKeys(ctx, plan.Metadata, prepared.object)
+				if filterErr != nil {
+					resp.Diagnostics.AddAttributeError(path.Root("metadata_json"), "Invalid Semantic Organization Dictionary", "The legacy metadata projection could not be produced safely. No organization plan was produced.")
+					return
+				}
+				plan.Metadata = filtered
+			}
+		}
+		resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 	}
 
 	if !config.Blocked.IsNull() && !config.Blocked.IsUnknown() {
@@ -139,55 +189,139 @@ func (r *OrganizationResource) ModifyPlan(ctx context.Context, req resource.Modi
 }
 
 func (r *OrganizationResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
-	var data OrganizationResourceModel
+	var data, config OrganizationResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
+	if req.Config.Raw.Type() == nil {
+		config = data
+	} else {
+		resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+	}
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	if config.MetadataJSON.IsUnknown() {
+		resp.Diagnostics.AddError("Unknown Semantic Organization Dictionary", "metadata_json must be known before creating an organization. No request was sent.")
+		return
+	}
+	prepared, err := prepareOrganizationSemanticDictionary(ctx, config.MetadataJSON, config.Metadata)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Semantic Organization Dictionary", "The JSON object is malformed, overlaps another managed organization metadata surface, or cannot be persisted exactly. No request was sent.")
+		return
+	}
+	if prepared.provenance.Configured && (!knownString(config.OrganizationID) || config.OrganizationID.ValueString() == "") {
+		resp.Diagnostics.AddAttributeError(path.Root("organization_id"), "Explicit Organization Identity Required", "metadata_json requires a known nonempty caller-selected organization_id so an accepted create can be recovered safely. No request was sent.")
+		return
+	}
+	data.MetadataJSON = config.MetadataJSON
 	organizationRequest, err := r.buildOrganizationCreateRequest(ctx, &data)
 	if err != nil {
-		resp.Diagnostics.AddError("Invalid Organization Request", err.Error())
+		resp.Diagnostics.AddError("Invalid Organization Request", "The organization request could not be converted safely. No request was sent.")
 		return
 	}
-	var result map[string]interface{}
-	if err := r.client.DoRequestWithResponse(ctx, "POST", "/organization/new", organizationRequest, &result); err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to create organization: %s", err))
+	if err := overlayOrganizationCreateSemantic(ctx, organizationRequest, prepared); err != nil {
+		resp.Diagnostics.AddError("Invalid Semantic Organization Dictionary", "The complete metadata document could not be composed safely. No request was sent.")
 		return
 	}
-	object, err := unwrapObjectEnvelope(result, "organization_info", "data")
+	privateValue, err := encodeOrganizationSemanticProvenance(ctx, prepared.provenance)
 	if err != nil {
-		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		resp.Diagnostics.AddError("Invalid Semantic Dictionary Provenance", "Semantic ownership could not be encoded safely. No request was sent.")
 		return
 	}
-	organizationID, ok := object["organization_id"].(string)
-	if !ok || organizationID == "" {
-		resp.Diagnostics.AddError("Invalid API Response", "Organization create response did not contain a nonempty organization_id.")
-		return
-	}
-	data.OrganizationID = types.StringValue(organizationID)
-	data.ID = types.StringValue(organizationID)
 
-	// Organization creation stores budget_duration but does not initialize
-	// budget_reset_at. Re-send the duration through v2's transactional writer.
+	requestedIdentity := config.OrganizationID.ValueString()
+	retainAcceptedCreate := func(title, detail string) {
+		recoveryCtx := context.WithoutCancel(ctx)
+		recovery := partialOrganizationSemanticRecoveryState(data, requestedIdentity)
+		unconfigured, encodeErr := encodeOrganizationSemanticProvenance(recoveryCtx, organizationUnconfiguredSemanticProvenance())
+		if encodeErr == nil && resp.Private != nil {
+			resp.Diagnostics.Append(resp.Private.SetKey(recoveryCtx, organizationMetadataJSONProvenancePrivateKey, unconfigured)...)
+			resp.Diagnostics.Append(resp.Private.SetKey(recoveryCtx, organizationAcceptedCreateRecoveryPrivateKey, []byte("true"))...)
+		}
+		resp.Diagnostics.Append(resp.State.Set(recoveryCtx, &recovery)...)
+		resp.Diagnostics.AddError(title, detail)
+	}
+
+	var result map[string]interface{}
+	accepted := false
+	var createErr error
+	if prepared.provenance.Configured {
+		accepted, createErr = r.client.doRequestWithResponse(ctx, http.MethodPost, "/organization/new", organizationRequest, &result)
+	} else {
+		createErr = r.client.DoRequestWithResponse(ctx, http.MethodPost, "/organization/new", organizationRequest, &result)
+	}
+	if createErr != nil {
+		if prepared.provenance.Configured && organizationSemanticCreateRecoveryRequired(accepted, createErr) {
+			if accepted {
+				retainAcceptedCreate("Organization Creation Not Confirmed", "LiteLLM accepted the organization create, but its response could not be decoded safely. Only the caller-selected identity was retained for authoritative recovery.")
+			} else {
+				retainAcceptedCreate("Organization Creation Outcome Uncertain", "The organization create was dispatched, but response loss prevented the provider from determining whether it committed. Only the caller-selected identity was retained for authoritative recovery.")
+			}
+		} else if prepared.provenance.Configured {
+			resp.Diagnostics.AddError("Organization Creation Failed", "LiteLLM did not confirm acceptance of the organization create. Response and transport details were omitted.")
+		} else {
+			resp.Diagnostics.AddError("Organization Creation Failed", "The organization create request failed. Response, identity, URL, and transport details were omitted.")
+		}
+		return
+	}
+	if prepared.provenance.Configured {
+		if validateOrganizationCreateResponseIdentity(result, requestedIdentity) != nil {
+			retainAcceptedCreate("Organization Creation Identity Not Confirmed", "LiteLLM accepted the organization create, but the response did not confirm the caller-selected identity. Only that identity was retained for authoritative recovery.")
+			return
+		}
+		data.OrganizationID = types.StringValue(requestedIdentity)
+		data.ID = types.StringValue(requestedIdentity)
+	} else {
+		object, unwrapErr := unwrapObjectEnvelope(result, "organization_info", "data")
+		if unwrapErr != nil {
+			resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned a malformed organization create response. Response and identity details were omitted.")
+			return
+		}
+		organizationID, ok := object["organization_id"].(string)
+		if !ok || organizationID == "" {
+			resp.Diagnostics.AddError("Invalid API Response", "Organization create response did not contain a nonempty organization_id.")
+			return
+		}
+		data.OrganizationID = types.StringValue(organizationID)
+		data.ID = types.StringValue(organizationID)
+	}
+
+	organizationID := data.OrganizationID.ValueString()
 	if knownString(data.BudgetDuration) {
 		var resetResult map[string]interface{}
 		endpoint := endpointWithPathSegment("/v2/organization/", organizationID, "")
-		if err := r.client.DoRequestWithResponse(ctx, "PATCH", endpoint, map[string]interface{}{"budget_duration": data.BudgetDuration.ValueString()}, &resetResult); err != nil {
-			resp.Diagnostics.AddError("Budget Reset Initialization Error", fmt.Sprintf("Organization was created, but LiteLLM could not initialize its budget reset schedule: %s", err))
-			resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+		if err := r.client.DoRequestWithResponse(ctx, http.MethodPatch, endpoint, map[string]interface{}{"budget_duration": data.BudgetDuration.ValueString()}, &resetResult); err != nil {
+			if prepared.provenance.Configured {
+				retainAcceptedCreate("Budget Reset Initialization Not Confirmed", "LiteLLM accepted the organization create, but reset initialization could not be confirmed. Only the caller-selected identity was retained for recovery.")
+			} else {
+				resp.Diagnostics.AddError("Budget Reset Initialization Error", "The organization was created, but budget reset initialization failed. Response, identity, URL, and transport details were omitted.")
+				resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+			}
 			return
 		}
-		resetObject, err := unwrapObjectEnvelope(resetResult, "organization_info", "data")
-		if err != nil || validateImportedObjectIdentity(true, "organization reset initialization", resetObject, "organization_id", organizationID) != nil {
-			resp.Diagnostics.AddError("Budget Reset Initialization Error", "Organization was created and LiteLLM accepted reset initialization, but the response did not confirm the matching organization identity.")
-			resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+		resetObject, unwrapErr := unwrapObjectEnvelope(resetResult, "organization_info", "data")
+		if unwrapErr != nil || validateImportedObjectIdentity(true, "organization reset initialization", resetObject, "organization_id", organizationID) != nil {
+			if prepared.provenance.Configured {
+				retainAcceptedCreate("Budget Reset Initialization Not Confirmed", "LiteLLM accepted the organization create, but reset initialization did not confirm the same identity. Only the caller-selected identity was retained for recovery.")
+			} else {
+				resp.Diagnostics.AddError("Budget Reset Initialization Error", "Organization was created and LiteLLM accepted reset initialization, but the response did not confirm the matching organization identity.")
+				resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+			}
 			return
 		}
 	}
-	if err := r.readOrganization(ctx, &data); err != nil {
-		resp.Diagnostics.AddError("Read Error", fmt.Sprintf("Organization was created but its authoritative state could not be read: %s", err))
-		resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	ownership := organizationSemanticOwnership{provenance: prepared.provenance, fresh: prepared.provenance.Configured, confirmCurrentValue: prepared.provenance.Configured}
+	if err := r.readOrganizationWithOwnership(ctx, &data, false, ownership); err != nil {
+		if prepared.provenance.Configured {
+			retainAcceptedCreate("Semantic Organization Dictionary Not Confirmed", "LiteLLM accepted the organization create, but one authoritative identity-bound read did not confirm its metadata. Only the caller-selected identity was retained for recovery.")
+		} else {
+			resp.Diagnostics.AddError("Organization Create Readback Failed", "The organization was created, but authoritative readback failed. Response, identity, URL, and transport details were omitted.")
+			resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+		}
 		return
+	}
+	if resp.Private != nil {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, organizationMetadataJSONProvenancePrivateKey, privateValue)...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, organizationAcceptedCreateRecoveryPrivateKey, nil)...)
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -195,36 +329,157 @@ func (r *OrganizationResource) Create(ctx context.Context, req resource.CreateRe
 func (r *OrganizationResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	var data OrganizationResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
-	marker, privateDiagnostics := req.Private.GetKey(ctx, numericImportedPrivateKey)
-	resp.Diagnostics.Append(privateDiagnostics...)
+	var importMarker, provenanceRaw, acceptedRaw, pendingRaw []byte
+	var importDiagnostics, provenanceDiagnostics, acceptedDiagnostics, pendingDiagnostics diag.Diagnostics
+	if req.Private != nil {
+		importMarker, importDiagnostics = req.Private.GetKey(ctx, numericImportedPrivateKey)
+		provenanceRaw, provenanceDiagnostics = req.Private.GetKey(ctx, organizationMetadataJSONProvenancePrivateKey)
+		acceptedRaw, acceptedDiagnostics = req.Private.GetKey(ctx, organizationAcceptedCreateRecoveryPrivateKey)
+		pendingRaw, pendingDiagnostics = req.Private.GetKey(ctx, organizationPendingUpdatePrivateKey)
+	}
+	resp.Diagnostics.Append(importDiagnostics...)
+	resp.Diagnostics.Append(provenanceDiagnostics...)
+	resp.Diagnostics.Append(acceptedDiagnostics...)
+	resp.Diagnostics.Append(pendingDiagnostics...)
+	if len(acceptedRaw) != 0 && string(acceptedRaw) != "true" {
+		resp.Diagnostics.AddError("Invalid Organization Recovery State", "Accepted-create recovery state is malformed. No organization read was performed.")
+	}
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	imported := string(marker) == "true"
-	if err := r.readOrganizationWithNumericOwnership(ctx, &data, imported); err != nil {
+	provenance, err := decodeOrganizationSemanticProvenance(ctx, provenanceRaw, data.MetadataJSON)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("metadata_json"), "Invalid Semantic Dictionary Provenance", "Private ownership is missing, malformed, or inconsistent with public state. No organization read was performed.")
+		return
+	}
+	pending, err := decodeKeySemanticPendingTransition(ctx, pendingRaw)
+	if err != nil || pending.Config.Active || pending.Permissions.Active {
+		resp.Diagnostics.AddError("Invalid Organization Recovery State", "Pending semantic-update recovery state is malformed. No organization read was performed.")
+		return
+	}
+	reconcile := keySemanticPendingReconcile{}
+	ownership := organizationSemanticOwnership{
+		provenance: provenance, pending: pending, reconcile: &reconcile,
+		acceptedCreate: string(acceptedRaw) == "true", fresh: len(acceptedRaw) != 0 || pending.any(),
+	}
+	imported := string(importMarker) == "true"
+	if err := r.readOrganizationWithOwnership(ctx, &data, imported, ownership); err != nil {
 		if IsNotFoundError(err) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read organization: %s", err))
+		resp.Diagnostics.AddError("Organization Read Failed", "The authoritative organization response could not be validated or projected safely. Response, identity, metadata, and transport details were omitted.")
 		return
 	}
+	if reconcile.Present && reconcile.Committed {
+		provenance = reconcile.Effective.metadata
+	}
+	encoded, err := encodeOrganizationSemanticProvenance(ctx, provenance)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Semantic Dictionary Provenance", "Semantic ownership could not be encoded safely. No organization state was produced.")
+		return
+	}
+	if resp.Private != nil {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, organizationMetadataJSONProvenancePrivateKey, encoded)...)
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
-	if !resp.Diagnostics.HasError() && imported {
-		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, nil)...)
+	if !resp.Diagnostics.HasError() {
+		if imported {
+			resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, nil)...)
+		}
+		if string(acceptedRaw) == "true" {
+			resp.Diagnostics.Append(resp.Private.SetKey(ctx, organizationAcceptedCreateRecoveryPrivateKey, nil)...)
+		}
+		if reconcile.Present {
+			resp.Diagnostics.Append(resp.Private.SetKey(ctx, organizationPendingUpdatePrivateKey, nil)...)
+		}
 	}
 }
 
 func (r *OrganizationResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var plan, state OrganizationResourceModel
+	var plan, state, config OrganizationResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if req.Config.Raw.Type() == nil {
+		config = plan
+	} else {
+		resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+	}
+	var acceptedRaw, pendingRaw []byte
+	var acceptedDiagnostics, pendingDiagnostics diag.Diagnostics
+	if req.Private != nil {
+		acceptedRaw, acceptedDiagnostics = req.Private.GetKey(ctx, organizationAcceptedCreateRecoveryPrivateKey)
+		pendingRaw, pendingDiagnostics = req.Private.GetKey(ctx, organizationPendingUpdatePrivateKey)
+	}
+	resp.Diagnostics.Append(acceptedDiagnostics...)
+	resp.Diagnostics.Append(pendingDiagnostics...)
+	if len(pendingRaw) != 0 {
+		resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+		resp.Diagnostics.AddError("Organization Recovery Required", "A prior semantic metadata update has not been reconciled. Refresh must determine whether its shape transition committed before another update can be sent.")
+		return
+	}
+	if string(acceptedRaw) == "true" {
+		resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+		resp.Diagnostics.AddError("Organization Recovery Required", "A prior organization create was accepted without complete readback. Refresh must reconcile its caller-selected identity before another update can be sent.")
+		return
+	}
+	if len(acceptedRaw) != 0 {
+		resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+		resp.Diagnostics.AddError("Invalid Organization Recovery State", "Accepted-create recovery state is malformed. No organization update was sent.")
+		return
+	}
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	if config.MetadataJSON.IsUnknown() {
+		resp.Diagnostics.AddError("Unknown Semantic Organization Dictionary", "metadata_json must be known before updating an organization. No request was sent.")
+		return
+	}
+	var provenanceRaw []byte
+	var provenanceDiagnostics diag.Diagnostics
+	if req.Private != nil {
+		provenanceRaw, provenanceDiagnostics = req.Private.GetKey(ctx, organizationMetadataJSONProvenancePrivateKey)
+	}
+	resp.Diagnostics.Append(provenanceDiagnostics...)
+	priorProvenance, err := decodeOrganizationSemanticProvenance(ctx, provenanceRaw, state.MetadataJSON)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("metadata_json"), "Invalid Semantic Dictionary Provenance", "Private ownership is missing, malformed, or inconsistent with public state. No organization update was sent.")
+		return
+	}
+	prepared, err := prepareOrganizationSemanticDictionary(ctx, config.MetadataJSON, config.Metadata)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Semantic Organization Dictionary", "The JSON object is malformed, overlaps another managed organization metadata surface, or cannot be persisted exactly. No request was sent.")
+		return
+	}
+	semanticChanged, err := organizationSemanticNeedsChange(ctx, config.MetadataJSON, state.MetadataJSON, priorProvenance)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("metadata_json"), "Invalid Semantic Organization Dictionary", "The semantic value or private ownership could not be compared safely. No request was sent.")
+		return
+	}
+	confirmationOwnership, err := prepared.updateOwnership(ctx, priorProvenance)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Semantic Dictionary Provenance", "Semantic shape-transition ownership could not be validated safely. No request was sent.")
+		return
+	}
+	pendingTransition := pendingOrganizationSemanticTransition(confirmationOwnership)
+	var pendingPrivate []byte
+	if pendingTransition.any() {
+		pendingPrivate, err = encodeKeySemanticPendingTransition(ctx, pendingTransition)
+		if err != nil {
+			resp.Diagnostics.AddError("Invalid Semantic Dictionary Provenance", "Pending semantic shape ownership could not be encoded safely. No request was sent.")
+			return
+		}
+	}
+	newProvenanceRaw, err := encodeOrganizationSemanticProvenance(ctx, prepared.provenance)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Semantic Dictionary Provenance", "Semantic ownership could not be encoded safely. No request was sent.")
+		return
+	}
+
 	plan.ID, plan.OrganizationID = state.ID, state.OrganizationID
+	plan.MetadataJSON = config.MetadataJSON
 	if state.BudgetID.IsUnknown() || plan.BudgetID.IsUnknown() || !state.BudgetID.Equal(plan.BudgetID) {
-		resp.Diagnostics.AddError("Unsafe Organization Budget Reassociation", "The organization budget_id changed or remained unknown despite the plan safety check; no API call was made.")
+		resp.Diagnostics.AddError("Unsafe Organization Budget Reassociation", "The organization budget association changed or remained unknown despite the plan safety check; no API call was made.")
 		return
 	}
 	if !plan.Blocked.IsNull() && !plan.Blocked.IsUnknown() && plan.Blocked.ValueBool() && !plan.Blocked.Equal(state.Blocked) {
@@ -237,47 +492,104 @@ func (r *OrganizationResource) Update(ctx context.Context, req resource.UpdateRe
 	}
 	updateRequest, err := buildOrganizationUpdateRequest(ctx, &plan, &state)
 	if err != nil {
-		resp.Diagnostics.AddError("Invalid Organization Request", err.Error())
+		resp.Diagnostics.AddError("Invalid Organization Request", "The organization update could not be converted safely. No request was sent.")
 		return
 	}
-	if organizationUpdateChangesBudget(updateRequest) {
-		if _, err := r.lookupOrganizationBudgetID(ctx, state.OrganizationID.ValueString(), state.BudgetID); err != nil {
-			resp.Diagnostics.AddError("Organization Budget Lookup Error", err.Error())
+	legacyChanged := !plan.Metadata.IsUnknown() && !plan.Metadata.Equal(state.Metadata)
+	rpmChanged := !plan.ModelRPMLimit.IsUnknown() && !plan.ModelRPMLimit.Equal(state.ModelRPMLimit)
+	tpmChanged := !plan.ModelTPMLimit.IsUnknown() && !plan.ModelTPMLimit.Equal(state.ModelTPMLimit)
+	metadataChanged := semanticChanged || legacyChanged || rpmChanged || tpmChanged
+	delete(updateRequest, "metadata")
+
+	var hydrated map[string]interface{}
+	if metadataChanged {
+		hydrated, err = r.getFreshExactOrganizationInfo(ctx, state.OrganizationID.ValueString())
+		if err != nil {
+			resp.Diagnostics.AddError("Organization Metadata Hydration Failed", "The complete identity-bound metadata document could not be read safely. No update request was sent.")
 			return
 		}
+		remoteMetadata, err := organizationMetadataObject(ctx, hydrated)
+		if err != nil {
+			resp.Diagnostics.AddError("Organization Metadata Hydration Failed", "The complete metadata document was malformed or not persistable exactly. No update request was sent.")
+			return
+		}
+		replacement, err := composeOrganizationMetadataReplacement(ctx, remoteMetadata, plan, state, priorProvenance, prepared)
+		if err != nil {
+			resp.Diagnostics.AddError("Organization Metadata Composition Failed", "The complete metadata replacement could not be composed safely. No update request was sent.")
+			return
+		}
+		updateRequest["metadata"] = replacement
+	}
+	if organizationUpdateChangesBudget(updateRequest) {
+		if hydrated != nil {
+			if err := validateOrganizationBudgetFromInfo(hydrated, state.BudgetID); err != nil {
+				resp.Diagnostics.AddError("Organization Budget Lookup Error", "The authoritative budget association could not be validated. No update request was sent.")
+				return
+			}
+		} else if _, err := r.lookupOrganizationBudgetID(ctx, state.OrganizationID.ValueString(), state.BudgetID); err != nil {
+			resp.Diagnostics.AddError("Organization Budget Lookup Error", "The authoritative budget association could not be validated. No update request was sent; response and identity details were omitted.")
+			return
+		}
+	}
+
+	retainPrior := func(localCtx context.Context) {
+		if len(pendingPrivate) != 0 && resp.Private != nil {
+			resp.Diagnostics.Append(resp.Private.SetKey(localCtx, organizationPendingUpdatePrivateKey, pendingPrivate)...)
+		}
+		resp.Diagnostics.Append(resp.State.Set(localCtx, &state)...)
 	}
 	if len(updateRequest) > 0 {
 		var result map[string]interface{}
 		endpoint := endpointWithPathSegment("/v2/organization/", state.OrganizationID.ValueString(), "")
-		if err := r.client.DoRequestWithResponse(ctx, "PATCH", endpoint, updateRequest, &result); err != nil {
-			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to update organization: %s", err))
+		if err := r.client.DoRequestWithResponse(ctx, http.MethodPatch, endpoint, updateRequest, &result); err != nil {
+			if metadataChanged {
+				retainPrior(context.WithoutCancel(ctx))
+				resp.Diagnostics.AddError("Organization Update Not Confirmed", "The metadata-bearing update may have been dispatched, but its outcome was not confirmed. Prior public and private state were retained.")
+			} else {
+				resp.Diagnostics.AddError("Organization Update Failed", "The organization update failed. Response, identity, URL, and transport details were omitted.")
+			}
 			return
 		}
-		object, err := unwrapObjectEnvelope(result, "organization_info", "data")
-		if err != nil {
-			resp.Diagnostics.AddError("Invalid API Response", err.Error())
-			return
-		}
-		if err := validateImportedObjectIdentity(true, "organization update", object, "organization_id", state.OrganizationID.ValueString()); err != nil {
-			resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		object, unwrapErr := unwrapObjectEnvelope(result, "organization_info", "data")
+		if unwrapErr != nil || validateImportedObjectIdentity(true, "organization update", object, "organization_id", state.OrganizationID.ValueString()) != nil {
+			if metadataChanged {
+				retainPrior(context.WithoutCancel(ctx))
+				resp.Diagnostics.AddError("Organization Update Not Confirmed", "LiteLLM accepted the metadata-bearing update, but its response did not confirm the same identity. Prior public and private state were retained.")
+			} else {
+				resp.Diagnostics.AddError("Invalid API Response", "LiteLLM did not return the matching organization identity.")
+			}
 			return
 		}
 	}
 	desired := plan
 	seedOrganizationClearOwnership(&plan, &state)
-	if err := r.readOrganization(ctx, &plan); err != nil {
-		resp.Diagnostics.AddError("Read Error", fmt.Sprintf("Organization update was accepted but authoritative read-back failed; prior state was retained: %s", err))
+	readOwnership := organizationSemanticOwnership{provenance: priorProvenance}
+	if metadataChanged {
+		readOwnership = confirmationOwnership
+	}
+	if err := r.readOrganizationWithOwnership(ctx, &plan, false, readOwnership); err != nil {
+		if metadataChanged {
+			retainPrior(context.WithoutCancel(ctx))
+			resp.Diagnostics.AddError("Organization Metadata Update Not Confirmed", "LiteLLM accepted the update, but one authoritative identity-bound read did not confirm the complete metadata transition. Prior public and private state were retained.")
+		} else {
+			resp.Diagnostics.AddError("Organization Update Readback Failed", "The organization update was accepted, but authoritative readback failed. Prior state was retained; response, identity, URL, and transport details were omitted.")
+		}
 		return
 	}
 	if field, ok := organizationChangedFieldMismatch(&desired, &state, &plan); ok {
+		if metadataChanged {
+			retainPrior(context.WithoutCancel(ctx))
+		}
 		resp.Diagnostics.AddError("Organization Update Did Not Converge", fmt.Sprintf("LiteLLM accepted the update but authoritative read-back did not match planned %s; prior Terraform state was retained.", field))
 		return
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 	if !resp.Diagnostics.HasError() && resp.Private != nil {
-		pending, diagnostics := resp.Private.GetKey(ctx, organizationProjectBudgetOwnershipPendingPrivateKey)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, organizationMetadataJSONProvenancePrivateKey, newProvenanceRaw)...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, organizationPendingUpdatePrivateKey, nil)...)
+		pendingBudget, diagnostics := resp.Private.GetKey(ctx, organizationProjectBudgetOwnershipPendingPrivateKey)
 		resp.Diagnostics.Append(diagnostics...)
-		if !resp.Diagnostics.HasError() && string(pending) == "true" {
+		if !resp.Diagnostics.HasError() && string(pendingBudget) == "true" {
 			resp.Diagnostics.Append(resp.Private.SetKey(ctx, organizationProjectImportedBudgetPrivateKey, nil)...)
 			resp.Diagnostics.Append(resp.Private.SetKey(ctx, organizationProjectBudgetOwnershipPendingPrivateKey, nil)...)
 		}
@@ -287,20 +599,71 @@ func (r *OrganizationResource) Update(ctx context.Context, req resource.UpdateRe
 func (r *OrganizationResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	var data OrganizationResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
+	var acceptedRaw, pendingRaw []byte
+	var acceptedDiagnostics, pendingDiagnostics diag.Diagnostics
+	if req.Private != nil {
+		acceptedRaw, acceptedDiagnostics = req.Private.GetKey(ctx, organizationAcceptedCreateRecoveryPrivateKey)
+		pendingRaw, pendingDiagnostics = req.Private.GetKey(ctx, organizationPendingUpdatePrivateKey)
+	}
+	resp.Diagnostics.Append(acceptedDiagnostics...)
+	resp.Diagnostics.Append(pendingDiagnostics...)
+	if len(pendingRaw) != 0 {
+		resp.Diagnostics.AddError("Organization Recovery Required", "A prior semantic metadata update has not been reconciled. Refresh must reconcile it before deletion can be sent.")
+		return
+	}
+	if string(acceptedRaw) == "true" {
+		resp.Diagnostics.AddError("Organization Recovery Required", "A prior organization create was accepted without complete readback. Refresh must reconcile it before deletion can be sent.")
+		return
+	}
+	if len(acceptedRaw) != 0 {
+		resp.Diagnostics.AddError("Invalid Organization Recovery State", "Accepted-create recovery state is malformed. No organization deletion was sent.")
+		return
+	}
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	if err := r.client.DoRequestWithResponse(ctx, "DELETE", "/organization/delete", map[string]interface{}{"organization_ids": []string{data.OrganizationID.ValueString()}}, nil); err != nil && !IsNotFoundError(err) {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to delete organization: %s", err))
+	if err := r.client.DoRequestWithResponse(ctx, http.MethodDelete, "/organization/delete", map[string]interface{}{"organization_ids": []string{data.OrganizationID.ValueString()}}, nil); err != nil && !IsNotFoundError(err) {
+		resp.Diagnostics.AddError("Organization Delete Failed", "The organization deletion failed. Response, identity, URL, and transport details were omitted.")
 	}
 }
 
 func (r *OrganizationResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	provenance, err := encodeOrganizationSemanticProvenance(ctx, organizationUnconfiguredSemanticProvenance())
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Semantic Dictionary Provenance", "Import ownership could not be initialized safely.")
+		return
+	}
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("organization_id"), req.ID)...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("metadata_json"), types.StringNull())...)
 	if resp.Private != nil {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, organizationMetadataJSONProvenancePrivateKey, provenance)...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, organizationAcceptedCreateRecoveryPrivateKey, nil)...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, organizationPendingUpdatePrivateKey, nil)...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, []byte("true"))...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, organizationProjectImportedBudgetPrivateKey, []byte("true"))...)
+	}
+}
+
+// UpgradeState performs the direct v0-to-v1 migration. It adds only a typed
+// JSON null and never adopts metadata returned by LiteLLM.
+func (r *OrganizationResource) UpgradeState(context.Context) map[int64]resource.StateUpgrader {
+	return map[int64]resource.StateUpgrader{
+		0: {
+			PriorSchema: nil,
+			StateUpgrader: func(_ context.Context, req resource.UpgradeStateRequest, resp *resource.UpgradeStateResponse) {
+				if req.RawState == nil {
+					resp.Diagnostics.AddError("Unable to Upgrade State", "Prior organization state is unavailable.")
+					return
+				}
+				upgraded, err := marshalOrganizationUpgrade(req.RawState.JSON)
+				if err != nil {
+					resp.Diagnostics.AddError("Unable to Upgrade State", "Prior organization state could not be decoded safely.")
+					return
+				}
+				resp.DynamicValue = &tfprotov6.DynamicValue{JSON: upgraded}
+			},
+		},
 	}
 }
 
@@ -440,6 +803,38 @@ func (r *OrganizationResource) lookupOrganizationBudgetID(ctx context.Context, o
 	return budgetID, nil
 }
 
+func (r *OrganizationResource) getFreshExactOrganizationInfo(ctx context.Context, organizationID string) (map[string]interface{}, error) {
+	if organizationID == "" {
+		return nil, errSemanticDictionaryTraversal
+	}
+	var result map[string]interface{}
+	query := url.Values{"organization_id": []string{organizationID}}
+	endpoint := endpointWithQuery("/organization/info", query)
+	if err := r.client.doFreshRequestWithResponse(ctx, http.MethodGet, endpoint, nil, &result); err != nil {
+		return nil, err
+	}
+	object, err := unwrapObjectEnvelope(result, "organization_info", "data")
+	if err != nil || validateImportedObjectIdentity(true, "organization", object, "organization_id", organizationID) != nil {
+		return nil, errSemanticDictionaryTraversal
+	}
+	return object, nil
+}
+
+func validateOrganizationBudgetFromInfo(object map[string]interface{}, configured types.String) error {
+	table, err := parseBudgetTable(object)
+	if err != nil {
+		return err
+	}
+	budgetID, presence, err := budgetTableID(object, table)
+	if err != nil || presence != apiValuePresent {
+		return errSemanticDictionaryTraversal
+	}
+	if knownString(configured) && configured.ValueString() != budgetID {
+		return errSemanticDictionaryTraversal
+	}
+	return nil
+}
+
 func organizationMetadataPayload(ctx context.Context, data *OrganizationResourceModel) (map[string]interface{}, error) {
 	metadata := map[string]interface{}{}
 	if !data.Metadata.IsNull() && !data.Metadata.IsUnknown() {
@@ -469,29 +864,52 @@ func organizationMetadataPayload(ctx context.Context, data *OrganizationResource
 }
 
 func (r *OrganizationResource) readOrganization(ctx context.Context, data *OrganizationResourceModel) error {
-	return r.readOrganizationWithNumericOwnership(ctx, data, false)
+	return r.readOrganizationWithOwnership(ctx, data, false, organizationSemanticOwnership{provenance: organizationUnconfiguredSemanticProvenance()})
 }
 
 func (r *OrganizationResource) readOrganizationWithNumericOwnership(ctx context.Context, data *OrganizationResourceModel, imported bool) error {
+	return r.readOrganizationWithOwnership(ctx, data, imported, organizationSemanticOwnership{provenance: organizationUnconfiguredSemanticProvenance()})
+}
+
+func (r *OrganizationResource) readOrganizationWithOwnership(ctx context.Context, data *OrganizationResourceModel, imported bool, ownership organizationSemanticOwnership) error {
 	organizationID := data.OrganizationID.ValueString()
 	if organizationID == "" {
 		organizationID = data.ID.ValueString()
 	}
 	if organizationID == "" {
-		return fmt.Errorf("organization ID is empty, cannot read organization")
+		return errSemanticDictionaryTraversal
 	}
-	var result map[string]interface{}
-	query := url.Values{"organization_id": []string{organizationID}}
-	endpoint := endpointWithQuery("/organization/info", query)
-	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
-		return err
+	var object map[string]interface{}
+	var err error
+	if ownership.fresh {
+		object, err = r.getFreshExactOrganizationInfo(ctx, organizationID)
+	} else {
+		var result map[string]interface{}
+		query := url.Values{"organization_id": []string{organizationID}}
+		endpoint := endpointWithQuery("/organization/info", query)
+		if err = r.client.DoRequestWithResponse(ctx, http.MethodGet, endpoint, nil, &result); err == nil {
+			object, err = unwrapObjectEnvelope(result, "organization_info", "data")
+			if err == nil {
+				err = validateImportedObjectIdentity(true, "organization", object, "organization_id", organizationID)
+			}
+		}
 	}
-	object, err := unwrapObjectEnvelope(result, "organization_info", "data")
 	if err != nil {
 		return err
 	}
-	if err := validateImportedObjectIdentity(true, "organization", object, "organization_id", organizationID); err != nil {
+	metadataObject, err := organizationMetadataObject(ctx, object)
+	if err != nil {
 		return err
+	}
+	if ownership.pending.any() {
+		var reconcile keySemanticPendingReconcile
+		ownership, reconcile, err = resolveOrganizationSemanticPending(ctx, metadataObject, ownership)
+		if err != nil {
+			return errSemanticDictionaryTraversal
+		}
+		if ownership.reconcile != nil {
+			*ownership.reconcile = reconcile
+		}
 	}
 	if err := requireImportedStringField(imported, "organization", object, "organization_alias"); err != nil {
 		return err
@@ -567,12 +985,13 @@ func (r *OrganizationResource) readOrganizationWithNumericOwnership(ctx context.
 	if err := updateBudgetDuration(&data.BudgetDuration, table, durationOwned, durationOwned); err != nil {
 		return err
 	}
-	nextMetadata, metadataPresence, err := stringMapFromAPI(object, "metadata", "model_rpm_limit", "model_tpm_limit")
+	nextMetadata, err := projectOrganizationLegacyMetadata(ctx, data.Metadata, metadataObject, ownership)
 	if err != nil {
 		return err
 	}
-	if metadataPresence != apiValuePresent {
-		nextMetadata = types.MapNull(types.StringType)
+	nextJSON, err := projectOrganizationSemanticMetadata(ctx, data.MetadataJSON, metadataObject, ownership)
+	if err != nil {
+		return err
 	}
 	nextRPM, nextTPM := data.ModelRPMLimit, data.ModelTPMLimit
 	rpmOwned := imported || knownMap(data.ModelRPMLimit)
@@ -583,7 +1002,7 @@ func (r *OrganizationResource) readOrganizationWithNumericOwnership(ctx context.
 	if err := updateInt64MapFromAPI(&nextTPM, object, tpmOwned, tpmOwned, "metadata", "model_tpm_limit"); err != nil {
 		return err
 	}
-	data.Metadata, data.ModelRPMLimit, data.ModelTPMLimit = nextMetadata, nextRPM, nextTPM
+	data.Metadata, data.MetadataJSON, data.ModelRPMLimit, data.ModelTPMLimit = nextMetadata, nextJSON, nextRPM, nextTPM
 
 	// These fields do not exist in the v1.98 organization request/table/response
 	// contracts. Ignore equally named API extras rather than adopting phantoms.
@@ -639,7 +1058,7 @@ func organizationChangedFieldMismatch(desired, prior, actual *OrganizationResour
 		{"tpm_limit", desired.TPMLimit, prior.TPMLimit, actual.TPMLimit}, {"rpm_limit", desired.RPMLimit, prior.RPMLimit, actual.RPMLimit},
 		{"max_parallel_requests", desired.MaxParallelRequests, prior.MaxParallelRequests, actual.MaxParallelRequests},
 		{"budget_duration", desired.BudgetDuration, prior.BudgetDuration, actual.BudgetDuration},
-		{"metadata", desired.Metadata, prior.Metadata, actual.Metadata}, {"model_rpm_limit", desired.ModelRPMLimit, prior.ModelRPMLimit, actual.ModelRPMLimit}, {"model_tpm_limit", desired.ModelTPMLimit, prior.ModelTPMLimit, actual.ModelTPMLimit},
+		{"metadata", desired.Metadata, prior.Metadata, actual.Metadata}, {"metadata_json", desired.MetadataJSON, prior.MetadataJSON, actual.MetadataJSON}, {"model_rpm_limit", desired.ModelRPMLimit, prior.ModelRPMLimit, actual.ModelRPMLimit}, {"model_tpm_limit", desired.ModelTPMLimit, prior.ModelTPMLimit, actual.ModelTPMLimit},
 	} {
 		if !field.desired.IsUnknown() && !field.desired.Equal(field.prior) && !field.desired.Equal(field.actual) {
 			return field.name, true

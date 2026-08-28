@@ -664,7 +664,7 @@
     "evidence": [
       {
         "file": "internal/provider/resource_organization.go",
-        "line": 293
+        "line": 625
       }
     ]
   },
@@ -682,11 +682,15 @@
       },
       {
         "file": "internal/provider/resource_organization.go",
-        "line": 416
+        "line": 779
       },
       {
         "file": "internal/provider/resource_organization.go",
-        "line": 486
+        "line": 813
+      },
+      {
+        "file": "internal/provider/resource_organization.go",
+        "line": 890
       },
       {
         "file": "internal/provider/resource_organization_member.go",
@@ -756,7 +760,11 @@
     "evidence": [
       {
         "file": "internal/provider/resource_organization.go",
-        "line": 153
+        "line": 248
+      },
+      {
+        "file": "internal/provider/resource_organization.go",
+        "line": 250
       }
     ]
   },
@@ -1673,11 +1681,11 @@
     "evidence": [
       {
         "file": "internal/provider/resource_organization.go",
-        "line": 175
+        "line": 292
       },
       {
         "file": "internal/provider/resource_organization.go",
-        "line": 252
+        "line": 544
       }
     ]
   },

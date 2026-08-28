@@ -266,6 +266,18 @@ REVIEWED_ISSUE218_KEY_PATHS = (
 REVIEWED_ISSUE218_KEY_RUNTIME_DIFF_SHA256 = (
     "66c163dbc6140c04270f8acfa9658c23522194b39f850beaae032cf61b183cd2"
 )
+REVIEWED_ISSUE218_ORGANIZATION_BASE = "c9c585008a52b4938241654cec2eac26f617e929"
+REVIEWED_ISSUE218_ORGANIZATION_PATHS = (
+    "internal/provider/organization_project_budget_authority_test.go",
+    "internal/provider/organization_project_budget_safety_test.go",
+    "internal/provider/resource_organization.go",
+    "internal/provider/resource_organization_semantic_dictionary.go",
+    "internal/provider/resource_organization_semantic_dictionary_protocol_test.go",
+    "internal/provider/resource_organization_semantic_dictionary_test.go",
+)
+REVIEWED_ISSUE218_ORGANIZATION_RUNTIME_DIFF_SHA256 = (
+    "ecee569303fea90c085584c8f15a9a928cb93ae7c10cd7c38b0f0f30c46dfff3"
+)
 
 
 def git(*args: str) -> str:
@@ -397,6 +409,12 @@ def main() -> int:
             and digest == REVIEWED_ISSUE218_KEY_RUNTIME_DIFF_SHA256
         ):
             reviewed = "issue218-key"
+        elif (
+            comparison == REVIEWED_ISSUE218_ORGANIZATION_BASE
+            and changed_paths == REVIEWED_ISSUE218_ORGANIZATION_PATHS
+            and digest == REVIEWED_ISSUE218_ORGANIZATION_RUNTIME_DIFF_SHA256
+        ):
+            reviewed = "issue218-organization"
         if reviewed is not None:
             print(
                 f"Provider runtime parity verified: reviewed={reviewed} "
