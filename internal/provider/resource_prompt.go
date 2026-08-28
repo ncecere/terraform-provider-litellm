@@ -539,7 +539,12 @@ func (r *PromptResource) readPromptWithTransport(ctx context.Context, data *Prom
 	if err != nil {
 		return err
 	}
-	return projectPromptResourceAPIObject(data, rawResult, promptID, environment, adoptImportedDefaults)
+	if err := projectPromptResourceAPIObject(data, rawResult, promptID, environment, adoptImportedDefaults); err != nil {
+		// Create and Update include this error in diagnostics, so do not return
+		// response field names or other response-derived details here.
+		return fmt.Errorf("prompt response validation failed")
+	}
+	return nil
 }
 
 func isPromptInfoAbsenceCandidate(err error) bool {
