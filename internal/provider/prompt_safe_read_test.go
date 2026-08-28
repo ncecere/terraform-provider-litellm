@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"reflect"
 	"sync/atomic"
 	"syscall"
@@ -191,37 +190,6 @@ func TestPromptConfirmationReadRemainsSingleAttempt(t *testing.T) {
 	data := promptSafeReadModel(id, environment)
 	if err := resource.readPromptWithRetry(context.Background(), &data, 8, false); err == nil || calls.Load() != 1 {
 		t.Fatalf("calls=%d err=%v", calls.Load(), err)
-	}
-}
-
-func TestPromptScopedVersionsAbsenceIsExactAndSingleAttempt(t *testing.T) {
-	for _, test := range []struct {
-		name   string
-		status int
-		body   string
-		absent bool
-		err    bool
-	}{
-		{name: "exact 404", status: http.StatusNotFound, body: `{"detail":"missing"}`, absent: true},
-		{name: "misleading 400", status: http.StatusBadRequest, body: `{"detail":"404 not found"}`, err: true},
-		{name: "empty success is not proof", status: http.StatusOK, body: `{"prompts":[]}`},
-		{name: "nonempty success", status: http.StatusOK, body: `{"prompts":[{}]}`},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			var calls atomic.Int32
-			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-				calls.Add(1)
-				writer.Header().Set("Content-Type", "application/json")
-				writer.WriteHeader(test.status)
-				_, _ = writer.Write([]byte(test.body))
-			}))
-			defer server.Close()
-			resource := &PromptResource{client: &Client{APIBase: server.URL, APIKey: "admin", HTTPClient: server.Client()}}
-			absent, err := resource.promptScopedVersionsAbsent(context.Background(), "prompt", "production")
-			if absent != test.absent || (err != nil) != test.err || calls.Load() != 1 {
-				t.Fatalf("absent=%t err=%v calls=%d", absent, err, calls.Load())
-			}
-		})
 	}
 }
 

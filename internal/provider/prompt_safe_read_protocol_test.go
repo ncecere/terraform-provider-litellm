@@ -143,16 +143,13 @@ func TestPromptResourceSafeReadProtocolSequences(t *testing.T) {
 		}
 	})
 
-	for _, failureMode := range []string{"exhaustion", "terminal-403", "malformed", "mismatch", "malformed-late", "versions-nonempty", "versions-empty", "versions-error"} {
+	for _, failureMode := range []string{"exhaustion", "terminal-403", "malformed", "mismatch", "malformed-late", "absence-400", "absence-404", "versions-nonempty", "versions-empty", "versions-error"} {
 		failureMode := failureMode
 		t.Run(failureMode+" retains exact state", func(t *testing.T) {
 			response, infoCalls, versionCalls := read(failureMode)
 			wantInfo, wantVersions := 1, 0
 			if failureMode == "exhaustion" {
 				wantInfo = defaultSafeReadRetryPolicy.maxAttempts
-			}
-			if strings.HasPrefix(failureMode, "versions-") {
-				wantVersions = 1
 			}
 			text := agentProtocolDiagnosticsText(response.Diagnostics)
 			if !accessGroupProtocolDiagnosticsHaveError(response.Diagnostics) || infoCalls != wantInfo || versionCalls != wantVersions {
@@ -166,19 +163,6 @@ func TestPromptResourceSafeReadProtocolSequences(t *testing.T) {
 				if strings.Contains(text, forbidden) {
 					t.Fatalf("diagnostic exposed %q: %s", forbidden, text)
 				}
-			}
-		})
-	}
-
-	for _, absenceMode := range []string{"absence-400", "absence-404"} {
-		t.Run(absenceMode+" requires versions 404", func(t *testing.T) {
-			response, infoCalls, versionCalls := read(absenceMode)
-			if accessGroupProtocolDiagnosticsHaveError(response.Diagnostics) || infoCalls != 1 || versionCalls != 1 {
-				t.Fatalf("info=%d versions=%d diagnostics=%s", infoCalls, versionCalls, agentProtocolDiagnosticsText(response.Diagnostics))
-			}
-			value, err := response.NewState.Unmarshal(schema.ValueType())
-			if err != nil || !value.IsNull() {
-				t.Fatalf("state=%v err=%v", value, err)
 			}
 		})
 	}

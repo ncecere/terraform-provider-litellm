@@ -213,19 +213,10 @@ func (r *PromptResource) Read(ctx context.Context, req resource.ReadRequest, res
 		return
 	}
 	imported := string(importedMarker) == "true"
-	promptID := data.PromptID.ValueString()
-	if promptID == "" {
-		promptID = data.ID.ValueString()
-	}
-	environment := promptEnvironment(data.Environment.ValueString())
 	if err := r.refreshPrompt(ctx, &data, imported); err != nil {
-		if isPromptInfoAbsenceCandidate(err) {
-			absent, absenceErr := r.promptScopedVersionsAbsent(ctx, promptID, environment)
-			if absenceErr == nil && absent {
-				resp.State.RemoveResource(ctx)
-				return
-			}
-		}
+		// LiteLLM v1.98 does not expose whether a singular 400/404 or a
+		// versions-route 404 came from Prisma or its process-local registry.
+		// No current response can therefore prove durable absence safely.
 		resp.Diagnostics.AddError("Prompt Read Error", "Unable to read and validate the scoped prompt. Response and request details were omitted.")
 		return
 	}
@@ -545,23 +536,6 @@ func (r *PromptResource) readPromptWithTransport(ctx context.Context, data *Prom
 		return fmt.Errorf("prompt response validation failed")
 	}
 	return nil
-}
-
-func isPromptInfoAbsenceCandidate(err error) bool {
-	return IsAPIErrorStatus(err, http.StatusBadRequest) || IsAPIErrorStatus(err, http.StatusNotFound)
-}
-
-// promptScopedVersionsAbsent performs one direct authoritative DB-history read.
-// At v1.98 only its exact 404 proves that the scoped prompt is absent.
-func (r *PromptResource) promptScopedVersionsAbsent(ctx context.Context, promptID, environment string) (bool, error) {
-	_, err := fetchEnvelopeListObjects(ctx, r.client, promptVersionsEndpoint(promptID, environment), "prompts", "prompt version item")
-	if IsAPIErrorStatus(err, http.StatusNotFound) {
-		return true, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return false, nil
 }
 
 // projectPromptResourceAPIObject validates every modeled response field before
