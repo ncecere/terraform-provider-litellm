@@ -238,8 +238,17 @@ func TestProjectSemanticAcceptedCreateRequiresExactTeam(t *testing.T) {
 			}
 		})
 	}
-	includeTeam, remoteTeam = true, teamID
+	includeTeam, remoteTeam = true, "wrong-team"
 	data := partialProjectSemanticRecoveryState(ProjectResourceModel{TeamID: types.StringValue(teamID)}, id)
+	if err := resource.readProjectWithOwnership(ctx, &data, false, projectSemanticOwnership{provenance: projectUnconfiguredSemanticProvenance()}); err == nil {
+		t.Fatal("ordinary authoritative read adopted a different team")
+	}
+	includeTeam, remoteTeam = true, teamID
+	data = partialProjectSemanticRecoveryState(ProjectResourceModel{TeamID: types.StringValue(teamID), BudgetID: types.StringValue("shared-budget")}, id)
+	if err := resource.readProjectWithOwnership(ctx, &data, false, projectSemanticOwnership{provenance: projectUnconfiguredSemanticProvenance(), acceptedCreate: true, fresh: true}); err == nil {
+		t.Fatal("accepted recovery cleared an unconfirmed shared budget association")
+	}
+	data = partialProjectSemanticRecoveryState(ProjectResourceModel{TeamID: types.StringValue(teamID)}, id)
 	if err := resource.readProjectWithOwnership(ctx, &data, false, projectSemanticOwnership{provenance: projectUnconfiguredSemanticProvenance(), acceptedCreate: true, fresh: true}); err != nil || data.TeamID.ValueString() != teamID {
 		t.Fatalf("exact team confirmation failed: team=%s err=%v", data.TeamID, err)
 	}

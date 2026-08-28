@@ -1082,18 +1082,19 @@ func (r *ProjectResource) readProjectWithOwnership(ctx context.Context, data *Pr
 			*ownership.reconcile = reconcile
 		}
 	}
-	if err := requireImportedStringField(imported || ownership.acceptedCreate, "project", object, "team_id"); err != nil {
-		return err
+	remoteTeam, teamPresence, err := apiValueAt(object, "team_id")
+	if err != nil || teamPresence != apiValuePresent {
+		return errSemanticDictionaryTraversal
 	}
-	if ownership.acceptedCreate {
-		remoteTeam, presence, err := apiValueAt(object, "team_id")
-		if err != nil || presence != apiValuePresent || !knownString(data.TeamID) {
-			return errSemanticDictionaryTraversal
-		}
-		teamID, ok := remoteTeam.(string)
-		if !ok || teamID == "" || teamID != data.TeamID.ValueString() {
-			return errSemanticDictionaryTraversal
-		}
+	teamID, ok := remoteTeam.(string)
+	if !ok || teamID == "" {
+		return errSemanticDictionaryTraversal
+	}
+	// team_id is required public configuration and cannot be repaired through
+	// the project update endpoint. Every authoritative read must confirm the
+	// configured association instead of silently adopting a reassignment.
+	if knownString(data.TeamID) && teamID != data.TeamID.ValueString() {
+		return errSemanticDictionaryTraversal
 	}
 	original := data
 	next := *data
@@ -1112,10 +1113,14 @@ func (r *ProjectResource) readProjectWithOwnership(ctx context.Context, data *Pr
 			return fmt.Errorf("project budget reassociation detected: state budget_id %q, API budget_id %q", data.BudgetID.ValueString(), remoteBudgetID)
 		}
 		data.BudgetID = types.StringValue(remoteBudgetID)
-	} else if budgetOwned && budgetPresence != apiValuePresent {
-		data.BudgetID = types.StringNull()
-	} else if !budgetOwned && data.BudgetID.IsUnknown() {
-		// Do not adopt LiteLLM's generated budget for an ordinary omitted create.
+	} else if knownString(data.BudgetID) && budgetPresence != apiValuePresent {
+		// A retained budget identity represents configured/imported authority.
+		// Missing readback cannot prove that association and project update cannot
+		// repair it, so preserve prior state by failing the transactional read.
+		return errSemanticDictionaryTraversal
+	} else if imported || data.BudgetID.IsUnknown() {
+		// Imports may authoritatively establish that no shared budget exists. An
+		// ordinary omitted create must likewise not adopt LiteLLM's generated ID.
 		data.BudgetID = types.StringNull()
 	}
 	data.ID = types.StringValue(projectID)

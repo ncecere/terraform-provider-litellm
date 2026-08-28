@@ -596,10 +596,45 @@ func TestProjectSemanticMalformedIdentityMetadataPrivateAndCancellationProtocol(
 	}
 }
 
+func TestProjectSemanticSuccessfulCreateRequiresExactTeamProtocol(t *testing.T) {
+	ctx := context.Background()
+	const configuredTeam = "team-configured-create"
+	var projectID string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		switch {
+		case request.Method == http.MethodPost && request.URL.Path == "/project/new":
+			var body map[string]interface{}
+			_ = json.NewDecoder(request.Body).Decode(&body)
+			projectID, _ = body["project_id"].(string)
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{"project_id": projectID, "team_id": configuredTeam, "metadata": map[string]interface{}{}, "litellm_budget_table": map[string]interface{}{}})
+		case request.Method == http.MethodGet && request.URL.Path == "/project/info":
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{"project_id": projectID, "team_id": "wrong-team", "models": []interface{}{}, "metadata": map[string]interface{}{}, "litellm_budget_table": map[string]interface{}{}})
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+	protocolServer, schemas := configuredImportProtocolServer(t, ctx, server.URL)
+	schema := schemas.ResourceSchemas["litellm_project"]
+	nullState := accessGroupProtocolDynamicValue(t, schema, tftypes.NewValue(schema.ValueType(), nil))
+	values := map[string]interface{}{"team_id": configuredTeam}
+	config, planned := projectSemanticProtocolPlan(t, ctx, protocolServer, schema, values, nullState, keySemanticCreateProposed(t, schema, values), nil)
+	created, err := protocolServer.ApplyResourceChange(ctx, &tfprotov6.ApplyResourceChangeRequest{TypeName: "litellm_project", Config: config, PriorState: nullState, PlannedState: planned.PlannedState, PlannedPrivate: planned.PlannedPrivate})
+	if err != nil || !accessGroupProtocolDiagnosticsHaveError(created.Diagnostics) || !protocolPrivateHasKey(t, created.Private, projectAcceptedCreateRecoveryPrivateKey) {
+		t.Fatalf("wrong-team create readback: err=%v diagnostics=%s private=%s", err, agentProtocolDiagnosticsText(created.Diagnostics), created.Private)
+	}
+	var retainedTeam string
+	if err := protocolAttributeMap(t, schema, created.NewState)["team_id"].As(&retainedTeam); err != nil || retainedTeam != configuredTeam {
+		t.Fatalf("configured team not retained: team=%q err=%v", retainedTeam, err)
+	}
+}
+
 func TestProjectSemanticConfiguredBudgetCreateRecoveryProtocol(t *testing.T) {
 	ctx := context.Background()
 	const teamID, budgetID = "team-shared-recovery", "budget-shared-recovery"
 	var projectID string
+	var includeBudget atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
 		switch {
@@ -609,10 +644,15 @@ func TestProjectSemanticConfiguredBudgetCreateRecoveryProtocol(t *testing.T) {
 			projectID, _ = body["project_id"].(string)
 			_ = json.NewEncoder(writer).Encode(map[string]interface{}{"project_id": "wrong-response-identity"})
 		case request.Method == http.MethodGet && request.URL.Path == "/project/info":
-			_ = json.NewEncoder(writer).Encode(map[string]interface{}{
-				"project_id": projectID, "team_id": teamID, "budget_id": budgetID, "models": []interface{}{}, "metadata": map[string]interface{}{}, "blocked": false,
-				"litellm_budget_table": map[string]interface{}{"budget_id": budgetID},
-			})
+			object := map[string]interface{}{
+				"project_id": projectID, "team_id": teamID, "models": []interface{}{}, "metadata": map[string]interface{}{}, "blocked": false,
+				"litellm_budget_table": map[string]interface{}{},
+			}
+			if includeBudget.Load() {
+				object["budget_id"] = budgetID
+				object["litellm_budget_table"] = map[string]interface{}{"budget_id": budgetID}
+			}
+			_ = json.NewEncoder(writer).Encode(object)
 		default:
 			http.NotFound(writer, request)
 		}
@@ -633,6 +673,11 @@ func TestProjectSemanticConfiguredBudgetCreateRecoveryProtocol(t *testing.T) {
 		t.Fatalf("retained shared budget_id=%q err=%v", recoveredBudgetID, err)
 	}
 
+	unconfirmed, readErr := protocolServer.ReadResource(ctx, &tfprotov6.ReadResourceRequest{TypeName: "litellm_project", CurrentState: created.NewState, Private: created.Private})
+	if readErr != nil || !accessGroupProtocolDiagnosticsHaveError(unconfirmed.Diagnostics) || !protocolPrivateHasKey(t, unconfirmed.Private, projectAcceptedCreateRecoveryPrivateKey) {
+		t.Fatalf("missing shared-budget authority: err=%v diagnostics=%s private=%s", readErr, agentProtocolDiagnosticsText(unconfirmed.Diagnostics), unconfirmed.Private)
+	}
+	includeBudget.Store(true)
 	refreshed, readErr := protocolServer.ReadResource(ctx, &tfprotov6.ReadResourceRequest{TypeName: "litellm_project", CurrentState: created.NewState, Private: created.Private})
 	if readErr != nil || accessGroupProtocolDiagnosticsHaveError(refreshed.Diagnostics) || protocolPrivateHasKey(t, refreshed.Private, projectAcceptedCreateRecoveryPrivateKey) {
 		t.Fatalf("shared-budget recovery read: err=%v diagnostics=%s private=%s", readErr, agentProtocolDiagnosticsText(refreshed.Diagnostics), refreshed.Private)
