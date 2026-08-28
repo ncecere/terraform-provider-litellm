@@ -216,7 +216,7 @@ func (r *KeyBlockResource) Schema(ctx context.Context, req resource.SchemaReques
 				Description: "A sha256:<64-hex> key management identifier, such as litellm_key.example.id. LiteLLM receives only the bare hash.",
 				Optional:    true,
 				Validators: []validator.String{
-					stringvalidator.RegexMatches(keyHashIDPattern, "must use the sha256:<64-hex> management identifier format"),
+					redactingKeyHashValidator{},
 				},
 			},
 			"blocked": schema.BoolAttribute{

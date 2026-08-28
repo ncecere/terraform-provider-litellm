@@ -290,6 +290,44 @@ func TestKeySafeReadCancellationAndDeadlineRetainProtocolState(t *testing.T) {
 	}
 }
 
+func TestKeyHashValidationDiagnosticsRedactProtocol(t *testing.T) {
+	ctx := context.Background()
+	protocolServer := providerserver.NewProtocol6(New("test")())()
+	schemas, err := protocolServer.GetProviderSchema(ctx, &tfprotov6.GetProviderSchemaRequest{})
+	if err != nil || accessGroupProtocolDiagnosticsHaveError(schemas.Diagnostics) {
+		t.Fatalf("schemas: err=%v diagnostics=%v", err, schemas.Diagnostics)
+	}
+	malformed := "sha256:malformed-sensitive-hash-value"
+
+	dataSourceSchema := schemas.DataSourceSchemas["litellm_key"]
+	dataSourceConfig := keyNumericProtocolValue(t, dataSourceSchema, false, map[string]tftypes.Value{
+		"key_hash": tftypes.NewValue(tftypes.String, malformed),
+	})
+	validatedDataSource, err := protocolServer.ValidateDataResourceConfig(ctx, &tfprotov6.ValidateDataResourceConfigRequest{
+		TypeName: "litellm_key",
+		Config:   keyNumericProtocolDynamic(t, dataSourceSchema, dataSourceConfig),
+	})
+	if err != nil || !accessGroupProtocolDiagnosticsHaveError(validatedDataSource.Diagnostics) {
+		t.Fatalf("data source validation: err=%v diagnostics=%v", err, validatedDataSource.Diagnostics)
+	}
+	if text := agentProtocolDiagnosticsText(validatedDataSource.Diagnostics); strings.Contains(text, malformed) {
+		t.Fatalf("data source diagnostic exposed hash: %s", text)
+	}
+
+	resourceSchema := schemas.ResourceSchemas["litellm_key_block"]
+	resourceConfig := organizationProjectProtocolValue(t, resourceSchema, map[string]interface{}{"key_hash": malformed})
+	validatedResource, err := protocolServer.ValidateResourceConfig(ctx, &tfprotov6.ValidateResourceConfigRequest{
+		TypeName: "litellm_key_block",
+		Config:   accessGroupProtocolDynamicValue(t, resourceSchema, resourceConfig),
+	})
+	if err != nil || !accessGroupProtocolDiagnosticsHaveError(validatedResource.Diagnostics) {
+		t.Fatalf("resource validation: err=%v diagnostics=%v", err, validatedResource.Diagnostics)
+	}
+	if text := agentProtocolDiagnosticsText(validatedResource.Diagnostics); strings.Contains(text, malformed) {
+		t.Fatalf("resource diagnostic exposed hash: %s", text)
+	}
+}
+
 func TestKeyUppercaseHashImportCanonicalizesManagementIdentity(t *testing.T) {
 	ctx := context.Background()
 	protocolServer := providerserver.NewProtocol6(New("test")())()

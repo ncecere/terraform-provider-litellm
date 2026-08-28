@@ -6,11 +6,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/datasourcevalidator"
-	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -81,7 +79,7 @@ func (d *KeyDataSource) Schema(ctx context.Context, req datasource.SchemaRequest
 				Description: "A sha256:<64-hex> management identifier used to look up a write-only key without reintroducing the raw token into Terraform state. Conflicts with key.",
 				Optional:    true,
 				Validators: []validator.String{
-					stringvalidator.RegexMatches(regexp.MustCompile(`^sha256:[0-9a-fA-F]{64}$`), "must use the sha256:<64-hex> management identifier format"),
+					redactingKeyHashValidator{},
 				},
 			},
 			"key_alias": schema.StringAttribute{
