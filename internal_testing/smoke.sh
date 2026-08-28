@@ -542,6 +542,56 @@ if [ "$plan_status" -ne 0 ]; then
 fi
 terraform show -json matrix-steady.tfplan >matrix-steady-plan.json
 
+if [ "${SMOKE_ACCESS_GROUP_EXTERNAL_DELETE:-}" = "1" ]; then
+  echo '=== ACCESS GROUP EXTERNAL DELETE AND AUTHORITATIVE 404 REFRESH ==='
+  access_group_delete_address=${SMOKE_ACCESS_GROUP_DELETE_ADDRESS:-}
+  [ "$access_group_delete_address" = "litellm_access_group.minimal" ] || {
+    echo 'Access Group external-delete mode requires the reviewed minimal resource address.' >&3
+    exit 1
+  }
+  [ -f resource_model_access_group.tf ] && [ -f resource_access_group_minimal.tf ] || {
+    echo 'Access Group external-delete mode requires the reviewed model and minimal resource fixtures.' >&3
+    exit 1
+  }
+  access_group_delete_id=$(terraform output -raw access_group_minimal_id)
+  access_group_delete_url=$(python3 - "$access_group_delete_id" <<'PY'
+import sys, urllib.parse
+identity=sys.argv[1]
+if not identity or "/" in identity:
+    raise SystemExit(1)
+print("http://localhost:4000/access_group/" + urllib.parse.quote(identity, safe="") + "/delete")
+PY
+)
+  curl --fail --silent --show-error -X DELETE \
+    -H 'Authorization: Bearer sk-testing-key' \
+    "$access_group_delete_url" >/dev/null
+  terraform apply -refresh-only -auto-approve >access-group-external-delete-refresh.log 2>&1
+  cat access-group-external-delete-refresh.log
+  terraform state list >access-group-post-delete-state.list
+  if grep -Fxq "$access_group_delete_address" access-group-post-delete-state.list; then
+    echo 'Exact 404 refresh retained the externally deleted Access Group address.' >&3
+    exit 1
+  fi
+  [ "$(cat access-group-post-delete-state.list)" = "litellm_model.access_group" ] || {
+    echo 'Access Group external-delete refresh changed unexpected managed state.' >&3
+    exit 1
+  }
+  terraform destroy -auto-approve >access-group-external-delete-destroy.log 2>&1
+  cat access-group-external-delete-destroy.log
+  terraform state list >matrix-final-state.list
+  [ ! -s matrix-final-state.list ] || {
+    echo 'Access Group external-delete cleanup left managed state.' >&3
+    exit 1
+  }
+  [ "$(wc -c <"$SMOKE_LOG")" -le 10485760 ] || {
+    echo 'Access Group smoke log exceeded its private bound.' >&3
+    exit 1
+  }
+  SUCCESS=1
+  printf '\nSmoke passed: Access Group create/refresh, direct delete, exact-404 state removal, and model cleanup succeeded.\n' >&3
+  exit 0
+fi
+
 if [ "${SMOKE_SEARCH_TOOL_EXTERNAL_DELETE:-}" = "1" ]; then
   echo '=== SEARCH TOOL EXTERNAL DELETE AND AUTHORITATIVE 404 REFRESH ==='
   search_tool_delete_address=${SMOKE_SEARCH_TOOL_DELETE_ADDRESS:-}

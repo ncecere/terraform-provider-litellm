@@ -16,7 +16,7 @@
   "provider_golden": {
     "operation_count": 108,
     "path": "internal/contractapi/testdata/provider-operations.golden.json",
-    "sha256": "0746d601f13894fa1a979b6a32fea9ef4cdd80714ad699836de0e7edfbfee468"
+    "sha256": "3549829ee6da567c6c2c839da032828c4d09ec33c898b983bff5b335e36e1a79"
   },
   "provider_operations": [
     {
@@ -35,7 +35,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_access_group.go",
-          "line": 108
+          "line": 109
         }
       ],
       "method": "POST",
@@ -47,7 +47,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_access_group.go",
-          "line": 195
+          "line": 196
         }
       ],
       "method": "DELETE",
@@ -61,11 +61,15 @@
       "evidence": [
         {
           "file": "internal/provider/datasource_access_group.go",
-          "line": 82
+          "line": 83
         },
         {
           "file": "internal/provider/resource_access_group.go",
-          "line": 323
+          "line": 337
+        },
+        {
+          "file": "internal/provider/resource_access_group.go",
+          "line": 339
         }
       ],
       "method": "GET",
@@ -79,7 +83,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_access_group.go",
-          "line": 173
+          "line": 174
         }
       ],
       "method": "PUT",

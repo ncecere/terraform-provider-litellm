@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"sort"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
@@ -128,12 +129,12 @@ func (r *AccessGroupResource) Read(ctx context.Context, req resource.ReadRequest
 		return
 	}
 
-	if err := r.readAccessGroup(ctx, &data); err != nil {
-		if IsNotFoundError(err) {
+	if err := r.refreshAccessGroup(ctx, &data); err != nil {
+		if IsAPIErrorStatus(err, http.StatusNotFound) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read access group: %s", err))
+		resp.Diagnostics.AddError("Client Error", "Unable to read access group. Response and request details were omitted.")
 		return
 	}
 
@@ -311,32 +312,57 @@ func accessGroupModelMembershipEqual(current types.List, canonicalRemote []strin
 	return true
 }
 
+// readAccessGroup is reserved for operation-coupled Create/Update confirmation.
+// It deliberately performs one request because those callers follow a mutation.
 func (r *AccessGroupResource) readAccessGroup(ctx context.Context, data *AccessGroupResourceModel) error {
+	return r.readAccessGroupWith(ctx, data, false)
+}
+
+// refreshAccessGroup is the ordinary Terraform refresh path. Only this
+// singular database-authoritative GET uses bounded safe-read retries.
+func (r *AccessGroupResource) refreshAccessGroup(ctx context.Context, data *AccessGroupResourceModel) error {
+	return r.readAccessGroupWith(ctx, data, true)
+}
+
+func (r *AccessGroupResource) readAccessGroupWith(ctx context.Context, data *AccessGroupResourceModel, safeRead bool) error {
 	accessGroup := data.AccessGroup.ValueString()
 	if accessGroup == "" {
 		accessGroup = data.ID.ValueString()
 	}
-
 	endpoint := endpointWithPathSegment("/access_group/", accessGroup, "/info")
 
 	var result map[string]interface{}
-	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
+	var err error
+	if safeRead {
+		err = r.client.DoReadWithResponse(ctx, http.MethodGet, endpoint, nil, &result)
+	} else {
+		err = r.client.DoRequestWithResponse(ctx, http.MethodGet, endpoint, nil, &result)
+	}
+	if err != nil {
 		return err
 	}
+	return projectAccessGroupResourceAPIObject(ctx, data, result, accessGroup)
+}
 
-	// Update fields from response
-	if ag, ok := result["access_group"].(string); ok {
-		data.AccessGroup = types.StringValue(ag)
-		data.ID = types.StringValue(ag)
+// projectAccessGroupResourceAPIObject validates and projects atomically so a
+// malformed successful response cannot partially mutate prior state.
+func projectAccessGroupResourceAPIObject(ctx context.Context, data *AccessGroupResourceModel, result map[string]interface{}, expectedAccessGroup string) error {
+	actualAccessGroup, ok := result["access_group"].(string)
+	if !ok || actualAccessGroup == "" || actualAccessGroup != expectedAccessGroup {
+		return fmt.Errorf("invalid access group response identity")
 	}
 
+	candidate := *data
+	candidate.AccessGroup = types.StringValue(actualAccessGroup)
+	candidate.ID = candidate.AccessGroup
 	if rawModelNames, ok := result["model_names"]; ok {
-		modelNames, err := reconcileAccessGroupModelNames(ctx, data.ModelNames, rawModelNames)
+		modelNames, err := reconcileAccessGroupModelNames(ctx, candidate.ModelNames, rawModelNames)
 		if err != nil {
-			return fmt.Errorf("invalid model_names response: %w", err)
+			return fmt.Errorf("invalid model names response")
 		}
-		data.ModelNames = modelNames
+		candidate.ModelNames = modelNames
 	}
 
+	*data = candidate
 	return nil
 }

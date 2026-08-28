@@ -19,7 +19,7 @@
     "evidence": [
       {
         "file": "internal/provider/resource_access_group.go",
-        "line": 108
+        "line": 109
       }
     ]
   },
@@ -33,7 +33,7 @@
     "evidence": [
       {
         "file": "internal/provider/resource_access_group.go",
-        "line": 195
+        "line": 196
       }
     ]
   },
@@ -47,11 +47,15 @@
     "evidence": [
       {
         "file": "internal/provider/datasource_access_group.go",
-        "line": 82
+        "line": 83
       },
       {
         "file": "internal/provider/resource_access_group.go",
-        "line": 323
+        "line": 337
+      },
+      {
+        "file": "internal/provider/resource_access_group.go",
+        "line": 339
       }
     ]
   },
@@ -65,7 +69,7 @@
     "evidence": [
       {
         "file": "internal/provider/resource_access_group.go",
-        "line": 173
+        "line": 174
       }
     ]
   },
