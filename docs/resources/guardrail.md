@@ -89,6 +89,8 @@ terraform import litellm_guardrail.example <guardrail-id>
 
 LiteLLM v1.98 masks credential-bearing `litellm_params` on information reads. Terraform cannot recover plaintext that was never in prior state, so import fails safely when the remote object contains masked parameters. Recreate the guardrail under Terraform ownership or remove/rotate the sensitive remote parameter before importing; a redaction marker is never stored as if it were the credential.
 
+Ordinary refreshes retry bounded transient transport, HTTP 408, 429, and 5xx failures. Successful refresh requires an identity-matched, complete response whose `guardrail_definition_location` is `db`. If LiteLLM falls back to a same-ID config-defined guardrail after database deletion, Terraform retains the managed resource state and fails closed rather than adopting the config object. Only an exact HTTP 404 removes state. Create/update confirmation, lists, and mutations remain single-attempt.
+
 ## Guardrail Modes
 
 ### pre_call

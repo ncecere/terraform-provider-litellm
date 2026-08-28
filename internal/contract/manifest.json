@@ -16,7 +16,7 @@
   "provider_golden": {
     "operation_count": 108,
     "path": "internal/contractapi/testdata/provider-operations.golden.json",
-    "sha256": "255f16cb57178e2bad20f4698ce04462e389769004fbffd90e9e21002bd671ed"
+    "sha256": "f885fc626d63152861805dc39969b119b04b7641bd6a44237580a572a4f4bb60"
   },
   "provider_operations": [
     {
@@ -329,7 +329,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_guardrail.go",
-          "line": 136
+          "line": 137
         }
       ],
       "method": "POST",
@@ -341,7 +341,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_guardrail.go",
-          "line": 248
+          "line": 249
         }
       ],
       "method": "DELETE",
@@ -355,7 +355,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_guardrail.go",
-          "line": 224
+          "line": 225
         }
       ],
       "method": "PUT",
@@ -369,11 +369,15 @@
       "evidence": [
         {
           "file": "internal/provider/datasource_guardrail.go",
-          "line": 115
+          "line": 116
         },
         {
           "file": "internal/provider/resource_guardrail.go",
-          "line": 363
+          "line": 378
+        },
+        {
+          "file": "internal/provider/resource_guardrail.go",
+          "line": 380
         }
       ],
       "method": "GET",

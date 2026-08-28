@@ -41,3 +41,5 @@ output "guardrail_info" {
 Sensitivity propagates through Terraform expressions. Mark outputs that expose `litellm_params` as sensitive. Masked values are inventory metadata, not usable credentials, and configured plaintext is not available to a read-only data source.
 
 LiteLLM requires authentication for guardrail reads. In v1.98, the single-info route does not apply the v2 list route's team/status filtering, so restrict provider credentials and guardrail-ID access accordingly. This data source does not bypass LiteLLM authorization or access its database directly.
+
+Ordinary reads retry bounded transient transport, HTTP 408, 429, and 5xx failures. The data source accepts only LiteLLM's known `db` and `config` definition locations; malformed, identity-mismatched, or unknown-authority responses publish no partial state. A 404 remains an error for the data source.
