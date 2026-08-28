@@ -1107,6 +1107,14 @@ func (r *ProjectResource) readProjectWithOwnership(ctx context.Context, data *Pr
 	if err != nil {
 		return err
 	}
+	if table.presence == apiValuePresent {
+		_, nestedPresence, nestedErr := table.value("budget_id")
+		if nestedErr != nil || nestedPresence == apiValueNull {
+			// A present relation originates from a database row whose primary key is
+			// non-null. Explicit null is malformed, not authoritative absence.
+			return errSemanticDictionaryTraversal
+		}
+	}
 	knownBudgetID := knownString(data.BudgetID)
 	budgetOwned := imported || knownBudgetID
 	if budgetPresence == apiValuePresent && budgetOwned {

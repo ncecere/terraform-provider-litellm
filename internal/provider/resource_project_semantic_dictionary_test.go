@@ -299,6 +299,26 @@ func TestProjectSemanticImportRejectsTopLevelOnlyBudget(t *testing.T) {
 	}
 }
 
+func TestProjectSemanticImportRejectsNullNestedBudgetIdentity(t *testing.T) {
+	ctx := context.Background()
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+			"project_id": "project-null-budget", "team_id": "team-null-budget", "metadata": map[string]interface{}{},
+			"litellm_budget_table": map[string]interface{}{"budget_id": nil},
+		})
+	}))
+	defer server.Close()
+	data := ProjectResourceModel{ID: types.StringValue("project-null-budget"), TeamID: types.StringValue("team-null-budget"), BudgetID: types.StringNull()}
+	resource := &ProjectResource{client: &Client{APIBase: server.URL, APIKey: "test", HTTPClient: server.Client()}}
+	if err := resource.readProjectWithOwnership(ctx, &data, true, projectSemanticOwnership{provenance: projectUnconfiguredSemanticProvenance()}); err == nil {
+		t.Fatal("first import consumed a present budget relation with a null identity")
+	}
+	if !data.BudgetID.IsNull() {
+		t.Fatalf("failed import published malformed budget authority: %s", data.BudgetID)
+	}
+}
+
 func TestProjectSemanticFormattingPendingReconciliationAndPrivateValidation(t *testing.T) {
 	ctx := context.Background()
 	prior, _ := prepareProjectSemanticDictionary(ctx, types.StringValue(`{"b":2,"a":1}`), types.MapNull(types.StringType))
