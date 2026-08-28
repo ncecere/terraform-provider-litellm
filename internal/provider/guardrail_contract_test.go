@@ -16,10 +16,11 @@ import (
 
 func guardrailAPIResponse() map[string]interface{} {
 	return map[string]interface{}{
-		"guardrail_id":   "guardrail-1",
-		"guardrail_name": "managed",
-		"created_at":     "2026-08-25T00:00:00Z",
-		"updated_at":     nil,
+		"guardrail_id":                  "guardrail-1",
+		"guardrail_name":                "managed",
+		"guardrail_definition_location": "db",
+		"created_at":                    "2026-08-25T00:00:00Z",
+		"updated_at":                    nil,
 		"litellm_params": map[string]interface{}{
 			"guardrail":  "bedrock",
 			"mode":       []interface{}{"pre_call", "post_call"},
@@ -118,7 +119,7 @@ func TestReadGuardrailPreservesOwnedMaskedLeavesAndVisibleDrift(t *testing.T) {
 func TestReadGuardrailPreservesExplicitEmptyObjects(t *testing.T) {
 	t.Parallel()
 	response := map[string]interface{}{
-		"guardrail_id": "guardrail-1", "guardrail_name": "managed",
+		"guardrail_id": "guardrail-1", "guardrail_name": "managed", "guardrail_definition_location": "db",
 		"litellm_params": map[string]interface{}{"guardrail": "bedrock", "mode": "pre_call"},
 		"guardrail_info": map[string]interface{}{},
 	}

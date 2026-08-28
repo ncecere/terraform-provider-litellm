@@ -542,6 +542,51 @@ if [ "$plan_status" -ne 0 ]; then
 fi
 terraform show -json matrix-steady.tfplan >matrix-steady-plan.json
 
+if [ "${SMOKE_GUARDRAIL_EXTERNAL_DELETE:-}" = "1" ]; then
+  echo '=== GUARDRAIL EXTERNAL DELETE AND AUTHORITATIVE 404 REFRESH ==='
+  guardrail_delete_address=${SMOKE_GUARDRAIL_DELETE_ADDRESS:-}
+  [ "$guardrail_delete_address" = "litellm_guardrail.safe_read" ] || {
+    echo 'Guardrail external-delete mode requires the reviewed dedicated resource address.' >&3
+    exit 1
+  }
+  [ -f resource_guardrail_safe_read_minimal.tf ] || {
+    echo 'Guardrail external-delete mode requires only the dedicated safe-read fixture.' >&3
+    exit 1
+  }
+  guardrail_delete_id=$(terraform output -raw guardrail_safe_read_id)
+  guardrail_delete_url=$(python3 - "$guardrail_delete_id" <<'PY'
+import sys, urllib.parse
+identity=sys.argv[1]
+if not identity or "/" in identity:
+    raise SystemExit(1)
+print("http://localhost:4000/guardrails/" + urllib.parse.quote(identity, safe=""))
+PY
+)
+  unset guardrail_delete_id
+  curl --fail --silent --show-error -X DELETE \
+    -H 'Authorization: Bearer sk-testing-key' \
+    "$guardrail_delete_url" >/dev/null
+  unset guardrail_delete_url
+  terraform apply -refresh-only -auto-approve >guardrail-external-delete-refresh.log 2>&1
+  cat guardrail-external-delete-refresh.log
+  terraform state list >matrix-final-state.list
+  if grep -Fxq "$guardrail_delete_address" matrix-final-state.list; then
+    echo 'Exact 404 refresh retained the externally deleted Guardrail address.' >&3
+    exit 1
+  fi
+  [ ! -s matrix-final-state.list ] || {
+    echo 'Guardrail external-delete refresh left unexpected managed state.' >&3
+    exit 1
+  }
+  [ "$(wc -c <"$SMOKE_LOG")" -le 10485760 ] || {
+    echo 'Guardrail smoke log exceeded its private bound.' >&3
+    exit 1
+  }
+  SUCCESS=1
+  printf '\nSmoke passed: Guardrail create/refresh, direct delete, and exact-404 state removal succeeded.\n' >&3
+  exit 0
+fi
+
 if [ "${SMOKE_KEY_EXTERNAL_DELETE:-}" = "1" ]; then
   echo '=== KEY EXTERNAL DELETE AND AUTHORITATIVE 404 REFRESH ==='
   key_delete_address=${SMOKE_KEY_DELETE_ADDRESS:-}

@@ -78,8 +78,9 @@ func TestReadGuardrailFiltersNestedNullDefaults(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(writer).Encode(map[string]interface{}{
-			"guardrail_id":   "guardrail-1",
-			"guardrail_name": "test",
+			"guardrail_id":                  "guardrail-1",
+			"guardrail_name":                "test",
+			"guardrail_definition_location": "db",
 			"litellm_params": map[string]interface{}{
 				"guardrail":  "litellm_content_filter",
 				"mode":       "pre_call",
@@ -125,8 +126,9 @@ func TestReadGuardrailPreservesRealNestedDrift(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(writer).Encode(map[string]interface{}{
-			"guardrail_id":   "guardrail-1",
-			"guardrail_name": "test",
+			"guardrail_id":                  "guardrail-1",
+			"guardrail_name":                "test",
+			"guardrail_definition_location": "db",
 			"litellm_params": map[string]interface{}{
 				"guardrail": "tool_permission",
 				"mode":      "post_call",

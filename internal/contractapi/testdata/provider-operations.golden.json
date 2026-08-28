@@ -313,7 +313,7 @@
     "evidence": [
       {
         "file": "internal/provider/resource_guardrail.go",
-        "line": 136
+        "line": 137
       }
     ]
   },
@@ -327,7 +327,7 @@
     "evidence": [
       {
         "file": "internal/provider/resource_guardrail.go",
-        "line": 248
+        "line": 249
       }
     ]
   },
@@ -341,7 +341,7 @@
     "evidence": [
       {
         "file": "internal/provider/resource_guardrail.go",
-        "line": 224
+        "line": 225
       }
     ]
   },
@@ -355,11 +355,15 @@
     "evidence": [
       {
         "file": "internal/provider/datasource_guardrail.go",
-        "line": 115
+        "line": 116
       },
       {
         "file": "internal/provider/resource_guardrail.go",
-        "line": 363
+        "line": 378
+      },
+      {
+        "file": "internal/provider/resource_guardrail.go",
+        "line": 380
       }
     ]
   },

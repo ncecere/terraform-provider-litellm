@@ -15,6 +15,7 @@ unset SMOKE_SEARCH_TOOL_EXTERNAL_DELETE SMOKE_SEARCH_TOOL_DELETE_ADDRESS
 unset SMOKE_ACCESS_GROUP_EXTERNAL_DELETE SMOKE_ACCESS_GROUP_DELETE_ADDRESS
 unset SMOKE_USER_EXTERNAL_DELETE SMOKE_USER_DELETE_ADDRESS
 unset SMOKE_KEY_EXTERNAL_DELETE SMOKE_KEY_DELETE_ADDRESS SMOKE_KEY_BLOCK_DELETE_ADDRESS
+unset SMOKE_GUARDRAIL_EXTERNAL_DELETE SMOKE_GUARDRAIL_DELETE_ADDRESS
 unset SMOKE_DIAGNOSTIC_OUTPUT SMOKE_LOG_OVERRIDE
 
 if [ "$ASSEMBLY_ONLY" != "1" ]; then
@@ -143,6 +144,13 @@ run_key_external_delete_case() {
     sh "$REPO_ROOT/internal_testing/smoke.sh" "$REPO_ROOT" resources key_minimal.tf,key_block_minimal.tf
 }
 
+run_guardrail_external_delete_case() {
+  printf '\n===== ACCEPTANCE: guardrail_external_delete =====\n'
+  SMOKE_ASSEMBLY_ONLY=$ASSEMBLY_ONLY SMOKE_SUPPLEMENTAL_ONLY=1 \
+    SMOKE_GUARDRAIL_EXTERNAL_DELETE=1 SMOKE_GUARDRAIL_DELETE_ADDRESS=litellm_guardrail.safe_read \
+    sh "$REPO_ROOT/internal_testing/smoke.sh" "$REPO_ROOT" resources guardrail_safe_read_minimal.tf
+}
+
 # Explicit coverage table. litellm_project is enterprise-only and intentionally
 # excluded; every other registered resource has a lifecycle case here.
 run_case access_group resources model_access_group.tf,access_group_minimal.tf datasources access_group.tf,access_groups_list.tf
@@ -157,6 +165,7 @@ run_credential_import_case
 run_fallback_case
 run_fallback_import_case
 run_case guardrail resources guardrail_minimal.tf datasources guardrail.tf,guardrails_list.tf
+run_guardrail_external_delete_case
 run_case guardrail_structured_mode resources guardrail_full.tf
 if [ "$CLI_SUPPORTS_111" = "1" ]; then
   run_case key resources key_minimal.tf,key_router_settings.tf,key_semantic_json.tf,send_invite_email.tf datasources key.tf,keys_list.tf

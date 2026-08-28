@@ -235,9 +235,10 @@ func TestReadGuardrail(t *testing.T) {
 	t.Parallel()
 
 	server, client := jsonServer(t, map[string]interface{}{
-		"guardrail_id":   "g-1",
-		"guardrail_name": "pii",
-		"created_at":     "2024-01-01T00:00:00Z",
+		"guardrail_id":                  "g-1",
+		"guardrail_name":                "pii",
+		"guardrail_definition_location": "db",
+		"created_at":                    "2024-01-01T00:00:00Z",
 		"litellm_params": map[string]interface{}{
 			"guardrail":  "presidio",
 			"mode":       "pre_call",

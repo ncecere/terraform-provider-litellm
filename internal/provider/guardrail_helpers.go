@@ -12,12 +12,13 @@ var guardrailReservedParams = map[string]struct{}{
 }
 
 type guardrailAPIObject struct {
-	ID        string
-	Name      string
-	Params    map[string]interface{}
-	Info      map[string]interface{}
-	CreatedAt *string
-	UpdatedAt *string
+	ID                 string
+	Name               string
+	DefinitionLocation string
+	Params             map[string]interface{}
+	Info               map[string]interface{}
+	CreatedAt          *string
+	UpdatedAt          *string
 }
 
 func optionalAPIString(object map[string]interface{}, field string) (*string, error) {
@@ -78,6 +79,16 @@ func decodeGuardrailAPIObject(object map[string]interface{}, expectedID string, 
 	result.UpdatedAt, err = optionalAPIString(object, "updated_at")
 	if err != nil {
 		return result, err
+	}
+	location, err := optionalAPIString(object, "guardrail_definition_location")
+	if err != nil {
+		return result, err
+	}
+	if location != nil {
+		if *location != "db" && *location != "config" {
+			return result, fmt.Errorf("guardrail response returned an unsupported definition location")
+		}
+		result.DefinitionLocation = *location
 	}
 	return result, nil
 }

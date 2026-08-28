@@ -341,6 +341,22 @@ REVIEWED_ISSUE202_KEY_PATHS = (
 REVIEWED_ISSUE202_KEY_RUNTIME_DIFF_SHA256 = (
     "aa39212b05c2cf723d1fa0ace27bb22f2fd0af45e21fe734bfd0405863985cf5"
 )
+REVIEWED_ISSUE202_GUARDRAIL_BASE = "c1dec96bd3e11134da598c3b0fa0ea5589da05a9"
+REVIEWED_ISSUE202_GUARDRAIL_PATHS = (
+    "internal/provider/datasource_guardrail.go",
+    "internal/provider/guardrail_contract_test.go",
+    "internal/provider/guardrail_helpers.go",
+    "internal/provider/guardrail_protocol_test.go",
+    "internal/provider/guardrail_safe_read_protocol_test.go",
+    "internal/provider/guardrail_safe_read_test.go",
+    "internal/provider/read_test.go",
+    "internal/provider/resource_guardrail.go",
+    "internal/provider/resource_guardrail_test.go",
+    "internal/provider/semantic_json_protocol_test.go",
+)
+REVIEWED_ISSUE202_GUARDRAIL_RUNTIME_DIFF_SHA256 = (
+    "e944aef251fa4e4d42cf9318487dc64fb59049019ee1fd7eccf17baab0e17849"
+)
 
 
 def git(*args: str) -> str:
@@ -508,6 +524,12 @@ def main() -> int:
             and digest == REVIEWED_ISSUE202_KEY_RUNTIME_DIFF_SHA256
         ):
             reviewed = "issue202-key"
+        elif (
+            comparison == REVIEWED_ISSUE202_GUARDRAIL_BASE
+            and changed_paths == REVIEWED_ISSUE202_GUARDRAIL_PATHS
+            and digest == REVIEWED_ISSUE202_GUARDRAIL_RUNTIME_DIFF_SHA256
+        ):
+            reviewed = "issue202-guardrail"
         if reviewed is not None:
             print(
                 f"Provider runtime parity verified: reviewed={reviewed} "
