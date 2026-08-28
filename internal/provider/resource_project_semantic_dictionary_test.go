@@ -274,6 +274,31 @@ func TestProjectSemanticKnownImportedBudgetMismatchFailsClosed(t *testing.T) {
 	}
 }
 
+func TestProjectSemanticImportRejectsTopLevelOnlyBudget(t *testing.T) {
+	ctx := context.Background()
+	for name, table := range map[string]interface{}{"absent": "omit", "null": nil, "empty": map[string]interface{}{}} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				writer.Header().Set("Content-Type", "application/json")
+				object := map[string]interface{}{"project_id": "project-import-budget", "team_id": "team-import-budget", "budget_id": "budget-top-only", "metadata": map[string]interface{}{}}
+				if table != "omit" {
+					object["litellm_budget_table"] = table
+				}
+				_ = json.NewEncoder(writer).Encode(object)
+			}))
+			defer server.Close()
+			data := ProjectResourceModel{ID: types.StringValue("project-import-budget"), TeamID: types.StringValue("team-import-budget"), BudgetID: types.StringNull()}
+			resource := &ProjectResource{client: &Client{APIBase: server.URL, APIKey: "test", HTTPClient: server.Client()}}
+			if err := resource.readProjectWithOwnership(ctx, &data, true, projectSemanticOwnership{provenance: projectUnconfiguredSemanticProvenance()}); err == nil {
+				t.Fatal("first import adopted an unconfirmed top-level-only budget")
+			}
+			if !data.BudgetID.IsNull() {
+				t.Fatalf("failed import published budget authority: %s", data.BudgetID)
+			}
+		})
+	}
+}
+
 func TestProjectSemanticFormattingPendingReconciliationAndPrivateValidation(t *testing.T) {
 	ctx := context.Background()
 	prior, _ := prepareProjectSemanticDictionary(ctx, types.StringValue(`{"b":2,"a":1}`), types.MapNull(types.StringType))
