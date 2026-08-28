@@ -86,6 +86,8 @@ func TestUserResourceSafeReadProtocolSequences(t *testing.T) {
 			_, _ = writer.Write(userSafeReadBody(t, "wrong-root-secret", userID))
 		case "nested-mismatch":
 			_, _ = writer.Write(userSafeReadBody(t, userID, "wrong-nested-secret"))
+		case "malformed-scalar":
+			_, _ = fmt.Fprintf(writer, `{"user_id":%q,"user_info":{"user_id":%q,"user_alias":7}}`, userID, userID)
 		case "malformed-collection":
 			_, _ = fmt.Fprintf(writer, `{"user_id":%q,"user_info":{"user_id":%q,"teams":["ok",1]}}`, userID, userID)
 		case "404":
@@ -139,7 +141,7 @@ func TestUserResourceSafeReadProtocolSequences(t *testing.T) {
 		}
 	})
 
-	for _, failureMode := range []string{"exhaustion", "terminal-4xx", "malformed", "missing-envelope", "root-mismatch", "nested-mismatch", "malformed-collection"} {
+	for _, failureMode := range []string{"exhaustion", "terminal-4xx", "malformed", "missing-envelope", "root-mismatch", "nested-mismatch", "malformed-scalar", "malformed-collection"} {
 		failureMode := failureMode
 		t.Run(failureMode+" retains byte-exact public and private state", func(t *testing.T) {
 			response, calls := read(failureMode, private)
@@ -190,6 +192,9 @@ func TestUserDataSourceSafeReadProtocolSequences(t *testing.T) {
 		{name: "missing envelope", status: http.StatusOK, body: func(id string) []byte { return []byte(fmt.Sprintf(`{"user_id":%q}`, id)) }, calls: 1},
 		{name: "root mismatch", status: http.StatusOK, body: func(id string) []byte { return userSafeReadBody(t, "wrong-root-secret", id) }, calls: 1},
 		{name: "nested mismatch", status: http.StatusOK, body: func(id string) []byte { return userSafeReadBody(t, id, "wrong-nested-secret") }, calls: 1},
+		{name: "malformed scalar", status: http.StatusOK, body: func(id string) []byte {
+			return []byte(fmt.Sprintf(`{"user_id":%q,"user_info":{"user_id":%q,"user_alias":7}}`, id, id))
+		}, calls: 1},
 		{name: "malformed collection", status: http.StatusOK, body: func(id string) []byte {
 			return []byte(fmt.Sprintf(`{"user_id":%q,"user_info":{"user_id":%q,"teams":["ok",1]}}`, id, id))
 		}, calls: 1},

@@ -630,22 +630,23 @@ func projectUserResourceAPIObject(ctx context.Context, data *UserResourceModel, 
 	next := *data
 	data = &next
 
-	// Update fields from response
+	// Update fields from response. Any present non-null scalar must have the
+	// exact wire type even when its optional Terraform attribute is unowned.
 	if userID, ok := userInfo["user_id"].(string); ok {
 		data.UserID = types.StringValue(userID)
 		data.ID = types.StringValue(userID)
 	}
-	if alias, ok := userInfo["user_alias"].(string); ok && !data.UserAlias.IsNull() {
-		data.UserAlias = types.StringValue(alias)
+	if err := projectUserStringFromAPI(&data.UserAlias, userInfo, "user_alias", !data.UserAlias.IsNull()); err != nil {
+		return err
 	}
-	if email, ok := userInfo["user_email"].(string); ok {
-		data.UserEmail = types.StringValue(email)
+	if err := projectUserStringFromAPI(&data.UserEmail, userInfo, "user_email", true); err != nil {
+		return err
 	}
-	if role, ok := userInfo["user_role"].(string); ok && !data.UserRole.IsNull() {
-		data.UserRole = types.StringValue(role)
+	if err := projectUserStringFromAPI(&data.UserRole, userInfo, "user_role", !data.UserRole.IsNull()); err != nil {
+		return err
 	}
-	if budgetDuration, ok := userInfo["budget_duration"].(string); ok && !data.BudgetDuration.IsNull() {
-		data.BudgetDuration = types.StringValue(budgetDuration)
+	if err := projectUserStringFromAPI(&data.BudgetDuration, userInfo, "budget_duration", !data.BudgetDuration.IsNull()); err != nil {
+		return err
 	}
 
 	// Numeric fields are Optional-only: validate every present API value, but
@@ -715,6 +716,24 @@ func projectUserResourceAPIObject(ctx context.Context, data *UserResourceModel, 
 	}
 
 	*original = *data
+	return nil
+}
+
+func projectUserStringFromAPI(target *types.String, object map[string]interface{}, key string, project bool) error {
+	value, presence, err := apiValueAt(object, key)
+	if err != nil {
+		return fmt.Errorf("invalid user scalar response")
+	}
+	if presence != apiValuePresent || value == nil {
+		return nil
+	}
+	text, ok := value.(string)
+	if !ok {
+		return fmt.Errorf("invalid user scalar response")
+	}
+	if project {
+		*target = types.StringValue(text)
+	}
 	return nil
 }
 

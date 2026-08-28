@@ -174,6 +174,8 @@ func TestUserSafeReadStatusEnvelopeAndProjectionSequences(t *testing.T) {
 		{name: "empty envelope", body: []byte(`{"user_id":"user-sequence","user_info":{}}`)},
 		{name: "root mismatch", body: userSafeReadBody(t, "wrong-root", userID)},
 		{name: "nested mismatch", body: userSafeReadBody(t, userID, "wrong-nested")},
+		{name: "malformed string", body: []byte(`{"user_id":"user-sequence","user_info":{"user_id":"user-sequence","user_alias":7}}`)},
+		{name: "malformed unowned string", body: []byte(`{"user_id":"user-sequence","user_info":{"user_id":"user-sequence","user_role":false}}`)},
 		{name: "malformed number", body: []byte(`{"user_id":"user-sequence","user_info":{"user_id":"user-sequence","max_budget":"secret"}}`)},
 		{name: "malformed collection", body: []byte(`{"user_id":"user-sequence","user_info":{"user_id":"user-sequence","teams":["ok",1]}}`)},
 	} {
