@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"net/http"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
@@ -79,25 +80,25 @@ func (d *AccessGroupDataSource) Read(ctx context.Context, req datasource.ReadReq
 		return
 	}
 	var result map[string]interface{}
-	if err := d.client.DoRequestWithResponse(ctx, "GET", endpointWithPathSegment("/access_group/", accessGroup, "/info"), nil, &result); err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read access group: %s", err))
+	if err := d.client.DoReadWithResponse(ctx, http.MethodGet, endpointWithPathSegment("/access_group/", accessGroup, "/info"), nil, &result); err != nil {
+		resp.Diagnostics.AddError("Client Error", "Unable to read access group. Response and request details were omitted.")
 		return
 	}
 
 	actualAccessGroup, err := dataSourceRequiredStringAt(result, "access_group")
 	if err != nil || actualAccessGroup.ValueString() != accessGroup {
-		resp.Diagnostics.AddError("Invalid API Response", "Access group response identity did not match the requested access group.")
+		resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned a malformed or identity-mismatched access group response. Response and request details were omitted.")
 		return
 	}
 	modelNames, err := dataSourceNullableStringListAt(result, "model_names")
 	if err != nil {
-		resp.Diagnostics.AddError("Invalid API Response", fmt.Sprintf("Unable to decode model_names: %s", err))
+		resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned a malformed access group response. Response and request details were omitted.")
 		return
 	}
 	if !modelNames.IsNull() {
 		modelNames, err = reconcileAccessGroupModelNames(ctx, types.ListNull(types.StringType), result["model_names"])
 		if err != nil {
-			resp.Diagnostics.AddError("Invalid API Response", fmt.Sprintf("Unable to decode model_names: %s", err))
+			resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned a malformed access group response. Response and request details were omitted.")
 			return
 		}
 	}
