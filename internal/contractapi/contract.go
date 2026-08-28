@@ -1261,9 +1261,9 @@ var reviewedPaginationFunctions = map[string]bool{
 // raw-identity helpers and promptEnvironment. Any implementation or dependency
 // change must be independently reviewed before its new proof is admitted here.
 var reviewedRawIdentityProofs = map[string]string{
-	"keyDataSourceLookup":          "cbe0fc0b8088f11d87fa5bc0478904f489cf18e21c2355831991505b05de71cd",
-	"keyLookupIdentifier":          "13feb0c08774c8a559a1d8a58195d48b19af95188fa54c80c1c2dc145d8b4d45",
-	"keyBlockStateIdentity":        "0191ee6f5e184846f49ff73454b211e758c6e235c6097af43c8d7d9040fb5968",
+	"keyDataSourceLookup":          "f08481c1c2e15199e9c41d00951db05a4c7a4f9b2c47808b8cc856064292f54c",
+	"keyLookupIdentifier":          "f49ebea85202b2949fdd44b9aab7cc8c417a72d3d187733f2796194962471652",
+	"keyBlockStateIdentity":        "565265e0425d3c4820d1bd198c0fed6f1b641e4dc4790752c269de3bd49eb08f",
 	"batchTeamID":                  "c568cb284d64ec148f22093cc28d161db0f7f00d88a7728f53b44d9d12fd3c04",
 	"teamMemberConfiguredIdentity": "f7f74ec5327d73d2f6a935213553eaab298068b93fe1b081734d619a51adfc3d",
 }

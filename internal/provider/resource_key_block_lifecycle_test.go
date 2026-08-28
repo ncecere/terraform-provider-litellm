@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -120,7 +121,7 @@ func TestKeyBlockLifecycleUsesOnlyBareHash(t *testing.T) {
 			if request.URL.Query().Get("key") != bareHash {
 				t.Errorf("read key = %q, want bare hash", request.URL.Query().Get("key"))
 			}
-			_, _ = writer.Write([]byte(`{"info":{"blocked":true}}`))
+			_, _ = fmt.Fprintf(writer, `{"key":%q,"info":{"blocked":true}}`, bareHash)
 		default:
 			http.NotFound(writer, request)
 		}

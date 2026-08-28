@@ -4,12 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
-	"regexp"
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/datasourcevalidator"
-	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -80,7 +79,7 @@ func (d *KeyDataSource) Schema(ctx context.Context, req datasource.SchemaRequest
 				Description: "A sha256:<64-hex> management identifier used to look up a write-only key without reintroducing the raw token into Terraform state. Conflicts with key.",
 				Optional:    true,
 				Validators: []validator.String{
-					stringvalidator.RegexMatches(regexp.MustCompile(`^sha256:[0-9a-fA-F]{64}$`), "must use the sha256:<64-hex> management identifier format"),
+					redactingKeyHashValidator{},
 				},
 			},
 			"key_alias": schema.StringAttribute{
@@ -135,6 +134,7 @@ func (d *KeyDataSource) Schema(ctx context.Context, req datasource.SchemaRequest
 			"metadata": schema.MapAttribute{
 				Description: "Metadata for the key.",
 				Computed:    true,
+				Sensitive:   true,
 				ElementType: types.StringType,
 			},
 			"tags": schema.ListAttribute{
@@ -211,97 +211,79 @@ func (d *KeyDataSource) Read(ctx context.Context, req datasource.ReadRequest, re
 	endpoint := endpointWithQuery("/key/info", query)
 
 	var result map[string]interface{}
-	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
+	if err := d.client.DoReadWithResponse(ctx, http.MethodGet, endpoint, nil, &result); err != nil {
 		resp.Diagnostics.AddError("Key Read Error", keyDataSourceReadError(err))
 		return
 	}
 
-	actualKey, err := dataSourceRequiredStringAt(result, "key")
-	if err != nil || actualKey.ValueString() != lookupValue {
-		resp.Diagnostics.AddError("Invalid API Response", "Key response identity did not match the requested key.")
-		return
-	}
-	info := result
-	if raw, presence, infoErr := apiValueAt(result, "info"); infoErr != nil {
-		resp.Diagnostics.AddError("Invalid API Response", infoErr.Error())
-		return
-	} else if presence == apiValuePresent {
-		var ok bool
-		info, ok = raw.(map[string]interface{})
-		if !ok {
-			resp.Diagnostics.AddError("Invalid API Response", dataSourceShapeError([]string{"info"}, "an object or null").Error())
-			return
-		}
-	}
-
-	complete := KeyDataSourceModel{
-		ID:      types.StringValue(managementID),
-		Key:     data.Key,
-		KeyHash: data.KeyHash,
-	}
-	if complete.KeyAlias, err = dataSourceRoleRedactedNullableStringAt(info, "key_alias"); err != nil {
-		resp.Diagnostics.AddError("Invalid API Response", err.Error())
-		return
-	}
-	if complete.UserID, err = dataSourceRoleRedactedNullableStringAt(info, "user_id"); err != nil {
-		resp.Diagnostics.AddError("Invalid API Response", err.Error())
-		return
-	}
-	if complete.TeamID, err = dataSourceRoleRedactedNullableStringAt(info, "team_id"); err != nil {
-		resp.Diagnostics.AddError("Invalid API Response", err.Error())
-		return
-	}
-	if complete.ProjectID, err = dataSourceRoleRedactedNullableStringAt(info, "project_id"); err != nil {
-		resp.Diagnostics.AddError("Invalid API Response", err.Error())
-		return
-	}
-	if complete.BudgetDuration, err = dataSourceRoleRedactedNullableStringAt(info, "budget_duration"); err != nil {
-		resp.Diagnostics.AddError("Invalid API Response", err.Error())
-		return
-	}
-	if complete.Models, err = dataSourceRoleRedactedNullableStringListAt(info, "models"); err != nil {
-		resp.Diagnostics.AddError("Invalid API Response", err.Error())
-		return
-	}
-	if complete.MaxBudget, err = keyDataSourceNullableFloat64AtPaths(info,
-		[]string{"max_budget"}, []string{"litellm_budget_table", "max_budget"}); err != nil {
-		resp.Diagnostics.AddError("Invalid API Response", err.Error())
-		return
-	}
-	if complete.SoftBudget, err = keyDataSourceNullableFloat64AtPaths(info,
-		[]string{"litellm_budget_table", "soft_budget"}, []string{"soft_budget"}); err != nil {
-		resp.Diagnostics.AddError("Invalid API Response", err.Error())
-		return
-	}
-	if complete.Spend, err = dataSourceRoleRedactedNullableFloat64At(info, "spend"); err != nil {
-		resp.Diagnostics.AddError("Invalid API Response", err.Error())
-		return
-	}
-	if complete.MaxParallelRequests, err = dataSourceRoleRedactedNullableInt64At(info, "max_parallel_requests"); err != nil {
-		resp.Diagnostics.AddError("Invalid API Response", err.Error())
-		return
-	}
-	if complete.TPMLimit, err = dataSourceRoleRedactedNullableInt64At(info, "tpm_limit"); err != nil {
-		resp.Diagnostics.AddError("Invalid API Response", err.Error())
-		return
-	}
-	if complete.RPMLimit, err = dataSourceRoleRedactedNullableInt64At(info, "rpm_limit"); err != nil {
-		resp.Diagnostics.AddError("Invalid API Response", err.Error())
-		return
-	}
-	if complete.Blocked, err = dataSourceRoleRedactedNullableBoolAt(info, "blocked"); err != nil {
-		resp.Diagnostics.AddError("Invalid API Response", err.Error())
-		return
-	}
-	if complete.Tags, complete.Metadata, err = keyDataSourceCollections(info); err != nil {
-		resp.Diagnostics.AddError("Invalid API Response", err.Error())
-		return
-	}
-	if complete.RouterSettings, _, err = keyRouterSettingsFromAPI(info["router_settings"], types.ObjectNull(keyRouterSettingsAttrTypes)); err != nil {
-		resp.Diagnostics.AddError("Router Settings Read Error", err.Error())
+	complete, err := projectKeyDataSourceAPIObject(data, result, lookupValue, managementID)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned a malformed or identity-mismatched key response. Response and request details were omitted.")
 		return
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &complete)...)
+}
+
+func projectKeyDataSourceAPIObject(data KeyDataSourceModel, result map[string]interface{}, lookupValue, managementID string) (KeyDataSourceModel, error) {
+	rawInfo, presence, err := apiValueAt(result, "info")
+	if err != nil || presence != apiValuePresent || rawInfo == nil {
+		return KeyDataSourceModel{}, fmt.Errorf("invalid key response envelope")
+	}
+	info, ok := rawInfo.(map[string]interface{})
+	if !ok {
+		return KeyDataSourceModel{}, fmt.Errorf("invalid key response envelope")
+	}
+	if err := validateExactKeyInfoIdentity(result, info, lookupValue); err != nil {
+		return KeyDataSourceModel{}, fmt.Errorf("invalid key response identity")
+	}
+
+	complete := KeyDataSourceModel{ID: types.StringValue(managementID), Key: data.Key, KeyHash: data.KeyHash}
+	if complete.KeyAlias, err = dataSourceRoleRedactedNullableStringAt(info, "key_alias"); err != nil {
+		return KeyDataSourceModel{}, err
+	}
+	if complete.UserID, err = dataSourceRoleRedactedNullableStringAt(info, "user_id"); err != nil {
+		return KeyDataSourceModel{}, err
+	}
+	if complete.TeamID, err = dataSourceRoleRedactedNullableStringAt(info, "team_id"); err != nil {
+		return KeyDataSourceModel{}, err
+	}
+	if complete.ProjectID, err = dataSourceRoleRedactedNullableStringAt(info, "project_id"); err != nil {
+		return KeyDataSourceModel{}, err
+	}
+	if complete.BudgetDuration, err = dataSourceRoleRedactedNullableStringAt(info, "budget_duration"); err != nil {
+		return KeyDataSourceModel{}, err
+	}
+	if complete.Models, err = dataSourceRoleRedactedNullableStringListAt(info, "models"); err != nil {
+		return KeyDataSourceModel{}, err
+	}
+	if complete.MaxBudget, err = keyDataSourceNullableFloat64AtPaths(info, []string{"max_budget"}, []string{"litellm_budget_table", "max_budget"}); err != nil {
+		return KeyDataSourceModel{}, err
+	}
+	if complete.SoftBudget, err = keyDataSourceNullableFloat64AtPaths(info, []string{"litellm_budget_table", "soft_budget"}, []string{"soft_budget"}); err != nil {
+		return KeyDataSourceModel{}, err
+	}
+	if complete.Spend, err = dataSourceRoleRedactedNullableFloat64At(info, "spend"); err != nil {
+		return KeyDataSourceModel{}, err
+	}
+	if complete.MaxParallelRequests, err = dataSourceRoleRedactedNullableInt64At(info, "max_parallel_requests"); err != nil {
+		return KeyDataSourceModel{}, err
+	}
+	if complete.TPMLimit, err = dataSourceRoleRedactedNullableInt64At(info, "tpm_limit"); err != nil {
+		return KeyDataSourceModel{}, err
+	}
+	if complete.RPMLimit, err = dataSourceRoleRedactedNullableInt64At(info, "rpm_limit"); err != nil {
+		return KeyDataSourceModel{}, err
+	}
+	if complete.Blocked, err = dataSourceRoleRedactedNullableBoolAt(info, "blocked"); err != nil {
+		return KeyDataSourceModel{}, err
+	}
+	if complete.Tags, complete.Metadata, err = keyDataSourceCollections(info); err != nil {
+		return KeyDataSourceModel{}, err
+	}
+	if complete.RouterSettings, _, err = keyRouterSettingsFromAPI(info["router_settings"], types.ObjectNull(keyRouterSettingsAttrTypes)); err != nil {
+		return KeyDataSourceModel{}, err
+	}
+	return complete, nil
 }
 
 func keyDataSourceNullableFloat64AtPaths(object map[string]interface{}, paths ...[]string) (types.Float64, error) {

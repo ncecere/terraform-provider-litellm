@@ -216,7 +216,7 @@ func (r *KeyBlockResource) Schema(ctx context.Context, req resource.SchemaReques
 				Description: "A sha256:<64-hex> key management identifier, such as litellm_key.example.id. LiteLLM receives only the bare hash.",
 				Optional:    true,
 				Validators: []validator.String{
-					stringvalidator.RegexMatches(keyHashIDPattern, "must use the sha256:<64-hex> management identifier format"),
+					redactingKeyHashValidator{},
 				},
 			},
 			"blocked": schema.BoolAttribute{
@@ -298,9 +298,8 @@ func (r *KeyBlockResource) Read(ctx context.Context, req resource.ReadRequest, r
 	endpoint := keyBlockInfoEndpoint(identity.apiValue)
 
 	var result map[string]interface{}
-	if err := r.client.DoRequestWithResponse(ctx, http.MethodGet, endpoint, nil, &result); err != nil {
+	if err := r.client.DoReadWithResponse(ctx, http.MethodGet, endpoint, nil, &result); err != nil {
 		if IsAPIErrorStatus(err, http.StatusNotFound) {
-			// Key no longer exists, remove the block resource.
 			resp.State.RemoveResource(ctx)
 			return
 		}
@@ -308,27 +307,36 @@ func (r *KeyBlockResource) Read(ctx context.Context, req resource.ReadRequest, r
 		return
 	}
 
-	// The /key/info endpoint may return key data nested inside "info"
-	info := result
-	if nested, ok := result["info"].(map[string]interface{}); ok {
-		info = nested
+	blocked, err := projectKeyBlockAPIObject(result, identity.apiValue)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned a malformed or identity-mismatched key response. Response and request details were omitted.")
+		return
 	}
-
-	// Check blocked status
-	if blocked, ok := info["blocked"].(bool); ok {
-		data.Blocked = types.BoolValue(blocked)
-		if !blocked {
-			// Key is no longer blocked, remove this resource
-			resp.State.RemoveResource(ctx)
-			return
-		}
-	} else {
-		// If blocked field doesn't exist or is not a bool, assume not blocked
+	if !blocked {
 		resp.State.RemoveResource(ctx)
 		return
 	}
-
+	data.Blocked = types.BoolValue(true)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+}
+
+func projectKeyBlockAPIObject(result map[string]interface{}, expectedKey string) (bool, error) {
+	rawInfo, presence, err := apiValueAt(result, "info")
+	if err != nil || presence != apiValuePresent || rawInfo == nil {
+		return false, errors.New("invalid key response envelope")
+	}
+	info, ok := rawInfo.(map[string]interface{})
+	if !ok {
+		return false, errors.New("invalid key response envelope")
+	}
+	if err := validateExactKeyInfoIdentity(result, info, expectedKey); err != nil {
+		return false, errors.New("invalid key response identity")
+	}
+	blocked, ok := info["blocked"].(bool)
+	if !ok {
+		return false, errors.New("invalid key response block state")
+	}
+	return blocked, nil
 }
 
 func (r *KeyBlockResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {

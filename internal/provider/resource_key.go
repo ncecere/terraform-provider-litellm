@@ -68,7 +68,7 @@ func keyHashFromID(id string) (string, error) {
 	if _, err := hex.DecodeString(hash); err != nil {
 		return "", fmt.Errorf("key ID contains an invalid SHA256 hash: %w", err)
 	}
-	return hash, nil
+	return strings.ToLower(hash), nil
 }
 
 func keyLookupIdentifier(data *KeyResourceModel) (string, error) {
@@ -764,8 +764,8 @@ func (r *KeyResource) Read(ctx context.Context, req resource.ReadRequest, resp *
 		acceptedCreateRecovery: acceptedRecovery, fresh: acceptedRecovery || pendingUpdate.any(),
 	}
 
-	if err := r.readKeyWithOwnership(ctx, &data, imported, ownership); err != nil {
-		if IsNotFoundError(err) {
+	if err := r.refreshKeyWithOwnership(ctx, &data, imported, ownership); err != nil {
+		if IsAPIErrorStatus(err, http.StatusNotFound) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
@@ -1082,7 +1082,12 @@ func (r *KeyResource) ImportState(ctx context.Context, req resource.ImportStateR
 		}
 		// A hash import avoids placing the raw token in state. Version "1" is
 		// the documented bootstrap value and must match configuration initially.
-		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
+		canonicalHash, err := keyHashFromID(req.ID)
+		if err != nil {
+			resp.Diagnostics.AddError("Invalid Write-Only Key Import", "The SHA256 management identifier is invalid.")
+			return
+		}
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), "sha256:"+canonicalHash)...)
 		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("key"), types.StringNull())...)
 		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("key_wo_version"), "1")...)
 		if resp.Private != nil {
@@ -1418,6 +1423,51 @@ func (r *KeyResource) getKeyInfo(ctx context.Context, data *KeyResourceModel) (m
 	return result, info, nil
 }
 
+func (r *KeyResource) getSafeExactKeyInfo(ctx context.Context, data *KeyResourceModel) (map[string]interface{}, map[string]interface{}, error) {
+	keyIdentifier, err := keyLookupIdentifier(data)
+	if err != nil {
+		return nil, nil, err
+	}
+	endpoint := keyInfoEndpoint(keyIdentifier)
+	var result map[string]interface{}
+	if err := r.client.DoReadWithResponse(ctx, http.MethodGet, endpoint, nil, &result); err != nil {
+		return nil, nil, err
+	}
+	info, ok := result["info"].(map[string]interface{})
+	if !ok || info == nil {
+		return nil, nil, errSemanticDictionaryTraversal
+	}
+	if err := validateExactKeyInfoIdentity(result, info, keyIdentifier); err != nil {
+		return nil, nil, err
+	}
+	if err := validateOrdinaryKeyInfoScalars(info); err != nil {
+		return nil, nil, err
+	}
+	return result, info, nil
+}
+
+func validateOrdinaryKeyInfoScalars(info map[string]interface{}) error {
+	if value, presence, err := apiValueAt(info, "blocked"); err != nil {
+		return errSemanticDictionaryTraversal
+	} else if presence == apiValuePresent && value != nil {
+		if _, ok := value.(bool); !ok {
+			return errSemanticDictionaryTraversal
+		}
+	}
+	for _, field := range []string{"organization_id", "project_id", "budget_id", "key_alias", "duration", "tpm_limit_type", "rpm_limit_type", "budget_duration", "team_id", "user_id"} {
+		value, presence, err := apiValueAt(info, field)
+		if err != nil {
+			return errSemanticDictionaryTraversal
+		}
+		if presence == apiValuePresent && value != nil {
+			if _, ok := value.(string); !ok {
+				return errSemanticDictionaryTraversal
+			}
+		}
+	}
+	return nil
+}
+
 func (r *KeyResource) getFreshExactKeyInfo(ctx context.Context, data *KeyResourceModel) (map[string]interface{}, map[string]interface{}, error) {
 	keyIdentifier, err := keyLookupIdentifier(data)
 	if err != nil {
@@ -1507,6 +1557,14 @@ func (r *KeyResource) readKeyWithNumericOwnership(ctx context.Context, data *Key
 }
 
 func (r *KeyResource) readKeyWithOwnership(ctx context.Context, data *KeyResourceModel, imported bool, semantic keySemanticReadOwnership) error {
+	return r.readKeyWithTransport(ctx, data, imported, semantic, false)
+}
+
+func (r *KeyResource) refreshKeyWithOwnership(ctx context.Context, data *KeyResourceModel, imported bool, semantic keySemanticReadOwnership) error {
+	return r.readKeyWithTransport(ctx, data, imported, semantic, true)
+}
+
+func (r *KeyResource) readKeyWithTransport(ctx context.Context, data *KeyResourceModel, imported bool, semantic keySemanticReadOwnership, safeRead bool) error {
 	keyIdentifier, err := keyLookupIdentifier(data)
 	if err != nil {
 		return err
@@ -1514,6 +1572,8 @@ func (r *KeyResource) readKeyWithOwnership(ctx context.Context, data *KeyResourc
 	var result, info map[string]interface{}
 	if semantic.fresh {
 		result, info, err = r.getFreshExactKeyInfo(ctx, data)
+	} else if safeRead {
+		result, info, err = r.getSafeExactKeyInfo(ctx, data)
 	} else {
 		result, info, err = r.getKeyInfo(ctx, data)
 	}

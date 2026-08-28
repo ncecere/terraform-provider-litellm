@@ -14,6 +14,7 @@ unset SMOKE_SUPPLEMENTAL_ONLY SMOKE_FALLBACK_DELETE_UNSUPPORTED SMOKE_FALLBACK_D
 unset SMOKE_SEARCH_TOOL_EXTERNAL_DELETE SMOKE_SEARCH_TOOL_DELETE_ADDRESS
 unset SMOKE_ACCESS_GROUP_EXTERNAL_DELETE SMOKE_ACCESS_GROUP_DELETE_ADDRESS
 unset SMOKE_USER_EXTERNAL_DELETE SMOKE_USER_DELETE_ADDRESS
+unset SMOKE_KEY_EXTERNAL_DELETE SMOKE_KEY_DELETE_ADDRESS SMOKE_KEY_BLOCK_DELETE_ADDRESS
 unset SMOKE_DIAGNOSTIC_OUTPUT SMOKE_LOG_OVERRIDE
 
 if [ "$ASSEMBLY_ONLY" != "1" ]; then
@@ -134,6 +135,14 @@ run_user_external_delete_case() {
     sh "$REPO_ROOT/internal_testing/smoke.sh" "$REPO_ROOT" resources user_minimal.tf
 }
 
+run_key_external_delete_case() {
+  printf '\n===== ACCEPTANCE: key_external_delete =====\n'
+  SMOKE_ASSEMBLY_ONLY=$ASSEMBLY_ONLY SMOKE_SUPPLEMENTAL_ONLY=1 \
+    SMOKE_KEY_EXTERNAL_DELETE=1 SMOKE_KEY_DELETE_ADDRESS=litellm_key.minimal \
+    SMOKE_KEY_BLOCK_DELETE_ADDRESS=litellm_key_block.minimal \
+    sh "$REPO_ROOT/internal_testing/smoke.sh" "$REPO_ROOT" resources key_minimal.tf,key_block_minimal.tf
+}
+
 # Explicit coverage table. litellm_project is enterprise-only and intentionally
 # excluded; every other registered resource has a lifecycle case here.
 run_case access_group resources model_access_group.tf,access_group_minimal.tf datasources access_group.tf,access_groups_list.tf
@@ -157,7 +166,7 @@ if [ "$CLI_SUPPORTS_111" = "1" ]; then
   keywo_command_log="$SMOKE_PRIVATE_ROOT/.smoke-logs/key-write-only-attempt.command.log"
   rm -f "$keywo_log" "$keywo_command_log"
   set +e
-  SMOKE_LOG_OVERRIDE=$keywo_log SMOKE_DIAGNOSTIC_OUTPUT=$keywo_command_log \
+  SMOKE_ASSEMBLY_ONLY=$ASSEMBLY_ONLY SMOKE_LOG_OVERRIDE=$keywo_log SMOKE_DIAGNOSTIC_OUTPUT=$keywo_command_log \
     sh "$REPO_ROOT/internal_testing/smoke.sh" "$REPO_ROOT" resources key_write_only.tf
   keywo_status=$?
   set -e
@@ -191,6 +200,7 @@ else
   emit_controlled_record data_source litellm_jwt_key_mappings skipped cli-version-below-1.11
 fi
 run_case key_block resources key_minimal.tf,key_block_minimal.tf,key_block_hash.tf
+run_key_external_delete_case
 run_case mcp_server resources mcp_server_minimal.tf,mcp_server_identity.tf,mcp_server_json_info.tf datasources mcp_server.tf,mcp_servers_list.tf
 run_mcp_clear_lifecycle_case
 mcp_evidence="$SMOKE_PRIVATE_ROOT/.smoke-logs/mcp-immediate-import-evidence.json"

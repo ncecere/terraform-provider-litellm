@@ -49,7 +49,7 @@ Exactly one lookup argument is required:
 * `rpm_limit` - Requests per minute limit.
 * `budget_duration` - Budget reset duration.
 * `soft_budget` - Soft budget limit for warnings.
-* `metadata` - Map of metadata for the key.
+* `metadata` - (Sensitive) Map of metadata for the key. Terraform redacts it from normal CLI output because metadata can contain credentials.
 * `tags` - List of tags for the key.
 * `blocked` - Whether the key is blocked.
 * `router_settings` - Complete key-specific LiteLLM v1.98.0 router-settings document. Scalar fields are typed; heterogeneous objects and ordered arrays are returned as canonical JSON strings. See the `litellm_key` resource documentation for the nested fields.
@@ -58,3 +58,4 @@ Exactly one lookup argument is required:
 
 - The `key` argument is marked as sensitive and will not appear in plan output. It is still an input stored in data-source state; use `key_hash` for write-only keys.
 - Use this data source to check key status and budget information.
+- Ordinary reads retry bounded transient transport, HTTP 408, 429, and 5xx failures. A 404 remains an error for the data source, and malformed or identity-mismatched responses do not publish partial state.

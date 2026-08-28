@@ -490,11 +490,15 @@
       },
       {
         "file": "internal/provider/resource_key.go",
-        "line": 1411
+        "line": 1416
       },
       {
         "file": "internal/provider/resource_key.go",
-        "line": 1428
+        "line": 1433
+      },
+      {
+        "file": "internal/provider/resource_key.go",
+        "line": 1478
       },
       {
         "file": "internal/provider/resource_key_block.go",
@@ -559,7 +563,7 @@
     "evidence": [
       {
         "file": "internal/provider/resource_key_block.go",
-        "line": 370
+        "line": 378
       }
     ]
   },
