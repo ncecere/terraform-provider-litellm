@@ -341,8 +341,10 @@ func TestShippedMCPServerHCLMatchesV198AuthContracts(t *testing.T) {
 						t.Errorf("%s resource %q bearer_token credentials keys = %q, want exactly [auth_value]; token and api_key are ignored by LiteLLM v1.98", relativePath, block.Labels[1], credentialKeys)
 					}
 				case "oauth2":
-					if hasCredentials && !slices.Equal(credentialKeys, []string{"client_id", "client_secret"}) {
-						t.Errorf("%s resource %q oauth2 credentials keys = %q, want [client_id client_secret]", relativePath, block.Labels[1], credentialKeys)
+					baseCredentials := []string{"client_id", "client_secret"}
+					withUpstreamResource := []string{"client_id", "client_secret", "upstream_resource"}
+					if hasCredentials && !slices.Equal(credentialKeys, baseCredentials) && !slices.Equal(credentialKeys, withUpstreamResource) {
+						t.Errorf("%s resource %q oauth2 credentials keys = %q, want [client_id client_secret] with optional upstream_resource", relativePath, block.Labels[1], credentialKeys)
 					}
 				case "api_key", "basic", "authorization", "token":
 					if hasCredentials && !slices.Equal(credentialKeys, []string{"auth_value"}) {

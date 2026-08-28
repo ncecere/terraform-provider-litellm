@@ -169,6 +169,8 @@ type MCPServerResourceModel struct {
 	// Computed fields
 	CreatedAt types.String `tfsdk:"created_at"`
 	CreatedBy types.String `tfsdk:"created_by"`
+	UpdatedAt types.String `tfsdk:"updated_at"`
+	UpdatedBy types.String `tfsdk:"updated_by"`
 }
 
 func (r *MCPServerResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -178,7 +180,7 @@ func (r *MCPServerResource) Metadata(ctx context.Context, req resource.MetadataR
 func (r *MCPServerResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		Description: "Manages a LiteLLM MCP (Model Context Protocol) server.",
-		Version:     3,
+		Version:     4,
 		Attributes: map[string]schema.Attribute{
 			"mcp_info_json": schema.StringAttribute{
 				Description: "Sensitive complete MCP info JSON object. The root must be a non-null object; {} explicitly owns and clears the whole document. Authoritative reads expose the complete object without dropping unknown members or exact JSON numbers.",
@@ -237,10 +239,12 @@ func (r *MCPServerResource) Schema(ctx context.Context, req resource.SchemaReque
 			"url": schema.StringAttribute{
 				Description: "URL of the MCP server. HTTP and SSE transports require url or spec_path; stdio does not require a URL.",
 				Optional:    true,
+				Sensitive:   true,
 			},
 			"spec_path": schema.StringAttribute{
 				Description: "Path or URL of an OpenAPI specification. For HTTP and SSE transports this can be used instead of url.",
 				Optional:    true,
+				Sensitive:   true,
 			},
 			"transport": schema.StringAttribute{
 				Description: "Transport type for the MCP server (http, sse, stdio).",
@@ -274,17 +278,20 @@ func (r *MCPServerResource) Schema(ctx context.Context, req resource.SchemaReque
 			"command": schema.StringAttribute{
 				Description: "Command to run for stdio transport.",
 				Optional:    true,
+				Sensitive:   true,
 			},
 			"args": schema.ListAttribute{
 				Description: "Arguments for the command (stdio transport).",
 				Optional:    true,
 				Computed:    true,
+				Sensitive:   true,
 				ElementType: types.StringType,
 			},
 			"env": schema.MapAttribute{
 				Description: "Environment variables for the command (stdio transport).",
 				Optional:    true,
 				Computed:    true,
+				Sensitive:   true,
 				ElementType: types.StringType,
 			},
 			"credentials": schema.MapAttribute{
@@ -310,19 +317,23 @@ func (r *MCPServerResource) Schema(ctx context.Context, req resource.SchemaReque
 				Description: "Static headers to always include with requests.",
 				Optional:    true,
 				Computed:    true,
+				Sensitive:   true,
 				ElementType: types.StringType,
 			},
 			"authorization_url": schema.StringAttribute{
 				Description: "OAuth authorization URL for the MCP server.",
 				Optional:    true,
+				Sensitive:   true,
 			},
 			"token_url": schema.StringAttribute{
 				Description: "OAuth token URL for the MCP server.",
 				Optional:    true,
+				Sensitive:   true,
 			},
 			"registration_url": schema.StringAttribute{
 				Description: "OAuth registration URL for the MCP server.",
 				Optional:    true,
+				Sensitive:   true,
 			},
 			"allow_all_keys": schema.BoolAttribute{
 				Description: "Whether to allow all API keys to access this MCP server.",
@@ -346,6 +357,14 @@ func (r *MCPServerResource) Schema(ctx context.Context, req resource.SchemaReque
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
 				},
+			},
+			"updated_at": schema.StringAttribute{
+				Description: "Timestamp when the server was last updated.",
+				Computed:    true,
+			},
+			"updated_by": schema.StringAttribute{
+				Description: "User who last updated the server.",
+				Computed:    true,
 			},
 		},
 		Blocks: map[string]schema.Block{
@@ -677,6 +696,24 @@ func (r *MCPServerResource) ModifyPlan(ctx context.Context, req resource.ModifyP
 			resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("alias"), types.StringValue(mcpNormalizeAliasV198(config.ServerName.ValueString())))...)
 		} else {
 			resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("alias"), types.StringNull())...)
+		}
+	}
+	// LiteLLM advances these observable audit leaves after every accepted
+	// mutation. Keep them unknown whenever the final planned resource differs
+	// from prior state so readback can publish the new values without violating
+	// Terraform's planned-value contract. A true no-op retains known state.
+	if hasState {
+		comparisonPlan := resp.Plan
+		resp.Diagnostics.Append(comparisonPlan.SetAttribute(ctx, path.Root("updated_at"), state.UpdatedAt)...)
+		resp.Diagnostics.Append(comparisonPlan.SetAttribute(ctx, path.Root("updated_by"), state.UpdatedBy)...)
+		if !resp.Diagnostics.HasError() {
+			if comparisonPlan.Raw.Equal(req.State.Raw) {
+				resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("updated_at"), state.UpdatedAt)...)
+				resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("updated_by"), state.UpdatedBy)...)
+			} else {
+				resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("updated_at"), types.StringUnknown())...)
+				resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("updated_by"), types.StringUnknown())...)
+			}
 		}
 	}
 	if resp.Private != nil && !resp.Diagnostics.HasError() {
@@ -1141,12 +1178,12 @@ func (r *MCPServerResource) ImportState(ctx context.Context, req resource.Import
 	}
 }
 
-// UpgradeState handles v0, v1, and v2 directly so Terraform 1.1 never needs
-// to understand an intermediate schema. Existing values, flags, types, and
-// blocks remain byte-for-byte compatible; only computed lifecycle controls are
-// initialized.
+// UpgradeState handles v0, v1, v2, and v3 directly so Terraform 1.1 never
+// needs to understand an intermediate schema. Existing values, flags, types,
+// blocks, and v3 field-ownership generations remain byte-for-byte compatible;
+// only computed lifecycle controls absent from the source schema are initialized.
 func (r *MCPServerResource) UpgradeState(ctx context.Context) map[int64]resource.StateUpgrader {
-	upgrade := func(convertExtraHeaders, addMCPInfoControls bool) resource.StateUpgrader {
+	upgrade := func(convertExtraHeaders, addMCPInfoControls, addFieldOwnershipControl bool) resource.StateUpgrader {
 		return resource.StateUpgrader{PriorSchema: nil, StateUpgrader: func(ctx context.Context, req resource.UpgradeStateRequest, resp *resource.UpgradeStateResponse) {
 			if req.RawState == nil {
 				resp.Diagnostics.AddError("Unable to Upgrade State", "RawState is nil. This is a bug in the provider.")
@@ -1183,7 +1220,11 @@ func (r *MCPServerResource) UpgradeState(ctx context.Context) map[int64]resource
 				priorState["mcp_info_clear_paths"] = json.RawMessage("null")
 				priorState["mcp_info_ownership_generation"] = json.RawMessage("0")
 			}
-			priorState["field_ownership_generation"] = json.RawMessage("0")
+			if addFieldOwnershipControl {
+				priorState["field_ownership_generation"] = json.RawMessage("0")
+			}
+			priorState["updated_at"] = json.RawMessage("null")
+			priorState["updated_by"] = json.RawMessage("null")
 			upgradedJSON, err := json.Marshal(priorState)
 			if err != nil {
 				resp.Diagnostics.AddError("Unable to Upgrade State", "Failed to marshal upgraded state.")
@@ -1192,7 +1233,12 @@ func (r *MCPServerResource) UpgradeState(ctx context.Context) map[int64]resource
 			resp.DynamicValue = &tfprotov6.DynamicValue{JSON: upgradedJSON}
 		}}
 	}
-	return map[int64]resource.StateUpgrader{0: upgrade(true, true), 1: upgrade(false, true), 2: upgrade(false, false)}
+	return map[int64]resource.StateUpgrader{
+		0: upgrade(true, true, true),
+		1: upgrade(false, true, true),
+		2: upgrade(false, false, true),
+		3: upgrade(false, false, false),
+	}
 }
 
 func (r *MCPServerResource) buildMCPServerRequest(ctx context.Context, data *MCPServerResourceModel, resolvedMCPInfo map[string]interface{}, mcpInfoPresent bool) (map[string]interface{}, error) {
@@ -1403,6 +1449,10 @@ func partialMCPServerState(serverID string) MCPServerResourceModel {
 		MCPInfoClearPaths:          types.ListNull(types.StringType),
 		MCPInfoOwnershipGeneration: types.Int64Value(0),
 		FieldOwnershipGeneration:   types.Int64Value(0),
+		CreatedAt:                  types.StringNull(),
+		CreatedBy:                  types.StringNull(),
+		UpdatedAt:                  types.StringNull(),
+		UpdatedBy:                  types.StringNull(),
 	}
 }
 
@@ -1465,6 +1515,8 @@ func resolveUnknownMCPServerState(data *MCPServerResourceModel, previous *MCPSer
 	data.RegistrationURL = resolveString(data.RegistrationURL, prior.RegistrationURL)
 	data.CreatedAt = resolveString(data.CreatedAt, prior.CreatedAt)
 	data.CreatedBy = resolveString(data.CreatedBy, prior.CreatedBy)
+	data.UpdatedAt = resolveString(data.UpdatedAt, prior.UpdatedAt)
+	data.UpdatedBy = resolveString(data.UpdatedBy, prior.UpdatedBy)
 	data.AllowAllKeys = resolveBool(data.AllowAllKeys, prior.AllowAllKeys)
 	data.SkipURLValidation = resolveBool(data.SkipURLValidation, prior.SkipURLValidation)
 	data.MCPAccessGroups = resolveList(data.MCPAccessGroups, prior.MCPAccessGroups)
@@ -1597,7 +1649,7 @@ func validateMCPServerResponse(result map[string]interface{}, expectedServerID s
 	}
 	return validateMCPServerOptionalResponseFields(
 		result,
-		[]string{"server_name", "url", "spec_path", "alias", "description", "command", "authorization_url", "token_url", "registration_url", "auth_type", "created_at", "created_by"},
+		[]string{"server_name", "url", "spec_path", "alias", "description", "command", "authorization_url", "token_url", "registration_url", "auth_type", "created_at", "created_by", "updated_at", "updated_by"},
 		[]string{"allow_all_keys"},
 		[]string{"mcp_access_groups", "args", "allowed_tools", "extra_headers"},
 		[]string{"env", "static_headers", "credentials"},
@@ -1796,12 +1848,21 @@ func (r *MCPServerResource) readMCPServerResultProjection(ctx context.Context, d
 	} else if fieldOwnership.Owned[mcpFieldCommandPath] || (!data.Command.IsNull() && !data.Command.IsUnknown()) {
 		projectNullableSensitiveString("command", &data.Command)
 	}
-	if createdAt, ok := result["created_at"].(string); ok {
-		data.CreatedAt = types.StringValue(createdAt)
+	projectComputedAuditString := func(name string, current *types.String) {
+		if raw, present := result[name]; present && raw != nil {
+			*current = types.StringValue(raw.(string))
+			return
+		}
+		// Null/omission is role redaction, not a clear. Preserve known prior
+		// state, but resolve first-create/import computed unknowns to typed null.
+		if current.IsUnknown() {
+			*current = types.StringNull()
+		}
 	}
-	if createdBy, ok := result["created_by"].(string); ok {
-		data.CreatedBy = types.StringValue(createdBy)
-	}
+	projectComputedAuditString("created_at", &data.CreatedAt)
+	projectComputedAuditString("created_by", &data.CreatedBy)
+	projectComputedAuditString("updated_at", &data.UpdatedAt)
+	projectComputedAuditString("updated_by", &data.UpdatedBy)
 	projectList := func(fieldPath, name string, current *types.List) error {
 		observed, presence, diagnostics := strictAPIStringList(ctx, result, name, path.Root(name))
 		if diagnostics.HasError() {

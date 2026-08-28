@@ -49,6 +49,7 @@ type MCPServerDataSourceModel struct {
 	Status           types.String `tfsdk:"status"`
 	LastHealthCheck  types.String `tfsdk:"last_health_check"`
 	HealthCheckError types.String `tfsdk:"health_check_error"`
+	UpstreamResource types.String `tfsdk:"upstream_resource"`
 }
 
 func (d *MCPServerDataSource) Metadata(ctx context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
@@ -82,10 +83,12 @@ func (d *MCPServerDataSource) Schema(ctx context.Context, req datasource.SchemaR
 			"url": schema.StringAttribute{
 				Description: "URL of the MCP server, when configured.",
 				Computed:    true,
+				Sensitive:   true,
 			},
 			"spec_path": schema.StringAttribute{
 				Description: "Path or URL of the server's OpenAPI specification, when configured.",
 				Computed:    true,
+				Sensitive:   true,
 			},
 			"transport": schema.StringAttribute{
 				Description: "Transport type for the MCP server (http, sse, stdio).",
@@ -113,15 +116,18 @@ func (d *MCPServerDataSource) Schema(ctx context.Context, req datasource.SchemaR
 			"command": schema.StringAttribute{
 				Description: "Command to run for stdio transport.",
 				Computed:    true,
+				Sensitive:   true,
 			},
 			"args": schema.ListAttribute{
 				Description: "Arguments for the command (stdio transport).",
 				Computed:    true,
+				Sensitive:   true,
 				ElementType: types.StringType,
 			},
 			"env": schema.MapAttribute{
 				Description: "Environment variables for the command (stdio transport).",
 				Computed:    true,
+				Sensitive:   true,
 				ElementType: types.StringType,
 			},
 			"allowed_tools": schema.ListAttribute{
@@ -137,19 +143,23 @@ func (d *MCPServerDataSource) Schema(ctx context.Context, req datasource.SchemaR
 			"static_headers": schema.MapAttribute{
 				Description: "Static headers to always include with requests.",
 				Computed:    true,
+				Sensitive:   true,
 				ElementType: types.StringType,
 			},
 			"authorization_url": schema.StringAttribute{
 				Description: "OAuth authorization URL for the MCP server.",
 				Computed:    true,
+				Sensitive:   true,
 			},
 			"token_url": schema.StringAttribute{
 				Description: "OAuth token URL for the MCP server.",
 				Computed:    true,
+				Sensitive:   true,
 			},
 			"registration_url": schema.StringAttribute{
 				Description: "OAuth registration URL for the MCP server.",
 				Computed:    true,
+				Sensitive:   true,
 			},
 			"allow_all_keys": schema.BoolAttribute{
 				Description: "Whether all API keys are allowed to access this MCP server.",
@@ -181,6 +191,10 @@ func (d *MCPServerDataSource) Schema(ctx context.Context, req datasource.SchemaR
 			},
 			"health_check_error": schema.StringAttribute{
 				Description: "Error message from the last health check, if any.",
+				Computed:    true,
+			},
+			"upstream_resource": schema.StringAttribute{
+				Description: "Non-secret RFC 8707 upstream resource indicator retained by LiteLLM in the otherwise redacted credentials object.",
 				Computed:    true,
 			},
 		},
@@ -230,7 +244,24 @@ func (d *MCPServerDataSource) Read(ctx context.Context, req datasource.ReadReque
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
+type mcpServerDataSourceProjectionRole uint8
+
+const (
+	mcpServerSingularProjection mcpServerDataSourceProjectionRole = iota
+	mcpServerManagerListProjection
+)
+
+// projectMCPServerDataSource remains the compatibility entry point for
+// existing singular callers and focused projection tests.
 func projectMCPServerDataSource(result map[string]interface{}, expectedServerID string) (MCPServerDataSourceModel, error) {
+	return projectMCPServerDataSourceForRole(result, expectedServerID, mcpServerSingularProjection)
+}
+
+func projectMCPServerManagerListDataSource(result map[string]interface{}, expectedServerID string) (MCPServerDataSourceModel, error) {
+	return projectMCPServerDataSourceForRole(result, expectedServerID, mcpServerManagerListProjection)
+}
+
+func projectMCPServerDataSourceForRole(result map[string]interface{}, expectedServerID string, role mcpServerDataSourceProjectionRole) (MCPServerDataSourceModel, error) {
 	var data MCPServerDataSourceModel
 	serverID, err := dataSourceRequiredStringAt(result, "server_id")
 	if err != nil || serverID.ValueString() != expectedServerID {
@@ -263,7 +294,7 @@ func projectMCPServerDataSource(result map[string]interface{}, expectedServerID 
 	if data.AuthType, err = dataSourceNullableStringAt(result, "auth_type"); err != nil {
 		return MCPServerDataSourceModel{}, err
 	}
-	if data.MCPAccessGroups, err = dataSourceNullableStringListAt(result, "mcp_access_groups"); err != nil {
+	if data.MCPAccessGroups, err = mcpAmbiguousDataSourceStringListAt(result, "mcp_access_groups"); err != nil {
 		return MCPServerDataSourceModel{}, err
 	}
 	if data.MCPInfoJSON, err = mcpInfoDataSourceValue(result); err != nil {
@@ -272,16 +303,16 @@ func projectMCPServerDataSource(result map[string]interface{}, expectedServerID 
 	if data.Command, err = dataSourceNullableStringAt(result, "command"); err != nil {
 		return MCPServerDataSourceModel{}, err
 	}
-	if data.Args, err = dataSourceNullableStringListAt(result, "args"); err != nil {
+	if data.Args, err = mcpAmbiguousDataSourceStringListAt(result, "args"); err != nil {
 		return MCPServerDataSourceModel{}, err
 	}
-	if data.Env, err = dataSourceNullableStringMapAt(result, "env"); err != nil {
+	if data.Env, err = mcpAmbiguousDataSourceStringMapAt(result, "env"); err != nil {
 		return MCPServerDataSourceModel{}, err
 	}
-	if data.AllowedTools, err = dataSourceNullableStringListAt(result, "allowed_tools"); err != nil {
+	if data.AllowedTools, err = mcpAmbiguousDataSourceStringListAt(result, "allowed_tools"); err != nil {
 		return MCPServerDataSourceModel{}, err
 	}
-	if data.ExtraHeaders, err = dataSourceNullableStringListAt(result, "extra_headers"); err != nil {
+	if data.ExtraHeaders, err = mcpAmbiguousDataSourceStringListAt(result, "extra_headers"); err != nil {
 		return MCPServerDataSourceModel{}, err
 	}
 	if data.StaticHeaders, err = dataSourceNullableStringMapAt(result, "static_headers"); err != nil {
@@ -302,16 +333,32 @@ func projectMCPServerDataSource(result map[string]interface{}, expectedServerID 
 	if data.CreatedAt, err = dataSourceNullableStringAt(result, "created_at"); err != nil {
 		return MCPServerDataSourceModel{}, err
 	}
-	if data.CreatedBy, err = dataSourceNullableStringAt(result, "created_by"); err != nil {
-		return MCPServerDataSourceModel{}, err
-	}
 	if data.UpdatedAt, err = dataSourceNullableStringAt(result, "updated_at"); err != nil {
 		return MCPServerDataSourceModel{}, err
 	}
-	if data.UpdatedBy, err = dataSourceNullableStringAt(result, "updated_by"); err != nil {
+	if data.Status, err = dataSourceNullableStringAt(result, "status"); err != nil {
 		return MCPServerDataSourceModel{}, err
 	}
-	if data.Status, err = dataSourceNullableStringAt(result, "status"); err != nil {
+
+	if role == mcpServerManagerListProjection {
+		if credentials, present := result["credentials"]; present && credentials != nil {
+			return MCPServerDataSourceModel{}, fmt.Errorf("MCP server list response contains credentials")
+		}
+		data.UpstreamResource = types.StringNull()
+		data.CreatedBy = types.StringNull()
+		data.UpdatedBy = types.StringNull()
+		data.LastHealthCheck = types.StringNull()
+		data.HealthCheckError = types.StringNull()
+		return data, nil
+	}
+
+	if data.UpstreamResource, err = mcpUpstreamResourceDataSourceValue(result); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.CreatedBy, err = dataSourceNullableStringAt(result, "created_by"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.UpdatedBy, err = dataSourceNullableStringAt(result, "updated_by"); err != nil {
 		return MCPServerDataSourceModel{}, err
 	}
 	if data.LastHealthCheck, err = dataSourceNullableStringAt(result, "last_health_check"); err != nil {
@@ -321,6 +368,22 @@ func projectMCPServerDataSource(result map[string]interface{}, expectedServerID 
 		return MCPServerDataSourceModel{}, err
 	}
 	return data, nil
+}
+
+func mcpAmbiguousDataSourceStringListAt(result map[string]interface{}, name string) (types.List, error) {
+	value, err := dataSourceNullableStringListAt(result, name)
+	if err != nil || value.IsNull() || len(value.Elements()) == 0 {
+		return types.ListNull(types.StringType), err
+	}
+	return value, nil
+}
+
+func mcpAmbiguousDataSourceStringMapAt(result map[string]interface{}, name string) (types.Map, error) {
+	value, err := dataSourceNullableStringMapAt(result, name)
+	if err != nil || value.IsNull() || len(value.Elements()) == 0 {
+		return types.MapNull(types.StringType), err
+	}
+	return value, nil
 }
 
 func mcpInfoDataSourceValue(result map[string]interface{}) (types.String, error) {
@@ -333,6 +396,34 @@ func mcpInfoDataSourceValue(result map[string]interface{}) (types.String, error)
 		return types.StringNull(), err
 	}
 	return types.StringValue(canonical), nil
+}
+
+func mcpUpstreamResourceDataSourceValue(result map[string]interface{}) (types.String, error) {
+	raw, present := result["credentials"]
+	if !present || raw == nil {
+		return types.StringNull(), nil
+	}
+
+	var credentials map[string]interface{}
+	switch value := raw.(type) {
+	case map[string]interface{}:
+		credentials = value
+	case map[string]string:
+		credentials = make(map[string]interface{}, len(value))
+		for name, member := range value {
+			credentials[name] = member
+		}
+	default:
+		return types.StringNull(), fmt.Errorf("MCP server credentials projection is malformed")
+	}
+	if len(credentials) != 1 {
+		return types.StringNull(), fmt.Errorf("MCP server credentials projection is malformed")
+	}
+	upstreamResource, ok := credentials["upstream_resource"].(string)
+	if !ok || upstreamResource == "" {
+		return types.StringNull(), fmt.Errorf("MCP server credentials projection is malformed")
+	}
+	return types.StringValue(upstreamResource), nil
 }
 
 func mcpDataSourceTransportValid(transport string) bool {

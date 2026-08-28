@@ -130,8 +130,9 @@ resource "litellm_mcp_server" "oauth_protected" {
   registration_url  = "https://auth.enterprise.com/oauth/register"
 
   credentials = {
-    "client_id"     = var.oauth_client_id
-    "client_secret" = var.oauth_client_secret
+    "client_id"         = var.oauth_client_id
+    "client_secret"     = var.oauth_client_secret
+    "upstream_resource" = "auto"
   }
 
   static_headers = {
@@ -200,6 +201,12 @@ resource "litellm_mcp_server" "local_nodejs" {
   }
 }
 
+# Singular reads expose only LiteLLM's non-secret upstream_resource credential
+# member. No credential map or secret credential member is projected.
+data "litellm_mcp_server" "oauth_protected" {
+  server_id = litellm_mcp_server.oauth_protected.server_id
+}
+
 # =============================================================================
 # VARIABLES
 # =============================================================================
@@ -239,4 +246,8 @@ output "mcp_server_ids" {
     python_local = litellm_mcp_server.local_python.server_id
     nodejs_local = litellm_mcp_server.local_nodejs.server_id
   }
+}
+
+output "oauth_upstream_resource" {
+  value = data.litellm_mcp_server.oauth_protected.upstream_resource
 }

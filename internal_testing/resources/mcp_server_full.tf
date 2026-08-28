@@ -2,8 +2,8 @@
 # All attributes populated
 
 resource "litellm_mcp_server" "full" {
-  server_name    = "test-mcp-full"
-  alias          = "mcp-full"
+  server_name    = "test_mcp_full"
+  alias          = "mcp_full"
   description    = "Full test MCP server"
   url            = "https://example.com/mcp-full"
   transport      = "sse"
@@ -50,4 +50,12 @@ output "mcp_server_full_id" {
 
 output "mcp_server_full_created_at" {
   value = litellm_mcp_server.full.created_at
+}
+
+output "mcp_server_full_updated_at" {
+  value = litellm_mcp_server.full.updated_at
+}
+
+output "mcp_server_full_updated_by" {
+  value = litellm_mcp_server.full.updated_by
 }

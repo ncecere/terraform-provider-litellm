@@ -10,7 +10,8 @@ output "ds_mcp_server_name" {
 }
 
 output "ds_mcp_server_url" {
-  value = data.litellm_mcp_server.lookup.url
+  value     = data.litellm_mcp_server.lookup.url
+  sensitive = true
 }
 
 output "ds_mcp_server_transport" {

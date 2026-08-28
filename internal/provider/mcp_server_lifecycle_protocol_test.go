@@ -408,6 +408,7 @@ func TestMCPServerNoOpPlanDoesNotUpdateProtocol(t *testing.T) {
 	values := map[string]interface{}{
 		"id": "no-op", "server_id": "no-op", "server_name": "no-op", "transport": "http",
 		"url": "https://configured.invalid/mcp", "auth_type": "none", "spec_version": "2024-11-05",
+		"updated_at": "2026-09-01T00:00:00Z", "updated_by": "stable-admin",
 	}
 	state := accessGroupProtocolDynamicValue(t, schema, organizationProjectProtocolValue(t, schema, values))
 	config := accessGroupProtocolDynamicValue(t, schema, organizationProjectProtocolValue(t, schema, map[string]interface{}{
@@ -419,6 +420,9 @@ func TestMCPServerNoOpPlanDoesNotUpdateProtocol(t *testing.T) {
 	if err != nil || accessGroupProtocolDiagnosticsHaveError(planned.Diagnostics) || organizationProjectProtocolPlannedAction(t, schema, state, planned) != organizationProjectProtocolActionNoOp {
 		t.Fatalf("no-op plan: err=%v diagnostics=%v action=%s", err, planned.Diagnostics, organizationProjectProtocolPlannedAction(t, schema, state, planned))
 	}
+	plannedAttributes := protocolAttributeMap(t, schema, planned.PlannedState)
+	assertMCPProtocolString(t, plannedAttributes["updated_at"], "2026-09-01T00:00:00Z")
+	assertMCPProtocolString(t, plannedAttributes["updated_by"], "stable-admin")
 	if puts.Load() != 0 {
 		t.Fatalf("no-op planning issued %d updates", puts.Load())
 	}
