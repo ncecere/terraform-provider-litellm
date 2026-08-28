@@ -97,6 +97,7 @@ internal_testing/
     jwt_key_mapping.tf         # claim-to-existing-key mapping lifecycle
     team_minimal.tf
     team_full.tf
+    team_semantic_json.tf
     team_block_minimal.tf      # blocks the minimal team (destructive)
     team_member_minimal.tf
     team_member_full.tf
