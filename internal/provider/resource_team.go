@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"net/url"
 	"regexp"
 
@@ -20,10 +21,13 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
+	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
 )
 
 var _ resource.Resource = &TeamResource{}
 var _ resource.ResourceWithImportState = &TeamResource{}
+var _ resource.ResourceWithModifyPlan = &TeamResource{}
+var _ resource.ResourceWithUpgradeState = &TeamResource{}
 
 // LiteLLM v1.98 normalizes the four word aliases before computing reset times,
 // supports week units in both duration_in_seconds and standardized reset handling,
@@ -47,6 +51,7 @@ type TeamResourceModel struct {
 	OrganizationID        types.String  `tfsdk:"organization_id"`
 	AccessGroupIDs        types.Set     `tfsdk:"access_group_ids"`
 	Metadata              types.Map     `tfsdk:"metadata"`
+	MetadataJSON          types.String  `tfsdk:"metadata_json"`
 	TPMLimit              types.Int64   `tfsdk:"tpm_limit"`
 	RPMLimit              types.Int64   `tfsdk:"rpm_limit"`
 	TPMLimitType          types.String  `tfsdk:"tpm_limit_type"`
@@ -67,6 +72,42 @@ type TeamResourceModel struct {
 	TeamMemberRPMLimit    types.Int64   `tfsdk:"team_member_rpm_limit"`
 	TeamMemberTPMLimit    types.Int64   `tfsdk:"team_member_tpm_limit"`
 	RouterSettings        types.Object  `tfsdk:"router_settings"`
+}
+
+func teamChangedFieldMismatch(desired, prior, actual TeamResourceModel) (string, bool) {
+	for _, field := range []struct {
+		name                   string
+		desired, prior, actual attr.Value
+	}{
+		{"team_alias", desired.TeamAlias, prior.TeamAlias, actual.TeamAlias},
+		{"organization_id", desired.OrganizationID, prior.OrganizationID, actual.OrganizationID},
+		{"access_group_ids", desired.AccessGroupIDs, prior.AccessGroupIDs, actual.AccessGroupIDs},
+		{"metadata", desired.Metadata, prior.Metadata, actual.Metadata},
+		{"metadata_json", desired.MetadataJSON, prior.MetadataJSON, actual.MetadataJSON},
+		{"tpm_limit", desired.TPMLimit, prior.TPMLimit, actual.TPMLimit},
+		{"rpm_limit", desired.RPMLimit, prior.RPMLimit, actual.RPMLimit},
+		{"max_budget", desired.MaxBudget, prior.MaxBudget, actual.MaxBudget},
+		{"budget_duration", desired.BudgetDuration, prior.BudgetDuration, actual.BudgetDuration},
+		{"models", desired.Models, prior.Models, actual.Models},
+		{"model_aliases", desired.ModelAliases, prior.ModelAliases, actual.ModelAliases},
+		{"model_rpm_limit", desired.ModelRPMLimit, prior.ModelRPMLimit, actual.ModelRPMLimit},
+		{"model_tpm_limit", desired.ModelTPMLimit, prior.ModelTPMLimit, actual.ModelTPMLimit},
+		{"tags", desired.Tags, prior.Tags, actual.Tags},
+		{"guardrails", desired.Guardrails, prior.Guardrails, actual.Guardrails},
+		{"prompts", desired.Prompts, prior.Prompts, actual.Prompts},
+		{"blocked", desired.Blocked, prior.Blocked, actual.Blocked},
+		{"team_member_permissions", desired.TeamMemberPermissions, prior.TeamMemberPermissions, actual.TeamMemberPermissions},
+		{"team_member_budget", desired.TeamMemberBudget, prior.TeamMemberBudget, actual.TeamMemberBudget},
+		{"team_member_budget_duration", desired.MemberBudgetDuration, prior.MemberBudgetDuration, actual.MemberBudgetDuration},
+		{"team_member_rpm_limit", desired.TeamMemberRPMLimit, prior.TeamMemberRPMLimit, actual.TeamMemberRPMLimit},
+		{"team_member_tpm_limit", desired.TeamMemberTPMLimit, prior.TeamMemberTPMLimit, actual.TeamMemberTPMLimit},
+		{"router_settings", desired.RouterSettings, prior.RouterSettings, actual.RouterSettings},
+	} {
+		if !field.desired.IsUnknown() && !field.desired.Equal(field.prior) && !field.desired.Equal(field.actual) {
+			return field.name, true
+		}
+	}
+	return "", false
 }
 
 func preserveTeamMutationRepresentations(planned TeamResourceModel, observed *TeamResourceModel) {
@@ -105,6 +146,7 @@ func partialTeamState(teamID string) TeamResourceModel {
 		TeamID:                types.StringValue(teamID),
 		AccessGroupIDs:        types.SetNull(types.StringType),
 		Metadata:              types.MapNull(types.StringType),
+		MetadataJSON:          types.StringNull(),
 		Models:                types.ListNull(types.StringType),
 		ModelAliases:          types.MapNull(types.StringType),
 		ModelRPMLimit:         types.MapNull(types.Int64Type),
@@ -177,6 +219,7 @@ func (r *TeamResource) Metadata(ctx context.Context, req resource.MetadataReques
 func (r *TeamResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		Description: "Manages a LiteLLM team.",
+		Version:     1,
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Description: "The unique identifier for this team.",
@@ -219,6 +262,13 @@ func (r *TeamResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 				Optional:    true,
 				Computed:    true,
 				ElementType: types.StringType,
+			},
+			"metadata_json": schema.StringAttribute{
+				Description: "Additional team metadata as a semantic JSON object.",
+				Optional:    true,
+				Computed:    true,
+				Sensitive:   true,
+				Validators:  []validator.String{keySemanticDictionaryValidator{}},
 			},
 			"tpm_limit": schema.Int64Attribute{
 				Description: "Tokens per minute limit for the team.",
@@ -402,98 +452,320 @@ func (r *TeamResource) Configure(ctx context.Context, req resource.ConfigureRequ
 	r.client = client
 }
 
-func (r *TeamResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
-	var data TeamResourceModel
-
-	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
+func (r *TeamResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	if organizationProjectPlanIsDestroy(req) {
+		return
+	}
+	var plan, config, state TeamResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	if config.MetadataJSON.IsUnknown() {
+		resp.Diagnostics.AddAttributeError(path.Root("metadata_json"), "Unknown Semantic Team Dictionary", "metadata_json must be known before a team mutation.")
+		return
+	}
+	prepared, err := prepareTeamSemanticDictionary(ctx, config.MetadataJSON, config.Metadata)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("metadata_json"), "Invalid Semantic Team Dictionary", "The JSON object is malformed, overlaps another managed team metadata surface, or cannot be persisted exactly.")
+		return
+	}
+	if _, err := teamLegacyMetadataObject(ctx, config.Metadata); err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("metadata"), "Invalid Team Metadata", "Legacy metadata overlaps a reserved or server-owned team metadata surface.")
+		return
+	}
+	if req.State.Raw.IsNull() {
+		return
+	}
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	var raw []byte
+	if req.Private != nil {
+		value, diagnostics := req.Private.GetKey(ctx, teamMetadataJSONProvenancePrivateKey)
+		resp.Diagnostics.Append(diagnostics...)
+		raw = value
+	}
+	provenance, err := decodeTeamSemanticProvenance(ctx, raw, state.MetadataJSON)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("metadata_json"), "Invalid Semantic Dictionary Provenance", "Private ownership is missing, malformed, or inconsistent with public state. No team plan was produced.")
+		return
+	}
+	changed, err := keySemanticDictionaryNeedsChange(ctx, config.MetadataJSON, state.MetadataJSON, provenance)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("metadata_json"), "Invalid Semantic Team Dictionary", "The semantic value or private ownership could not be compared safely.")
+		return
+	}
+	if !provenance.Configured && config.MetadataJSON.IsNull() {
+		plan.MetadataJSON = types.StringNull()
+	}
+	if !changed && provenance.Configured && knownString(config.MetadataJSON) {
+		plan.MetadataJSON = state.MetadataJSON
+	}
+	if changed && config.MetadataJSON.IsNull() {
+		plan.MetadataJSON = types.StringUnknown()
+	}
+	if prepared.object != nil && config.Metadata.IsNull() {
+		legacyPlan := plan.Metadata
+		if legacyPlan.IsUnknown() {
+			legacyPlan = state.Metadata
+		}
+		filtered, filterErr := excludeKeyLegacyJSONTopLevelKeys(ctx, legacyPlan, prepared.object)
+		if filterErr != nil {
+			resp.Diagnostics.AddAttributeError(path.Root("metadata_json"), "Invalid Semantic Team Dictionary", "The legacy metadata projection could not be produced safely.")
+			return
+		}
+		plan.Metadata = filtered
+	}
+	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
+}
 
+func (r *TeamResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	var data, config TeamResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
+	if req.Config.Raw.Type() == nil {
+		config = data
+	} else {
+		resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+	}
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if config.MetadataJSON.IsUnknown() {
+		resp.Diagnostics.AddError("Unknown Semantic Team Dictionary", "metadata_json must be known before creating a team. No request was sent.")
+		return
+	}
+	prepared, err := prepareTeamSemanticDictionary(ctx, config.MetadataJSON, config.Metadata)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Semantic Team Dictionary", "The JSON object is malformed, overlaps another managed team metadata surface, or cannot be persisted exactly. No request was sent.")
+		return
+	}
+	if _, err := teamLegacyMetadataObject(ctx, config.Metadata); err != nil {
+		resp.Diagnostics.AddError("Invalid Team Metadata", "Legacy metadata overlaps a reserved or server-owned team metadata surface. No request was sent.")
+		return
+	}
+	data.MetadataJSON = config.MetadataJSON
 	teamID := teamIDForCreate(data.TeamID)
+	data.ID = types.StringValue(teamID)
 	data.TeamID = types.StringValue(teamID)
 	teamReq, err := r.buildTeamRequest(ctx, &data, teamID)
 	if err != nil {
-		resp.Diagnostics.AddError("Invalid Team Configuration", err.Error())
+		resp.Diagnostics.AddError("Invalid Team Configuration", "The team request could not be converted safely. No request was sent.")
 		return
+	}
+	if err := overlayTeamCreateSemantic(ctx, teamReq, prepared); err != nil {
+		resp.Diagnostics.AddError("Invalid Semantic Team Dictionary", "The complete metadata document could not be composed safely. No request was sent.")
+		return
+	}
+	provenanceRaw, err := encodeSemanticDictionaryProvenance(ctx, prepared.provenance)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Semantic Dictionary Provenance", "Semantic ownership could not be encoded safely. No request was sent.")
+		return
+	}
+	retainRecovery := func(title, detail string) {
+		recoveryCtx := context.WithoutCancel(ctx)
+		recovery := partialTeamSemanticRecoveryState(teamID)
+		unconfigured, encodeErr := encodeSemanticDictionaryProvenance(recoveryCtx, teamUnconfiguredSemanticProvenance())
+		if encodeErr == nil && resp.Private != nil {
+			resp.Diagnostics.Append(resp.Private.SetKey(recoveryCtx, teamMetadataJSONProvenancePrivateKey, unconfigured)...)
+			resp.Diagnostics.Append(resp.Private.SetKey(recoveryCtx, teamAcceptedCreateRecoveryPrivateKey, []byte("true"))...)
+		}
+		resp.Diagnostics.Append(resp.State.Set(recoveryCtx, &recovery)...)
+		resp.Diagnostics.AddError(title, detail)
 	}
 
 	var createResult map[string]interface{}
-	if err := r.client.DoRequestWithResponse(ctx, "POST", "/team/new", teamReq, &createResult); err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to create team: %s", err))
+	accepted, createErr := r.client.doRequestWithResponse(ctx, http.MethodPost, "/team/new", teamReq, &createResult)
+	if createErr != nil {
+		// Team creation can commit the database row before a later endpoint phase
+		// returns a non-2xx response. Once the request was dispatched, status alone
+		// cannot prove rejection and the generated/caller identity must be retained.
+		if accepted || ClassifyHTTPFailure(createErr).RequestDispatched {
+			retainRecovery("Team Creation Outcome Uncertain", "The team create may have been accepted, but its outcome could not be validated safely. Only the generated identity was retained for authoritative recovery.")
+		} else {
+			resp.Diagnostics.AddError("Team Creation Failed", "LiteLLM definitively rejected the team create before mutation. No state was published.")
+		}
 		return
 	}
 
-	partial := partialTeamState(teamID)
 	createdID, createIDErr := requiredTeamString(createResult, "team_id")
 	if createIDErr != nil || createdID != teamID {
-		resp.Diagnostics.Append(resp.State.Set(ctx, &partial)...)
-		resp.Diagnostics.AddError("Invalid Create Response", "LiteLLM accepted the team create but did not return the requested identity. Only the requested recovery identity was retained.")
+		retainRecovery("Team Creation Identity Not Confirmed", "LiteLLM accepted the team create, but its response did not confirm the generated identity. Only that identity was retained for authoritative recovery.")
 		return
 	}
-	data.ID = types.StringValue(createdID)
-	data.TeamID = types.StringValue(createdID)
-
-	// Publish only an authoritative read-back. A successful mutation followed by
-	// a malformed or ambiguous response must not turn planned values into state.
 	planned := data
-	if err := r.readTeam(ctx, &data); err != nil {
-		resp.Diagnostics.Append(resp.State.Set(ctx, &partial)...)
-		resp.Diagnostics.AddError("Read Error", "LiteLLM accepted the team create, but authoritative read-back failed. Only the confirmed identity was retained for recovery.")
+	ownership := teamSemanticOwnership{provenance: prepared.provenance, fresh: true, confirmCurrentValue: prepared.provenance.Configured}
+	if err := r.readTeamWithOwnership(ctx, &data, false, ownership); err != nil {
+		retainRecovery("Team Creation Not Confirmed", "LiteLLM accepted the team create, but one authoritative identity-bound read did not confirm complete state. Only the generated identity was retained for recovery.")
 		return
 	}
 	preserveTeamMutationRepresentations(planned, &data)
-
+	if resp.Private != nil {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, teamMetadataJSONProvenancePrivateKey, provenanceRaw)...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, teamAcceptedCreateRecoveryPrivateKey, nil)...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, teamPendingUpdatePrivateKey, nil)...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, teamPendingMemberDefaultsPrivateKey, nil)...)
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
 func (r *TeamResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	var data TeamResourceModel
-
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
-	importedMarker, privateDiags := req.Private.GetKey(ctx, numericImportedPrivateKey)
-	resp.Diagnostics.Append(privateDiags...)
+	var importedRaw, provenanceRaw, acceptedRaw, pendingRaw, pendingMemberRaw []byte
+	if req.Private != nil {
+		for _, entry := range []struct {
+			key    string
+			target *[]byte
+		}{{numericImportedPrivateKey, &importedRaw}, {teamMetadataJSONProvenancePrivateKey, &provenanceRaw}, {teamAcceptedCreateRecoveryPrivateKey, &acceptedRaw}, {teamPendingUpdatePrivateKey, &pendingRaw}, {teamPendingMemberDefaultsPrivateKey, &pendingMemberRaw}} {
+			value, diagnostics := req.Private.GetKey(ctx, entry.key)
+			resp.Diagnostics.Append(diagnostics...)
+			*entry.target = value
+		}
+	}
+	if len(acceptedRaw) != 0 && string(acceptedRaw) != "true" {
+		resp.Diagnostics.AddError("Invalid Team Recovery State", "Accepted-create recovery state is malformed. No team read was performed.")
+	}
+	provenance, err := decodeTeamSemanticProvenance(ctx, provenanceRaw, data.MetadataJSON)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("metadata_json"), "Invalid Semantic Dictionary Provenance", "Private ownership is missing, malformed, or inconsistent with public state. No team read was performed.")
+	}
+	pending, err := decodeKeySemanticPendingTransition(ctx, pendingRaw)
+	if err != nil || pending.Config.Active || pending.Permissions.Active {
+		resp.Diagnostics.AddError("Invalid Team Recovery State", "Pending semantic-update recovery state is malformed. No team read was performed.")
+	}
+	pendingMember, err := decodeTeamPendingMemberDefaults(ctx, pendingMemberRaw)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Team Recovery State", "Pending member-default recovery state is malformed. No team read was performed.")
+	}
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	imported := string(importedMarker) == "true"
-
-	if err := r.readTeamWithNumericOwnership(ctx, &data, imported); err != nil {
-		if IsNotFoundError(err) {
+	reconcile := keySemanticPendingReconcile{}
+	ownership := teamSemanticOwnership{provenance: provenance, pending: pending, reconcile: &reconcile, acceptedCreate: string(acceptedRaw) == "true", pendingMemberFields: pendingMember, fresh: len(acceptedRaw) != 0 || pending.any() || len(pendingMember) != 0}
+	imported := string(importedRaw) == "true"
+	if err := r.readTeamWithOwnership(ctx, &data, imported, ownership); err != nil {
+		if IsNotFoundError(err) && !ownership.acceptedCreate {
 			resp.State.RemoveResource(ctx)
+			return
+		}
+		if IsNotFoundError(err) && ownership.acceptedCreate {
+			resp.State = req.State
+			resp.Private = req.Private
+			resp.Diagnostics.AddError("Team Creation Not Yet Confirmed", "The accepted team identity is not yet authoritatively readable. Recovery state was retained to prevent duplicate creation.")
 			return
 		}
 		resp.State = req.State
 		resp.Private = req.Private
-		resp.Diagnostics.AddError("Client Error", "Unable to read team because LiteLLM did not return an authoritative response. Prior state was retained.")
+		resp.Diagnostics.AddError("Team Read Failed", "The authoritative team response could not be validated or projected safely. Prior state was retained.")
 		return
 	}
-
+	if reconcile.Present && reconcile.Committed {
+		provenance = reconcile.Effective.metadata
+	}
+	encoded, err := encodeSemanticDictionaryProvenance(ctx, provenance)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Semantic Dictionary Provenance", "Semantic ownership could not be encoded safely. No team state was produced.")
+		return
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
-	if !resp.Diagnostics.HasError() && imported {
-		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, nil)...)
+	if !resp.Diagnostics.HasError() && resp.Private != nil {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, teamMetadataJSONProvenancePrivateKey, encoded)...)
+		if imported {
+			resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, nil)...)
+		}
+		if string(acceptedRaw) == "true" {
+			resp.Diagnostics.Append(resp.Private.SetKey(ctx, teamAcceptedCreateRecoveryPrivateKey, nil)...)
+		}
+		if reconcile.Present {
+			resp.Diagnostics.Append(resp.Private.SetKey(ctx, teamPendingUpdatePrivateKey, nil)...)
+		}
+		if len(pendingMember) != 0 {
+			resp.Diagnostics.Append(resp.Private.SetKey(ctx, teamPendingMemberDefaultsPrivateKey, nil)...)
+		}
 	}
 }
 
 func (r *TeamResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var data TeamResourceModel
-
+	var data, state, config TeamResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	var state TeamResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
-	if resp.Diagnostics.HasError() {
-		return
+	if req.Config.Raw.Type() == nil {
+		config = data
+	} else {
+		resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
 	}
-	// Every failed or unconfirmed update retains the complete prior state.
 	resp.State = req.State
 	resp.Private = req.Private
-
+	var acceptedRaw, pendingRaw, pendingMemberRaw, provenanceRaw []byte
+	if req.Private != nil {
+		for _, entry := range []struct {
+			key    string
+			target *[]byte
+		}{{teamAcceptedCreateRecoveryPrivateKey, &acceptedRaw}, {teamPendingUpdatePrivateKey, &pendingRaw}, {teamPendingMemberDefaultsPrivateKey, &pendingMemberRaw}, {teamMetadataJSONProvenancePrivateKey, &provenanceRaw}} {
+			value, diagnostics := req.Private.GetKey(ctx, entry.key)
+			resp.Diagnostics.Append(diagnostics...)
+			*entry.target = value
+		}
+	}
+	if len(pendingRaw) != 0 || len(pendingMemberRaw) != 0 || string(acceptedRaw) == "true" {
+		resp.Diagnostics.AddError("Team Recovery Required", "A prior team mutation has not been reconciled. Refresh must reconcile it before another update can be sent.")
+		return
+	}
+	if len(acceptedRaw) != 0 {
+		resp.Diagnostics.AddError("Invalid Team Recovery State", "Accepted-create recovery state is malformed. No team update was sent.")
+		return
+	}
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if config.MetadataJSON.IsUnknown() {
+		resp.Diagnostics.AddError("Unknown Semantic Team Dictionary", "metadata_json must be known before updating a team. No request was sent.")
+		return
+	}
+	priorProvenance, err := decodeTeamSemanticProvenance(ctx, provenanceRaw, state.MetadataJSON)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("metadata_json"), "Invalid Semantic Dictionary Provenance", "Private ownership is missing, malformed, or inconsistent with public state. No team update was sent.")
+		return
+	}
+	prepared, err := prepareTeamSemanticDictionary(ctx, config.MetadataJSON, config.Metadata)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Semantic Team Dictionary", "The JSON object is malformed, overlaps another managed team metadata surface, or cannot be persisted exactly. No request was sent.")
+		return
+	}
+	if _, err := teamLegacyMetadataObject(ctx, config.Metadata); err != nil {
+		resp.Diagnostics.AddError("Invalid Team Metadata", "Legacy metadata overlaps a reserved or server-owned team metadata surface. No request was sent.")
+		return
+	}
+	semanticChanged, err := keySemanticDictionaryNeedsChange(ctx, config.MetadataJSON, state.MetadataJSON, priorProvenance)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Semantic Team Dictionary", "The semantic value or private ownership could not be compared safely. No request was sent.")
+		return
+	}
+	confirmationOwnership, err := prepared.updateOwnership(ctx, priorProvenance)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Semantic Dictionary Provenance", "Semantic shape-transition ownership could not be validated safely. No request was sent.")
+		return
+	}
+	pendingTransition := pendingTeamSemanticTransition(confirmationOwnership)
+	var pendingPrivate []byte
+	if pendingTransition.any() {
+		pendingPrivate, err = encodeKeySemanticPendingTransition(ctx, pendingTransition)
+		if err != nil {
+			resp.Diagnostics.AddError("Invalid Semantic Dictionary Provenance", "Pending semantic shape ownership could not be encoded safely. No request was sent.")
+			return
+		}
+	}
+	newProvenanceRaw, err := encodeSemanticDictionaryProvenance(ctx, prepared.provenance)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Semantic Dictionary Provenance", "Semantic ownership could not be encoded safely. No request was sent.")
+		return
+	}
 	data.ID = state.ID
 	data.TeamID = state.TeamID
+	data.MetadataJSON = config.MetadataJSON
 	if data.TeamID.IsNull() || data.TeamID.IsUnknown() {
 		data.TeamID = state.ID
 	}
@@ -509,59 +781,135 @@ func (r *TeamResource) Update(ctx context.Context, req resource.UpdateRequest, r
 	}
 	teamReq, err := r.buildTeamUpdateRequest(ctx, &data, data.ID.ValueString())
 	if err != nil {
-		resp.Diagnostics.AddError("Invalid Team Configuration", err.Error())
+		resp.Diagnostics.AddError("Invalid Team Configuration", "The team update request could not be converted safely. No request was sent.")
 		return
 	}
 	applyTeamNullableClears(teamReq, &state, &data)
-	metadataChanged := !data.Metadata.IsUnknown() && !data.Metadata.Equal(state.Metadata)
-	if err := r.hydrateTeamUpdateMetadata(ctx, state, metadataChanged, teamReq); err != nil {
-		resp.Diagnostics.AddError("Team Metadata Hydration Error", "The authoritative team metadata could not be safely hydrated. Prior state was retained and no update was attempted.")
-		return
-	}
-
-	// LiteLLM's team-default budget handler ignores explicit nulls whenever the
-	// same request also contains another non-null member-budget field. Split
-	// clears into their own merge-patch before applying the remaining changes.
-	if clearReq := extractTeamMemberBudgetClears(teamReq, data.ID.ValueString()); clearReq != nil {
-		if err := r.client.DoRequestWithResponse(ctx, "POST", "/team/update", clearReq, nil); err != nil {
-			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to clear team member budget defaults: %s", err))
+	metadataChanged := semanticChanged ||
+		(!data.Metadata.IsUnknown() && !data.Metadata.Equal(state.Metadata)) ||
+		(!data.Tags.IsUnknown() && !data.Tags.Equal(state.Tags)) ||
+		(!data.Guardrails.IsUnknown() && !data.Guardrails.Equal(state.Guardrails)) ||
+		(!data.Prompts.IsUnknown() && !data.Prompts.Equal(state.Prompts)) ||
+		(!data.ModelRPMLimit.IsUnknown() && !data.ModelRPMLimit.Equal(state.ModelRPMLimit)) ||
+		(!data.ModelTPMLimit.IsUnknown() && !data.ModelTPMLimit.Equal(state.ModelTPMLimit))
+	delete(teamReq, "metadata")
+	memberBudgetReinsert := false
+	if metadataChanged {
+		fresh, freshErr := r.getFreshExactTeamInfo(ctx, state.ID.ValueString())
+		if freshErr != nil {
+			resp.Diagnostics.AddError("Team Metadata Hydration Failed", "The complete identity-bound metadata document could not be read safely. No update request was sent.")
 			return
 		}
+		teamInfo, _, unwrapErr := unwrapTeamInfoResponse(fresh)
+		if unwrapErr != nil {
+			resp.Diagnostics.AddError("Team Metadata Hydration Failed", "The complete metadata document could not be read safely. No update request was sent.")
+			return
+		}
+		remote, _, metadataErr := teamMetadataObject(ctx, teamInfo)
+		if metadataErr != nil {
+			resp.Diagnostics.AddError("Team Metadata Hydration Failed", "The complete metadata document was malformed or not persistable exactly. No update request was sent.")
+			return
+		}
+		replacement, reinsert, compositionErr := composeTeamMetadataReplacement(ctx, remote, data, state, priorProvenance, prepared, teamReq)
+		if compositionErr != nil {
+			resp.Diagnostics.AddError("Team Metadata Composition Failed", "The complete metadata replacement could not be composed safely. No update request was sent.")
+			return
+		}
+		teamReq["metadata"] = replacement
+		memberBudgetReinsert = reinsert
 	}
 
-	if err := r.client.DoRequestWithResponse(ctx, "POST", "/team/update", teamReq, nil); err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to update team: %s", err))
+	pendingMember := changedTeamPendingMemberDefaults(data, state, teamReq)
+	clearReq := extractTeamMemberBudgetClears(teamReq, data.ID.ValueString())
+	pendingMemberPrivate, err := encodeTeamPendingMemberDefaults(ctx, pendingMember)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Team Recovery State", "Member-default recovery state could not be encoded safely. No request was sent.")
 		return
 	}
-
-	// Update permissions only after their complete collection was validated
-	// before either mutation.
-	if permissionsChanged {
-		permReq := map[string]interface{}{
-			"team_id":                 data.ID.ValueString(),
-			"team_member_permissions": permissions,
+	retainPrior := func(localCtx context.Context, includeSemantic, includeMember bool) {
+		if resp.Private != nil {
+			if includeSemantic && len(pendingPrivate) != 0 {
+				resp.Diagnostics.Append(resp.Private.SetKey(localCtx, teamPendingUpdatePrivateKey, pendingPrivate)...)
+			}
+			if includeMember && len(pendingMemberPrivate) != 0 {
+				resp.Diagnostics.Append(resp.Private.SetKey(localCtx, teamPendingMemberDefaultsPrivateKey, pendingMemberPrivate)...)
+			}
 		}
-		if err := r.client.DoRequestWithResponse(ctx, "POST", "/team/permissions_update", permReq, nil); err != nil {
+		resp.Diagnostics.Append(resp.State.Set(localCtx, &state)...)
+	}
+	memberDefaultsMayHaveCommitted := false
+	if clearReq != nil {
+		if err := r.client.DoRequestWithResponse(ctx, http.MethodPost, "/team/update", clearReq, nil); err != nil {
+			if ClassifyHTTPFailure(err).RequestDispatched {
+				retainPrior(context.WithoutCancel(ctx), false, true)
+			}
+			resp.Diagnostics.AddError("Team Member Defaults Update Failed", "The member-default clear was not confirmed. Prior state was retained; dispatched requests require authoritative recovery.")
+			return
+		}
+		memberDefaultsMayHaveCommitted = true
+	}
+	if err := r.client.DoRequestWithResponse(ctx, http.MethodPost, "/team/update", teamReq, nil); err != nil {
+		dispatched := ClassifyHTTPFailure(err).RequestDispatched
+		memberRecovery := len(pendingMember) != 0 && (memberDefaultsMayHaveCommitted || dispatched)
+		if metadataChanged || clearReq != nil || memberRecovery {
+			retainPrior(context.WithoutCancel(ctx), dispatched, memberRecovery)
+			resp.Diagnostics.AddError("Team Update Not Confirmed", "The team update may have partially committed, but its complete outcome was not confirmed. Prior public and private state were retained.")
+		} else {
+			resp.Diagnostics.AddError("Team Update Failed", "The team update failed. Response, identity, URL, and transport details were omitted.")
+		}
+		return
+	}
+	if len(pendingMember) != 0 {
+		memberDefaultsMayHaveCommitted = true
+	}
+	if permissionsChanged {
+		permReq := map[string]interface{}{"team_id": data.ID.ValueString(), "team_member_permissions": permissions}
+		if err := r.client.DoRequestWithResponse(ctx, http.MethodPost, "/team/permissions_update", permReq, nil); err != nil {
 			resp.Diagnostics.AddWarning("Permissions Update Error", fmt.Sprintf("Failed to update permissions: %s", err))
 		}
 	}
-
 	planned := data
-	if err := r.readTeam(ctx, &data); err != nil {
-		resp.State = req.State
-		resp.Private = req.Private
-		resp.Diagnostics.AddError("Read Error", "LiteLLM accepted the team update, but authoritative read-back failed. Prior state was retained.")
+	readOwnership := teamSemanticOwnership{provenance: priorProvenance, fresh: true}
+	if metadataChanged {
+		readOwnership = confirmationOwnership
+		readOwnership.expectMemberBudgetID = memberBudgetReinsert
+	}
+	if err := r.readTeamWithOwnership(ctx, &data, false, readOwnership); err != nil {
+		if metadataChanged || clearReq != nil || memberDefaultsMayHaveCommitted {
+			retainPrior(context.WithoutCancel(ctx), true, memberDefaultsMayHaveCommitted)
+		}
+		resp.Diagnostics.AddError("Team Update Readback Failed", "LiteLLM accepted the update, but authoritative identity-bound readback did not confirm convergence. Prior state was retained.")
 		return
 	}
 	preserveTeamMutationRepresentations(planned, &data)
-
+	if _, mismatch := teamChangedFieldMismatch(planned, state, data); mismatch {
+		if metadataChanged || clearReq != nil || memberDefaultsMayHaveCommitted {
+			retainPrior(context.WithoutCancel(ctx), true, memberDefaultsMayHaveCommitted)
+		}
+		resp.Diagnostics.AddError("Team Update Did Not Converge", "LiteLLM accepted the update, but authoritative readback did not match the plan. Prior state was retained.")
+		return
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	if !resp.Diagnostics.HasError() && resp.Private != nil {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, teamMetadataJSONProvenancePrivateKey, newProvenanceRaw)...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, teamPendingUpdatePrivateKey, nil)...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, teamPendingMemberDefaultsPrivateKey, nil)...)
+	}
 }
 
 func (r *TeamResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	var data TeamResourceModel
-
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
+	if req.Private != nil {
+		for _, key := range []string{teamAcceptedCreateRecoveryPrivateKey, teamPendingUpdatePrivateKey, teamPendingMemberDefaultsPrivateKey} {
+			raw, diagnostics := req.Private.GetKey(ctx, key)
+			resp.Diagnostics.Append(diagnostics...)
+			if len(raw) != 0 {
+				resp.Diagnostics.AddError("Team Recovery Required", "A prior team mutation has not been reconciled. Refresh must reconcile it before deletion can be sent.")
+				return
+			}
+		}
+	}
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -579,11 +927,36 @@ func (r *TeamResource) Delete(ctx context.Context, req resource.DeleteRequest, r
 }
 
 func (r *TeamResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	provenance, err := encodeSemanticDictionaryProvenance(ctx, teamUnconfiguredSemanticProvenance())
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Semantic Dictionary Provenance", "Import ownership could not be initialized safely.")
+		return
+	}
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("team_id"), req.ID)...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("metadata_json"), types.StringNull())...)
 	if resp.Private != nil {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, teamMetadataJSONProvenancePrivateKey, provenance)...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, teamAcceptedCreateRecoveryPrivateKey, nil)...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, teamPendingUpdatePrivateKey, nil)...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, teamPendingMemberDefaultsPrivateKey, nil)...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, []byte("true"))...)
 	}
+}
+
+func (r *TeamResource) UpgradeState(context.Context) map[int64]resource.StateUpgrader {
+	return map[int64]resource.StateUpgrader{0: {PriorSchema: nil, StateUpgrader: func(_ context.Context, req resource.UpgradeStateRequest, resp *resource.UpgradeStateResponse) {
+		if req.RawState == nil {
+			resp.Diagnostics.AddError("Unable to Upgrade State", "Prior team state is unavailable.")
+			return
+		}
+		upgraded, err := marshalTeamUpgrade(req.RawState.JSON)
+		if err != nil {
+			resp.Diagnostics.AddError("Unable to Upgrade State", "Prior team state could not be decoded safely.")
+			return
+		}
+		resp.DynamicValue = &tfprotov6.DynamicValue{JSON: upgraded}
+	}}}
 }
 
 func (r *TeamResource) buildTeamRequest(ctx context.Context, data *TeamResourceModel, teamID string) (map[string]interface{}, error) {
@@ -726,6 +1099,9 @@ func (r *TeamResource) buildTeamRequest(ctx context.Context, data *TeamResourceM
 		}
 		if len(metadata) > 0 {
 			metadataPayload := convertMetadataToNative(metadata)
+			if _, forbidden := metadataPayload["team_member_budget_id"]; forbidden {
+				return nil, fmt.Errorf("legacy team metadata contains a server-owned field")
+			}
 			delete(metadataPayload, "model_rpm_limit")
 			delete(metadataPayload, "model_tpm_limit")
 			if len(metadataPayload) > 0 {
@@ -877,7 +1253,7 @@ func fallbackEntriesToAPIFormat(ctx context.Context, list types.List, valuePath 
 }
 
 func (r *TeamResource) readTeam(ctx context.Context, data *TeamResourceModel) error {
-	return r.readTeamWithNumericOwnership(ctx, data, false)
+	return r.readTeamWithOwnership(ctx, data, false, teamSemanticOwnership{provenance: teamUnconfiguredSemanticProvenance()})
 }
 
 func (r *TeamResource) getTeamInfo(ctx context.Context, teamID string) (map[string]interface{}, error) {
@@ -890,8 +1266,41 @@ func (r *TeamResource) getTeamInfo(ctx context.Context, teamID string) (map[stri
 	return result, nil
 }
 
+func (r *TeamResource) getFreshExactTeamInfo(ctx context.Context, teamID string) (map[string]interface{}, error) {
+	if teamID == "" {
+		return nil, errSemanticDictionaryTraversal
+	}
+	query := url.Values{"team_id": []string{teamID}}
+	endpoint := endpointWithQuery("/team/info", query)
+	var result map[string]interface{}
+	if err := r.client.doFreshRequestWithResponse(ctx, http.MethodGet, endpoint, nil, &result); err != nil {
+		return nil, err
+	}
+	teamInfo, wrapped, err := unwrapTeamInfoResponse(result)
+	if err != nil || !wrapped {
+		return nil, errSemanticDictionaryTraversal
+	}
+	rootID, rootErr := requiredTeamString(result, "team_id")
+	nestedID, nestedErr := requiredTeamString(teamInfo, "team_id")
+	if rootErr != nil || nestedErr != nil || rootID != teamID || nestedID != teamID || rootID != nestedID {
+		return nil, errSemanticDictionaryTraversal
+	}
+	metadata, presence, metadataErr := optionalObjectAt(teamInfo, "metadata")
+	if metadataErr != nil || presence == apiValueAbsent {
+		return nil, errSemanticDictionaryTraversal
+	}
+	if presence == apiValuePresent && (metadata == nil || validateSemanticDictionaryValue(ctx, metadata) != nil || validateModelSemanticDictionaryNumbers(ctx, metadata) != nil) {
+		return nil, errSemanticDictionaryTraversal
+	}
+	prior := partialTeamState(teamID)
+	if _, err := projectTeamInfoResponseWithSemantic(ctx, prior, result, false, teamSemanticOwnership{provenance: teamUnconfiguredSemanticProvenance(), fresh: true}); err != nil {
+		return nil, errSemanticDictionaryTraversal
+	}
+	return result, nil
+}
+
 func (r *TeamResource) hydrateTeamUpdateMetadata(ctx context.Context, state TeamResourceModel, metadataChanged bool, request map[string]interface{}) error {
-	result, err := r.getTeamInfo(ctx, state.ID.ValueString())
+	result, err := r.getFreshExactTeamInfo(ctx, state.ID.ValueString())
 	if err != nil {
 		return err
 	}
@@ -956,11 +1365,21 @@ func (r *TeamResource) hydrateTeamUpdateMetadata(ctx context.Context, state Team
 }
 
 func (r *TeamResource) readTeamWithNumericOwnership(ctx context.Context, data *TeamResourceModel, imported bool) error {
-	result, err := r.getTeamInfo(ctx, data.ID.ValueString())
+	return r.readTeamWithOwnership(ctx, data, imported, teamSemanticOwnership{provenance: teamUnconfiguredSemanticProvenance()})
+}
+
+func (r *TeamResource) readTeamWithOwnership(ctx context.Context, data *TeamResourceModel, imported bool, ownership teamSemanticOwnership) error {
+	var result map[string]interface{}
+	var err error
+	if ownership.fresh {
+		result, err = r.getFreshExactTeamInfo(ctx, data.ID.ValueString())
+	} else {
+		result, err = r.getTeamInfo(ctx, data.ID.ValueString())
+	}
 	if err != nil {
 		return err
 	}
-	projected, err := projectTeamInfoResponse(ctx, *data, result, imported)
+	projected, err := projectTeamInfoResponseWithSemantic(ctx, *data, result, imported, ownership)
 	if err != nil {
 		return err
 	}
