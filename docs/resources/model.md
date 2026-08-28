@@ -266,6 +266,38 @@ The following arguments are supported:
   }
   ```
 
+* `additional_litellm_params_json` - (Optional, Computed, Sensitive) a lossless JSON-object sibling for heterogeneous custom `litellm_params` values. Use it when the legacy `additional_litellm_params` `map(string)` cannot preserve native types.
+
+  * The root must be one non-null JSON object with unique members. Native strings, booleans, nested objects and arrays, and arbitrary-size integers remain distinct. JSON null is rejected at every depth because LiteLLM v1.98's `/model/info` masking layer stringifies it, so its persisted type cannot be confirmed. Direct numeric, boolean, or null values beneath sensitive-named map keys are also rejected because that layer converts them to masked strings; native numbers and booleans inside sensitive lists remain supported. The exact string `"None"` and an empty string directly beneath a sensitive-named map key are rejected because they are indistinguishable from that lossy null conversion. Decimal and exponent values must round-trip exactly through LiteLLM's Python-float behavior; lossy values such as `1.0000000000000001` are rejected before any request.
+  * Top-level keys must be disjoint from `additional_litellm_params` and every dedicated `litellm_model` parameter surface, including provider/model routing, limits, API settings, thinking/reasoning, AWS and Vertex settings, credential references, and costs. Credential fields removed by `/model/info` (`client_secret` and `vertex_ai_credentials`) are also unavailable. `max_budget` and `budget_duration` are reserved for the separate issue #223 model-budget lifecycle. Overlap is rejected before any request without including keys or values in diagnostics.
+  * Terraform owns only the recursively configured JSON paths. API-only parameters are never adopted into this attribute or duplicated into the legacy map under a JSON-owned top-level key. Imports and states upgraded from an earlier provider keep the attribute null and unmanaged. `{}` is an explicitly managed empty view.
+  * Any takeover, semantic or shape change, nested removal, clear, or attribute removal replaces the model. An unresolved value on an existing model also plans replacement. Formatting-only equality sends no PATCH and semantically equal reads preserve the configured spelling.
+  * Before an unrelated in-place update, Terraform performs one fresh identity-checked `/model/info` read. It preserves API-owned nested siblings beneath configured object keys, then overlays configured values. If an API-owned sibling is masked, Terraform fails before PATCH rather than resending the mask as a credential.
+  * `/model/info` recursively masks values controlled by sensitive key segments. Terraform restores only configured owned masked leaves from prior authoritative state. Ambiguous mask-like configured strings under sensitive keys, missing plaintext, missing or changed owned shape, and identity failures fail closed. Literal mask-like strings under non-sensitive keys remain ordinary values.
+  * This attribute is sensitive because arbitrary parameters can contain credentials. Mark outputs derived from it as sensitive.
+
+  ```hcl
+  resource "litellm_model" "typed_params" {
+    model_name          = "typed-params"
+    custom_llm_provider = "openai"
+    base_model          = "gpt-4o-mini"
+
+    additional_litellm_params = {
+      legacy_disjoint = "legacy-value"
+    }
+
+    additional_litellm_params_json = jsonencode({
+      native_false = false
+      large_number = 9007199254740993
+      options = {
+        null_text  = "null"
+        api_secret = "authoritative-plaintext"
+        items      = [1, true, "1"]
+      }
+    })
+  }
+  ```
+
 * `additional_model_info` - (Optional) map(string). A map of arbitrary additional fields that will be merged into the `model_info` object sent to the LiteLLM API. The main use case is declaring capability flags (`supports_vision`, `supports_function_calling`, `supports_reasoning`, `supports_response_schema`, …) for models that are missing from LiteLLM's model cost map, so that `/model/info` and `/v1/models` advertise the model's capabilities to clients.
 
   * Values follow the same string-to-native conversion rules as `additional_litellm_params` (booleans, integers, floats, JSON).
@@ -320,7 +352,7 @@ The following arguments are supported:
   }
   ```
 
-  `additional_litellm_params_json`, object-form Vertex credentials, and model-budget JSON are separate lifecycle surfaces and are not provided by this attribute.
+  Object-form Vertex credentials and model-budget JSON are separate lifecycle surfaces and are not provided by either issue #218 JSON attribute.
 
 ### AWS-specific Configuration
 

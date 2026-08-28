@@ -56,6 +56,30 @@ resource "litellm_model" "azure_with_drop_params" {
   output_cost_per_million_tokens = 2.00
 }
 
+# Lossless heterogeneous litellm_params values. This sensitive JSON sibling
+# is recursively owned, cannot overlap the legacy map or dedicated fields, and
+# is replacement-managed for every semantic change or removal.
+resource "litellm_model" "typed_litellm_params" {
+  model_name          = "typed-litellm-params"
+  custom_llm_provider = "openai"
+  model_api_key       = var.openai_api_key
+  base_model          = "gpt-4o-mini"
+
+  additional_litellm_params = {
+    legacy_disjoint = "legacy-value"
+  }
+
+  additional_litellm_params_json = jsonencode({
+    native_false = false
+    large_number = 9007199254740993
+    options = {
+      null_text  = "null"
+      api_secret = "authoritative-plaintext"
+      items      = [1, true, "1"]
+    }
+  })
+}
+
 # Lossless heterogeneous model_info values. The JSON sibling is sensitive,
 # cannot overlap the legacy map or dedicated model fields, and is
 # replacement-managed for every semantic change or removal.

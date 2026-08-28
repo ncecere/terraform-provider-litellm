@@ -45,13 +45,14 @@ type ModelResource struct {
 }
 
 type modelReadOwnership struct {
-	imported                          bool
-	importedFields                    map[string]struct{}
-	topThinkingOwned                  bool
-	additionalModelInfoJSONProvenance semanticDictionaryProvenance
-	clearedFields                     map[string]struct{}
-	durablyClearedFields              map[string]struct{}
-	freshConnection                   bool
+	imported                              bool
+	importedFields                        map[string]struct{}
+	topThinkingOwned                      bool
+	additionalLiteLLMParamsJSONProvenance semanticDictionaryProvenance
+	additionalModelInfoJSONProvenance     semanticDictionaryProvenance
+	clearedFields                         map[string]struct{}
+	durablyClearedFields                  map[string]struct{}
+	freshConnection                       bool
 }
 
 // ModelResourceModel describes the resource data model.
@@ -89,6 +90,7 @@ type ModelResourceModel struct {
 	VertexCredentials                 types.String  `tfsdk:"vertex_credentials"`
 	AccessGroups                      types.List    `tfsdk:"access_groups"`
 	AdditionalLiteLLMParams           types.Map     `tfsdk:"additional_litellm_params"`
+	AdditionalLiteLLMParamsJSON       types.String  `tfsdk:"additional_litellm_params_json"`
 	AdditionalLiteLLMParamsConfigured types.Bool    `tfsdk:"additional_litellm_params_configured"`
 	AdditionalModelInfo               types.Map     `tfsdk:"additional_model_info"`
 	AdditionalModelInfoJSON           types.String  `tfsdk:"additional_model_info_json"`
@@ -285,6 +287,15 @@ func (r *ModelResource) Schema(ctx context.Context, req resource.SchemaRequest, 
 					modelAdditionalParamsRemovalModifier{},
 				},
 			},
+			"additional_litellm_params_json": schema.StringAttribute{
+				Description: "Sensitive lossless JSON-object sibling for heterogeneous litellm_params. Keys cannot overlap additional_litellm_params, dedicated model attributes, credentials removed by /model/info, or model-budget fields. Any change replaces the model so LiteLLM cannot retain removed nested values.",
+				Optional:    true,
+				Computed:    true,
+				Sensitive:   true,
+				Validators: []validator.String{
+					modelSemanticDictionaryValidator{},
+				},
+			},
 			"additional_litellm_params_configured": schema.BoolAttribute{
 				Description: "Internal state marker indicating whether additional_litellm_params is explicitly managed by configuration.",
 				Computed:    true,
@@ -365,6 +376,61 @@ func (r *ModelResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanR
 		return
 	}
 	importedFields := decodeModelImportedFields(marker)
+	paramsSemanticMarker, diagnostics := req.Private.GetKey(ctx, modelAdditionalLiteLLMParamsJSONProvenancePrivateKey)
+	resp.Diagnostics.Append(diagnostics...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	paramsSemanticProvenance, err := decodeModelAdditionalLiteLLMParamsJSONProvenance(ctx, paramsSemanticMarker, state.AdditionalLiteLLMParamsJSON)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("additional_litellm_params_json"),
+			"Invalid Semantic Dictionary Provenance",
+			"Private ownership state is missing or malformed. No model plan was produced.",
+		)
+		return
+	}
+	if !config.AdditionalLiteLLMParamsJSON.IsNull() && !config.AdditionalLiteLLMParamsJSON.IsUnknown() {
+		paramsSemanticObject, _, configurationErr := modelAdditionalLiteLLMParamsJSONConfiguration(ctx, config.AdditionalLiteLLMParamsJSON, config.AdditionalLiteLLMParams)
+		if configurationErr != nil {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("additional_litellm_params_json"),
+				"Invalid Semantic LiteLLM Parameters",
+				"The JSON object is malformed or overlaps another managed LiteLLM parameter surface. No model plan was produced.",
+			)
+			return
+		}
+		if config.AdditionalLiteLLMParams.IsNull() {
+			// Imported/computed legacy state can contain the same remote key a
+			// replacement is taking over through JSON. Keep the planned legacy
+			// projection disjoint so Create and readback agree exactly.
+			filtered, exclusionErr := excludeModelAdditionalLiteLLMParamsJSONTopLevelKeys(ctx, plan.AdditionalLiteLLMParams, paramsSemanticObject)
+			if exclusionErr != nil {
+				resp.Diagnostics.AddAttributeError(path.Root("additional_litellm_params_json"), "Invalid Semantic LiteLLM Parameters", "The JSON-owned legacy projection could not be produced safely. No model plan was produced.")
+				return
+			}
+			plan.AdditionalLiteLLMParams = filtered
+		}
+	}
+	paramsSemanticReplace, err := modelAdditionalLiteLLMParamsJSONNeedsReplacement(ctx, config.AdditionalLiteLLMParamsJSON, state.AdditionalLiteLLMParamsJSON, paramsSemanticProvenance)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("additional_litellm_params_json"),
+			"Invalid Semantic LiteLLM Parameters",
+			"The JSON object or its ownership state could not be compared safely. No model plan was produced.",
+		)
+		return
+	}
+	if !paramsSemanticProvenance.Configured && config.AdditionalLiteLLMParamsJSON.IsNull() {
+		plan.AdditionalLiteLLMParamsJSON = types.StringNull()
+	}
+	if paramsSemanticReplace {
+		if config.AdditionalLiteLLMParamsJSON.IsNull() {
+			plan.AdditionalLiteLLMParamsJSON = types.StringUnknown()
+		}
+		resp.RequiresReplace = append(resp.RequiresReplace, path.Root("additional_litellm_params_json"))
+	}
+
 	semanticMarker, diagnostics := req.Private.GetKey(ctx, modelAdditionalModelInfoJSONProvenancePrivateKey)
 	resp.Diagnostics.Append(diagnostics...)
 	if resp.Diagnostics.HasError() {
@@ -586,12 +652,18 @@ func (r *ModelResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanR
 	if forceOwnershipUpdate {
 		plan.ID = types.StringUnknown()
 	}
+	paramsSemanticRaw, err := encodeModelAdditionalLiteLLMParamsJSONProvenance(ctx, paramsSemanticProvenance)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("additional_litellm_params_json"), "Invalid Semantic Dictionary Provenance", "Private ownership state could not be encoded safely. No model plan was produced.")
+		return
+	}
 	semanticRaw, err := encodeModelAdditionalModelInfoJSONProvenance(ctx, semanticProvenance)
 	if err != nil {
 		resp.Diagnostics.AddAttributeError(path.Root("additional_model_info_json"), "Invalid Semantic Dictionary Provenance", "Private ownership state could not be encoded safely. No model plan was produced.")
 		return
 	}
 	resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelImportedFieldsPrivateKey, encodeModelImportedFields(importedFields))...)
+	resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelAdditionalLiteLLMParamsJSONProvenancePrivateKey, paramsSemanticRaw)...)
 	resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelAdditionalModelInfoJSONProvenancePrivateKey, semanticRaw)...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -625,6 +697,37 @@ func (r *ModelResource) Create(ctx context.Context, req resource.CreateRequest, 
 		data.AdditionalLiteLLMParams = configuredAdditionalParams
 	}
 	data.AdditionalLiteLLMParamsConfigured = types.BoolValue(!configuredAdditionalParams.IsNull() && !configuredAdditionalParams.IsUnknown())
+
+	var configuredAdditionalParamsJSON types.String
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("additional_litellm_params_json"), &configuredAdditionalParamsJSON)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if configuredAdditionalParamsJSON.IsUnknown() {
+		resp.Diagnostics.AddAttributeError(path.Root("additional_litellm_params_json"), "Unknown Semantic LiteLLM Parameters", "The JSON object must be known before creating a model.")
+		return
+	}
+	data.AdditionalLiteLLMParamsJSON = configuredAdditionalParamsJSON
+	paramsSemanticObject, paramsSemanticProvenance, err := modelAdditionalLiteLLMParamsJSONConfiguration(ctx, configuredAdditionalParamsJSON, configuredAdditionalParams)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("additional_litellm_params_json"), "Invalid Semantic LiteLLM Parameters", "The JSON object is malformed or overlaps another managed LiteLLM parameter surface. No model request was sent.")
+		return
+	}
+	paramsSemanticRaw, err := encodeModelAdditionalLiteLLMParamsJSONProvenance(ctx, paramsSemanticProvenance)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("additional_litellm_params_json"), "Invalid Semantic Dictionary Provenance", "Private ownership state could not be encoded safely. No model request was sent.")
+		return
+	}
+	if paramsSemanticProvenance.Configured && configuredAdditionalParams.IsNull() {
+		// A replacement takeover from imported/computed legacy state must not
+		// duplicate JSON-owned top-level keys into the legacy map request/state.
+		filtered, exclusionErr := excludeModelAdditionalLiteLLMParamsJSONTopLevelKeys(ctx, data.AdditionalLiteLLMParams, paramsSemanticObject)
+		if exclusionErr != nil {
+			resp.Diagnostics.AddAttributeError(path.Root("additional_litellm_params_json"), "Invalid Semantic LiteLLM Parameters", "The JSON-owned legacy projection could not be produced safely. No model request was sent.")
+			return
+		}
+		data.AdditionalLiteLLMParams = filtered
+	}
 
 	var configuredModelInfo types.Map
 	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("additional_model_info"), &configuredModelInfo)...)
@@ -680,8 +783,9 @@ func (r *ModelResource) Create(ctx context.Context, req resource.CreateRequest, 
 	// Read back to ensure consistency using the same ownership that built the
 	// request. Additional thinking still wins when both forms are configured.
 	ownership := modelReadOwnership{
-		topThinkingOwned:                  topThinkingOwned,
-		additionalModelInfoJSONProvenance: semanticProvenance,
+		topThinkingOwned:                      topThinkingOwned,
+		additionalLiteLLMParamsJSONProvenance: paramsSemanticProvenance,
+		additionalModelInfoJSONProvenance:     semanticProvenance,
 	}
 	if err := r.readModelWithRetryOwnership(ctx, &data, 8, ownership); err != nil {
 		if finalizeErr := finalizeModelComputedDefaults(ctx, &data); finalizeErr != nil {
@@ -689,8 +793,11 @@ func (r *ModelResource) Create(ctx context.Context, req resource.CreateRequest, 
 			return
 		}
 		reassertPlannedCosts(&data, &planned)
-		if semanticProvenance.Configured && errors.Is(err, errModelSemanticDictionaryProjection) {
+		paramsProjectionFailure := paramsSemanticProvenance.Configured && errors.Is(err, errModelLiteLLMParamsJSONProjection)
+		modelInfoProjectionFailure := semanticProvenance.Configured && errors.Is(err, errModelSemanticDictionaryProjection)
+		if paramsProjectionFailure || modelInfoProjectionFailure {
 			if resp.Private != nil {
+				resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelAdditionalLiteLLMParamsJSONProvenancePrivateKey, paramsSemanticRaw)...)
 				resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelAdditionalModelInfoJSONProvenancePrivateKey, semanticRaw)...)
 				resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelTopThinkingOwnedPrivateKey, []byte(strconv.FormatBool(topThinkingOwned)))...)
 				if resp.Diagnostics.HasError() {
@@ -698,11 +805,19 @@ func (r *ModelResource) Create(ctx context.Context, req resource.CreateRequest, 
 				}
 			}
 			resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
-			resp.Diagnostics.AddAttributeError(
-				path.Root("additional_model_info_json"),
-				"Semantic Model Information Not Confirmed",
-				"LiteLLM created the model but did not return the complete owned JSON shape required for confirmation. Terraform retained the complete planned state and ownership so a later refresh can reconcile safely.",
-			)
+			if paramsProjectionFailure {
+				resp.Diagnostics.AddAttributeError(
+					path.Root("additional_litellm_params_json"),
+					"Semantic LiteLLM Parameters Not Confirmed",
+					"LiteLLM created the model but did not return the complete owned JSON shape required for confirmation. Terraform retained the complete planned state and both JSON ownership records so a later refresh can reconcile safely.",
+				)
+			} else {
+				resp.Diagnostics.AddAttributeError(
+					path.Root("additional_model_info_json"),
+					"Semantic Model Information Not Confirmed",
+					"LiteLLM created the model but did not return the complete owned JSON shape required for confirmation. Terraform retained the complete planned state and both JSON ownership records so a later refresh can reconcile safely.",
+				)
+			}
 			return
 		}
 		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Model created but failed to read back: %s", err))
@@ -710,6 +825,7 @@ func (r *ModelResource) Create(ctx context.Context, req resource.CreateRequest, 
 	reassertPlannedCosts(&data, &planned)
 
 	if resp.Private != nil {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelAdditionalLiteLLMParamsJSONProvenancePrivateKey, paramsSemanticRaw)...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelAdditionalModelInfoJSONProvenancePrivateKey, semanticRaw)...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelTopThinkingOwnedPrivateKey, []byte(strconv.FormatBool(topThinkingOwned)))...)
 		if resp.Diagnostics.HasError() {
@@ -735,9 +851,16 @@ func (r *ModelResource) Read(ctx context.Context, req resource.ReadRequest, resp
 	resp.Diagnostics.Append(importedFieldsDiags...)
 	topThinkingMarker, topThinkingDiags := req.Private.GetKey(ctx, modelTopThinkingOwnedPrivateKey)
 	resp.Diagnostics.Append(topThinkingDiags...)
+	paramsSemanticMarker, paramsSemanticDiags := req.Private.GetKey(ctx, modelAdditionalLiteLLMParamsJSONProvenancePrivateKey)
+	resp.Diagnostics.Append(paramsSemanticDiags...)
 	semanticMarker, semanticDiags := req.Private.GetKey(ctx, modelAdditionalModelInfoJSONProvenancePrivateKey)
 	resp.Diagnostics.Append(semanticDiags...)
 	if resp.Diagnostics.HasError() {
+		return
+	}
+	paramsSemanticProvenance, err := decodeModelAdditionalLiteLLMParamsJSONProvenance(ctx, paramsSemanticMarker, data.AdditionalLiteLLMParamsJSON)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("additional_litellm_params_json"), "Invalid Semantic Dictionary Provenance", "Private ownership state is missing or malformed. No model read was performed.")
 		return
 	}
 	semanticProvenance, err := decodeModelAdditionalModelInfoJSONProvenance(ctx, semanticMarker, data.AdditionalModelInfoJSON)
@@ -755,10 +878,11 @@ func (r *ModelResource) Read(ctx context.Context, req resource.ReadRequest, resp
 
 	importedFields := decodeModelImportedFields(importedFieldsMarker)
 	err = r.readModelWithRetryOwnership(ctx, &data, 8, modelReadOwnership{
-		imported:                          imported,
-		importedFields:                    importedFields,
-		topThinkingOwned:                  topThinkingOwned,
-		additionalModelInfoJSONProvenance: semanticProvenance,
+		imported:                              imported,
+		importedFields:                        importedFields,
+		topThinkingOwned:                      topThinkingOwned,
+		additionalLiteLLMParamsJSONProvenance: paramsSemanticProvenance,
+		additionalModelInfoJSONProvenance:     semanticProvenance,
 	})
 	if err != nil {
 		if IsNotFoundError(err) {
@@ -784,6 +908,11 @@ func (r *ModelResource) Read(ctx context.Context, req resource.ReadRequest, resp
 		data.AdditionalModelInfoConfigured = types.BoolValue(configured)
 	}
 
+	paramsSemanticRaw, paramsSemanticErr := encodeModelAdditionalLiteLLMParamsJSONProvenance(ctx, paramsSemanticProvenance)
+	if paramsSemanticErr != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("additional_litellm_params_json"), "Invalid Semantic Dictionary Provenance", "Private ownership state could not be encoded safely. No model state was produced.")
+		return
+	}
 	semanticRaw, semanticErr := encodeModelAdditionalModelInfoJSONProvenance(ctx, semanticProvenance)
 	if semanticErr != nil {
 		resp.Diagnostics.AddAttributeError(path.Root("additional_model_info_json"), "Invalid Semantic Dictionary Provenance", "Private ownership state could not be encoded safely. No model state was produced.")
@@ -791,6 +920,7 @@ func (r *ModelResource) Read(ctx context.Context, req resource.ReadRequest, resp
 	}
 	if resp.Private != nil {
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelTopThinkingOwnedPrivateKey, []byte(strconv.FormatBool(topThinkingOwned)))...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelAdditionalLiteLLMParamsJSONProvenancePrivateKey, paramsSemanticRaw)...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelAdditionalModelInfoJSONProvenancePrivateKey, semanticRaw)...)
 		if imported {
 			fields := importedFields
@@ -831,6 +961,22 @@ func (r *ModelResource) Update(ctx context.Context, req resource.UpdateRequest, 
 	}
 	data.AdditionalLiteLLMParamsConfigured = types.BoolValue(!configuredAdditionalParams.IsNull() && !configuredAdditionalParams.IsUnknown())
 
+	var configuredAdditionalParamsJSON types.String
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("additional_litellm_params_json"), &configuredAdditionalParamsJSON)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if configuredAdditionalParamsJSON.IsUnknown() {
+		resp.Diagnostics.AddAttributeError(path.Root("additional_litellm_params_json"), "Unknown Semantic LiteLLM Parameters", "The JSON object must be known before updating a model.")
+		return
+	}
+	data.AdditionalLiteLLMParamsJSON = configuredAdditionalParamsJSON
+	_, paramsSemanticProvenance, err := modelAdditionalLiteLLMParamsJSONConfiguration(ctx, configuredAdditionalParamsJSON, configuredAdditionalParams)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("additional_litellm_params_json"), "Invalid Semantic LiteLLM Parameters", "The JSON object is malformed or overlaps another managed LiteLLM parameter surface. No model request was sent.")
+		return
+	}
+
 	var configuredModelInfo types.Map
 	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("additional_model_info"), &configuredModelInfo)...)
 	if resp.Diagnostics.HasError() {
@@ -870,13 +1016,24 @@ func (r *ModelResource) Update(ctx context.Context, req resource.UpdateRequest, 
 	resp.Diagnostics.Append(priorThinkingDiags...)
 	importedFieldsMarker, importedFieldsDiags := req.Private.GetKey(ctx, modelImportedFieldsPrivateKey)
 	resp.Diagnostics.Append(importedFieldsDiags...)
+	paramsSemanticMarker, paramsSemanticDiags := req.Private.GetKey(ctx, modelAdditionalLiteLLMParamsJSONProvenancePrivateKey)
+	resp.Diagnostics.Append(paramsSemanticDiags...)
 	semanticMarker, semanticDiags := req.Private.GetKey(ctx, modelAdditionalModelInfoJSONProvenancePrivateKey)
 	resp.Diagnostics.Append(semanticDiags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	if _, err := decodeModelAdditionalLiteLLMParamsJSONProvenance(ctx, paramsSemanticMarker, state.AdditionalLiteLLMParamsJSON); err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("additional_litellm_params_json"), "Invalid Semantic Dictionary Provenance", "Private ownership state is missing or malformed. No model request was sent.")
+		return
+	}
 	if _, err := decodeModelAdditionalModelInfoJSONProvenance(ctx, semanticMarker, state.AdditionalModelInfoJSON); err != nil {
 		resp.Diagnostics.AddAttributeError(path.Root("additional_model_info_json"), "Invalid Semantic Dictionary Provenance", "Private ownership state is missing or malformed. No model request was sent.")
+		return
+	}
+	paramsSemanticRaw, err := encodeModelAdditionalLiteLLMParamsJSONProvenance(ctx, paramsSemanticProvenance)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("additional_litellm_params_json"), "Invalid Semantic Dictionary Provenance", "Private ownership state could not be encoded safely. No model request was sent.")
 		return
 	}
 	semanticRaw, err := encodeModelAdditionalModelInfoJSONProvenance(ctx, semanticProvenance)
@@ -918,12 +1075,13 @@ func (r *ModelResource) Update(ctx context.Context, req resource.UpdateRequest, 
 	}
 
 	ownership := modelReadOwnership{
-		importedFields:                    decodeModelImportedFields(importedFieldsMarker),
-		topThinkingOwned:                  topThinkingOwned,
-		additionalModelInfoJSONProvenance: semanticProvenance,
-		clearedFields:                     readbackClears,
-		durablyClearedFields:              durablyClearedFields,
-		freshConnection:                   true,
+		importedFields:                        decodeModelImportedFields(importedFieldsMarker),
+		topThinkingOwned:                      topThinkingOwned,
+		additionalLiteLLMParamsJSONProvenance: paramsSemanticProvenance,
+		additionalModelInfoJSONProvenance:     semanticProvenance,
+		clearedFields:                         readbackClears,
+		durablyClearedFields:                  durablyClearedFields,
+		freshConnection:                       true,
 	}
 	// v1.98 model reads can lag durable writes across workers for several seconds.
 	if err := r.readModelAfterUpdateWithOwnership(ctx, &data, plannedData, state, 24, ownership); err != nil {
@@ -936,6 +1094,7 @@ func (r *ModelResource) Update(ctx context.Context, req resource.UpdateRequest, 
 	}
 
 	if resp.Private != nil {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelAdditionalLiteLLMParamsJSONProvenancePrivateKey, paramsSemanticRaw)...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelAdditionalModelInfoJSONProvenancePrivateKey, semanticRaw)...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelTopThinkingOwnedPrivateKey, []byte(strconv.FormatBool(topThinkingOwned)))...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelImportedPrivateKey, nil)...)
@@ -968,16 +1127,19 @@ func (r *ModelResource) ImportState(ctx context.Context, req resource.ImportStat
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelImportedPrivateKey, []byte("true"))...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelImportedFieldsPrivateKey, nil)...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelTopThinkingOwnedPrivateKey, []byte("false"))...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelAdditionalLiteLLMParamsJSONProvenancePrivateKey, nil)...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, modelAdditionalModelInfoJSONProvenancePrivateKey, nil)...)
 	}
 }
 
 type modelRequestCollections struct {
-	accessGroups                  []string
-	additionalLiteLLMParams       map[string]string
-	additionalModelInfo           map[string]string
-	additionalModelInfoJSON       map[string]interface{}
-	additionalModelInfoConfigured bool
+	accessGroups                          []string
+	additionalLiteLLMParams               map[string]string
+	additionalLiteLLMParamsJSON           map[string]interface{}
+	additionalLiteLLMParamsJSONConfigured bool
+	additionalModelInfo                   map[string]string
+	additionalModelInfoJSON               map[string]interface{}
+	additionalModelInfoConfigured         bool
 }
 
 func convertModelRequestCollections(ctx context.Context, data ModelResourceModel) (modelRequestCollections, diag.Diagnostics) {
@@ -988,6 +1150,17 @@ func convertModelRequestCollections(ctx context.Context, data ModelResourceModel
 	diagnostics.Append(converted...)
 	result.additionalLiteLLMParams, _, converted = strictTerraformStringMap(ctx, data.AdditionalLiteLLMParams, path.Root("additional_litellm_params"), false)
 	diagnostics.Append(converted...)
+	paramsSemanticObject, paramsSemanticProvenance, paramsSemanticErr := modelAdditionalLiteLLMParamsJSONConfiguration(ctx, data.AdditionalLiteLLMParamsJSON, data.AdditionalLiteLLMParams)
+	if paramsSemanticErr != nil {
+		diagnostics.AddAttributeError(
+			path.Root("additional_litellm_params_json"),
+			"Invalid Semantic LiteLLM Parameters",
+			"The JSON object is malformed, unknown, or overlaps another managed LiteLLM parameter surface.",
+		)
+	} else {
+		result.additionalLiteLLMParamsJSON = paramsSemanticObject
+		result.additionalLiteLLMParamsJSONConfigured = paramsSemanticProvenance.Configured
+	}
 	result.additionalModelInfo, _, converted = strictTerraformStringMap(ctx, data.AdditionalModelInfo, path.Root("additional_model_info"), false)
 	diagnostics.Append(converted...)
 	semanticObject, semanticProvenance, semanticErr := modelAdditionalModelInfoJSONConfiguration(ctx, data.AdditionalModelInfoJSON, data.AdditionalModelInfo)
@@ -1118,6 +1291,13 @@ func (r *ModelResource) createOrUpdateModel(ctx context.Context, data *ModelReso
 	if !data.AdditionalLiteLLMParams.IsNull() && !data.AdditionalLiteLLMParams.IsUnknown() {
 		for key, value := range collections.additionalLiteLLMParams {
 			litellmParams[key] = convertStringValue(value)
+		}
+	}
+	if collections.additionalLiteLLMParamsJSONConfigured {
+		var overlayErr error
+		litellmParams, overlayErr = overlaySemanticDictionaryObject(ctx, litellmParams, collections.additionalLiteLLMParamsJSON)
+		if overlayErr != nil {
+			return fmt.Errorf("semantic LiteLLM parameters overlay failed")
 		}
 	}
 
@@ -1463,8 +1643,17 @@ func (r *ModelResource) readModelWithOwnership(ctx context.Context, data *ModelR
 		if data.AdditionalLiteLLMParamsConfigured.IsNull() || data.AdditionalLiteLLMParamsConfigured.IsUnknown() {
 			additionalParamsOwned = len(inferLegacyConfiguredAdditionalParamKeys(data.AdditionalLiteLLMParams)) > 0
 		}
+		jsonOwnedTopLevel, err := semanticDictionaryTopLevelOwnedKeys(ctx, ownership.additionalLiteLLMParamsJSONProvenance)
+		if err != nil {
+			return err
+		}
 		additionalParams := make(map[string]attr.Value)
 		for key, rawValue := range litellmParams {
+			// The JSON sibling exclusively projects every top-level key it owns.
+			// Never duplicate those values into the legacy string map.
+			if jsonOwnedTopLevel[key] {
+				continue
+			}
 			// Skip "known" params (handled by top-level attributes) UNLESS the
 			// user explicitly placed them in additional_litellm_params. Import is
 			// the one extra case: remote thinking has no top-level ownership, so
@@ -1550,6 +1739,9 @@ func (r *ModelResource) readModelWithOwnership(ctx context.Context, data *ModelR
 		if filterByState {
 			priorParams := data.AdditionalLiteLLMParams.Elements()
 			for k := range stateKeys {
+				if jsonOwnedTopLevel[k] {
+					continue
+				}
 				if _, dedicated := knownLiteLLMParams[k]; dedicated && !additionalParamsOwned {
 					continue
 				}
@@ -1575,6 +1767,21 @@ func (r *ModelResource) readModelWithOwnership(ctx context.Context, data *ModelR
 		}
 		data.AdditionalLiteLLMParams = value
 	}
+
+	semanticLiteLLMParams := litellmParams
+	if !hasLiteLLMParams {
+		semanticLiteLLMParams = nil
+	}
+	semanticParamsJSON, err := reconcileModelAdditionalLiteLLMParamsJSON(
+		ctx,
+		data.AdditionalLiteLLMParamsJSON,
+		semanticLiteLLMParams,
+		ownership.additionalLiteLLMParamsJSONProvenance,
+	)
+	if err != nil {
+		return fmt.Errorf("%w", errModelLiteLLMParamsJSONProjection)
+	}
+	data.AdditionalLiteLLMParamsJSON = semanticParamsJSON
 
 	if hasModelInfo {
 		if baseModel, ok := modelInfo["base_model"].(string); ok && baseModel != "" {
@@ -1878,6 +2085,9 @@ func finalizeModelComputedDefaults(ctx context.Context, data *ModelResourceModel
 		}
 		data.AdditionalLiteLLMParams = value
 	}
+	if data.AdditionalLiteLLMParamsJSON.IsUnknown() {
+		data.AdditionalLiteLLMParamsJSON = types.StringNull()
+	}
 	if data.AdditionalModelInfo.IsUnknown() {
 		value, diagnostics := checkedStringMapValue(ctx, nil, path.Root("additional_model_info"), false)
 		if err := collectionProjectionError(ctx, diagnostics); err != nil {
@@ -2023,14 +2233,14 @@ func modelAPIFieldsChanged(ctx context.Context, planned, prior ModelResourceMode
 		}
 		plannedAttr, plannedOK := plannedValue.Field(i).Interface().(attr.Value)
 		priorAttr, priorOK := priorValue.Field(i).Interface().(attr.Value)
-		if name == "additional_model_info_json" {
+		if name == "additional_litellm_params_json" || name == "additional_model_info_json" {
 			plannedJSON, plannedIsString := plannedAttr.(types.String)
 			priorJSON, priorIsString := priorAttr.(types.String)
 			if plannedIsString && priorIsString && !plannedJSON.IsNull() && !plannedJSON.IsUnknown() && !priorJSON.IsNull() && !priorJSON.IsUnknown() {
 				plannedObject, plannedErr := parseSemanticDictionary(ctx, plannedJSON.ValueString())
 				priorObject, priorErr := parseSemanticDictionary(ctx, priorJSON.ValueString())
 				if plannedErr != nil || priorErr != nil {
-					return false, errors.New("semantic model information comparison failed")
+					return false, errors.New("semantic model dictionary comparison failed")
 				}
 				equal, compareErr := semanticDictionaryValuesEqual(ctx, plannedObject, priorObject)
 				if compareErr != nil {
@@ -2246,10 +2456,30 @@ func (r *ModelResource) patchModel(ctx context.Context, data, prior *ModelResour
 		return nil, fmt.Errorf("model request collection conversion failed")
 	}
 	modelID := data.ID.ValueString()
+	semanticParamsPatch := collections.additionalLiteLLMParamsJSON
 	semanticModelInfoPatch := collections.additionalModelInfoJSON
+	var hydrationResult map[string]interface{}
+	if collections.additionalLiteLLMParamsJSONConfigured || collections.additionalModelInfoConfigured {
+		var hydrationErr error
+		hydrationResult, hydrationErr = r.hydrateModelSemanticDictionaryPatchResult(ctx, modelID)
+		if hydrationErr != nil {
+			return nil, fmt.Errorf("semantic model dictionary hydration failed")
+		}
+	}
+	if collections.additionalLiteLLMParamsJSONConfigured {
+		_, paramsProvenance, provenanceErr := modelAdditionalLiteLLMParamsJSONConfiguration(ctx, data.AdditionalLiteLLMParamsJSON, data.AdditionalLiteLLMParams)
+		if provenanceErr != nil {
+			return nil, fmt.Errorf("semantic LiteLLM parameters provenance failed")
+		}
+		var hydrationErr error
+		semanticParamsPatch, hydrationErr = hydrateModelAdditionalLiteLLMParamsJSONPatch(ctx, hydrationResult, collections.additionalLiteLLMParamsJSON, paramsProvenance)
+		if hydrationErr != nil {
+			return nil, fmt.Errorf("semantic LiteLLM parameters hydration failed")
+		}
+	}
 	if collections.additionalModelInfoConfigured {
 		var hydrationErr error
-		semanticModelInfoPatch, hydrationErr = r.hydrateModelAdditionalModelInfoJSONPatch(ctx, modelID, collections.additionalModelInfoJSON)
+		semanticModelInfoPatch, hydrationErr = hydrateModelAdditionalModelInfoJSONPatch(ctx, hydrationResult, collections.additionalModelInfoJSON)
 		if hydrationErr != nil {
 			return nil, fmt.Errorf("semantic model information hydration failed")
 		}
@@ -2322,6 +2552,13 @@ func (r *ModelResource) patchModel(ctx context.Context, data, prior *ModelResour
 	if !data.AdditionalLiteLLMParams.IsNull() && !data.AdditionalLiteLLMParams.IsUnknown() {
 		for key, value := range collections.additionalLiteLLMParams {
 			litellmParams[key] = convertStringValue(value)
+		}
+	}
+	if collections.additionalLiteLLMParamsJSONConfigured {
+		var overlayErr error
+		litellmParams, overlayErr = overlaySemanticDictionaryObject(ctx, litellmParams, semanticParamsPatch)
+		if overlayErr != nil {
+			return nil, fmt.Errorf("semantic LiteLLM parameters overlay failed")
 		}
 	}
 

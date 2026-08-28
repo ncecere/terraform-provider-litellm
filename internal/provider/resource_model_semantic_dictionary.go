@@ -225,10 +225,9 @@ func modelAdditionalModelInfoJSONNeedsReplacement(
 	return !equal, nil
 }
 
-func (r *ModelResource) hydrateModelAdditionalModelInfoJSONPatch(
+func (r *ModelResource) hydrateModelSemanticDictionaryPatchResult(
 	ctx context.Context,
 	modelID string,
-	configured map[string]interface{},
 ) (map[string]interface{}, error) {
 	query := url.Values{"litellm_model_id": []string{modelID}}
 	endpoint := endpointWithQuery("/model/info", query)
@@ -249,7 +248,18 @@ func (r *ModelResource) hydrateModelAdditionalModelInfoJSONPatch(
 	if !present || !ok || text == "" || text != modelID {
 		return nil, errSemanticDictionaryTraversal
 	}
+	return result, nil
+}
 
+func hydrateModelAdditionalModelInfoJSONPatch(
+	ctx context.Context,
+	result map[string]interface{},
+	configured map[string]interface{},
+) (map[string]interface{}, error) {
+	modelInfo, ok := result["model_info"].(map[string]interface{})
+	if !ok || modelInfo == nil {
+		return nil, errSemanticDictionaryTraversal
+	}
 	base := map[string]interface{}{}
 	for name, configuredValue := range configured {
 		configuredObject, configuredIsObject := configuredValue.(map[string]interface{})
