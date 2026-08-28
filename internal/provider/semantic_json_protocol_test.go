@@ -31,7 +31,7 @@ func TestGuardrailStructuredModeProtocol(t *testing.T) {
 			captured.Store(payload)
 			_, _ = fmt.Fprint(writer, `{"guardrail_id":"guardrail"}`)
 		case request.Method == http.MethodGet && request.URL.Path == "/guardrails/guardrail/info":
-			_, _ = fmt.Fprint(writer, `{"guardrail_id":"guardrail","guardrail_name":"guardrail","litellm_params":{"guardrail":"custom","mode":{"default":"pre_call","tags":{"risky":["pre_call","post_call"],"trusted":"logging_only"}}}}`)
+			_, _ = fmt.Fprint(writer, `{"guardrail_id":"guardrail","guardrail_name":"guardrail","guardrail_definition_location":"db","litellm_params":{"guardrail":"custom","mode":{"default":"pre_call","tags":{"risky":["pre_call","post_call"],"trusted":"logging_only"}}}}`)
 		case request.Method == http.MethodGet && request.URL.Path == "/v2/guardrails/list":
 			_, _ = fmt.Fprint(writer, `{"guardrails":[{"guardrail_id":"guardrail","guardrail_name":"guardrail","litellm_params":{"guardrail":"custom","mode":{"default":"pre_call","tags":{"risky":["pre_call","post_call"],"trusted":"logging_only"}}}}]}`)
 		default:

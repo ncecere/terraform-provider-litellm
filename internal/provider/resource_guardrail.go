@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"net/http"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -160,7 +161,7 @@ func (r *GuardrailResource) Create(ctx context.Context, req resource.CreateReque
 			data.CreatedAt = types.StringNull()
 		}
 		resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
-		resp.Diagnostics.AddError("Guardrail Create Not Confirmed", fmt.Sprintf("LiteLLM created the guardrail, but authoritative read-back failed: %s", err))
+		resp.Diagnostics.AddError("Guardrail Create Not Confirmed", "LiteLLM created the guardrail, but its database-backed state could not be confirmed. Response and request details were omitted.")
 		return
 	}
 
@@ -181,12 +182,12 @@ func (r *GuardrailResource) Read(ctx context.Context, req resource.ReadRequest, 
 		return
 	}
 	imported := string(importedMarker) == "true"
-	if err := r.readGuardrail(ctx, &data, imported); err != nil {
-		if IsNotFoundError(err) {
+	if err := r.refreshGuardrail(ctx, &data, imported); err != nil {
+		if IsAPIErrorStatus(err, http.StatusNotFound) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read guardrail: %s", err))
+		resp.Diagnostics.AddError("Guardrail Read Error", "Unable to read a complete database-backed guardrail. Response and request details were omitted.")
 		return
 	}
 
@@ -229,7 +230,7 @@ func (r *GuardrailResource) Update(ctx context.Context, req resource.UpdateReque
 	// Never publish the planned value after an unconfirmed response; retaining
 	// prior state makes a failed or partially applied update safely retryable.
 	if err := r.readGuardrail(ctx, &data, false); err != nil {
-		resp.Diagnostics.AddError("Guardrail Update Not Confirmed", fmt.Sprintf("LiteLLM accepted the guardrail update, but authoritative read-back failed: %s", err))
+		resp.Diagnostics.AddError("Guardrail Update Not Confirmed", "LiteLLM accepted the guardrail update, but its database-backed state could not be confirmed. Response and request details were omitted.")
 		return
 	}
 
@@ -245,9 +246,9 @@ func (r *GuardrailResource) Delete(ctx context.Context, req resource.DeleteReque
 	}
 
 	endpoint := endpointWithPathSegment("/guardrails/", data.GuardrailID.ValueString(), "")
-	if err := r.client.DoRequestWithResponse(ctx, "DELETE", endpoint, nil, nil); err != nil {
-		if !IsNotFoundError(err) {
-			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to delete guardrail: %s", err))
+	if err := r.client.DoRequestWithResponse(ctx, http.MethodDelete, endpoint, nil, nil); err != nil {
+		if !IsAPIErrorStatus(err, http.StatusNotFound) {
+			resp.Diagnostics.AddError("Guardrail Delete Error", "Unable to delete the guardrail. Response and request details were omitted.")
 			return
 		}
 	}
@@ -349,7 +350,19 @@ func removeUnconfiguredGuardrailNulls(apiValue, configuredValue interface{}) int
 	}
 }
 
+// readGuardrail is reserved for operation-coupled Create/Update confirmation.
+// It deliberately performs one request.
 func (r *GuardrailResource) readGuardrail(ctx context.Context, data *GuardrailResourceModel, imported bool) error {
+	return r.readGuardrailWithTransport(ctx, data, imported, false)
+}
+
+// refreshGuardrail is the ordinary Terraform refresh path. Only this
+// database-authoritative singular GET uses bounded safe-read retries.
+func (r *GuardrailResource) refreshGuardrail(ctx context.Context, data *GuardrailResourceModel, imported bool) error {
+	return r.readGuardrailWithTransport(ctx, data, imported, true)
+}
+
+func (r *GuardrailResource) readGuardrailWithTransport(ctx context.Context, data *GuardrailResourceModel, imported, safeRead bool) error {
 	guardrailID := data.GuardrailID.ValueString()
 	if guardrailID == "" {
 		guardrailID = data.ID.ValueString()
@@ -360,12 +373,27 @@ func (r *GuardrailResource) readGuardrail(ctx context.Context, data *GuardrailRe
 
 	endpoint := endpointWithPathSegment("/guardrails/", guardrailID, "/info")
 	var raw map[string]interface{}
-	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &raw); err != nil {
+	var err error
+	if safeRead {
+		err = r.client.DoReadWithResponse(ctx, http.MethodGet, endpoint, nil, &raw)
+	} else {
+		err = r.client.DoRequestWithResponse(ctx, http.MethodGet, endpoint, nil, &raw)
+	}
+	if err != nil {
 		return err
 	}
+	return projectGuardrailResourceAPIObject(data, raw, guardrailID, imported)
+}
+
+// projectGuardrailResourceAPIObject validates and projects into a candidate so
+// malformed successful responses cannot partially mutate prior state.
+func projectGuardrailResourceAPIObject(data *GuardrailResourceModel, raw map[string]interface{}, guardrailID string, imported bool) error {
 	observed, err := decodeGuardrailAPIObject(raw, guardrailID, true)
 	if err != nil {
 		return err
+	}
+	if observed.DefinitionLocation != "db" {
+		return fmt.Errorf("guardrail response was not database-backed")
 	}
 	if observed.Params == nil {
 		return fmt.Errorf("guardrail response omitted required litellm_params")
@@ -387,50 +415,52 @@ func (r *GuardrailResource) readGuardrail(ctx context.Context, data *GuardrailRe
 		return fmt.Errorf("guardrail import cannot recover masked litellm_params without prior Terraform state")
 	}
 
-	data.ID = types.StringValue(observed.ID)
-	data.GuardrailID = types.StringValue(observed.ID)
-	data.GuardrailName = types.StringValue(observed.Name)
-	data.Guardrail = types.StringValue(guardrail)
-	if data.Mode.IsNull() || data.Mode.IsUnknown() || !jsonSemanticallyEqual(data.Mode.ValueString(), mode) {
-		data.Mode = types.StringValue(mode)
+	candidate := *data
+	candidate.ID = types.StringValue(observed.ID)
+	candidate.GuardrailID = types.StringValue(observed.ID)
+	candidate.GuardrailName = types.StringValue(observed.Name)
+	candidate.Guardrail = types.StringValue(guardrail)
+	if candidate.Mode.IsNull() || candidate.Mode.IsUnknown() || !jsonSemanticallyEqual(candidate.Mode.ValueString(), mode) {
+		candidate.Mode = types.StringValue(mode)
 	}
 	if observed.CreatedAt == nil {
-		data.CreatedAt = types.StringNull()
+		candidate.CreatedAt = types.StringNull()
 	} else {
-		data.CreatedAt = types.StringValue(*observed.CreatedAt)
+		candidate.CreatedAt = types.StringValue(*observed.CreatedAt)
 	}
 	if defaultOn, exists := observed.Params["default_on"]; exists && defaultOn != nil {
 		value, valid := defaultOn.(bool)
 		if !valid {
-			return fmt.Errorf("guardrail response field %q must be a boolean or null", "litellm_params.default_on")
+			return fmt.Errorf("guardrail response default state was malformed")
 		}
-		if !data.DefaultOn.IsNull() || data.DefaultOn.IsUnknown() {
-			data.DefaultOn = types.BoolValue(value)
+		if !candidate.DefaultOn.IsNull() || candidate.DefaultOn.IsUnknown() {
+			candidate.DefaultOn = types.BoolValue(value)
 		}
-	} else if !data.DefaultOn.IsNull() || data.DefaultOn.IsUnknown() {
-		data.DefaultOn = types.BoolNull()
+	} else if !candidate.DefaultOn.IsNull() || candidate.DefaultOn.IsUnknown() {
+		candidate.DefaultOn = types.BoolNull()
 	}
 
-	if !data.LitellmParams.IsNull() && !data.LitellmParams.IsUnknown() {
-		reconciled, err := reconcileOwnedGuardrailParams(observed.Params, data.LitellmParams.ValueString())
+	if !candidate.LitellmParams.IsNull() && !candidate.LitellmParams.IsUnknown() {
+		reconciled, err := reconcileOwnedGuardrailParams(observed.Params, candidate.LitellmParams.ValueString())
 		if err != nil {
 			return err
 		}
-		data.LitellmParams = types.StringValue(reconciled)
+		candidate.LitellmParams = types.StringValue(reconciled)
 	}
 
-	if !data.GuardrailInfo.IsNull() || data.GuardrailInfo.IsUnknown() {
+	if !candidate.GuardrailInfo.IsNull() || candidate.GuardrailInfo.IsUnknown() {
 		if observed.Info != nil {
 			encoded, err := canonicalGuardrailJSONObject(observed.Info, "guardrail_info")
 			if err != nil {
 				return err
 			}
-			if !jsonSemanticallyEqual(data.GuardrailInfo.ValueString(), encoded) {
-				data.GuardrailInfo = types.StringValue(encoded)
+			if !jsonSemanticallyEqual(candidate.GuardrailInfo.ValueString(), encoded) {
+				candidate.GuardrailInfo = types.StringValue(encoded)
 			}
 		} else {
-			data.GuardrailInfo = types.StringNull()
+			candidate.GuardrailInfo = types.StringNull()
 		}
 	}
+	*data = candidate
 	return nil
 }

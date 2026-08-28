@@ -18,7 +18,7 @@ func TestGuardrailUnmaskedImportOmissionIsStableProtocol(t *testing.T) {
 			http.NotFound(writer, request)
 			return
 		}
-		_, _ = fmt.Fprint(writer, `{"guardrail_id":"guardrail-import","guardrail_name":"managed","litellm_params":{"guardrail":"bedrock","mode":"pre_call","default_on":true,"guardrailIdentifier":"remote-default"}}`)
+		_, _ = fmt.Fprint(writer, `{"guardrail_id":"guardrail-import","guardrail_name":"managed","guardrail_definition_location":"db","litellm_params":{"guardrail":"bedrock","mode":"pre_call","default_on":true,"guardrailIdentifier":"remote-default"}}`)
 	}))
 	defer server.Close()
 
@@ -49,7 +49,7 @@ func TestGuardrailSingleDataSourceRejectsNullParamsProtocol(t *testing.T) {
 	ctx := context.Background()
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(writer, `{"guardrail_id":"guardrail-null","guardrail_name":"malformed","litellm_params":null}`)
+		_, _ = fmt.Fprint(writer, `{"guardrail_id":"guardrail-null","guardrail_name":"malformed","guardrail_definition_location":"db","litellm_params":null}`)
 	}))
 	defer server.Close()
 	protocolServer, schemas := configuredImportProtocolServer(t, ctx, server.URL)
@@ -73,7 +73,7 @@ func TestGuardrailMaskedImportFailsClosedProtocol(t *testing.T) {
 			http.NotFound(writer, request)
 			return
 		}
-		_, _ = fmt.Fprint(writer, `{"guardrail_id":"guardrail-import","guardrail_name":"managed","litellm_params":{"guardrail":"bedrock","mode":"pre_call","api_key":"se****et"}}`)
+		_, _ = fmt.Fprint(writer, `{"guardrail_id":"guardrail-import","guardrail_name":"managed","guardrail_definition_location":"db","litellm_params":{"guardrail":"bedrock","mode":"pre_call","api_key":"se****et"}}`)
 	}))
 	defer server.Close()
 
