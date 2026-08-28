@@ -542,6 +542,52 @@ if [ "$plan_status" -ne 0 ]; then
 fi
 terraform show -json matrix-steady.tfplan >matrix-steady-plan.json
 
+if [ "${SMOKE_KEY_EXTERNAL_DELETE:-}" = "1" ]; then
+  echo '=== KEY EXTERNAL DELETE AND AUTHORITATIVE 404 REFRESH ==='
+  key_delete_address=${SMOKE_KEY_DELETE_ADDRESS:-}
+  key_block_delete_address=${SMOKE_KEY_BLOCK_DELETE_ADDRESS:-}
+  [ "$key_delete_address" = "litellm_key.minimal" ] && [ "$key_block_delete_address" = "litellm_key_block.minimal" ] || {
+    echo 'Key external-delete mode requires the reviewed key and key-block addresses.' >&3
+    exit 1
+  }
+  [ -f resource_key_minimal.tf ] && [ -f resource_key_block_minimal.tf ] || {
+    echo 'Key external-delete mode requires only the minimal key and key-block fixtures.' >&3
+    exit 1
+  }
+  terraform output -raw key_minimal_key | python3 -c '
+import json, sys
+identity=sys.stdin.read()
+if not identity:
+    raise SystemExit(1)
+json.dump({"keys": [identity]}, sys.stdout, separators=(",", ":"))
+' >key-external-delete-request.json
+  chmod 600 key-external-delete-request.json
+  curl --fail --silent --show-error -X POST \
+    -H 'Authorization: Bearer sk-testing-key' \
+    -H 'Content-Type: application/json' \
+    --data-binary @key-external-delete-request.json \
+    'http://localhost:4000/key/delete' >/dev/null
+  rm -f key-external-delete-request.json
+  terraform apply -refresh-only -auto-approve >key-external-delete-refresh.log 2>&1
+  cat key-external-delete-refresh.log
+  terraform state list >matrix-final-state.list
+  if grep -Fxq "$key_delete_address" matrix-final-state.list || grep -Fxq "$key_block_delete_address" matrix-final-state.list; then
+    echo 'Exact 404 refresh retained an externally deleted Key or Key Block address.' >&3
+    exit 1
+  fi
+  [ ! -s matrix-final-state.list ] || {
+    echo 'Key external-delete refresh left unexpected managed state.' >&3
+    exit 1
+  }
+  [ "$(wc -c <"$SMOKE_LOG")" -le 10485760 ] || {
+    echo 'Key smoke log exceeded its private bound.' >&3
+    exit 1
+  }
+  SUCCESS=1
+  printf '\nSmoke passed: Key and Key Block create/refresh, direct delete, and exact-404 state removal succeeded.\n' >&3
+  exit 0
+fi
+
 if [ "${SMOKE_USER_EXTERNAL_DELETE:-}" = "1" ]; then
   echo '=== USER EXTERNAL DELETE AND AUTHORITATIVE 404 REFRESH ==='
   user_delete_address=${SMOKE_USER_DELETE_ADDRESS:-}

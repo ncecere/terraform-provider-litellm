@@ -338,6 +338,8 @@ In addition to all arguments above, the following attributes are exported:
 
 * `key` - The API key token (sensitive). This is the actual secret used for authentication for generated or stateful predefined keys. It remains null in write-only mode.
 
+Ordinary refreshes retry bounded transient transport, HTTP 408, 429, and 5xx failures. Only an exact 404 removes state; malformed, identity-mismatched, or exhausted reads retain the prior public/private state. Create/update confirmation, accepted or pending recovery, semantic hydration, router convergence, invitation/access-group probes, and mutations retain their existing single-attempt behavior.
+
 ## Import
 
 LiteLLM keys can be imported using the raw key token:

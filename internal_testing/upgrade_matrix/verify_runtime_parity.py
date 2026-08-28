@@ -327,6 +327,20 @@ REVIEWED_ISSUE202_USER_PATHS = (
 REVIEWED_ISSUE202_USER_RUNTIME_DIFF_SHA256 = (
     "915a0810f0f8e3e93e50656dc943172a6df430a53e7a9b0ae3379c03384e54c1"
 )
+REVIEWED_ISSUE202_KEY_BASE = "85a5c1c713ddbd057e3794d53065915cb4557a06"
+REVIEWED_ISSUE202_KEY_PATHS = (
+    "internal/provider/datasource_key.go",
+    "internal/provider/key_hash_validator.go",
+    "internal/provider/key_safe_read_protocol_test.go",
+    "internal/provider/key_safe_read_test.go",
+    "internal/provider/resource_key.go",
+    "internal/provider/resource_key_block.go",
+    "internal/provider/resource_key_block_lifecycle_test.go",
+    "internal/provider/resource_key_numeric_regression_test.go",
+)
+REVIEWED_ISSUE202_KEY_RUNTIME_DIFF_SHA256 = (
+    "aa39212b05c2cf723d1fa0ace27bb22f2fd0af45e21fe734bfd0405863985cf5"
+)
 
 
 def git(*args: str) -> str:
@@ -488,6 +502,12 @@ def main() -> int:
             and digest == REVIEWED_ISSUE202_USER_RUNTIME_DIFF_SHA256
         ):
             reviewed = "issue202-user"
+        elif (
+            comparison == REVIEWED_ISSUE202_KEY_BASE
+            and changed_paths == REVIEWED_ISSUE202_KEY_PATHS
+            and digest == REVIEWED_ISSUE202_KEY_RUNTIME_DIFF_SHA256
+        ):
+            reviewed = "issue202-key"
         if reviewed is not None:
             print(
                 f"Provider runtime parity verified: reviewed={reviewed} "

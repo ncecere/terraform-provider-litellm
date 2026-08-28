@@ -41,6 +41,8 @@ Changing the target key forces replacement. Switching between `key` and `key_has
 - `id` - Canonical non-sensitive `sha256:<64-hex>` management identifier.
 - `blocked` - Whether the key is currently blocked.
 
+Ordinary refreshes retry bounded transient transport, HTTP 408, 429, and 5xx failures. Terraform removes the resource only after LiteLLM returns an exact 404 for the key or an identity-matched response with `blocked = false`; malformed or ambiguous responses retain state and fail closed.
+
 ## Import
 
 ### Hash-only import
