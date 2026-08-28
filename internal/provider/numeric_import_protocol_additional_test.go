@@ -60,7 +60,7 @@ func TestAdditionalNumericImportProtocolsAdoptOnceAndTransitionMarker(t *testing
 				case "/team/info":
 					_, _ = writer.Write([]byte(`{"team_id":"wrong-team","team_info":{"team_id":"wrong-team","team_alias":"wrong","members_with_roles":[]},"team_memberships":[]}`))
 				case "/user/info":
-					_, _ = writer.Write([]byte(`{"user_info":{"user_id":"wrong-user"}}`))
+					_, _ = writer.Write([]byte(`{"user_id":"wrong-user","user_info":{"user_id":"wrong-user"}}`))
 				case "/key/info":
 					_, _ = writer.Write([]byte(`{"key":"wrong-key","info":{}}`))
 				default:
@@ -93,7 +93,7 @@ func TestAdditionalNumericImportProtocolsAdoptOnceAndTransitionMarker(t *testing
 		case "/team/permissions_list":
 			_, _ = writer.Write([]byte(`{"team_id":"team-import","team_member_permissions":[]}`))
 		case "/user/info":
-			_, _ = writer.Write([]byte(`{"user_info":{"user_id":"user-resource-import","user_email":"import@example.test","tpm_limit":9007199254740993}}`))
+			_, _ = writer.Write([]byte(`{"user_id":"user-resource-import","user_info":{"user_id":"user-resource-import","user_email":"import@example.test","tpm_limit":9007199254740993}}`))
 		case "/key/info":
 			_, _ = writer.Write([]byte(`{"key":"sk-import","info":{"tpm_limit":9007199254740993,"litellm_budget_table":{"max_budget":50.5,"soft_budget":40,"model_max_budget":{}},"metadata":{"model_rpm_limit":{},"model_tpm_limit":{}}}}`))
 		default:

@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"net/url"
 	"sort"
 	"strconv"
@@ -255,12 +256,12 @@ func (r *UserResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 	}
 	imported := string(importedMarker) == "true"
 
-	if err := r.readUserWithNumericOwnership(ctx, &data, imported); err != nil {
-		if IsNotFoundError(err) {
+	if err := r.refreshUserWithNumericOwnership(ctx, &data, imported); err != nil {
+		if IsAPIErrorStatus(err, http.StatusNotFound) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read user: %s", err))
+		resp.Diagnostics.AddError("Client Error", "Unable to read user. Response and request details were omitted.")
 		return
 	}
 
@@ -564,39 +565,67 @@ func (r *UserResource) buildUserRequest(ctx context.Context, data *UserResourceM
 	return userReq, nil
 }
 
+// readUser is reserved for operation-coupled Create/Update/adoption
+// confirmation. It deliberately performs one request.
 func (r *UserResource) readUser(ctx context.Context, data *UserResourceModel) error {
 	return r.readUserWithNumericOwnership(ctx, data, false)
 }
 
 func (r *UserResource) readUserWithNumericOwnership(ctx context.Context, data *UserResourceModel, imported bool) error {
+	return r.readUserWithTransport(ctx, data, imported, false)
+}
+
+// refreshUserWithNumericOwnership is the ordinary Terraform refresh path.
+// Only this singular database-authoritative GET uses bounded safe-read retries.
+func (r *UserResource) refreshUserWithNumericOwnership(ctx context.Context, data *UserResourceModel, imported bool) error {
+	return r.readUserWithTransport(ctx, data, imported, true)
+}
+
+func (r *UserResource) readUserWithTransport(ctx context.Context, data *UserResourceModel, imported, safeRead bool) error {
 	userID := data.UserID.ValueString()
 	if userID == "" {
 		userID = data.ID.ValueString()
 	}
-
-	query := url.Values{"user_id": []string{userID}}
-	endpoint := endpointWithQuery("/user/info", query)
+	endpoint := endpointWithQuery("/user/info", url.Values{"user_id": []string{userID}})
 
 	var result map[string]interface{}
-	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
+	var err error
+	if safeRead {
+		err = r.client.DoReadWithResponse(ctx, http.MethodGet, endpoint, nil, &result)
+	} else {
+		err = r.client.DoRequestWithResponse(ctx, http.MethodGet, endpoint, nil, &result)
+	}
+	if err != nil {
 		return err
 	}
+	return projectUserResourceAPIObject(ctx, data, result, userID, imported, safeRead)
+}
 
-	// The /user/info endpoint returns user_info nested.
+// projectUserResourceAPIObject validates and projects atomically so a
+// malformed successful response cannot partially mutate prior state.
+func projectUserResourceAPIObject(ctx context.Context, data *UserResourceModel, result map[string]interface{}, expectedUserID string, imported, requireCompleteEnvelope bool) error {
 	userInfo := result
 	if ui, ok := result["user_info"].(map[string]interface{}); ok {
 		userInfo = ui
 	}
-	if imported {
+	if imported || requireCompleteEnvelope {
+		rootUserID, ok := result["user_id"].(string)
+		if !ok || rootUserID == "" || rootUserID != expectedUserID {
+			return fmt.Errorf("invalid user response root identity")
+		}
 		validated, err := requireImportedObjectField(true, "user", result, "user_info")
 		if err != nil {
-			return err
+			return fmt.Errorf("invalid user response envelope")
 		}
 		userInfo = validated
-	}
-	if err := validateImportedObjectIdentity(imported, "user", userInfo, "user_id", userID); err != nil {
+		nestedUserID, ok := userInfo["user_id"].(string)
+		if !ok || nestedUserID == "" || nestedUserID != expectedUserID || nestedUserID != rootUserID {
+			return fmt.Errorf("invalid user response nested identity")
+		}
+	} else if err := validateImportedObjectIdentity(false, "user", userInfo, "user_id", expectedUserID); err != nil {
 		return err
 	}
+
 	original := data
 	next := *data
 	data = &next
