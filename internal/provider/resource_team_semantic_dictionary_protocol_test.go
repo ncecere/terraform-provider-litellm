@@ -58,12 +58,13 @@ func TestTeamSemanticExactCreateUpdateHydrationAndFormattingProtocol(t *testing.
 	var metadata map[string]interface{}
 	var createBody, updateBody map[string]interface{}
 	var creates, updates, infos atomic.Int64
-	alias := "semantic"
+	var alias atomic.Value
+	alias.Store("semantic")
 	response := func() map[string]interface{} {
 		return map[string]interface{}{
 			"team_id": id, "keys": []interface{}{}, "team_memberships": []interface{}{},
 			"team_info": map[string]interface{}{
-				"team_id": id, "team_alias": alias, "access_group_ids": []interface{}{}, "models": []interface{}{}, "blocked": false,
+				"team_id": id, "team_alias": alias.Load(), "access_group_ids": []interface{}{}, "models": []interface{}{}, "blocked": false,
 				"metadata": metadata, "litellm_model_table": map[string]interface{}{"model_aliases": map[string]interface{}{}}, "team_member_budget_table": nil,
 			},
 		}
@@ -96,6 +97,9 @@ func TestTeamSemanticExactCreateUpdateHydrationAndFormattingProtocol(t *testing.
 			if replacement, ok := updateBody["metadata"].(map[string]interface{}); ok {
 				metadata = replacement
 			}
+			if updatedAlias, ok := updateBody["team_alias"].(string); ok {
+				alias.Store(updatedAlias)
+			}
 			_ = json.NewEncoder(writer).Encode(map[string]interface{}{"team_id": id})
 		case request.Method == http.MethodGet && request.URL.Path == "/team/info":
 			infos.Add(1)
@@ -112,7 +116,7 @@ func TestTeamSemanticExactCreateUpdateHydrationAndFormattingProtocol(t *testing.
 	schema := schemas.ResourceSchemas["litellm_team"]
 	nullState := accessGroupProtocolDynamicValue(t, schema, tftypes.NewValue(schema.ValueType(), nil))
 	semantic := `{"integer":9007199254740993123456789,"native":true,"nil":null,"list":[1,false,null],"object":{"keep":1,"remove":2},"empty":{}}`
-	values := map[string]interface{}{"team_id": id, "team_alias": alias, "metadata_json": semantic, "team_member_permissions": []tftypes.Value{}}
+	values := map[string]interface{}{"team_id": id, "team_alias": alias.Load(), "metadata_json": semantic, "team_member_permissions": []tftypes.Value{}}
 	config := teamSemanticProtocolValue(t, schema, values)
 	planned, err := protocolServer.PlanResourceChange(ctx, &tfprotov6.PlanResourceChangeRequest{TypeName: "litellm_team", Config: config, PriorState: nullState, ProposedNewState: teamSemanticCreateProposed(t, schema, values)})
 	if err != nil || accessGroupProtocolDiagnosticsHaveError(planned.Diagnostics) {
@@ -127,7 +131,7 @@ func TestTeamSemanticExactCreateUpdateHydrationAndFormattingProtocol(t *testing.
 	}
 
 	updatedJSON := `{"integer":9007199254740993123456789,"native":true,"nil":null,"list":[1,false,null],"object":{"keep":3},"empty":{}}`
-	updateValues := map[string]interface{}{"team_id": id, "team_alias": alias, "metadata_json": updatedJSON, "team_member_permissions": []tftypes.Value{}}
+	updateValues := map[string]interface{}{"team_id": id, "team_alias": alias.Load(), "metadata_json": updatedJSON, "team_member_permissions": []tftypes.Value{}}
 	updateConfig := teamSemanticProtocolValue(t, schema, updateValues)
 	proposed := organizationProjectProtocolReplace(t, schema, created.NewState, map[string]interface{}{"metadata_json": updatedJSON})
 	updatePlan, err := protocolServer.PlanResourceChange(ctx, &tfprotov6.PlanResourceChangeRequest{TypeName: "litellm_team", Config: updateConfig, PriorState: created.NewState, ProposedNewState: proposed, PriorPrivate: created.Private})
@@ -147,11 +151,27 @@ func TestTeamSemanticExactCreateUpdateHydrationAndFormattingProtocol(t *testing.
 		t.Fatalf("removed semantic leaf remained: %#v", replacement)
 	}
 
-	formattedValues := map[string]interface{}{"team_id": id, "team_alias": alias, "metadata_json": "{\n \"empty\": {}, \"object\": {\"keep\": 3}, \"list\": [1,false,null], \"nil\": null, \"native\": true, \"integer\": 9007199254740993123456789\n}", "team_member_permissions": []tftypes.Value{}}
+	formattedJSON := "{\n \"empty\": {}, \"object\": {\"keep\": 3}, \"list\": [1,false,null], \"nil\": null, \"native\": true, \"integer\": 9007199254740993123456789\n}"
+	formattedValues := map[string]interface{}{"team_id": id, "team_alias": alias.Load(), "metadata_json": formattedJSON, "team_member_permissions": []tftypes.Value{}}
 	formattedConfig := teamSemanticProtocolValue(t, schema, formattedValues)
 	formatted, err := protocolServer.PlanResourceChange(ctx, &tfprotov6.PlanResourceChangeRequest{TypeName: "litellm_team", Config: formattedConfig, PriorState: updated.NewState, ProposedNewState: updated.NewState, PriorPrivate: updated.Private})
 	if err != nil || accessGroupProtocolDiagnosticsHaveError(formatted.Diagnostics) || organizationProjectProtocolPlannedAction(t, schema, updated.NewState, formatted) != organizationProjectProtocolActionNoOp || updates.Load() != 1 {
 		t.Fatalf("format no-op: err=%v diagnostics=%s action=%s", err, agentProtocolDiagnosticsText(formatted.Diagnostics), organizationProjectProtocolPlannedAction(t, schema, updated.NewState, formatted))
+	}
+
+	renamedValues := map[string]interface{}{"team_id": id, "team_alias": "semantic-renamed", "metadata_json": formattedJSON, "team_member_permissions": []tftypes.Value{}}
+	renamedConfig := teamSemanticProtocolValue(t, schema, renamedValues)
+	renamedProposed := organizationProjectProtocolReplace(t, schema, updated.NewState, map[string]interface{}{"team_alias": "semantic-renamed", "metadata_json": formattedJSON})
+	renamedPlan, err := protocolServer.PlanResourceChange(ctx, &tfprotov6.PlanResourceChangeRequest{TypeName: "litellm_team", Config: renamedConfig, PriorState: updated.NewState, ProposedNewState: renamedProposed, PriorPrivate: updated.Private})
+	if err != nil || accessGroupProtocolDiagnosticsHaveError(renamedPlan.Diagnostics) {
+		t.Fatalf("format plus alias plan: err=%v diagnostics=%s", err, agentProtocolDiagnosticsText(renamedPlan.Diagnostics))
+	}
+	renamed, err := protocolServer.ApplyResourceChange(ctx, &tfprotov6.ApplyResourceChangeRequest{TypeName: "litellm_team", Config: renamedConfig, PriorState: updated.NewState, PlannedState: renamedPlan.PlannedState, PlannedPrivate: renamedPlan.PlannedPrivate})
+	if err != nil || accessGroupProtocolDiagnosticsHaveError(renamed.Diagnostics) || updates.Load() != 2 {
+		t.Fatalf("format plus alias apply: err=%v diagnostics=%s updates=%d", err, agentProtocolDiagnosticsText(renamed.Diagnostics), updates.Load())
+	}
+	if got := protocolString(t, protocolAttributeMap(t, schema, renamed.NewState)["metadata_json"]); got != updatedJSON {
+		t.Fatalf("format-equivalent unrelated update published %q want planned %q", got, updatedJSON)
 	}
 }
 

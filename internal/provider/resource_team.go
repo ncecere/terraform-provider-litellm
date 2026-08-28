@@ -765,7 +765,12 @@ func (r *TeamResource) Update(ctx context.Context, req resource.UpdateRequest, r
 	}
 	data.ID = state.ID
 	data.TeamID = state.TeamID
-	data.MetadataJSON = config.MetadataJSON
+	if semanticChanged {
+		// Apply the configured spelling only for a semantic value change. ModifyPlan
+		// pins formatting-only equality to prior state, and Update must not replace
+		// that known planned representation during an unrelated mutation.
+		data.MetadataJSON = config.MetadataJSON
+	}
 	if data.TeamID.IsNull() || data.TeamID.IsUnknown() {
 		data.TeamID = state.ID
 	}
