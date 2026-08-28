@@ -266,7 +266,7 @@ func TestProjectSemanticAcceptedCreateTeamRecoveryAndPrivacyProtocol(t *testing.
 			ctx := context.Background()
 			const teamID = "team-sensitive-recovery"
 			const metadataKey = "sensitive_metadata_name"
-			var projectID string
+			var projectID atomic.Value
 			var reads, creates atomic.Int64
 			teamMode := atomic.Int64{}
 			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -276,7 +276,7 @@ func TestProjectSemanticAcceptedCreateTeamRecoveryAndPrivacyProtocol(t *testing.
 					creates.Add(1)
 					var body map[string]interface{}
 					_ = json.NewDecoder(request.Body).Decode(&body)
-					projectID, _ = body["project_id"].(string)
+					projectID.Store(body["project_id"])
 					if transport == "commit then hijack" {
 						connection, _, err := writer.(http.Hijacker).Hijack()
 						if err != nil {
@@ -289,7 +289,7 @@ func TestProjectSemanticAcceptedCreateTeamRecoveryAndPrivacyProtocol(t *testing.
 					_, _ = writer.Write([]byte(`{"project_id":`))
 				case request.Method == http.MethodGet && request.URL.Path == "/project/info":
 					reads.Add(1)
-					object := map[string]interface{}{"project_id": projectID, "metadata": map[string]interface{}{metadataKey: true}, "litellm_budget_table": map[string]interface{}{}}
+					object := map[string]interface{}{"project_id": projectID.Load(), "metadata": map[string]interface{}{metadataKey: true}, "litellm_budget_table": map[string]interface{}{}}
 					switch teamMode.Load() {
 					case 1:
 						object["team_id"] = nil
@@ -315,11 +315,12 @@ func TestProjectSemanticAcceptedCreateTeamRecoveryAndPrivacyProtocol(t *testing.
 			}
 			attributes := protocolAttributeMap(t, schema, created.NewState)
 			var gotID, gotTeam string
-			if attributes["id"].As(&gotID) != nil || attributes["team_id"].As(&gotTeam) != nil || gotID != projectID || gotTeam != teamID || !attributes["metadata_json"].IsNull() {
+			createdProjectID, _ := projectID.Load().(string)
+			if attributes["id"].As(&gotID) != nil || attributes["team_id"].As(&gotTeam) != nil || gotID != createdProjectID || gotTeam != teamID || !attributes["metadata_json"].IsNull() {
 				t.Fatalf("partial state id=%q team=%q metadata=%s", gotID, gotTeam, attributes["metadata_json"])
 			}
 			diagnostic := agentProtocolDiagnosticsText(created.Diagnostics)
-			for _, protected := range []string{projectID, teamID, metadataKey, "/project", "true"} {
+			for _, protected := range []string{createdProjectID, teamID, metadataKey, "/project", "true"} {
 				if strings.Contains(diagnostic, protected) || bytes.Contains(created.Private, []byte(protected)) {
 					t.Fatalf("recovery exposed %q: diagnostics=%q private=%s", protected, diagnostic, created.Private)
 				}

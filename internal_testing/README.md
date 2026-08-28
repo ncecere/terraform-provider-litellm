@@ -109,6 +109,7 @@ internal_testing/
     organization_compatibility_defaults.tf
     project_minimal.tf              # Enterprise-only
     project_full.tf                 # Enterprise-only nested-budget coverage
+    project_semantic_json.tf        # Enterprise-only heterogeneous metadata
     project_budget_clear.tf         # two-apply set-to-clear fixture
     organization_member_minimal.tf
     organization_member_full.tf
