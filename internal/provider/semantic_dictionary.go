@@ -96,6 +96,33 @@ func cloneSemanticDictionaryProvenance(ctx context.Context, source semanticDicti
 	return result, nil
 }
 
+// semanticCreateRecoveryRequired classifies create failures without exposing
+// endpoint-specific data. Raw typed status information is inspected before the
+// general classifier because cancellation/deadline precedence can intentionally
+// hide a known non-2xx response.
+func semanticCreateRecoveryRequired(accepted bool, requestErr error) bool {
+	if accepted {
+		return true
+	}
+	observedRejection := false
+	walkErrorTree(requestErr, func(node error) {
+		status := 0
+		switch typed := node.(type) {
+		case *APIError:
+			status = typed.StatusCode
+		case *safeResponseError:
+			status = typed.statusCode
+		}
+		if status != 0 && (status < 200 || status >= 300) {
+			observedRejection = true
+		}
+	})
+	if observedRejection {
+		return false
+	}
+	return ClassifyHTTPFailure(requestErr).RequestDispatched
+}
+
 // parseSemanticDictionary accepts exactly one non-null JSON object. The shared
 // decoder supplies duplicate-member rejection, exact numbers, and global input,
 // depth, and object-member bounds. Errors never contain input text or keys.

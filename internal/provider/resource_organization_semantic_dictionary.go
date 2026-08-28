@@ -20,31 +20,7 @@ const (
 var organizationMetadataJSONReservedKeys = []string{"model_rpm_limit", "model_tpm_limit"}
 
 func organizationSemanticCreateRecoveryRequired(accepted bool, requestErr error) bool {
-	if accepted {
-		return true
-	}
-	observedRejection := false
-	walkErrorTree(requestErr, func(node error) {
-		status := 0
-		switch typed := node.(type) {
-		case *APIError:
-			status = typed.StatusCode
-		case *safeResponseError:
-			status = typed.statusCode
-		}
-		if status != 0 && (status < 200 || status >= 300) {
-			observedRejection = true
-		}
-	})
-	if observedRejection {
-		return false
-	}
-	// A request that reached dispatch without a known rejection can have
-	// committed before a transport failure, deadline, or cancellation hid the
-	// response. Inspect raw typed status metadata above because classifier
-	// precedence intentionally suppresses status for some cancellation and
-	// deadline outcomes. Local/pre-dispatch failures are not dispatched.
-	return ClassifyHTTPFailure(requestErr).RequestDispatched
+	return semanticCreateRecoveryRequired(accepted, requestErr)
 }
 
 type organizationSemanticPrepared struct {

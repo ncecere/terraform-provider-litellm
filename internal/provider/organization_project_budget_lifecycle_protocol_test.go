@@ -496,9 +496,11 @@ func TestOrganizationProjectOrdinaryOmittedCreateDoesNotAdoptGeneratedBudgetProt
 		case request.Method == http.MethodGet && request.URL.Path == "/organization/info":
 			_, _ = writer.Write([]byte(`{"organization_id":"org-created","organization_alias":"created-org","budget_id":"generated-org","litellm_budget_table":{"budget_id":"generated-org","model_max_budget":{"gpt-4o":{"max_budget":1}}}}`))
 		case request.Method == http.MethodPost && request.URL.Path == "/project/new":
-			_, _ = writer.Write([]byte(`{"project_id":"project-created","project_alias":"generated-alias","description":"generated description","team_id":"team-1","budget_id":"generated-project","litellm_budget_table":{"budget_id":"generated-project"}}`))
+			projectID, _ := requestBodies[request.URL.Path]["project_id"].(string)
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{"project_id": projectID, "project_alias": "generated-alias", "description": "generated description", "team_id": "team-1", "budget_id": "generated-project", "litellm_budget_table": map[string]interface{}{"budget_id": "generated-project"}})
 		case request.Method == http.MethodGet && request.URL.Path == "/project/info":
-			_, _ = writer.Write([]byte(`{"project_id":"project-created","project_alias":"generated-alias","description":"generated description","team_id":"team-1","budget_id":"generated-project","litellm_budget_table":{"budget_id":"generated-project","model_max_budget":{"gpt-4o":{"max_budget":1}}}}`))
+			projectID, _ := requestBodies["/project/new"]["project_id"].(string)
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{"project_id": projectID, "project_alias": "generated-alias", "description": "generated description", "team_id": "team-1", "budget_id": "generated-project", "litellm_budget_table": map[string]interface{}{"budget_id": "generated-project", "model_max_budget": map[string]interface{}{"gpt-4o": map[string]interface{}{"max_budget": 1}}}})
 		default:
 			http.NotFound(writer, request)
 		}
@@ -511,7 +513,7 @@ func TestOrganizationProjectOrdinaryOmittedCreateDoesNotAdoptGeneratedBudgetProt
 		config, computed           map[string]interface{}
 	}{
 		{"organization", "litellm_organization", "/organization/new", map[string]interface{}{"organization_alias": "created-org"}, map[string]interface{}{"id": tftypes.UnknownValue, "organization_id": tftypes.UnknownValue, "models": tftypes.UnknownValue, "budget_id": tftypes.UnknownValue, "model_rpm_limit": tftypes.UnknownValue, "model_tpm_limit": tftypes.UnknownValue, "metadata": tftypes.UnknownValue, "blocked": tftypes.UnknownValue, "tags": tftypes.UnknownValue, "created_at": tftypes.UnknownValue}},
-		{"project", "litellm_project", "/project/new", map[string]interface{}{"team_id": "team-1"}, map[string]interface{}{"id": tftypes.UnknownValue, "project_alias": tftypes.UnknownValue, "description": tftypes.UnknownValue, "models": tftypes.UnknownValue, "metadata": tftypes.UnknownValue, "tags": tftypes.UnknownValue, "budget_id": tftypes.UnknownValue, "model_max_budget": tftypes.UnknownValue, "model_rpm_limit": tftypes.UnknownValue, "model_tpm_limit": tftypes.UnknownValue, "blocked": tftypes.UnknownValue, "created_at": tftypes.UnknownValue, "updated_at": tftypes.UnknownValue, "created_by": tftypes.UnknownValue, "updated_by": tftypes.UnknownValue}},
+		{"project", "litellm_project", "/project/new", map[string]interface{}{"team_id": "team-1"}, map[string]interface{}{"id": tftypes.UnknownValue, "project_alias": tftypes.UnknownValue, "description": tftypes.UnknownValue, "models": tftypes.UnknownValue, "metadata": tftypes.UnknownValue, "metadata_json": tftypes.UnknownValue, "tags": tftypes.UnknownValue, "budget_id": tftypes.UnknownValue, "model_max_budget": tftypes.UnknownValue, "model_rpm_limit": tftypes.UnknownValue, "model_tpm_limit": tftypes.UnknownValue, "blocked": tftypes.UnknownValue, "created_at": tftypes.UnknownValue, "updated_at": tftypes.UnknownValue, "created_by": tftypes.UnknownValue, "updated_by": tftypes.UnknownValue}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			schema := schemas.ResourceSchemas[test.typeName]
