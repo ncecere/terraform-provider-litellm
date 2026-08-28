@@ -542,6 +542,52 @@ if [ "$plan_status" -ne 0 ]; then
 fi
 terraform show -json matrix-steady.tfplan >matrix-steady-plan.json
 
+if [ "${SMOKE_USER_EXTERNAL_DELETE:-}" = "1" ]; then
+  echo '=== USER EXTERNAL DELETE AND AUTHORITATIVE 404 REFRESH ==='
+  user_delete_address=${SMOKE_USER_DELETE_ADDRESS:-}
+  [ "$user_delete_address" = "litellm_user.minimal" ] || {
+    echo 'User external-delete mode requires the reviewed minimal resource address.' >&3
+    exit 1
+  }
+  [ -f resource_user_minimal.tf ] || {
+    echo 'User external-delete mode requires only the minimal resource fixture.' >&3
+    exit 1
+  }
+  user_delete_id=$(terraform output -raw user_minimal_id)
+  python3 - "$user_delete_id" >user-external-delete-request.json <<'PY'
+import json, sys
+identity=sys.argv[1]
+if not identity:
+    raise SystemExit(1)
+json.dump({"user_ids": [identity]}, sys.stdout, separators=(",", ":"))
+PY
+  chmod 600 user-external-delete-request.json
+  curl --fail --silent --show-error -X POST \
+    -H 'Authorization: Bearer sk-testing-key' \
+    -H 'Content-Type: application/json' \
+    --data-binary @user-external-delete-request.json \
+    'http://localhost:4000/user/delete' >/dev/null
+  rm -f user-external-delete-request.json
+  terraform apply -refresh-only -auto-approve >user-external-delete-refresh.log 2>&1
+  cat user-external-delete-refresh.log
+  terraform state list >matrix-final-state.list
+  if grep -Fxq "$user_delete_address" matrix-final-state.list; then
+    echo 'Exact 404 refresh retained the externally deleted User address.' >&3
+    exit 1
+  fi
+  [ ! -s matrix-final-state.list ] || {
+    echo 'User external-delete refresh left unexpected managed state.' >&3
+    exit 1
+  }
+  [ "$(wc -c <"$SMOKE_LOG")" -le 10485760 ] || {
+    echo 'User smoke log exceeded its private bound.' >&3
+    exit 1
+  }
+  SUCCESS=1
+  printf '\nSmoke passed: User create/refresh, direct delete, and exact-404 state removal succeeded.\n' >&3
+  exit 0
+fi
+
 if [ "${SMOKE_ACCESS_GROUP_EXTERNAL_DELETE:-}" = "1" ]; then
   echo '=== ACCESS GROUP EXTERNAL DELETE AND AUTHORITATIVE 404 REFRESH ==='
   access_group_delete_address=${SMOKE_ACCESS_GROUP_DELETE_ADDRESS:-}

@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"net/url"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
@@ -134,71 +135,66 @@ func (d *UserDataSource) Read(ctx context.Context, req datasource.ReadRequest, r
 	endpoint := endpointWithQuery("/user/info", url.Values{"user_id": []string{userID}})
 
 	var result map[string]interface{}
-	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read user '%s': %s", userID, err))
+	if err := d.client.DoReadWithResponse(ctx, http.MethodGet, endpoint, nil, &result); err != nil {
+		resp.Diagnostics.AddError("Client Error", "Unable to read user. Response and request details were omitted.")
 		return
 	}
 
-	rootUserID, err := dataSourceRequiredStringAt(result, "user_id")
-	if err != nil || rootUserID.ValueString() != userID {
-		resp.Diagnostics.AddError("Invalid API Response", "User response root identity did not match the requested user.")
+	data, err := projectUserDataSourceAPIObject(config, result, userID)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned a malformed or identity-mismatched user response. Response and request details were omitted.")
 		return
+	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+}
+
+func projectUserDataSourceAPIObject(config UserDataSourceModel, result map[string]interface{}, expectedUserID string) (UserDataSourceModel, error) {
+	rootUserID, err := dataSourceRequiredStringAt(result, "user_id")
+	if err != nil || rootUserID.ValueString() != expectedUserID {
+		return UserDataSourceModel{}, fmt.Errorf("invalid user response root identity")
 	}
 	userInfo, err := dataSourceRequiredObjectAt(result, "user_info")
 	if err != nil || len(userInfo) == 0 {
-		resp.Diagnostics.AddError("Invalid API Response", "User response omitted the required user_info object.")
-		return
+		return UserDataSourceModel{}, fmt.Errorf("invalid user response envelope")
 	}
 	actualUserID, err := dataSourceRequiredStringAt(userInfo, "user_id")
-	if err != nil || actualUserID.ValueString() != userID || !actualUserID.Equal(rootUserID) {
-		resp.Diagnostics.AddError("Invalid API Response", "User response nested identity did not match the requested user.")
-		return
-	}
-	data := UserDataSourceModel{ID: actualUserID, UserID: config.UserID}
-	if data.UserAlias, err = dataSourceRoleRedactedNullableStringAt(userInfo, "user_alias"); err != nil {
-		resp.Diagnostics.AddError("Invalid API Response", err.Error())
-		return
-	}
-	if data.UserEmail, err = dataSourceRoleRedactedNullableStringAt(userInfo, "user_email"); err != nil {
-		resp.Diagnostics.AddError("Invalid API Response", err.Error())
-		return
-	}
-	if data.UserRole, err = dataSourceRoleRedactedNullableStringAt(userInfo, "user_role"); err != nil {
-		resp.Diagnostics.AddError("Invalid API Response", err.Error())
-		return
-	}
-	if data.Teams, err = dataSourceRoleRedactedNullableStringListAt(userInfo, "teams"); err != nil {
-		resp.Diagnostics.AddError("Invalid API Response", err.Error())
-		return
-	}
-	if data.Models, err = dataSourceRoleRedactedNullableStringListAt(userInfo, "models"); err != nil {
-		resp.Diagnostics.AddError("Invalid API Response", err.Error())
-		return
-	}
-	if data.MaxBudget, err = dataSourceRoleRedactedNullableFloat64At(userInfo, "max_budget"); err != nil {
-		resp.Diagnostics.AddError("Invalid API Response", err.Error())
-		return
-	}
-	if data.BudgetDuration, err = dataSourceRoleRedactedNullableStringAt(userInfo, "budget_duration"); err != nil {
-		resp.Diagnostics.AddError("Invalid API Response", err.Error())
-		return
-	}
-	if data.TPMLimit, err = dataSourceRoleRedactedNullableInt64At(userInfo, "tpm_limit"); err != nil {
-		resp.Diagnostics.AddError("Invalid API Response", err.Error())
-		return
-	}
-	if data.RPMLimit, err = dataSourceRoleRedactedNullableInt64At(userInfo, "rpm_limit"); err != nil {
-		resp.Diagnostics.AddError("Invalid API Response", err.Error())
-		return
-	}
-	if data.Metadata, err = dataSourceRoleRedactedNullableStringMapAt(userInfo, "metadata"); err != nil {
-		resp.Diagnostics.AddError("Invalid API Response", err.Error())
-		return
-	}
-	if data.Spend, err = dataSourceRoleRedactedNullableFloat64At(userInfo, "spend"); err != nil {
-		resp.Diagnostics.AddError("Invalid API Response", err.Error())
-		return
+	if err != nil || actualUserID.ValueString() != expectedUserID || !actualUserID.Equal(rootUserID) {
+		return UserDataSourceModel{}, fmt.Errorf("invalid user response nested identity")
 	}
 
-	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	data := UserDataSourceModel{ID: actualUserID, UserID: config.UserID}
+	if data.UserAlias, err = dataSourceRoleRedactedNullableStringAt(userInfo, "user_alias"); err != nil {
+		return UserDataSourceModel{}, err
+	}
+	if data.UserEmail, err = dataSourceRoleRedactedNullableStringAt(userInfo, "user_email"); err != nil {
+		return UserDataSourceModel{}, err
+	}
+	if data.UserRole, err = dataSourceRoleRedactedNullableStringAt(userInfo, "user_role"); err != nil {
+		return UserDataSourceModel{}, err
+	}
+	if data.Teams, err = dataSourceRoleRedactedNullableStringListAt(userInfo, "teams"); err != nil {
+		return UserDataSourceModel{}, err
+	}
+	if data.Models, err = dataSourceRoleRedactedNullableStringListAt(userInfo, "models"); err != nil {
+		return UserDataSourceModel{}, err
+	}
+	if data.MaxBudget, err = dataSourceRoleRedactedNullableFloat64At(userInfo, "max_budget"); err != nil {
+		return UserDataSourceModel{}, err
+	}
+	if data.BudgetDuration, err = dataSourceRoleRedactedNullableStringAt(userInfo, "budget_duration"); err != nil {
+		return UserDataSourceModel{}, err
+	}
+	if data.TPMLimit, err = dataSourceRoleRedactedNullableInt64At(userInfo, "tpm_limit"); err != nil {
+		return UserDataSourceModel{}, err
+	}
+	if data.RPMLimit, err = dataSourceRoleRedactedNullableInt64At(userInfo, "rpm_limit"); err != nil {
+		return UserDataSourceModel{}, err
+	}
+	if data.Metadata, err = dataSourceRoleRedactedNullableStringMapAt(userInfo, "metadata"); err != nil {
+		return UserDataSourceModel{}, err
+	}
+	if data.Spend, err = dataSourceRoleRedactedNullableFloat64At(userInfo, "spend"); err != nil {
+		return UserDataSourceModel{}, err
+	}
+	return data, nil
 }
