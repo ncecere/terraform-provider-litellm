@@ -133,7 +133,7 @@ run_fallback_import_case
 run_case guardrail resources guardrail_minimal.tf datasources guardrail.tf,guardrails_list.tf
 run_case guardrail_structured_mode resources guardrail_full.tf
 if [ "$CLI_SUPPORTS_111" = "1" ]; then
-  run_case key resources key_minimal.tf,key_router_settings.tf,send_invite_email.tf datasources key.tf,keys_list.tf
+  run_case key resources key_minimal.tf,key_router_settings.tf,key_semantic_json.tf,send_invite_email.tf datasources key.tf,keys_list.tf
   emit_controlled_record optional_feature send_invite_email passed
   printf '\n===== ACCEPTANCE: key_write_only =====\n'
   keywo_log="$SMOKE_PRIVATE_ROOT/.smoke-logs/key-write-only-attempt.log"
@@ -163,7 +163,7 @@ PY
   run_case jwt_key_mapping resources key_minimal.tf,jwt_key_mapping.tf datasources jwt_key_mapping.tf,jwt_key_mappings_list.tf
   emit_controlled_record optional_feature jwt_key_mapping_key_wo passed
 else
-  run_case key resources key_minimal.tf,key_router_settings.tf datasources key.tf,keys_list.tf
+  run_case key resources key_minimal.tf,key_router_settings.tf,key_semantic_json.tf datasources key.tf,keys_list.tf
   emit_controlled_record optional_feature send_invite_email skipped cli-version-below-1.11
   emit_controlled_record optional_feature key_wo skipped cli-version-below-1.11
   emit_controlled_record optional_feature jwt_key_mapping_key_wo skipped cli-version-below-1.11

@@ -256,6 +256,16 @@ REVIEWED_ISSUE218_MODEL_PARAMS_PATHS = (
 REVIEWED_ISSUE218_MODEL_PARAMS_RUNTIME_DIFF_SHA256 = (
     "7f13de72ccc3c8953d2bcc1c9d282e5ebbd69c5fea00fa1f59115405efdbea13"
 )
+REVIEWED_ISSUE218_KEY_BASE = "a3e347039f5a1a24a133ba5f8e5c416d574517e4"
+REVIEWED_ISSUE218_KEY_PATHS = (
+    "internal/provider/resource_key.go",
+    "internal/provider/resource_key_semantic_dictionary.go",
+    "internal/provider/resource_key_semantic_dictionary_protocol_test.go",
+    "internal/provider/resource_key_semantic_dictionary_test.go",
+)
+REVIEWED_ISSUE218_KEY_RUNTIME_DIFF_SHA256 = (
+    "66c163dbc6140c04270f8acfa9658c23522194b39f850beaae032cf61b183cd2"
+)
 
 
 def git(*args: str) -> str:
@@ -381,6 +391,12 @@ def main() -> int:
             and digest == REVIEWED_ISSUE218_MODEL_PARAMS_RUNTIME_DIFF_SHA256
         ):
             reviewed = "issue218-model-params"
+        elif (
+            comparison == REVIEWED_ISSUE218_KEY_BASE
+            and changed_paths == REVIEWED_ISSUE218_KEY_PATHS
+            and digest == REVIEWED_ISSUE218_KEY_RUNTIME_DIFF_SHA256
+        ):
+            reviewed = "issue218-key"
         if reviewed is not None:
             print(
                 f"Provider runtime parity verified: reviewed={reviewed} "

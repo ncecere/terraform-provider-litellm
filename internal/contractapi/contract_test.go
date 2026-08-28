@@ -651,13 +651,13 @@ func TestProductionRawIdentityFlowsKeepLexicalIdentity(t *testing.T) {
 			file:   "resource_key.go",
 			needle: `query := url.Values{"key": []string{keyIdentifier}}`,
 			shadow: `{
-		keyIdentifier := data.Key.ValueString()
+		keyIdentifier := "lexically-isolated"
 		_ = keyIdentifier
 	}
 	query := url.Values{"key": []string{keyIdentifier}}`,
 			overwrite: `keyIdentifier = strings.TrimPrefix(keyIdentifier, invalidReviewedEndpoint)
 	{
-		keyIdentifier := data.Key.ValueString()
+		keyIdentifier := "lexically-isolated"
 		_ = keyIdentifier
 	}
 	query := url.Values{"key": []string{keyIdentifier}}`,
