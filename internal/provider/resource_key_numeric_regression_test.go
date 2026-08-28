@@ -186,7 +186,6 @@ func TestKeyCreateAndDataSourceKeepVerificationTokenMaxBudget(t *testing.T) {
 	const infoResponse = `{
 		"key":"sk-live-budget-precedence",
 		"info":{
-			"token":"sk-live-budget-precedence",
 			"max_budget":100,
 			"tpm_limit":9007199254740993,
 			"litellm_budget_table":{"soft_budget":80,"max_budget":null},
