@@ -111,6 +111,43 @@ resource "litellm_key" "example" {
 }
 ```
 
+### Lossless key dictionaries
+
+Use the sensitive semantic-JSON siblings when metadata, configuration, or permissions contain native booleans, numbers, nulls, arrays, or nested objects. The legacy maps remain `map(string)` and retain their existing behavior.
+
+```hcl
+resource "litellm_key" "structured" {
+  # A caller-selected identity is required when any semantic JSON sibling is
+  # configured so an accepted create remains recoverable after response loss.
+  key = var.structured_litellm_key
+
+  metadata_json = jsonencode({
+    deployment = {
+      production = true
+      revision   = 9007199254740993
+      owner      = null
+    }
+  })
+
+  config_json = jsonencode({
+    feature_flags = ["streaming", "cache"]
+    retries       = 3
+  })
+
+  permissions_json = jsonencode({
+    routes = {
+      allow = ["/chat/completions"]
+    }
+  })
+}
+```
+
+Each sibling owns only its recursively configured JSON leaves. A fresh identity-bound `/key/info` read preserves unowned API siblings before LiteLLM's whole-column update; unchanged roots are omitted. Removing a nested leaf or the whole attribute removes only previously owned leaves, while `{}` manages an explicitly empty object. If removal readback is interrupted, the provider retains prior state and value-free recovery metadata; the next refresh must confirm either the complete removal or the complete prior shape before another mutation. LiteLLM has no conditional-update token for these columns, so concurrent writers remain last-writer-wins between hydration and update.
+
+A JSON sibling cannot overlap top-level keys in its matching legacy map. `metadata_json` also excludes fields with dedicated provider attributes: `service_account_id`, `model_rpm_limit`, `model_tpm_limit`, `guardrails`, `prompts`, `enforced_params`, `tags`, `allowed_passthrough_routes`, `rpm_limit_type`, and `tpm_limit_type`. Imports and upgraded states leave all three siblings null and unmanaged; explicit configuration performs a safe takeover on a later apply.
+
+The provider preserves exact integers and accepts decimals only when LiteLLM's Python-float persistence leaves their numeric value unchanged. LiteLLM may encrypt direct callback credential strings under `metadata.logging[*].callback_vars` or `metadata.callback_settings.callback_vars`; same-shaped owned ciphertext is restored from prior authoritative state, while an unowned ciphertext sibling blocks a whole-root update before mutation.
+
 ### Key-Specific Router Settings
 
 `router_settings` is a complete key-level override. When present, it takes precedence over team router settings; Terraform owns and replaces the complete document. Ordered or heterogeneous fields use `jsonencode()` so their JSON semantics round-trip without losing order or object-valued aliases.
@@ -228,6 +265,8 @@ The following arguments are supported:
 
 * `metadata` - (Optional, Sensitive) Map of metadata associated with this key. Values are strings; use `jsonencode()` for complex values (objects, arrays) such as logging configuration — they will be sent as native JSON to the API. The entire map is marked sensitive because metadata commonly contains credentials; Terraform redacts it from normal CLI output while retaining it in state. When LiteLLM returns nested credentials as `litellm_enc::` or another recognized redaction marker, the provider retains the corresponding configured leaf while continuing to refresh unmasked metadata values for drift.
 
+* `metadata_json` - (Optional, Sensitive) Non-null JSON object for lossless heterogeneous metadata. It is independently recursively owned, cannot overlap `metadata` or dedicated metadata fields, and requires caller-selected `key` or `key_wo` identity on create.
+
 * `tpm_limit` - (Optional) Tokens per minute limit.
 
 * `rpm_limit` - (Optional) Requests per minute limit.
@@ -246,9 +285,13 @@ The following arguments are supported:
 
 * `aliases` - (Optional) Map of model aliases.
 
-* `config` - (Optional) Map of configuration options.
+* `config` - (Optional) Map of string configuration options.
 
-* `permissions` - (Optional) Map of permissions.
+* `config_json` - (Optional, Sensitive) Non-null JSON object for lossless heterogeneous configuration. Top-level keys cannot overlap `config`.
+
+* `permissions` - (Optional) Map of string permissions.
+
+* `permissions_json` - (Optional, Sensitive) Non-null JSON object for lossless heterogeneous permissions. Top-level keys cannot overlap `permissions`.
 
 * `model_max_budget` - (Optional) Map of maximum budget per model. **Note:** Requires LiteLLM Enterprise license.
 
@@ -312,7 +355,7 @@ TF_VAR_litellm_key="$LITELLM_KEY" terraform import \
   litellm_key.example "sha256:<64-character-sha256>"
 ```
 
-Hash import initializes `key_wo_version` to `"1"`; the configuration must initially match it. The ephemeral input must be available during import and subsequent operations. An initial apply may be needed to normalize other Optional+Computed key attributes.
+Hash import initializes `key_wo_version` to `"1"`; the configuration must initially match it. The ephemeral input must be available during import and subsequent operations. An initial apply may be needed to normalize other Optional+Computed key attributes. Imports never adopt remote values into `metadata_json`, `config_json`, or `permissions_json`; those attributes remain null until explicitly configured.
 
 Switching an existing stateful `key` resource to `key_wo` replaces the key and removes plaintext from the current state. Historical local backups or remote-state versions may still contain the old value and must be expired or purged according to the backend's retention controls.
 

@@ -452,7 +452,7 @@
     "evidence": [
       {
         "file": "internal/provider/resource_key.go",
-        "line": 575
+        "line": 1049
       }
     ]
   },
@@ -464,7 +464,11 @@
     "evidence": [
       {
         "file": "internal/provider/resource_key.go",
-        "line": 451
+        "line": 633
+      },
+      {
+        "file": "internal/provider/resource_key.go",
+        "line": 635
       }
     ]
   },
@@ -482,7 +486,11 @@
       },
       {
         "file": "internal/provider/resource_key.go",
-        "line": 887
+        "line": 1411
+      },
+      {
+        "file": "internal/provider/resource_key.go",
+        "line": 1428
       },
       {
         "file": "internal/provider/resource_key_block.go",
@@ -531,7 +539,11 @@
     "evidence": [
       {
         "file": "internal/provider/resource_key.go",
-        "line": 451
+        "line": 633
+      },
+      {
+        "file": "internal/provider/resource_key.go",
+        "line": 635
       }
     ]
   },
@@ -555,7 +567,7 @@
     "evidence": [
       {
         "file": "internal/provider/resource_key.go",
-        "line": 540
+        "line": 979
       },
       {
         "file": "internal/provider/resource_unified_access_group.go",

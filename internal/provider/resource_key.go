@@ -32,6 +32,7 @@ var _ resource.Resource = &KeyResource{}
 var _ resource.ResourceWithImportState = &KeyResource{}
 var _ resource.ResourceWithUpgradeState = &KeyResource{}
 var _ resource.ResourceWithConfigValidators = &KeyResource{}
+var _ resource.ResourceWithModifyPlan = &KeyResource{}
 
 func (r *KeyResource) ConfigValidators(ctx context.Context) []resource.ConfigValidator {
 	return []resource.ConfigValidator{
@@ -89,6 +90,30 @@ func writeOnlyKeyCreateError(err error) string {
 	return "The write-only key request failed. Error details were omitted because an intermediary may include the submitted secret."
 }
 
+func keyResourceReadError(err error) string {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return fmt.Sprintf("LiteLLM returned HTTP %d while reading the key. Response details were omitted because they may contain key dictionary values or the lookup token.", apiErr.StatusCode)
+	}
+	return "The key read failed. Transport details were omitted because they may contain key dictionary values or the lookup token."
+}
+
+func keyResourceUpdateError(err error) string {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return fmt.Sprintf("LiteLLM returned HTTP %d while updating the key. Response details were omitted because they may contain key dictionary values or the lookup token.", apiErr.StatusCode)
+	}
+	return "The key update failed. Transport details were omitted because they may contain key dictionary values or the lookup token."
+}
+
+func keyResourceDeleteError(err error) string {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return fmt.Sprintf("LiteLLM returned HTTP %d while deleting the key. Response details were omitted because they may contain the lookup token.", apiErr.StatusCode)
+	}
+	return "The key delete failed. Transport details were omitted because they may contain the lookup token."
+}
+
 func NewKeyResource() resource.Resource {
 	return &KeyResource{}
 }
@@ -115,6 +140,7 @@ type KeyResourceModel struct {
 	ServiceAccountID         types.String  `tfsdk:"service_account_id"`
 	MaxParallelRequests      types.Int64   `tfsdk:"max_parallel_requests"`
 	Metadata                 types.Map     `tfsdk:"metadata"`
+	MetadataJSON             types.String  `tfsdk:"metadata_json"`
 	TPMLimit                 types.Int64   `tfsdk:"tpm_limit"`
 	RPMLimit                 types.Int64   `tfsdk:"rpm_limit"`
 	TPMLimitType             types.String  `tfsdk:"tpm_limit_type"`
@@ -126,7 +152,9 @@ type KeyResourceModel struct {
 	Duration                 types.String  `tfsdk:"duration"`
 	Aliases                  types.Map     `tfsdk:"aliases"`
 	Config                   types.Map     `tfsdk:"config"`
+	ConfigJSON               types.String  `tfsdk:"config_json"`
 	Permissions              types.Map     `tfsdk:"permissions"`
+	PermissionsJSON          types.String  `tfsdk:"permissions_json"`
 	ModelMaxBudget           types.Map     `tfsdk:"model_max_budget"`
 	ModelRPMLimit            types.Map     `tfsdk:"model_rpm_limit"`
 	ModelTPMLimit            types.Map     `tfsdk:"model_tpm_limit"`
@@ -145,7 +173,7 @@ func (r *KeyResource) Metadata(ctx context.Context, req resource.MetadataRequest
 func (r *KeyResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		Description: "Manages a LiteLLM API key.",
-		Version:     1,
+		Version:     2,
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Description: "Non-sensitive unique identifier for this key (SHA256 hash of the key value).",
@@ -231,8 +259,11 @@ func (r *KeyResource) Schema(ctx context.Context, req resource.SchemaRequest, re
 				Optional:    true,
 			},
 			"service_account_id": schema.StringAttribute{
-				Description: "Service account ID for team-owned keys.",
+				Description: "Service account ID for team-owned keys. LiteLLM v1.98 does not update this identity in place.",
 				Optional:    true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
 			},
 			"max_parallel_requests": schema.Int64Attribute{
 				Description: "Maximum parallel requests allowed.",
@@ -245,6 +276,15 @@ func (r *KeyResource) Schema(ctx context.Context, req resource.SchemaRequest, re
 				Computed:    true,
 				Sensitive:   true,
 				ElementType: types.StringType,
+			},
+			"metadata_json": schema.StringAttribute{
+				Description: "Additional key metadata as a semantic JSON object.",
+				Optional:    true,
+				Computed:    true,
+				Sensitive:   true,
+				Validators: []validator.String{
+					keySemanticDictionaryValidator{},
+				},
 			},
 			"tpm_limit": schema.Int64Attribute{
 				Description: "Tokens per minute limit.",
@@ -309,11 +349,29 @@ func (r *KeyResource) Schema(ctx context.Context, req resource.SchemaRequest, re
 				Computed:    true,
 				ElementType: types.StringType,
 			},
+			"config_json": schema.StringAttribute{
+				Description: "Additional key configuration as a semantic JSON object.",
+				Optional:    true,
+				Computed:    true,
+				Sensitive:   true,
+				Validators: []validator.String{
+					keySemanticDictionaryValidator{},
+				},
+			},
 			"permissions": schema.MapAttribute{
 				Description: "Key permissions.",
 				Optional:    true,
 				Computed:    true,
 				ElementType: types.StringType,
+			},
+			"permissions_json": schema.StringAttribute{
+				Description: "Additional key permissions as a semantic JSON object.",
+				Optional:    true,
+				Computed:    true,
+				Sensitive:   true,
+				Validators: []validator.String{
+					keySemanticDictionaryValidator{},
+				},
 			},
 			"model_max_budget": schema.MapAttribute{
 				Description: "Per-model budget limits.",
@@ -387,6 +445,90 @@ func (r *KeyResource) Configure(ctx context.Context, req resource.ConfigureReque
 	r.client = client
 }
 
+func (r *KeyResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	if req.Plan.Raw.IsNull() || req.State.Raw.IsNull() {
+		return
+	}
+	var plan, state, config KeyResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	semanticChanged := false
+	entries := []struct {
+		name       string
+		privateKey string
+		configured types.String
+		prior      types.String
+		legacy     types.Map
+		reserved   []string
+		planValue  *types.String
+		planLegacy *types.Map
+	}{
+		{"metadata_json", keyMetadataJSONProvenancePrivateKey, config.MetadataJSON, state.MetadataJSON, config.Metadata, keyMetadataJSONReservedKeys, &plan.MetadataJSON, &plan.Metadata},
+		{"config_json", keyConfigJSONProvenancePrivateKey, config.ConfigJSON, state.ConfigJSON, config.Config, nil, &plan.ConfigJSON, &plan.Config},
+		{"permissions_json", keyPermissionsJSONProvenancePrivateKey, config.PermissionsJSON, state.PermissionsJSON, config.Permissions, nil, &plan.PermissionsJSON, &plan.Permissions},
+	}
+	for _, entry := range entries {
+		raw, diagnostics := req.Private.GetKey(ctx, entry.privateKey)
+		resp.Diagnostics.Append(diagnostics...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		provenance, err := decodeKeySemanticDictionaryProvenance(ctx, raw, entry.prior)
+		if err != nil {
+			resp.Diagnostics.AddAttributeError(path.Root(entry.name), "Invalid Semantic Dictionary Provenance", "Private ownership state is missing, malformed, or inconsistent with public state. No key plan was produced.")
+			return
+		}
+		if entry.configured.IsUnknown() {
+			semanticChanged = true
+			// Preserve Terraform's unknown value through planning. Apply performs
+			// complete validation after interpolation resolves and sends no request
+			// if it remains unknown.
+			*entry.planValue = types.StringUnknown()
+			continue
+		}
+		object, _, err := keySemanticDictionaryConfiguration(ctx, entry.configured, entry.legacy, entry.reserved)
+		if err != nil {
+			resp.Diagnostics.AddAttributeError(path.Root(entry.name), "Invalid Semantic Key Dictionary", "The JSON object is malformed or overlaps another managed key surface. No key plan was produced.")
+			return
+		}
+		changed, err := keySemanticDictionaryNeedsChange(ctx, entry.configured, entry.prior, provenance)
+		if err != nil {
+			resp.Diagnostics.AddAttributeError(path.Root(entry.name), "Invalid Semantic Key Dictionary", "The JSON object or its ownership state could not be compared safely. No key plan was produced.")
+			return
+		}
+		semanticChanged = semanticChanged || changed
+		if !provenance.Configured && entry.configured.IsNull() {
+			*entry.planValue = types.StringNull()
+		}
+		if !changed && provenance.Configured && !entry.configured.IsNull() && !entry.configured.IsUnknown() {
+			// Formatting-only JSON changes retain the configured spelling already
+			// stored in state and must not schedule a state-only key mutation.
+			*entry.planValue = entry.prior
+		}
+		if changed && entry.configured.IsNull() {
+			// Optional+Computed omission otherwise retains state and suppresses Apply.
+			*entry.planValue = types.StringUnknown()
+		}
+		if object != nil && entry.legacy.IsNull() {
+			filtered, filterErr := excludeKeyLegacyJSONTopLevelKeys(ctx, *entry.planLegacy, object)
+			if filterErr != nil {
+				resp.Diagnostics.AddAttributeError(path.Root(entry.name), "Invalid Semantic Key Dictionary", "The JSON-owned legacy projection could not be produced safely. No key plan was produced.")
+				return
+			}
+			*entry.planLegacy = filtered
+		}
+	}
+	if !semanticChanged && !keyHasNonSemanticConfigurationChange(config, state) {
+		plan = state
+	}
+	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
+}
+
 func (r *KeyResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var data KeyResourceModel
 
@@ -395,8 +537,9 @@ func (r *KeyResource) Create(ctx context.Context, req resource.CreateRequest, re
 		return
 	}
 
-	var writeOnlyKey types.String
+	var configuredKey, writeOnlyKey types.String
 	var sendInviteEmail types.Bool
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("key"), &configuredKey)...)
 	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("key_wo"), &writeOnlyKey)...)
 	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("send_invite_email"), &sendInviteEmail)...)
 	if resp.Diagnostics.HasError() {
@@ -421,9 +564,45 @@ func (r *KeyResource) Create(ctx context.Context, req resource.CreateRequest, re
 		return
 	}
 
+	var semanticConfig KeyResourceModel
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("metadata"), &semanticConfig.Metadata)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("metadata_json"), &semanticConfig.MetadataJSON)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("config"), &semanticConfig.Config)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("config_json"), &semanticConfig.ConfigJSON)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("permissions"), &semanticConfig.Permissions)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("permissions_json"), &semanticConfig.PermissionsJSON)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if semanticConfig.MetadataJSON.IsUnknown() || semanticConfig.ConfigJSON.IsUnknown() || semanticConfig.PermissionsJSON.IsUnknown() {
+		resp.Diagnostics.AddError("Unknown Semantic Key Dictionary", "All semantic JSON key dictionaries must be known before creating a key.")
+		return
+	}
+	prepared, err := prepareKeySemanticDictionaries(ctx, semanticConfig)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Semantic Key Dictionary", "A semantic JSON object is malformed, overlaps another managed key surface, or cannot be persisted exactly. No request was sent.")
+		return
+	}
+	privateValues, err := encodeKeySemanticProvenance(ctx, prepared)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Semantic Dictionary Provenance", "Semantic ownership could not be encoded safely. No request was sent.")
+		return
+	}
+	if prepared.anyConfigured() && !writeOnlyMode && (configuredKey.IsNull() || configuredKey.IsUnknown() || configuredKey.ValueString() == "") {
+		resp.Diagnostics.AddError("Explicit Key Identity Required", "Semantic key dictionaries require a caller-selected key or key_wo so an accepted create can be reconciled without list discovery. No request was sent.")
+		return
+	}
+	data.MetadataJSON = semanticConfig.MetadataJSON
+	data.ConfigJSON = semanticConfig.ConfigJSON
+	data.PermissionsJSON = semanticConfig.PermissionsJSON
+
 	keyReq, conversionDiagnostics := r.buildKeyRequest(ctx, &data)
 	resp.Diagnostics.Append(conversionDiagnostics...)
 	if resp.Diagnostics.HasError() {
+		return
+	}
+	if err := overlayKeyCreateSemanticDictionaries(ctx, keyReq, prepared); err != nil {
+		resp.Diagnostics.AddError("Invalid Semantic Key Dictionary", "The semantic JSON objects could not be overlaid safely. No request was sent.")
 		return
 	}
 
@@ -448,13 +627,51 @@ func (r *KeyResource) Create(ctx context.Context, req resource.CreateRequest, re
 	}
 
 	var result map[string]interface{}
-	if err := r.client.DoRequestWithResponse(ctx, "POST", endpoint, keyReq, &result); err != nil {
-		if writeOnlyMode {
-			resp.Diagnostics.AddError("Write-Only Key Creation Error", writeOnlyKeyCreateError(err))
+	accepted := false
+	var createErr error
+	if prepared.anyConfigured() {
+		accepted, createErr = r.client.doRequestWithResponse(ctx, "POST", endpoint, keyReq, &result)
+	} else {
+		createErr = r.client.DoRequestWithResponse(ctx, "POST", endpoint, keyReq, &result)
+	}
+	requestedIdentity := configuredKey.ValueString()
+	if writeOnlyMode {
+		requestedIdentity = writeOnlyKey.ValueString()
+	}
+	retainAcceptedCreate := func(title, detail string) {
+		// The request context may be canceled after LiteLLM accepted the mutation.
+		// Local recovery state must still be serializable without dispatching any
+		// further request.
+		recoveryCtx := context.WithoutCancel(ctx)
+		recovery := partialKeySemanticRecoveryState(data, requestedIdentity, writeOnlyMode)
+		unconfigured := keyUnconfiguredSemanticDictionaryProvenance()
+		recoveryPrivate, privateErr := encodeKeySemanticProvenance(recoveryCtx, keySemanticPrepared{
+			metadataProvenance: unconfigured, configProvenance: unconfigured, permissionsProvenance: unconfigured,
+		})
+		if privateErr == nil && resp.Private != nil {
+			for name, value := range recoveryPrivate {
+				resp.Diagnostics.Append(resp.Private.SetKey(recoveryCtx, name, value)...)
+			}
+			resp.Diagnostics.Append(resp.Private.SetKey(recoveryCtx, keyAcceptedCreateRecoveryPrivateKey, []byte("true"))...)
+		}
+		resp.Diagnostics.Append(resp.State.Set(recoveryCtx, &recovery)...)
+		resp.Diagnostics.AddError(title, detail)
+	}
+	if createErr != nil {
+		if prepared.anyConfigured() && accepted {
+			retainAcceptedCreate("Key Creation Not Confirmed", "LiteLLM accepted the key create, but its response could not be decoded safely. Only the caller-selected identity was retained for authoritative recovery.")
+		} else if writeOnlyMode {
+			resp.Diagnostics.AddError("Write-Only Key Creation Error", writeOnlyKeyCreateError(createErr))
 		} else {
-			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to create key: %s", err))
+			resp.Diagnostics.AddError("Client Error", "Unable to create key. Response and transport details were omitted because they may contain key material.")
 		}
 		return
+	}
+	if prepared.anyConfigured() {
+		if err := validateKeyCreateResponseIdentity(result, requestedIdentity); err != nil {
+			retainAcceptedCreate("Key Creation Identity Not Confirmed", "LiteLLM accepted the key create, but the response identity was missing or contradictory. Only the caller-selected identity was retained for authoritative recovery.")
+			return
+		}
 	}
 
 	if writeOnlyMode {
@@ -466,18 +683,31 @@ func (r *KeyResource) Create(ctx context.Context, req resource.CreateRequest, re
 		data.ID = types.StringValue(hashKeyForID(keyVal))
 	}
 
+	if prepared.anyConfigured() {
+		if err := r.readKeyWithOwnership(ctx, &data, false, prepared.ownership(true)); err != nil {
+			retainAcceptedCreate("Semantic Key Dictionary Not Confirmed", "LiteLLM accepted the key create, but authoritative readback did not confirm the semantic dictionaries. Only the caller-selected identity was retained for recovery.")
+			return
+		}
+	} else if err := r.readKey(ctx, &data); err != nil {
+		resp.Diagnostics.AddWarning("Read Error", keyResourceReadError(err))
+	}
+
 	if !data.RouterSettings.IsNull() {
 		if err := r.waitForKeyRouterSettings(ctx, &data); err != nil {
 			resp.Diagnostics.AddError("Router Settings Did Not Converge", "The key was created, but "+err.Error()+". Terraform retained the key identity for recovery.")
 		}
 	}
-
-	// Read back for full state
-	if err := r.readKey(ctx, &data); err != nil {
-		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Key created but failed to read back: %s", err))
+	localCtx := ctx
+	if resp.Diagnostics.HasError() {
+		localCtx = context.WithoutCancel(ctx)
 	}
-
-	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	if resp.Private != nil {
+		for name, value := range privateValues {
+			resp.Diagnostics.Append(resp.Private.SetKey(localCtx, name, value)...)
+		}
+		resp.Diagnostics.Append(resp.Private.SetKey(localCtx, keyAcceptedCreateRecoveryPrivateKey, nil)...)
+	}
+	resp.Diagnostics.Append(resp.State.Set(localCtx, &data)...)
 }
 
 func (r *KeyResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -485,48 +715,215 @@ func (r *KeyResource) Read(ctx context.Context, req resource.ReadRequest, resp *
 
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
 	importedMarker, privateDiags := req.Private.GetKey(ctx, numericImportedPrivateKey)
+	acceptedCreateMarker, acceptedCreateDiags := req.Private.GetKey(ctx, keyAcceptedCreateRecoveryPrivateKey)
+	pendingUpdateMarker, pendingUpdateDiags := req.Private.GetKey(ctx, keyPendingUpdatePrivateKey)
 	resp.Diagnostics.Append(privateDiags...)
+	resp.Diagnostics.Append(acceptedCreateDiags...)
+	resp.Diagnostics.Append(pendingUpdateDiags...)
+	if len(acceptedCreateMarker) != 0 && string(acceptedCreateMarker) != "true" {
+		resp.Diagnostics.AddError("Invalid Key Recovery State", "Accepted-create recovery state is malformed. No key read was performed.")
+	}
 	if resp.Diagnostics.HasError() {
 		return
 	}
 	imported := string(importedMarker) == "true"
+	metadataMarker, metadataDiags := req.Private.GetKey(ctx, keyMetadataJSONProvenancePrivateKey)
+	configMarker, configDiags := req.Private.GetKey(ctx, keyConfigJSONProvenancePrivateKey)
+	permissionsMarker, permissionsDiags := req.Private.GetKey(ctx, keyPermissionsJSONProvenancePrivateKey)
+	resp.Diagnostics.Append(metadataDiags...)
+	resp.Diagnostics.Append(configDiags...)
+	resp.Diagnostics.Append(permissionsDiags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	metadataProvenance, err := decodeKeySemanticDictionaryProvenance(ctx, metadataMarker, data.MetadataJSON)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("metadata_json"), "Invalid Semantic Dictionary Provenance", "Private ownership is missing, malformed, or inconsistent with public state. No key read was performed.")
+		return
+	}
+	configProvenance, err := decodeKeySemanticDictionaryProvenance(ctx, configMarker, data.ConfigJSON)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("config_json"), "Invalid Semantic Dictionary Provenance", "Private ownership is missing, malformed, or inconsistent with public state. No key read was performed.")
+		return
+	}
+	permissionsProvenance, err := decodeKeySemanticDictionaryProvenance(ctx, permissionsMarker, data.PermissionsJSON)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("permissions_json"), "Invalid Semantic Dictionary Provenance", "Private ownership is missing, malformed, or inconsistent with public state. No key read was performed.")
+		return
+	}
+	pendingUpdate, err := decodeKeySemanticPendingTransition(ctx, pendingUpdateMarker)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Key Recovery State", "Pending semantic-update recovery state is malformed. No key read was performed.")
+		return
+	}
+	acceptedRecovery := string(acceptedCreateMarker) == "true"
+	reconcile := keySemanticPendingReconcile{}
+	ownership := keySemanticReadOwnership{
+		metadata: metadataProvenance, config: configProvenance, permissions: permissionsProvenance,
+		pending: pendingUpdate, reconcile: &reconcile,
+		acceptedCreateRecovery: acceptedRecovery, fresh: acceptedRecovery || pendingUpdate.any(),
+	}
 
-	if err := r.readKeyWithNumericOwnership(ctx, &data, imported); err != nil {
+	if err := r.readKeyWithOwnership(ctx, &data, imported, ownership); err != nil {
 		if IsNotFoundError(err) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read key: %s", err))
+		resp.Diagnostics.AddError("Client Error", keyResourceReadError(err))
 		return
 	}
 
+	if reconcile.Present && reconcile.Committed {
+		metadataProvenance = reconcile.Effective.metadata
+		configProvenance = reconcile.Effective.config
+		permissionsProvenance = reconcile.Effective.permissions
+	}
+	prepared := keySemanticPrepared{metadataProvenance: metadataProvenance, configProvenance: configProvenance, permissionsProvenance: permissionsProvenance}
+	privateValues, err := encodeKeySemanticProvenance(ctx, prepared)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Semantic Dictionary Provenance", "Semantic ownership could not be encoded safely. No key state was produced.")
+		return
+	}
+	if resp.Private != nil {
+		for name, value := range privateValues {
+			resp.Diagnostics.Append(resp.Private.SetKey(ctx, name, value)...)
+		}
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
-	if !resp.Diagnostics.HasError() && imported {
-		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, nil)...)
+	if !resp.Diagnostics.HasError() {
+		if imported {
+			resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, nil)...)
+		}
+		if string(acceptedCreateMarker) == "true" {
+			resp.Diagnostics.Append(resp.Private.SetKey(ctx, keyAcceptedCreateRecoveryPrivateKey, nil)...)
+		}
+		if reconcile.Present {
+			resp.Diagnostics.Append(resp.Private.SetKey(ctx, keyPendingUpdatePrivateKey, nil)...)
+		}
 	}
 }
 
 func (r *KeyResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var data KeyResourceModel
-
+	var data, state, config KeyResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("metadata"), &config.Metadata)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("metadata_json"), &config.MetadataJSON)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("config"), &config.Config)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("config_json"), &config.ConfigJSON)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("permissions"), &config.Permissions)...)
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("permissions_json"), &config.PermissionsJSON)...)
+	acceptedCreateMarker, acceptedCreateDiags := req.Private.GetKey(ctx, keyAcceptedCreateRecoveryPrivateKey)
+	pendingUpdateMarker, pendingUpdateDiags := req.Private.GetKey(ctx, keyPendingUpdatePrivateKey)
+	resp.Diagnostics.Append(acceptedCreateDiags...)
+	resp.Diagnostics.Append(pendingUpdateDiags...)
+	if len(pendingUpdateMarker) != 0 {
+		resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+		resp.Diagnostics.AddError("Key Recovery Required", "A prior semantic key update has not been reconciled. Refresh must determine whether its removals committed before another update can be sent.")
+		return
+	}
+	if string(acceptedCreateMarker) == "true" {
+		resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+		resp.Diagnostics.AddError("Key Recovery Required", "A prior key create was accepted without complete readback. Refresh must reconcile the caller-selected identity before any update can be sent.")
+		return
+	}
+	if len(acceptedCreateMarker) != 0 {
+		resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+		resp.Diagnostics.AddError("Invalid Key Recovery State", "Accepted-create recovery state is malformed. No key update was sent.")
+		return
+	}
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	if config.MetadataJSON.IsUnknown() || config.ConfigJSON.IsUnknown() || config.PermissionsJSON.IsUnknown() {
+		resp.Diagnostics.AddError("Unknown Semantic Key Dictionary", "All semantic JSON key dictionaries must be known before updating a key.")
+		return
+	}
 
-	var state KeyResourceModel
-	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	metadataMarker, metadataDiags := req.Private.GetKey(ctx, keyMetadataJSONProvenancePrivateKey)
+	configMarker, configDiags := req.Private.GetKey(ctx, keyConfigJSONProvenancePrivateKey)
+	permissionsMarker, permissionsDiags := req.Private.GetKey(ctx, keyPermissionsJSONProvenancePrivateKey)
+	resp.Diagnostics.Append(metadataDiags...)
+	resp.Diagnostics.Append(configDiags...)
+	resp.Diagnostics.Append(permissionsDiags...)
 	if resp.Diagnostics.HasError() {
 		return
+	}
+	priorMetadata, err := decodeKeySemanticDictionaryProvenance(ctx, metadataMarker, state.MetadataJSON)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("metadata_json"), "Invalid Semantic Dictionary Provenance", "Private ownership is missing, malformed, or inconsistent with public state. No key request was sent.")
+		return
+	}
+	priorConfig, err := decodeKeySemanticDictionaryProvenance(ctx, configMarker, state.ConfigJSON)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("config_json"), "Invalid Semantic Dictionary Provenance", "Private ownership is missing, malformed, or inconsistent with public state. No key request was sent.")
+		return
+	}
+	priorPermissions, err := decodeKeySemanticDictionaryProvenance(ctx, permissionsMarker, state.PermissionsJSON)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("permissions_json"), "Invalid Semantic Dictionary Provenance", "Private ownership is missing, malformed, or inconsistent with public state. No key request was sent.")
+		return
+	}
+	priorOwnership := keySemanticReadOwnership{metadata: priorMetadata, config: priorConfig, permissions: priorPermissions}
+
+	prepared, err := prepareKeySemanticDictionaries(ctx, config)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Semantic Key Dictionary", "A semantic JSON object is malformed, overlaps another managed key surface, or cannot be persisted exactly. No request was sent.")
+		return
+	}
+	privateValues, err := encodeKeySemanticProvenance(ctx, prepared)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Semantic Dictionary Provenance", "Semantic ownership could not be encoded safely. No request was sent.")
+		return
+	}
+	confirmationOwnership, err := prepared.updateOwnership(ctx, priorOwnership)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Semantic Dictionary Provenance", "Semantic removal ownership could not be validated safely. No request was sent.")
+		return
+	}
+	metadataChanged, err := keySemanticDictionaryNeedsChange(ctx, config.MetadataJSON, state.MetadataJSON, priorMetadata)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("metadata_json"), "Invalid Semantic Key Dictionary", "The semantic value could not be compared safely. No request was sent.")
+		return
+	}
+	configChanged, err := keySemanticDictionaryNeedsChange(ctx, config.ConfigJSON, state.ConfigJSON, priorConfig)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("config_json"), "Invalid Semantic Key Dictionary", "The semantic value could not be compared safely. No request was sent.")
+		return
+	}
+	permissionsChanged, err := keySemanticDictionaryNeedsChange(ctx, config.PermissionsJSON, state.PermissionsJSON, priorPermissions)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("permissions_json"), "Invalid Semantic Key Dictionary", "The semantic value could not be compared safely. No request was sent.")
+		return
+	}
+	semanticInvolved := prepared.anyConfigured() || priorMetadata.Configured || priorConfig.Configured || priorPermissions.Configured
+	if semanticInvolved {
+		metadataChanged = metadataChanged || (!config.Metadata.IsNull() && !data.Metadata.Equal(state.Metadata))
+		configChanged = configChanged || (!config.Config.IsNull() && !data.Config.Equal(state.Config))
+		permissionsChanged = permissionsChanged || (!config.Permissions.IsNull() && !data.Permissions.Equal(state.Permissions))
+	}
+	changedRoots := map[string]bool{"metadata": metadataChanged, "config": configChanged, "permissions": permissionsChanged}
+	anyRootChanged := metadataChanged || configChanged || permissionsChanged
+	pendingTransition := pendingKeySemanticTransition(confirmationOwnership)
+	var pendingTransitionPrivate []byte
+	if pendingTransition.any() {
+		pendingTransitionPrivate, err = encodeKeySemanticPendingTransition(ctx, pendingTransition)
+		if err != nil {
+			resp.Diagnostics.AddError("Invalid Semantic Dictionary Provenance", "Pending semantic removals could not be encoded safely. No request was sent.")
+			return
+		}
 	}
 
 	data.ID = state.ID
 	data.Key = state.Key
 	data.KeyWO = types.StringNull()
+	data.MetadataJSON = config.MetadataJSON
+	data.ConfigJSON = config.ConfigJSON
+	data.PermissionsJSON = config.PermissionsJSON
 
 	keyIdentifier, err := keyLookupIdentifier(&data)
 	if err != nil {
-		resp.Diagnostics.AddError("Key Identity Error", fmt.Sprintf("Unable to identify key for update: %s", err))
+		resp.Diagnostics.AddError("Key Identity Error", "Unable to identify the key for update without exposing its value.")
 		return
 	}
 	updateReq, conversionDiagnostics := r.buildKeyRequest(ctx, &data)
@@ -534,12 +931,68 @@ func (r *KeyResource) Update(ctx context.Context, req resource.UpdateRequest, re
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	updateReq["key"] = keyIdentifier
 	applyKeyRouterSettingsUpdateSemantics(updateReq, data.RouterSettings, state.RouterSettings)
 
+	if semanticInvolved {
+		// service_account_id is the only current dedicated provider field that
+		// buildKeyRequest writes directly into the metadata root. Whenever it is
+		// present, preserve semantic and API-owned siblings through a hydrated
+		// whole-root replacement rather than deleting the metadata request.
+		if _, present := updateReq["metadata"]; present && (prepared.metadataProvenance.Configured || priorMetadata.Configured) {
+			metadataChanged = true
+			changedRoots["metadata"] = true
+			anyRootChanged = true
+		}
+		configuredRootData := data
+		configuredRootData.Metadata = config.Metadata
+		configuredRootData.Config = config.Config
+		configuredRootData.Permissions = config.Permissions
+		configuredRoots, diagnostics := r.buildKeyRequest(ctx, &configuredRootData)
+		resp.Diagnostics.Append(diagnostics...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		if anyRootChanged {
+			_, info, hydrationErr := r.getFreshExactKeyInfo(ctx, &data)
+			if hydrationErr != nil {
+				resp.Diagnostics.AddError("Semantic Key Dictionary Hydration Failed", "The complete identity-bound key dictionaries could not be read safely. No update request was sent.")
+				return
+			}
+			if err := replaceChangedKeySemanticDictionaries(ctx, updateReq, configuredRoots, info, prepared, priorOwnership, state, changedRoots); err != nil {
+				resp.Diagnostics.AddError("Semantic Key Dictionary Hydration Failed", "The remote dictionaries were malformed, masked without owned plaintext, or inconsistent with private ownership. No update request was sent.")
+				return
+			}
+		} else {
+			delete(updateReq, "metadata")
+			delete(updateReq, "config")
+			delete(updateReq, "permissions")
+		}
+	}
+	updateReq["key"] = keyIdentifier
+
+	retainPriorUpdate := func(localCtx context.Context) {
+		if len(pendingTransitionPrivate) != 0 && resp.Private != nil {
+			resp.Diagnostics.Append(resp.Private.SetKey(localCtx, keyPendingUpdatePrivateKey, pendingTransitionPrivate)...)
+		}
+		resp.Diagnostics.Append(resp.State.Set(localCtx, &state)...)
+	}
 	if err := r.client.DoRequestWithResponse(ctx, "POST", "/key/update", updateReq, nil); err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to update key: %s", err))
+		// A transport failure or non-success response cannot prove whether the
+		// mutation committed. Retain the complete prior public/private state until
+		// a later authoritative refresh reconciles it.
+		retainPriorUpdate(context.WithoutCancel(ctx))
+		resp.Diagnostics.AddError("Client Error", keyResourceUpdateError(err))
 		return
+	}
+
+	if semanticInvolved {
+		if err := r.readKeyWithOwnership(ctx, &data, false, confirmationOwnership); err != nil {
+			retainPriorUpdate(context.WithoutCancel(ctx))
+			resp.Diagnostics.AddError("Semantic Key Dictionary Update Not Confirmed", "LiteLLM accepted the update but a single authoritative identity-bound read did not confirm the owned dictionaries. Terraform retained prior public and private state.")
+			return
+		}
+	} else if err := r.readKey(ctx, &data); err != nil {
+		resp.Diagnostics.AddWarning("Read Error", keyResourceReadError(err))
 	}
 
 	if !data.RouterSettings.IsNull() || !state.RouterSettings.IsNull() {
@@ -547,25 +1000,46 @@ func (r *KeyResource) Update(ctx context.Context, req resource.UpdateRequest, re
 			resp.Diagnostics.AddError("Router Settings Did Not Converge", err.Error()+". The remote key may have changed; run Terraform again after reviewing the key.")
 		}
 	}
-
-	if err := r.readKey(ctx, &data); err != nil {
-		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Key updated but failed to read back: %s", err))
+	localCtx := ctx
+	if resp.Diagnostics.HasError() {
+		localCtx = context.WithoutCancel(ctx)
 	}
-
-	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	if resp.Private != nil {
+		for name, value := range privateValues {
+			resp.Diagnostics.Append(resp.Private.SetKey(localCtx, name, value)...)
+		}
+		resp.Diagnostics.Append(resp.Private.SetKey(localCtx, keyPendingUpdatePrivateKey, nil)...)
+	}
+	resp.Diagnostics.Append(resp.State.Set(localCtx, &data)...)
 }
 
 func (r *KeyResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	var data KeyResourceModel
 
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
+	acceptedCreateMarker, acceptedCreateDiags := req.Private.GetKey(ctx, keyAcceptedCreateRecoveryPrivateKey)
+	pendingUpdateMarker, pendingUpdateDiags := req.Private.GetKey(ctx, keyPendingUpdatePrivateKey)
+	resp.Diagnostics.Append(acceptedCreateDiags...)
+	resp.Diagnostics.Append(pendingUpdateDiags...)
+	if len(pendingUpdateMarker) != 0 {
+		resp.Diagnostics.AddError("Key Recovery Required", "A prior semantic key update has not been reconciled. Refresh must determine whether its removals committed before deletion can be sent.")
+		return
+	}
+	if string(acceptedCreateMarker) == "true" {
+		resp.Diagnostics.AddError("Key Recovery Required", "A prior key create was accepted without complete readback. Refresh must reconcile the caller-selected identity before deletion can be sent.")
+		return
+	}
+	if len(acceptedCreateMarker) != 0 {
+		resp.Diagnostics.AddError("Invalid Key Recovery State", "Accepted-create recovery state is malformed. No key deletion was sent.")
+		return
+	}
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
 	keyIdentifier, err := keyLookupIdentifier(&data)
 	if err != nil {
-		resp.Diagnostics.AddError("Key Identity Error", fmt.Sprintf("Unable to identify key for deletion: %s", err))
+		resp.Diagnostics.AddError("Key Identity Error", "Unable to identify the key for deletion without exposing its value.")
 		return
 	}
 	deleteReq := map[string]interface{}{
@@ -574,13 +1048,33 @@ func (r *KeyResource) Delete(ctx context.Context, req resource.DeleteRequest, re
 
 	if err := r.client.DoRequestWithResponse(ctx, "POST", "/key/delete", deleteReq, nil); err != nil {
 		if !IsNotFoundError(err) {
-			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to delete key: %s", err))
+			resp.Diagnostics.AddError("Client Error", keyResourceDeleteError(err))
 			return
 		}
 	}
 }
 
 func (r *KeyResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	unconfigured := keyUnconfiguredSemanticDictionaryProvenance()
+	semanticPrivate, err := encodeKeySemanticProvenance(ctx, keySemanticPrepared{metadataProvenance: unconfigured, configProvenance: unconfigured, permissionsProvenance: unconfigured})
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Semantic Dictionary Provenance", "Import ownership could not be initialized safely.")
+		return
+	}
+	if resp.Private != nil {
+		for name, value := range semanticPrivate {
+			resp.Diagnostics.Append(resp.Private.SetKey(ctx, name, value)...)
+		}
+		if resp.Diagnostics.HasError() {
+			return
+		}
+	}
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("metadata_json"), types.StringNull())...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("config_json"), types.StringNull())...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("permissions_json"), types.StringNull())...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	if strings.HasPrefix(req.ID, "sha256:") {
 		if _, err := keyHashFromID(req.ID); err != nil {
 			resp.Diagnostics.AddError("Invalid Write-Only Key Import", err.Error())
@@ -607,8 +1101,9 @@ func (r *KeyResource) ImportState(ctx context.Context, req resource.ImportStateR
 	}
 }
 
-// UpgradeState handles state migrations from older schema versions.
-// Version 0 → 1: The resource ID changes from the raw API key to a SHA256 hash.
+// UpgradeState handles direct migrations to schema v2. Version 0 also hashes
+// the historical raw key ID; both prior versions initialize semantic JSON as
+// unconfigured typed nulls and never adopt remote dictionary data.
 func (r *KeyResource) UpgradeState(ctx context.Context) map[int64]resource.StateUpgrader {
 	return map[int64]resource.StateUpgrader{
 		0: {
@@ -659,6 +1154,9 @@ func (r *KeyResource) UpgradeState(ctx context.Context) map[int64]resource.State
 				// write the full JSON back via DynamicValue so all other
 				// attributes are preserved.
 				priorState["id"], _ = json.Marshal(hashKeyForID(rawID))
+				priorState["metadata_json"] = json.RawMessage("null")
+				priorState["config_json"] = json.RawMessage("null")
+				priorState["permissions_json"] = json.RawMessage("null")
 
 				upgradedJSON, err := json.Marshal(priorState)
 				if err != nil {
@@ -675,6 +1173,29 @@ func (r *KeyResource) UpgradeState(ctx context.Context) map[int64]resource.State
 				resp.DynamicValue = &tfprotov6.DynamicValue{
 					JSON: upgradedJSON,
 				}
+			},
+		},
+		1: {
+			PriorSchema: nil,
+			StateUpgrader: func(ctx context.Context, req resource.UpgradeStateRequest, resp *resource.UpgradeStateResponse) {
+				if req.RawState == nil {
+					resp.Diagnostics.AddError("Unable to Upgrade State", "RawState is nil. This is a bug in the provider.")
+					return
+				}
+				var priorState map[string]json.RawMessage
+				if err := json.Unmarshal(req.RawState.JSON, &priorState); err != nil {
+					resp.Diagnostics.AddError("Unable to Upgrade State", "Failed to decode prior key state.")
+					return
+				}
+				priorState["metadata_json"] = json.RawMessage("null")
+				priorState["config_json"] = json.RawMessage("null")
+				priorState["permissions_json"] = json.RawMessage("null")
+				upgraded, err := json.Marshal(priorState)
+				if err != nil {
+					resp.Diagnostics.AddError("Unable to Upgrade State", "Failed to encode upgraded key state.")
+					return
+				}
+				resp.DynamicValue = &tfprotov6.DynamicValue{JSON: upgraded}
 			},
 		},
 	}
@@ -871,18 +1392,21 @@ func stringMapMatchesAttrValues(current types.Map, observed map[string]attr.Valu
 	return true
 }
 
-func (r *KeyResource) getKeyInfo(ctx context.Context, data *KeyResourceModel) (map[string]interface{}, map[string]interface{}, error) {
-	keyIdentifier, err := keyLookupIdentifier(data)
-	if err != nil {
-		return nil, nil, err
-	}
-
+func keyInfoEndpoint(keyIdentifier string) string {
 	// Canonical url.Values encoding ensures special characters in a plaintext
 	// key (e.g. '#') are not interpreted as a URL fragment. LiteLLM also accepts
 	// the SHA256 token hash used to manage write-only keys without recovering
 	// plaintext.
 	query := url.Values{"key": []string{keyIdentifier}}
-	endpoint := endpointWithQuery("/key/info", query)
+	return endpointWithQuery("/key/info", query)
+}
+
+func (r *KeyResource) getKeyInfo(ctx context.Context, data *KeyResourceModel) (map[string]interface{}, map[string]interface{}, error) {
+	keyIdentifier, err := keyLookupIdentifier(data)
+	if err != nil {
+		return nil, nil, err
+	}
+	endpoint := keyInfoEndpoint(keyIdentifier)
 	var result map[string]interface{}
 	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
 		return nil, nil, err
@@ -890,6 +1414,26 @@ func (r *KeyResource) getKeyInfo(ctx context.Context, data *KeyResourceModel) (m
 	info := result
 	if nested, ok := result["info"].(map[string]interface{}); ok {
 		info = nested
+	}
+	return result, info, nil
+}
+
+func (r *KeyResource) getFreshExactKeyInfo(ctx context.Context, data *KeyResourceModel) (map[string]interface{}, map[string]interface{}, error) {
+	keyIdentifier, err := keyLookupIdentifier(data)
+	if err != nil {
+		return nil, nil, err
+	}
+	endpoint := keyInfoEndpoint(keyIdentifier)
+	var result map[string]interface{}
+	if err := r.client.doFreshRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
+		return nil, nil, err
+	}
+	info, ok := result["info"].(map[string]interface{})
+	if !ok || info == nil {
+		return nil, nil, errSemanticDictionaryTraversal
+	}
+	if err := validateExactKeyInfoIdentity(result, info, keyIdentifier); err != nil {
+		return nil, nil, err
 	}
 	return result, info, nil
 }
@@ -955,15 +1499,24 @@ func (r *KeyResource) waitForKeyRouterSettings(ctx context.Context, data *KeyRes
 }
 
 func (r *KeyResource) readKey(ctx context.Context, data *KeyResourceModel) error {
-	return r.readKeyWithNumericOwnership(ctx, data, false)
+	return r.readKeyWithOwnership(ctx, data, false, keySemanticReadOwnership{})
 }
 
 func (r *KeyResource) readKeyWithNumericOwnership(ctx context.Context, data *KeyResourceModel, imported bool) error {
+	return r.readKeyWithOwnership(ctx, data, imported, keySemanticReadOwnership{})
+}
+
+func (r *KeyResource) readKeyWithOwnership(ctx context.Context, data *KeyResourceModel, imported bool, semantic keySemanticReadOwnership) error {
 	keyIdentifier, err := keyLookupIdentifier(data)
 	if err != nil {
 		return err
 	}
-	result, info, err := r.getKeyInfo(ctx, data)
+	var result, info map[string]interface{}
+	if semantic.fresh {
+		result, info, err = r.getFreshExactKeyInfo(ctx, data)
+	} else {
+		result, info, err = r.getKeyInfo(ctx, data)
+	}
 	if err != nil {
 		return err
 	}
@@ -976,6 +1529,16 @@ func (r *KeyResource) readKeyWithNumericOwnership(ctx context.Context, data *Key
 			return err
 		}
 		info = validatedInfo
+	}
+	if semantic.pending.any() {
+		effective, reconcile, err := resolveKeySemanticPendingTransition(ctx, info, semantic)
+		if err != nil {
+			return fmt.Errorf("pending semantic key update could not be reconciled safely")
+		}
+		semantic = effective
+		if semantic.reconcile != nil {
+			*semantic.reconcile = reconcile
+		}
 	}
 	original := data
 	next := *data
@@ -1123,10 +1686,18 @@ func (r *KeyResource) readKeyWithNumericOwnership(ctx context.Context, data *Key
 		return err
 	}
 
+	// Remove semantic-JSON-owned top-level members before the legacy map(string)
+	// projection. Native semantic values must never be coerced into, or rejected
+	// by, the compatibility map before their independent projection runs.
+	legacyInfo, err := keyLegacyDictionaryProjectionInfo(ctx, info, data, semantic)
+	if err != nil {
+		return fmt.Errorf("LiteLLM returned key dictionaries that could not be projected safely; response contents were omitted")
+	}
+
 	// Handle metadata map - preserve null when API returns empty and config didn't specify metadata.
 	// The API may inject internal keys (e.g. tpm_limit_type, rpm_limit_type) into metadata.
 	// Only include keys that were in the user's original config to avoid drift.
-	metadata, metadataPresent, metadataOK := keyResponseObject(info["metadata"])
+	metadata, metadataPresent, metadataOK := keyResponseObject(legacyInfo["metadata"])
 	if metadataPresent && !metadataOK {
 		return fmt.Errorf("LiteLLM returned malformed key metadata; response contents were omitted")
 	}
@@ -1191,10 +1762,14 @@ func (r *KeyResource) readKeyWithNumericOwnership(ctx context.Context, data *Key
 	if err := projectKeyStringMap(ctx, info, "aliases", &data.Aliases, false); err != nil {
 		return err
 	}
-	if err := projectKeyStringMap(ctx, info, "config", &data.Config, false); err != nil {
+	if err := projectKeyStringMap(ctx, legacyInfo, "config", &data.Config, false); err != nil {
 		return err
 	}
-	if err := projectKeyStringMap(ctx, info, "permissions", &data.Permissions, false); err != nil {
+	if err := projectKeyStringMap(ctx, legacyInfo, "permissions", &data.Permissions, false); err != nil {
+		return err
+	}
+
+	if err := projectKeySemanticDictionariesFromInfo(ctx, data, info, semantic); err != nil {
 		return err
 	}
 
