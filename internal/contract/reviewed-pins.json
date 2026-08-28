@@ -9,7 +9,7 @@
     },
     "manifest": {
       "path": "internal/contract/manifest.json",
-      "sha256": "b09d68203363df0348de54861cce0fcd7e047959934aba5ec1f2206a1275cfa0"
+      "sha256": "2ef71695fe0aa941b4d63a44668d33ef9ec48e65e5be9465b1fe5e0c3343daad"
     },
     "openapi": {
       "operation_count": 800,
@@ -20,7 +20,7 @@
     "provider_golden": {
       "operation_count": 108,
       "path": "internal/contractapi/testdata/provider-operations.golden.json",
-      "sha256": "f885fc626d63152861805dc39969b119b04b7641bd6a44237580a572a4f4bb60"
+      "sha256": "7c9e88f00d19bf466fd470832b1e53bf394e6eaf455cdf8accad2f5cb91115eb"
     },
     "supplemental": {
       "operation_count": 1,
