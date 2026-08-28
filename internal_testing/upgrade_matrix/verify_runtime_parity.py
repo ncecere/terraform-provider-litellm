@@ -210,6 +210,23 @@ REVIEWED_ISSUE224_PATHS = (
 REVIEWED_ISSUE224_RUNTIME_DIFF_SHA256 = (
     "f2136661a605f837a1502520a3fc09d86cf34bf10164d677bb05264dbd422772"
 )
+REVIEWED_ISSUE215_BASE = "7b2781d1ffb4525ba97b6d9d4cf95b6ce133ee72"
+REVIEWED_ISSUE215_PATHS = (
+    "internal/provider/datasource_mcp_presence_protocol_test.go",
+    "internal/provider/datasource_mcp_presence_test.go",
+    "internal/provider/datasource_mcp_server.go",
+    "internal/provider/datasource_mcp_servers_list.go",
+    "internal/provider/mcp_info_stage2_test.go",
+    "internal/provider/mcp_issue215_parity_protocol_test.go",
+    "internal/provider/mcp_issue215_parity_test.go",
+    "internal/provider/mcp_server_lifecycle_protocol_test.go",
+    "internal/provider/mcp_update_completion_protocol_test.go",
+    "internal/provider/request_enum_validators_test.go",
+    "internal/provider/resource_mcp_server.go",
+)
+REVIEWED_ISSUE215_RUNTIME_DIFF_SHA256 = (
+    "46f7d769f98533da902b553d1373f7be3c78af4832502116408d21145e6d4967"
+)
 REVIEWED_ISSUE218_FOUNDATION_BASE = "fcbdad4998d29a733afa5e03ad41494dbd32a6d0"
 REVIEWED_ISSUE218_FOUNDATION_PATHS = (
     "internal/provider/semantic_dictionary.go",
@@ -340,6 +357,12 @@ def main() -> int:
             and digest == REVIEWED_ISSUE224_RUNTIME_DIFF_SHA256
         ):
             reviewed = "issue224"
+        elif (
+            comparison == REVIEWED_ISSUE215_BASE
+            and changed_paths == REVIEWED_ISSUE215_PATHS
+            and digest == REVIEWED_ISSUE215_RUNTIME_DIFF_SHA256
+        ):
+            reviewed = "issue215"
         elif (
             comparison == REVIEWED_ISSUE218_FOUNDATION_BASE
             and changed_paths == REVIEWED_ISSUE218_FOUNDATION_PATHS
