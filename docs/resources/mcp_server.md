@@ -162,21 +162,21 @@ The following arguments are supported:
 - `server_name` - (String) An optional 1–128 character MCP tool-prefix name. When omitted, LiteLLM uses `alias`, then `server_id`, as the effective prefix fallback. Removing a configured name sends an explicit null.
 - `alias` - (String, Computed) An optional server alias. Non-empty configured aliases are sent with ASCII spaces normalized to underscores, while state preserves configured spelling when the API value is semantically equal. When alias is omitted on Create and `server_name` is set, LiteLLM defaults alias from the name; when both are omitted, `server_id` is the fallback.
 - `description` - (String) A human-readable description of the MCP server.
-- `url` - (String) The MCP server URL. HTTP and SSE require at least one of `url` or `spec_path`; stdio does not require a URL.
-- `spec_path` - (String) A LiteLLM-local path or HTTP(S) URL for an OpenAPI specification. It can satisfy the HTTP/SSE endpoint requirement without `url`; if both are set, LiteLLM uses `url` as the OpenAPI base URL.
+- `url` - (String, Sensitive) The MCP server URL. HTTP and SSE require at least one of `url` or `spec_path`; stdio does not require a URL.
+- `spec_path` - (String, Sensitive) A LiteLLM-local path or HTTP(S) URL for an OpenAPI specification. It can satisfy the HTTP/SSE endpoint requirement without `url`; if both are set, LiteLLM uses `url` as the OpenAPI base URL.
 - `spec_version` - (String, Deprecated) Compatibility-only attribute retained for existing HCL and state. LiteLLM v1.98 does not accept or return it, so the provider does not send it. New or changed non-default values are rejected; an unchanged historical value remains plannable so existing configurations can be upgraded or destroyed safely. Remove it from configuration when practical.
 - `auth_type` - (String) The authentication type. Defaults to `"none"`. LiteLLM v1.98 accepts exactly `none`, `api_key`, `bearer_token`, `basic`, `authorization`, `oauth2`, `aws_sigv4`, `token`, `oauth2_token_exchange`, `oauth2_id_jag`, `true_passthrough`, or `oauth_delegate`. When using a value other than `"none"`, the selected mode may require credentials and additional endpoint-specific fields.
 - `mcp_access_groups` - (List of String) Access groups that are allowed to use this MCP server.
-- `command` - (String) Command to execute for `stdio` transport.
-- `args` - (List of String) Arguments to pass to the command for `stdio` transport.
-- `env` - (Map of String) Environment variables to set when running the MCP server.
-- `credentials` - (Map of String, Sensitive) Credentials for authenticating with the MCP server. For static `api_key`, `bearer_token`, `basic`, `authorization`, and `token` modes, LiteLLM v1.98 reads the secret from `auth_value`; keys named `token` or `api_key` are ignored. OAuth2 uses fields such as `client_id` and `client_secret`. This attribute is marked as sensitive and will not be displayed in plan output.
+- `command` - (String, Sensitive) Command to execute for `stdio` transport.
+- `args` - (List of String, Sensitive) Arguments to pass to the command for `stdio` transport.
+- `env` - (Map of String, Sensitive) Environment variables to set when running the MCP server.
+- `credentials` - (Map of String, Sensitive) Credentials for authenticating with the MCP server. For static `api_key`, `bearer_token`, `basic`, `authorization`, and `token` modes, LiteLLM v1.98 reads the secret from `auth_value`; keys named `token` or `api_key` are ignored. OAuth2 uses fields such as `client_id` and `client_secret`; optional `upstream_resource` configures the non-secret RFC 8707 resource indicator. The resource keeps the complete map sensitive, while the singular data source may expose only LiteLLM's separately reviewed `upstream_resource` scalar.
 - `allowed_tools` - (List of String) List of tool names that are allowed to be used from this server.
 - `extra_headers` - (List of String) Extra header names to forward/include in requests. This matches the LiteLLM API schema.
-- `static_headers` - (Map of String) Static HTTP headers that are always included in requests.
-- `authorization_url` - (String) OAuth2 authorization URL (used with `oauth2` auth type).
-- `token_url` - (String) OAuth2 token URL (used with `oauth2` auth type).
-- `registration_url` - (String) OAuth2 dynamic client registration URL (used with `oauth2` auth type).
+- `static_headers` - (Map of String, Sensitive) Static HTTP headers that are always included in requests.
+- `authorization_url` - (String, Sensitive) OAuth2 authorization URL (used with `oauth2` auth type).
+- `token_url` - (String, Sensitive) OAuth2 token URL (used with `oauth2` auth type).
+- `registration_url` - (String, Sensitive) OAuth2 dynamic client registration URL (used with `oauth2` auth type).
 - `allow_all_keys` - (Bool) Whether all API keys are allowed to access this MCP server.
 - `skip_url_validation` - (Bool, Deprecated) Compatibility-only attribute retained for existing HCL and state. LiteLLM v1.98 does not accept it, so the provider does not send it. New or changed `true` values are rejected; an unchanged historical `true` remains plannable so unrelated updates and destroy continue to work. Remove the argument (`false` remains a safe migration no-op).
 - `mcp_info_json` - (String, Optional, Computed, Sensitive) A complete non-null JSON object for whole-document MCP info ownership. The empty object (`{}`) means an explicit whole-document clear. It conflicts with `mcp_info`, `mcp_info_overrides_json`, and `mcp_info_clear_paths`.
@@ -195,7 +195,9 @@ Update always performs an identity- and type-valid direct singular read first, t
 
 LiteLLM v1.98 can implicitly clear OAuth endpoints when `url` or the credential authentication class changes, and can implicitly clear credentials on an authentication-class change. The provider rejects the operation before PUT unless every affected existing value is explicitly owned, genuinely changed or cleared, and supplied completely in the same update. It never attempts a restorative second PUT.
 
-Legacy state has no trustworthy presence history. On the first schema-v3 plan, ownership is acquired only from known non-null configuration; public state is never used as ownership evidence. Consequently, removing an ambiguously historical value during that first upgrade does not clear it remotely. For a safe migration, first apply with the value still configured to record ownership, then remove it and apply again. This two-step rule prevents accidental first-upgrade clears.
+Legacy state has no trustworthy presence history. On the first ownership-aware plan (schema v3, upgraded directly to the current schema v4), ownership is acquired only from known non-null configuration; public state is never used as ownership evidence. Consequently, removing an ambiguously historical value during that first upgrade does not clear it remotely. For a safe migration, first apply with the value still configured to record ownership, then remove it and apply again. This two-step rule prevents accidental first-upgrade clears.
+
+Schema v4 upgrades v0, v1, v2, and v3 directly. It retains the v0 `extra_headers` conversion and existing MCP-info controls, preserves an existing v3 `field_ownership_generation`, and initializes only `updated_at` and `updated_by` to typed null without changing other lifecycle values.
 
 ### Nested Blocks
 
@@ -222,6 +224,8 @@ In addition to all arguments above, the following attributes are exported:
 - `server_id` - The canonical server identifier. It is configurable only at Create and otherwise contains the provider-selected generated identity.
 - `created_at` - Timestamp of when the MCP server was created.
 - `created_by` - The user or system that created the MCP server.
+- `updated_at` - Timestamp of the latest server update. Null/omission under role redaction preserves a known prior value; a first restricted create/import resolves it to null.
+- `updated_by` - The user or system that last updated the server, with the same role-redaction retention semantics as `updated_at`.
 - `mcp_info_ownership_generation` - A non-sensitive computed generation that changes when MCP info ownership intent changes, including equal-value takeover. It forces Apply without making the resource ID unknown.
 - `field_ownership_generation` - A non-sensitive computed generation for presence-aware ownership of existing MCP fields. It forces Apply for ownership-only takeover or removal without changing identity.
 
@@ -267,6 +271,7 @@ Standard input/output communication executed by the LiteLLM runtime. A URL is no
 - Server names and canonical aliases use ASCII letters, digits, underscores, or periods; aliases normalize ASCII spaces to underscores. Hyphens are reserved as LiteLLM v1.98's tool-prefix separator.
 - The `auth_type` field accepts exactly `none`, `api_key`, `bearer_token`, `basic`, `authorization`, `oauth2`, `aws_sigv4`, `token`, `oauth2_token_exchange`, `oauth2_id_jag`, `true_passthrough`, or `oauth_delegate` under the LiteLLM v1.98 request contract. The legacy literal `bearer` is not supported.
 - For authenticated modes, provide the credentials and endpoint-specific fields required by the selected authentication type.
-- The `credentials` attribute is sensitive and will not appear in CLI output or state file in plain text.
+- Terraform marks `credentials`, endpoint, stdio command/argument/environment, static-header, and OAuth URL attributes sensitive, which redacts normal CLI output. Sensitive values are still stored in Terraform state; protect the state backend accordingly.
+- Existing outputs derived from `url`, `spec_path`, `command`, `args`, `env`, `static_headers`, `authorization_url`, `token_url`, or `registration_url` must opt into sensitivity with `sensitive = true`.
 - Use `mcp_access_groups` to control which teams or users can access the MCP server tools.
 - Configure cost tracking through the `mcp_info.mcp_server_cost_info` block to monitor spending on MCP tool usage.

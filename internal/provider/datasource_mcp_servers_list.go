@@ -21,20 +21,30 @@ type MCPServersListDataSource struct {
 }
 
 type MCPServerListItem struct {
-	ServerID     types.String `tfsdk:"server_id"`
-	ServerName   types.String `tfsdk:"server_name"`
-	Alias        types.String `tfsdk:"alias"`
-	Description  types.String `tfsdk:"description"`
-	URL          types.String `tfsdk:"url"`
-	SpecPath     types.String `tfsdk:"spec_path"`
-	Transport    types.String `tfsdk:"transport"`
-	SpecVersion  types.String `tfsdk:"spec_version"`
-	AuthType     types.String `tfsdk:"auth_type"`
-	MCPInfoJSON  types.String `tfsdk:"mcp_info_json"`
-	Status       types.String `tfsdk:"status"`
-	AllowAllKeys types.Bool   `tfsdk:"allow_all_keys"`
-	CreatedAt    types.String `tfsdk:"created_at"`
-	UpdatedAt    types.String `tfsdk:"updated_at"`
+	ServerID         types.String `tfsdk:"server_id"`
+	ServerName       types.String `tfsdk:"server_name"`
+	Alias            types.String `tfsdk:"alias"`
+	Description      types.String `tfsdk:"description"`
+	URL              types.String `tfsdk:"url"`
+	SpecPath         types.String `tfsdk:"spec_path"`
+	Transport        types.String `tfsdk:"transport"`
+	SpecVersion      types.String `tfsdk:"spec_version"`
+	AuthType         types.String `tfsdk:"auth_type"`
+	MCPAccessGroups  types.List   `tfsdk:"mcp_access_groups"`
+	MCPInfoJSON      types.String `tfsdk:"mcp_info_json"`
+	Command          types.String `tfsdk:"command"`
+	Args             types.List   `tfsdk:"args"`
+	Env              types.Map    `tfsdk:"env"`
+	AllowedTools     types.List   `tfsdk:"allowed_tools"`
+	ExtraHeaders     types.List   `tfsdk:"extra_headers"`
+	StaticHeaders    types.Map    `tfsdk:"static_headers"`
+	AuthorizationURL types.String `tfsdk:"authorization_url"`
+	TokenURL         types.String `tfsdk:"token_url"`
+	RegistrationURL  types.String `tfsdk:"registration_url"`
+	Status           types.String `tfsdk:"status"`
+	AllowAllKeys     types.Bool   `tfsdk:"allow_all_keys"`
+	CreatedAt        types.String `tfsdk:"created_at"`
+	UpdatedAt        types.String `tfsdk:"updated_at"`
 }
 
 type MCPServersListDataSourceModel struct {
@@ -51,7 +61,7 @@ func (d *MCPServersListDataSource) Schema(ctx context.Context, req datasource.Sc
 		Description: "Retrieves a list of LiteLLM MCP (Model Context Protocol) servers.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
-				Description: "Placeholder identifier.",
+				Description: "Stable inventory identifier (mcp_servers).",
 				Computed:    true,
 			},
 			"mcp_servers": schema.ListNestedAttribute{
@@ -78,10 +88,12 @@ func (d *MCPServersListDataSource) Schema(ctx context.Context, req datasource.Sc
 						"url": schema.StringAttribute{
 							Description: "URL of the MCP server, when configured.",
 							Computed:    true,
+							Sensitive:   true,
 						},
 						"spec_path": schema.StringAttribute{
 							Description: "Path or URL of the server's OpenAPI specification, when configured.",
 							Computed:    true,
+							Sensitive:   true,
 						},
 						"transport": schema.StringAttribute{
 							Description: "Transport type for the MCP server (http, sse, stdio).",
@@ -96,8 +108,61 @@ func (d *MCPServersListDataSource) Schema(ctx context.Context, req datasource.Sc
 							Description: "Authentication type reported by LiteLLM.",
 							Computed:    true,
 						},
+						"mcp_access_groups": schema.ListAttribute{
+							Description: "List of access groups for the MCP server.",
+							Computed:    true,
+							ElementType: types.StringType,
+						},
 						"mcp_info_json": schema.StringAttribute{
 							Description: "Sensitive canonical complete MCP info JSON object, or null when LiteLLM masks or omits it.",
+							Computed:    true,
+							Sensitive:   true,
+						},
+						"command": schema.StringAttribute{
+							Description: "Command to run for stdio transport.",
+							Computed:    true,
+							Sensitive:   true,
+						},
+						"args": schema.ListAttribute{
+							Description: "Arguments for the command (stdio transport).",
+							Computed:    true,
+							Sensitive:   true,
+							ElementType: types.StringType,
+						},
+						"env": schema.MapAttribute{
+							Description: "Environment variables for the command (stdio transport).",
+							Computed:    true,
+							Sensitive:   true,
+							ElementType: types.StringType,
+						},
+						"allowed_tools": schema.ListAttribute{
+							Description: "List of allowed tool names for this MCP server.",
+							Computed:    true,
+							ElementType: types.StringType,
+						},
+						"extra_headers": schema.ListAttribute{
+							Description: "Extra header names forwarded to the MCP server.",
+							Computed:    true,
+							ElementType: types.StringType,
+						},
+						"static_headers": schema.MapAttribute{
+							Description: "Static headers to always include with requests.",
+							Computed:    true,
+							Sensitive:   true,
+							ElementType: types.StringType,
+						},
+						"authorization_url": schema.StringAttribute{
+							Description: "OAuth authorization URL for the MCP server.",
+							Computed:    true,
+							Sensitive:   true,
+						},
+						"token_url": schema.StringAttribute{
+							Description: "OAuth token URL for the MCP server.",
+							Computed:    true,
+							Sensitive:   true,
+						},
+						"registration_url": schema.StringAttribute{
+							Description: "OAuth registration URL for the MCP server.",
 							Computed:    true,
 							Sensitive:   true,
 						},
@@ -160,26 +225,36 @@ func (d *MCPServersListDataSource) Read(ctx context.Context, req datasource.Read
 			resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned a malformed MCP server list.")
 			return
 		}
-		server, projectionErr := projectMCPServerDataSource(serverMap, serverID.ValueString())
+		server, projectionErr := projectMCPServerManagerListDataSource(serverMap, serverID.ValueString())
 		if projectionErr != nil {
 			resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned a malformed MCP server list.")
 			return
 		}
 		data.MCPServers = append(data.MCPServers, MCPServerListItem{
-			ServerID:     server.ServerID,
-			ServerName:   server.ServerName,
-			Alias:        server.Alias,
-			Description:  server.Description,
-			URL:          server.URL,
-			SpecPath:     server.SpecPath,
-			Transport:    server.Transport,
-			SpecVersion:  server.SpecVersion,
-			AuthType:     server.AuthType,
-			MCPInfoJSON:  server.MCPInfoJSON,
-			Status:       server.Status,
-			AllowAllKeys: server.AllowAllKeys,
-			CreatedAt:    server.CreatedAt,
-			UpdatedAt:    server.UpdatedAt,
+			ServerID:         server.ServerID,
+			ServerName:       server.ServerName,
+			Alias:            server.Alias,
+			Description:      server.Description,
+			URL:              server.URL,
+			SpecPath:         server.SpecPath,
+			Transport:        server.Transport,
+			SpecVersion:      server.SpecVersion,
+			AuthType:         server.AuthType,
+			MCPAccessGroups:  server.MCPAccessGroups,
+			MCPInfoJSON:      server.MCPInfoJSON,
+			Command:          server.Command,
+			Args:             server.Args,
+			Env:              server.Env,
+			AllowedTools:     server.AllowedTools,
+			ExtraHeaders:     server.ExtraHeaders,
+			StaticHeaders:    server.StaticHeaders,
+			AuthorizationURL: server.AuthorizationURL,
+			TokenURL:         server.TokenURL,
+			RegistrationURL:  server.RegistrationURL,
+			Status:           server.Status,
+			AllowAllKeys:     server.AllowAllKeys,
+			CreatedAt:        server.CreatedAt,
+			UpdatedAt:        server.UpdatedAt,
 		})
 	}
 	sort.SliceStable(data.MCPServers, func(i, j int) bool {

@@ -103,9 +103,13 @@ func TestMCPDataSourcesCompleteEveryComputedPathProtocol(t *testing.T) {
 			case "valid":
 				assertMCPProtocolFalse(t, singleAttributes["allow_all_keys"])
 				assertMCPProtocolFalse(t, listItem["allow_all_keys"])
-				for _, field := range []string{"mcp_access_groups", "args", "env", "extra_headers", "static_headers"} {
-					assertMCPProtocolEmptyCollection(t, singleAttributes[field])
+				for _, field := range []string{"mcp_access_groups", "args", "env", "extra_headers"} {
+					if !singleAttributes[field].IsNull() || !listItem[field].IsNull() {
+						t.Fatalf("ambiguous empty %s was not typed null", field)
+					}
 				}
+				assertMCPProtocolEmptyCollection(t, singleAttributes["static_headers"])
+				assertMCPProtocolEmptyCollection(t, listItem["static_headers"])
 				for name, value := range map[string]tftypes.Value{
 					"singular": singleAttributes["mcp_info_json"],
 					"list":     listItem["mcp_info_json"],

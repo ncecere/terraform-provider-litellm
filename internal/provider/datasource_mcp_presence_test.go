@@ -36,6 +36,7 @@ func TestProjectMCPServerDataSourceV198Presence(t *testing.T) {
 		"status":             "unknown",
 		"last_health_check":  nil,
 		"health_check_error": "",
+		"credentials":        map[string]interface{}{"upstream_resource": "https://resource.invalid"},
 	}
 	state, err := projectMCPServerDataSource(response, "presence-mcp")
 	if err != nil {
@@ -50,19 +51,21 @@ func TestProjectMCPServerDataSourceV198Presence(t *testing.T) {
 	if state.AllowAllKeys.IsNull() || state.AllowAllKeys.ValueBool() {
 		t.Fatal("explicit false was not projected as known false")
 	}
-	for name, value := range map[string]interface {
-		IsNull() bool
-		IsUnknown() bool
-	}{
+	for name, value := range map[string]interface{ IsNull() bool }{
 		"mcp_access_groups": state.MCPAccessGroups,
 		"args":              state.Args,
 		"env":               state.Env,
 		"extra_headers":     state.ExtraHeaders,
-		"static_headers":    state.StaticHeaders,
 	} {
-		if value.IsNull() || value.IsUnknown() {
-			t.Fatalf("explicit empty %s was not known", name)
+		if !value.IsNull() {
+			t.Fatalf("sanitizer-fabricated empty %s was not projected as null", name)
 		}
+	}
+	if state.StaticHeaders.IsNull() || state.StaticHeaders.IsUnknown() {
+		t.Fatal("authoritative static_headers empty object was not known")
+	}
+	if state.UpstreamResource.IsNull() || state.UpstreamResource.ValueString() != "https://resource.invalid" {
+		t.Fatal("safe upstream_resource was not projected")
 	}
 	if got := state.MCPInfoJSON.ValueString(); got != `{"access":false,"nested":[9007199254740993,null]}` {
 		t.Fatalf("mcp_info_json = %q", got)
@@ -104,17 +107,23 @@ func TestProjectMCPServerDataSourceRejectsMalformedShapes(t *testing.T) {
 
 	secret := "response-secret-mcp"
 	tests := map[string]map[string]interface{}{
-		"wrong identity":        {"server_id": secret, "transport": "http"},
-		"missing identity":      {"transport": "http"},
-		"wrong transport type":  {"server_id": "presence-mcp", "transport": false},
-		"wrong transport value": {"server_id": "presence-mcp", "transport": "websocket"},
-		"wrong scalar":          {"server_id": "presence-mcp", "transport": "http", "description": false},
-		"wrong boolean":         {"server_id": "presence-mcp", "transport": "http", "allow_all_keys": "false"},
-		"wrong list root":       {"server_id": "presence-mcp", "transport": "http", "args": map[string]interface{}{}},
-		"late list element":     {"server_id": "presence-mcp", "transport": "http", "allowed_tools": []interface{}{"valid", false}},
-		"wrong map root":        {"server_id": "presence-mcp", "transport": "http", "env": []interface{}{}},
-		"late map element":      {"server_id": "presence-mcp", "transport": "http", "static_headers": map[string]interface{}{"valid": "value", "invalid": false}},
-		"wrong mcp info root":   {"server_id": "presence-mcp", "transport": "http", "mcp_info": []interface{}{secret}},
+		"wrong identity":                 {"server_id": secret, "transport": "http"},
+		"missing identity":               {"transport": "http"},
+		"wrong transport type":           {"server_id": "presence-mcp", "transport": false},
+		"wrong transport value":          {"server_id": "presence-mcp", "transport": "websocket"},
+		"wrong scalar":                   {"server_id": "presence-mcp", "transport": "http", "description": false},
+		"wrong boolean":                  {"server_id": "presence-mcp", "transport": "http", "allow_all_keys": "false"},
+		"wrong list root":                {"server_id": "presence-mcp", "transport": "http", "args": map[string]interface{}{}},
+		"late list element":              {"server_id": "presence-mcp", "transport": "http", "allowed_tools": []interface{}{"valid", false}},
+		"wrong map root":                 {"server_id": "presence-mcp", "transport": "http", "env": []interface{}{}},
+		"late map element":               {"server_id": "presence-mcp", "transport": "http", "static_headers": map[string]interface{}{"valid": "value", "invalid": false}},
+		"wrong mcp info root":            {"server_id": "presence-mcp", "transport": "http", "mcp_info": []interface{}{secret}},
+		"wrong credentials root":         {"server_id": "presence-mcp", "transport": "http", "credentials": secret},
+		"empty credentials":              {"server_id": "presence-mcp", "transport": "http", "credentials": map[string]interface{}{}},
+		"empty upstream resource":        {"server_id": "presence-mcp", "transport": "http", "credentials": map[string]interface{}{"upstream_resource": ""}},
+		"wrong upstream resource type":   {"server_id": "presence-mcp", "transport": "http", "credentials": map[string]interface{}{"upstream_resource": false}},
+		"unexpected credential member":   {"server_id": "presence-mcp", "transport": "http", "credentials": map[string]interface{}{"upstream_resource": "safe", "client_secret": secret}},
+		"only unexpected credential key": {"server_id": "presence-mcp", "transport": "http", "credentials": map[string]interface{}{"client_secret": secret}},
 	}
 	for name, response := range tests {
 		t.Run(name, func(t *testing.T) {

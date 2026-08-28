@@ -14,6 +14,7 @@ import (
 )
 
 type mcpUpdateCompletionProtocolResult struct {
+	planned *tfprotov6.PlanResourceChangeResponse
 	applied *tfprotov6.ApplyResourceChangeResponse
 	body    map[string]interface{}
 	puts    int64
@@ -72,7 +73,7 @@ func runMCPUpdateCompletionProtocol(t *testing.T, stateValues, configValues, pro
 	if err != nil {
 		t.Fatalf("apply transport error: %v", err)
 	}
-	return mcpUpdateCompletionProtocolResult{applied: applied, body: body, puts: puts.Load(), schema: schema, state: state}
+	return mcpUpdateCompletionProtocolResult{planned: planned, applied: applied, body: body, puts: puts.Load(), schema: schema, state: state}
 }
 
 func TestMCPServerNameUpdatePreservesUnownedAliasProtocol(t *testing.T) {

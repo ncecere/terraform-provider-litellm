@@ -17,7 +17,7 @@ func TestMCPInfoStage2Schema(t *testing.T) {
 	if response.Diagnostics.HasError() {
 		t.Fatal(response.Diagnostics)
 	}
-	if response.Schema.Version != 3 {
+	if response.Schema.Version != 4 {
 		t.Fatalf("schema version = %d", response.Schema.Version)
 	}
 	whole, ok := response.Schema.Attributes["mcp_info_json"].(schema.StringAttribute)
