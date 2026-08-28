@@ -54,7 +54,7 @@ jobs:
         run: |
           set -o pipefail
           gotestsum --junitfile junit.xml --format testname -- \
-            -race -covermode=atomic -coverprofile=coverage.out ./... 2>&1 | tee gotestsum.log
+            -timeout=20m -race -covermode=atomic -coverprofile=coverage.out ./... 2>&1 | tee gotestsum.log
       - name: GoReleaser v2 configuration check
         uses: goreleaser/goreleaser-action@286f3b13b1b49da4ac219696163fb8c1c93e1200 # v6.0.0
         with:

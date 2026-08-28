@@ -3,10 +3,14 @@ package provider
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"net/url"
+
+	"github.com/google/uuid"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/mapvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -14,11 +18,13 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
 )
 
 var _ resource.Resource = &ProjectResource{}
 var _ resource.ResourceWithImportState = &ProjectResource{}
 var _ resource.ResourceWithModifyPlan = &ProjectResource{}
+var _ resource.ResourceWithUpgradeState = &ProjectResource{}
 
 const (
 	// projectImportedOptionalStringsPrivateKey is the pre-per-field marker read
@@ -42,6 +48,7 @@ type ProjectResourceModel struct {
 	TeamID              types.String  `tfsdk:"team_id"`
 	Models              types.List    `tfsdk:"models"`
 	Metadata            types.Map     `tfsdk:"metadata"`
+	MetadataJSON        types.String  `tfsdk:"metadata_json"`
 	Tags                types.List    `tfsdk:"tags"`
 	MaxBudget           types.Float64 `tfsdk:"max_budget"`
 	SoftBudget          types.Float64 `tfsdk:"soft_budget"`
@@ -67,6 +74,7 @@ func (r *ProjectResource) Metadata(_ context.Context, req resource.MetadataReque
 func (r *ProjectResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		Description: "Manages a LiteLLM Project. Project budget controls are read authoritatively from the nested litellm_budget_table relation.",
+		Version:     1,
 		Attributes: map[string]schema.Attribute{
 			"id":                    schema.StringAttribute{Description: "The unique project ID (assigned by LiteLLM).", Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
 			"project_alias":         schema.StringAttribute{Description: "Human-friendly name for the project.", Optional: true, Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
@@ -74,6 +82,7 @@ func (r *ProjectResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 			"team_id":               schema.StringAttribute{Description: "The team ID that this project belongs to.", Required: true, PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}},
 			"models":                schema.ListAttribute{Description: "List of models the project can access.", Optional: true, Computed: true, ElementType: types.StringType},
 			"metadata":              schema.MapAttribute{Description: "Metadata for the project. Values are strings; use jsonencode() for complex values.", Optional: true, Computed: true, ElementType: types.StringType},
+			"metadata_json":         schema.StringAttribute{Description: "Additional project metadata as a semantic JSON object.", Optional: true, Computed: true, Sensitive: true, Validators: []validator.String{keySemanticDictionaryValidator{}}},
 			"tags":                  schema.ListAttribute{Description: "Tags associated with the project. LiteLLM v1.98 stores these in project metadata.", Optional: true, Computed: true, ElementType: types.StringType},
 			"max_budget":            schema.Float64Attribute{Description: "Maximum budget for this project.", Optional: true},
 			"soft_budget":           schema.Float64Attribute{Description: "Soft budget limit for warnings.", Optional: true},
@@ -117,6 +126,11 @@ func (r *ProjectResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 		return
 	}
 	if req.State.Raw.IsNull() {
+		if config.MetadataJSON.IsUnknown() {
+			resp.Diagnostics.AddAttributeError(path.Root("metadata_json"), "Unknown Semantic Project Dictionary", "metadata_json must be known before project creation.")
+		} else if _, err := prepareProjectSemanticDictionary(ctx, config.MetadataJSON, config.Metadata); err != nil {
+			resp.Diagnostics.AddAttributeError(path.Root("metadata_json"), "Invalid Semantic Project Dictionary", "The JSON object is malformed, overlaps another managed project metadata surface, or cannot be persisted exactly.")
+		}
 		if !config.BudgetID.IsNull() && projectBudgetControlsPresentInConfig(&config) {
 			resp.Diagnostics.AddAttributeError(path.Root("budget_id"), "Unsafe Shared Project Budget Controls", "budget_id cannot be combined with project budget controls during creation because LiteLLM v1.98 ignores or strips those controls for an existing shared budget.")
 		}
@@ -145,6 +159,53 @@ func (r *ProjectResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 		importedDescription = string(descriptionMarker) == "true" || legacyImportedStrings
 	}
 	preserveOrganizationProjectBudgetID(ctx, "Project", state.BudgetID, config.BudgetID, plan.BudgetID, importedBudget, resp)
+
+	var provenanceRaw []byte
+	if req.Private != nil {
+		raw, diagnostics := req.Private.GetKey(ctx, projectMetadataJSONProvenancePrivateKey)
+		resp.Diagnostics.Append(diagnostics...)
+		provenanceRaw = raw
+	}
+	provenance, err := decodeProjectSemanticProvenance(ctx, provenanceRaw, state.MetadataJSON)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("metadata_json"), "Invalid Semantic Dictionary Provenance", "Private ownership is missing, malformed, or inconsistent with public state. No project plan was produced.")
+		return
+	}
+	if config.MetadataJSON.IsUnknown() {
+		plan.MetadataJSON = types.StringUnknown()
+	} else {
+		prepared, err := prepareProjectSemanticDictionary(ctx, config.MetadataJSON, config.Metadata)
+		if err != nil {
+			resp.Diagnostics.AddAttributeError(path.Root("metadata_json"), "Invalid Semantic Project Dictionary", "The JSON object is malformed, overlaps another managed project metadata surface, or cannot be persisted exactly. No project plan was produced.")
+			return
+		}
+		changed, err := projectSemanticNeedsChange(ctx, config.MetadataJSON, state.MetadataJSON, provenance)
+		if err != nil {
+			resp.Diagnostics.AddAttributeError(path.Root("metadata_json"), "Invalid Semantic Project Dictionary", "The semantic value or private ownership could not be compared safely. No project plan was produced.")
+			return
+		}
+		if !provenance.Configured && config.MetadataJSON.IsNull() {
+			plan.MetadataJSON = types.StringNull()
+		}
+		if !changed && provenance.Configured && knownString(config.MetadataJSON) {
+			plan.MetadataJSON = state.MetadataJSON
+		}
+		if changed && config.MetadataJSON.IsNull() {
+			plan.MetadataJSON = types.StringUnknown()
+		}
+		if prepared.object != nil && config.Metadata.IsNull() {
+			filtered, filterErr := excludeKeyLegacyJSONTopLevelKeys(ctx, plan.Metadata, prepared.object)
+			if filterErr != nil {
+				resp.Diagnostics.AddAttributeError(path.Root("metadata_json"), "Invalid Semantic Project Dictionary", "The legacy metadata projection could not be produced safely. No project plan was produced.")
+				return
+			}
+			plan.Metadata = filtered
+		}
+	}
+	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 
 	for _, field := range []struct {
 		name                string
@@ -193,64 +254,108 @@ func (r *ProjectResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 }
 
 func (r *ProjectResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
-	var data ProjectResourceModel
+	var data, config ProjectResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
+	if req.Config.Raw.Type() == nil {
+		config = data
+	} else {
+		resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+	}
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	if config.MetadataJSON.IsUnknown() {
+		resp.Diagnostics.AddError("Unknown Semantic Project Dictionary", "metadata_json must be known before creating a project. No request was sent.")
+		return
+	}
+	prepared, err := prepareProjectSemanticDictionary(ctx, config.MetadataJSON, config.Metadata)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Semantic Project Dictionary", "The JSON object is malformed, overlaps another managed project metadata surface, or cannot be persisted exactly. No request was sent.")
+		return
+	}
+	data.MetadataJSON = config.MetadataJSON
+	projectID := uuid.NewString()
+	data.ID = types.StringValue(projectID)
 	projectRequest, err := r.buildProjectCreateRequest(ctx, &data)
 	if err != nil {
-		resp.Diagnostics.AddError("Invalid Project Request", err.Error())
+		resp.Diagnostics.AddError("Invalid Project Request", "The project request could not be converted safely. No request was sent.")
 		return
 	}
-	var result map[string]interface{}
-	if err := r.client.DoRequestWithResponse(ctx, "POST", "/project/new", projectRequest, &result); err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to create project: %s", err))
+	projectRequest["project_id"] = projectID
+	if err := overlayProjectCreateSemantic(ctx, projectRequest, prepared); err != nil {
+		resp.Diagnostics.AddError("Invalid Semantic Project Dictionary", "The complete metadata document could not be composed safely. No request was sent.")
 		return
 	}
-	object, err := unwrapObjectEnvelope(result, "project_info", "data")
+	privateValue, err := encodeProjectSemanticProvenance(ctx, prepared.provenance)
 	if err != nil {
-		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		resp.Diagnostics.AddError("Invalid Semantic Dictionary Provenance", "Semantic ownership could not be encoded safely. No request was sent.")
 		return
 	}
-	projectID, ok := object["project_id"].(string)
-	if !ok || projectID == "" {
-		resp.Diagnostics.AddError("Invalid API Response", "Project create response did not contain a nonempty project_id.")
+	retainRecovery := func(title, detail string) {
+		recoveryCtx := context.WithoutCancel(ctx)
+		recovery := partialProjectSemanticRecoveryState(data, projectID)
+		unconfigured, encodeErr := encodeProjectSemanticProvenance(recoveryCtx, projectUnconfiguredSemanticProvenance())
+		if encodeErr == nil && resp.Private != nil {
+			resp.Diagnostics.Append(resp.Private.SetKey(recoveryCtx, projectMetadataJSONProvenancePrivateKey, unconfigured)...)
+			resp.Diagnostics.Append(resp.Private.SetKey(recoveryCtx, projectAcceptedCreateRecoveryPrivateKey, []byte("true"))...)
+		}
+		resp.Diagnostics.Append(resp.State.Set(recoveryCtx, &recovery)...)
+		resp.Diagnostics.AddError(title, detail)
+	}
+
+	var result map[string]interface{}
+	accepted, createErr := r.client.doRequestWithResponse(ctx, http.MethodPost, "/project/new", projectRequest, &result)
+	if createErr != nil {
+		if semanticCreateRecoveryRequired(accepted, createErr) {
+			if accepted {
+				retainRecovery("Project Creation Not Confirmed", "LiteLLM accepted the project create, but its response could not be validated safely. Only the generated identity was retained for authoritative recovery.")
+			} else {
+				retainRecovery("Project Creation Outcome Uncertain", "The project create was dispatched, but its outcome could not be confirmed. Only the generated identity was retained for authoritative recovery.")
+			}
+		} else {
+			resp.Diagnostics.AddError("Project Creation Failed", "LiteLLM did not confirm the project create. Response, identity, URL, and transport details were omitted.")
+		}
 		return
 	}
-	data.ID = types.StringValue(projectID)
+	if validateProjectCreateResponseIdentity(result, projectID) != nil {
+		retainRecovery("Project Creation Identity Not Confirmed", "LiteLLM accepted the project create, but its response did not confirm the generated identity. Only that identity was retained for authoritative recovery.")
+		return
+	}
+	object, unwrapErr := unwrapObjectEnvelope(result, "project_info", "data")
+	if unwrapErr != nil {
+		retainRecovery("Project Creation Not Confirmed", "LiteLLM accepted the project create, but its response could not be validated safely. Only the generated identity was retained for authoritative recovery.")
+		return
+	}
 
 	// Project creation stores duration without setting the initial reset time.
 	if knownString(data.BudgetDuration) {
 		table, parseErr := parseBudgetTable(object)
-		if parseErr != nil {
-			resp.Diagnostics.AddError("Invalid API Response", parseErr.Error())
-			resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
-			return
-		}
 		budgetID, presence, budgetErr := budgetTableID(object, table)
-		if budgetErr != nil || presence != apiValuePresent {
-			resp.Diagnostics.AddError("Budget Reset Initialization Error", "Project was created, but the response did not identify its budget for reset initialization.")
-			resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+		if parseErr != nil || budgetErr != nil || presence != apiValuePresent {
+			retainRecovery("Budget Reset Initialization Not Confirmed", "LiteLLM accepted the project create, but reset initialization could not be completed safely. Only the generated identity was retained for recovery.")
 			return
 		}
 		var budgetResult map[string]interface{}
 		payload := map[string]interface{}{"budget_id": budgetID, "budget_duration": data.BudgetDuration.ValueString()}
-		if err := r.client.DoRequestWithResponse(ctx, "POST", "/budget/update", payload, &budgetResult); err != nil {
-			resp.Diagnostics.AddError("Budget Reset Initialization Error", fmt.Sprintf("Project was created, but LiteLLM could not initialize its budget reset schedule: %s", err))
-			resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+		if err := r.client.DoRequestWithResponse(ctx, http.MethodPost, "/budget/update", payload, &budgetResult); err != nil {
+			retainRecovery("Budget Reset Initialization Not Confirmed", "LiteLLM accepted the project create, but reset initialization could not be confirmed. Only the generated identity was retained for recovery.")
 			return
 		}
 		if confirmedID, ok := budgetResult["budget_id"].(string); !ok || confirmedID != budgetID {
-			resp.Diagnostics.AddError("Budget Reset Initialization Error", "Project was created and LiteLLM accepted reset initialization, but the response did not confirm the matching budget identity.")
-			resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+			retainRecovery("Budget Reset Initialization Not Confirmed", "LiteLLM accepted the project create, but reset initialization did not confirm the same budget association. Only the generated identity was retained for recovery.")
 			return
 		}
 	}
-	if err := r.readProject(ctx, &data); err != nil {
-		resp.Diagnostics.AddError("Read Error", fmt.Sprintf("Project was created but its authoritative state could not be read: %s", err))
-		resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	ownership := projectSemanticOwnership{provenance: prepared.provenance, fresh: prepared.provenance.Configured, confirmCurrentValue: prepared.provenance.Configured}
+	if err := r.readProjectWithOwnership(ctx, &data, false, ownership); err != nil {
+		retainRecovery("Project Creation Not Confirmed", "LiteLLM accepted the project create, but one authoritative identity-bound read did not confirm its complete state. Only the generated identity was retained for recovery.")
 		return
+	}
+	if resp.Private != nil {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, projectMetadataJSONProvenancePrivateKey, privateValue)...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, projectAcceptedCreateRecoveryPrivateKey, nil)...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, projectPendingUpdatePrivateKey, nil)...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, projectPendingBudgetPrivateKey, nil)...)
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -258,23 +363,81 @@ func (r *ProjectResource) Create(ctx context.Context, req resource.CreateRequest
 func (r *ProjectResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	var data ProjectResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
-	marker, privateDiagnostics := req.Private.GetKey(ctx, numericImportedPrivateKey)
-	resp.Diagnostics.Append(privateDiagnostics...)
+	var importRaw, provenanceRaw, acceptedRaw, pendingRaw, pendingBudgetRaw []byte
+	var importDiagnostics, provenanceDiagnostics, acceptedDiagnostics, pendingDiagnostics, pendingBudgetDiagnostics diag.Diagnostics
+	if req.Private != nil {
+		importRaw, importDiagnostics = req.Private.GetKey(ctx, numericImportedPrivateKey)
+		provenanceRaw, provenanceDiagnostics = req.Private.GetKey(ctx, projectMetadataJSONProvenancePrivateKey)
+		acceptedRaw, acceptedDiagnostics = req.Private.GetKey(ctx, projectAcceptedCreateRecoveryPrivateKey)
+		pendingRaw, pendingDiagnostics = req.Private.GetKey(ctx, projectPendingUpdatePrivateKey)
+		pendingBudgetRaw, pendingBudgetDiagnostics = req.Private.GetKey(ctx, projectPendingBudgetPrivateKey)
+	}
+	resp.Diagnostics.Append(importDiagnostics...)
+	resp.Diagnostics.Append(provenanceDiagnostics...)
+	resp.Diagnostics.Append(acceptedDiagnostics...)
+	resp.Diagnostics.Append(pendingDiagnostics...)
+	resp.Diagnostics.Append(pendingBudgetDiagnostics...)
+	if len(acceptedRaw) != 0 && string(acceptedRaw) != "true" {
+		resp.Diagnostics.AddError("Invalid Project Recovery State", "Accepted-create recovery state is malformed. No project read was performed.")
+	}
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	imported := string(marker) == "true"
-	if err := r.readProjectWithNumericOwnership(ctx, &data, imported); err != nil {
+	provenance, err := decodeProjectSemanticProvenance(ctx, provenanceRaw, data.MetadataJSON)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("metadata_json"), "Invalid Semantic Dictionary Provenance", "Private ownership is missing, malformed, or inconsistent with public state. No project read was performed.")
+		return
+	}
+	pending, err := decodeKeySemanticPendingTransition(ctx, pendingRaw)
+	if err != nil || pending.Config.Active || pending.Permissions.Active {
+		resp.Diagnostics.AddError("Invalid Project Recovery State", "Pending semantic-update recovery state is malformed. No project read was performed.")
+		return
+	}
+	pendingBudget, err := decodeProjectPendingBudget(ctx, pendingBudgetRaw)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Project Recovery State", "Pending budget-update recovery state is malformed. No project read was performed.")
+		return
+	}
+	reconcile := keySemanticPendingReconcile{}
+	ownership := projectSemanticOwnership{
+		provenance: provenance, pending: pending, reconcile: &reconcile,
+		acceptedCreate: string(acceptedRaw) == "true", pendingBudget: pendingBudget,
+		fresh: len(acceptedRaw) != 0 || pending.any() || len(pendingBudget) != 0,
+	}
+	imported := string(importRaw) == "true"
+	if err := r.readProjectWithOwnership(ctx, &data, imported, ownership); err != nil {
 		if IsNotFoundError(err) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read project: %s", err))
+		resp.Diagnostics.AddError("Project Read Failed", "The authoritative project response could not be validated or projected safely. Response, identity, metadata, and transport details were omitted.")
 		return
 	}
+	if reconcile.Present && reconcile.Committed {
+		provenance = reconcile.Effective.metadata
+	}
+	encoded, err := encodeProjectSemanticProvenance(ctx, provenance)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Semantic Dictionary Provenance", "Semantic ownership could not be encoded safely. No project state was produced.")
+		return
+	}
+	if resp.Private != nil {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, projectMetadataJSONProvenancePrivateKey, encoded)...)
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
-	if !resp.Diagnostics.HasError() && imported {
-		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, nil)...)
+	if !resp.Diagnostics.HasError() && resp.Private != nil {
+		if imported {
+			resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, nil)...)
+		}
+		if string(acceptedRaw) == "true" {
+			resp.Diagnostics.Append(resp.Private.SetKey(ctx, projectAcceptedCreateRecoveryPrivateKey, nil)...)
+		}
+		if reconcile.Present {
+			resp.Diagnostics.Append(resp.Private.SetKey(ctx, projectPendingUpdatePrivateKey, nil)...)
+		}
+		if len(pendingBudget) != 0 {
+			resp.Diagnostics.Append(resp.Private.SetKey(ctx, projectPendingBudgetPrivateKey, nil)...)
+		}
 	}
 }
 
@@ -282,17 +445,89 @@ func (r *ProjectResource) Update(ctx context.Context, req resource.UpdateRequest
 	var plan, state, config ProjectResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
-	if !req.Config.Raw.IsNull() {
-		resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
-	} else {
+	if req.Config.Raw.Type() == nil {
 		config = plan
+	} else {
+		resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+	}
+	var acceptedRaw, pendingRaw, pendingBudgetRaw, provenanceRaw []byte
+	var acceptedDiagnostics, pendingDiagnostics, pendingBudgetDiagnostics, provenanceDiagnostics diag.Diagnostics
+	if req.Private != nil {
+		acceptedRaw, acceptedDiagnostics = req.Private.GetKey(ctx, projectAcceptedCreateRecoveryPrivateKey)
+		pendingRaw, pendingDiagnostics = req.Private.GetKey(ctx, projectPendingUpdatePrivateKey)
+		pendingBudgetRaw, pendingBudgetDiagnostics = req.Private.GetKey(ctx, projectPendingBudgetPrivateKey)
+		provenanceRaw, provenanceDiagnostics = req.Private.GetKey(ctx, projectMetadataJSONProvenancePrivateKey)
+	}
+	resp.Diagnostics.Append(acceptedDiagnostics...)
+	resp.Diagnostics.Append(pendingDiagnostics...)
+	resp.Diagnostics.Append(pendingBudgetDiagnostics...)
+	resp.Diagnostics.Append(provenanceDiagnostics...)
+	if len(pendingRaw) != 0 {
+		resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+		resp.Diagnostics.AddError("Project Recovery Required", "A prior semantic metadata update has not been reconciled. Refresh must determine whether its shape transition committed before another update can be sent.")
+		return
+	}
+	if len(pendingBudgetRaw) != 0 {
+		resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+		resp.Diagnostics.AddError("Project Recovery Required", "A prior project budget update has not been reconciled. Refresh must retain its prior public values before another update can be sent.")
+		return
+	}
+	if string(acceptedRaw) == "true" {
+		resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+		resp.Diagnostics.AddError("Project Recovery Required", "A prior project create was accepted without complete readback. Refresh must reconcile its generated identity before another update can be sent.")
+		return
+	}
+	if len(acceptedRaw) != 0 {
+		resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+		resp.Diagnostics.AddError("Invalid Project Recovery State", "Accepted-create recovery state is malformed. No project update was sent.")
+		return
 	}
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	if config.MetadataJSON.IsUnknown() {
+		resp.Diagnostics.AddError("Unknown Semantic Project Dictionary", "metadata_json must be known before updating a project. No request was sent.")
+		return
+	}
+	priorProvenance, err := decodeProjectSemanticProvenance(ctx, provenanceRaw, state.MetadataJSON)
+	if err != nil {
+		resp.Diagnostics.AddAttributeError(path.Root("metadata_json"), "Invalid Semantic Dictionary Provenance", "Private ownership is missing, malformed, or inconsistent with public state. No project update was sent.")
+		return
+	}
+	prepared, err := prepareProjectSemanticDictionary(ctx, config.MetadataJSON, config.Metadata)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Semantic Project Dictionary", "The JSON object is malformed, overlaps another managed project metadata surface, or cannot be persisted exactly. No request was sent.")
+		return
+	}
+	semanticChanged, err := projectSemanticNeedsChange(ctx, config.MetadataJSON, state.MetadataJSON, priorProvenance)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Semantic Project Dictionary", "The semantic value or private ownership could not be compared safely. No request was sent.")
+		return
+	}
+	confirmationOwnership, err := prepared.updateOwnership(ctx, priorProvenance)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Semantic Dictionary Provenance", "Semantic shape-transition ownership could not be validated safely. No request was sent.")
+		return
+	}
+	pendingTransition := pendingProjectSemanticTransition(confirmationOwnership)
+	var pendingPrivate []byte
+	if pendingTransition.any() {
+		pendingPrivate, err = encodeKeySemanticPendingTransition(ctx, pendingTransition)
+		if err != nil {
+			resp.Diagnostics.AddError("Invalid Semantic Dictionary Provenance", "Pending semantic shape ownership could not be encoded safely. No request was sent.")
+			return
+		}
+	}
+	newProvenanceRaw, err := encodeProjectSemanticProvenance(ctx, prepared.provenance)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Semantic Dictionary Provenance", "Semantic ownership could not be encoded safely. No request was sent.")
+		return
+	}
+
 	plan.ID = state.ID
+	plan.MetadataJSON = config.MetadataJSON
 	if state.BudgetID.IsUnknown() || plan.BudgetID.IsUnknown() || !state.BudgetID.Equal(plan.BudgetID) {
-		resp.Diagnostics.AddError("Unsafe Project Budget Reassociation", "The project budget_id changed or remained unknown despite the plan safety check; no API call was made.")
+		resp.Diagnostics.AddError("Unsafe Project Budget Reassociation", "The project budget association changed or remained unknown despite the plan safety check; no API call was made.")
 		return
 	}
 	importedAlias, importedDescription := false, false
@@ -307,111 +542,164 @@ func (r *ProjectResource) Update(ctx context.Context, req resource.UpdateRequest
 		importedDescription = string(descriptionMarker) == "true" || string(legacyMarker) == "true"
 	}
 	if (!importedAlias && knownString(state.ProjectAlias) && config.ProjectAlias.IsNull()) || (!importedDescription && knownString(state.Description) && config.Description.IsNull()) {
-		resp.Diagnostics.AddError("Unsupported Project String Clear", "project_alias or description was removed despite the plan safety check; LiteLLM v1.98 ignores this null clear and no API call was made.")
+		resp.Diagnostics.AddError("Unsupported Project String Clear", "A project string was removed despite the plan safety check; no API call was made.")
 		return
 	}
 	if config.ModelMaxBudget.IsUnknown() || (knownMap(plan.ModelMaxBudget) && len(plan.ModelMaxBudget.Elements()) > 0 && !plan.ModelMaxBudget.Equal(state.ModelMaxBudget)) {
-		resp.Diagnostics.AddError("Unsupported Structured Project Model Budget", "The model_max_budget was unknown or changed despite the plan safety check; no API call was made.")
+		resp.Diagnostics.AddError("Unsupported Structured Project Model Budget", "The legacy model budget was unknown or changed despite the plan safety check; no API call was made.")
 		return
 	}
 	projectRequest, rowChanged, err := buildProjectRowUpdateRequest(ctx, &plan, &state)
 	if err != nil {
-		resp.Diagnostics.AddError("Invalid Project Request", err.Error())
+		resp.Diagnostics.AddError("Invalid Project Request", "The project row update could not be converted safely. No request was sent.")
 		return
 	}
+	delete(projectRequest, "metadata")
 	budgetRequest, budgetChanged, err := buildProjectBudgetUpdateRequest(&plan, &state)
 	if err != nil {
-		resp.Diagnostics.AddError("Invalid Project Budget Request", err.Error())
+		resp.Diagnostics.AddError("Invalid Project Budget Request", "The project budget update could not be converted safely. No request was sent.")
 		return
 	}
 	projectBudgetSets, directBudgetPatch := splitProjectBudgetUpdateRequest(budgetRequest)
 	for field, value := range projectBudgetSets {
 		projectRequest[field] = value
 	}
-	projectChanged := rowChanged || len(projectBudgetSets) > 0
+	pendingBudget := projectPendingBudgetFromPatch(directBudgetPatch)
+	pendingBudgetPrivate, err := encodeProjectPendingBudget(ctx, pendingBudget)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Project Recovery State", "Pending budget recovery state could not be encoded safely. No request was sent.")
+		return
+	}
+
+	legacyChanged := !plan.Metadata.IsUnknown() && !plan.Metadata.Equal(state.Metadata)
+	tagsChanged := !plan.Tags.IsUnknown() && !plan.Tags.Equal(state.Tags)
+	rpmChanged := !plan.ModelRPMLimit.IsUnknown() && !plan.ModelRPMLimit.Equal(state.ModelRPMLimit)
+	tpmChanged := !plan.ModelTPMLimit.IsUnknown() && !plan.ModelTPMLimit.Equal(state.ModelTPMLimit)
+	metadataChanged := semanticChanged || legacyChanged || tagsChanged || rpmChanged || tpmChanged
+	var hydrated map[string]interface{}
+	if metadataChanged {
+		hydrated, err = r.getFreshExactProjectInfo(ctx, state.ID.ValueString())
+		if err != nil {
+			resp.Diagnostics.AddError("Project Metadata Hydration Failed", "The complete identity-bound metadata document could not be read safely. No update request was sent.")
+			return
+		}
+		remoteMetadata, err := projectMetadataObject(ctx, hydrated)
+		if err != nil {
+			resp.Diagnostics.AddError("Project Metadata Hydration Failed", "The complete metadata document was malformed or not persistable exactly. No update request was sent.")
+			return
+		}
+		replacement, err := composeProjectMetadataReplacement(ctx, remoteMetadata, plan, state, priorProvenance, prepared)
+		if err != nil {
+			resp.Diagnostics.AddError("Project Metadata Composition Failed", "The complete metadata replacement could not be composed safely. No update request was sent.")
+			return
+		}
+		projectRequest["metadata"] = replacement
+	}
 
 	var budgetID string
 	if budgetChanged {
-		budgetID, err = r.lookupProjectBudgetID(ctx, state.ID.ValueString(), state.BudgetID)
+		if hydrated != nil {
+			budgetID, err = validateProjectBudgetFromInfo(hydrated, state.BudgetID)
+		} else {
+			budgetID, err = r.lookupProjectBudgetID(ctx, state.ID.ValueString(), state.BudgetID)
+		}
 		if err != nil {
-			resp.Diagnostics.AddError("Project Budget Lookup Error", err.Error())
+			resp.Diagnostics.AddError("Project Budget Lookup Error", "The authoritative budget association could not be validated. No update request was sent.")
 			return
 		}
 		if len(directBudgetPatch) > 0 {
 			directBudgetPatch["budget_id"] = budgetID
 		}
 	}
+	projectChanged := rowChanged || len(projectBudgetSets) > 0 || metadataChanged
+	retainPrior := func(localCtx context.Context) {
+		if len(pendingPrivate) != 0 && resp.Private != nil {
+			resp.Diagnostics.Append(resp.Private.SetKey(localCtx, projectPendingUpdatePrivateKey, pendingPrivate)...)
+		}
+		resp.Diagnostics.Append(resp.State.Set(localCtx, &state)...)
+	}
+	retainPriorWithBudget := func(localCtx context.Context) {
+		if len(pendingBudgetPrivate) != 0 && resp.Private != nil {
+			resp.Diagnostics.Append(resp.Private.SetKey(localCtx, projectPendingBudgetPrivateKey, pendingBudgetPrivate)...)
+		}
+		retainPrior(localCtx)
+	}
 	if projectChanged {
 		projectRequest["project_id"] = state.ID.ValueString()
 		var result map[string]interface{}
-		// LiteLLM v1.98's exact /project/update handler invokes
-		// _check_team_project_limits before writing its related budget row. All
-		// non-null project budget changes must pass through this route; using
-		// /budget/update directly would bypass parent-team max/TPM/RPM checks.
-		if err := r.client.DoRequestWithResponse(ctx, "POST", "/project/update", projectRequest, &result); err != nil {
-			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to update project: %s", err))
+		if err := r.client.DoRequestWithResponse(ctx, http.MethodPost, "/project/update", projectRequest, &result); err != nil {
+			if metadataChanged || len(pendingBudgetPrivate) != 0 {
+				retainPriorWithBudget(context.WithoutCancel(ctx))
+				resp.Diagnostics.AddError("Project Update Not Confirmed", "The project update may have been dispatched, but its metadata or budget outcome was not confirmed. Prior public and private state were retained.")
+			} else {
+				resp.Diagnostics.AddError("Project Update Failed", "The project update failed. Response, identity, URL, and transport details were omitted.")
+			}
 			return
 		}
-		object, err := unwrapObjectEnvelope(result, "project_info", "data")
-		if err != nil {
-			resp.Diagnostics.AddError("Invalid API Response", err.Error())
-			return
-		}
-		if err := validateImportedObjectIdentity(true, "project update", object, "project_id", state.ID.ValueString()); err != nil {
-			resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		object, unwrapErr := unwrapObjectEnvelope(result, "project_info", "data")
+		if unwrapErr != nil || validateImportedObjectIdentity(true, "project update", object, "project_id", state.ID.ValueString()) != nil {
+			if metadataChanged || len(pendingBudgetPrivate) != 0 {
+				retainPriorWithBudget(context.WithoutCancel(ctx))
+				resp.Diagnostics.AddError("Project Update Not Confirmed", "LiteLLM accepted the project update, but its response did not confirm the same identity. Prior public and private state were retained.")
+			} else {
+				resp.Diagnostics.AddError("Invalid API Response", "LiteLLM did not return the matching project identity.")
+			}
 			return
 		}
 	}
 	if len(directBudgetPatch) > 0 {
 		var result map[string]interface{}
-		// v1.98 serializes /project/update with exclude_none=True, so explicit
-		// clears cannot reach the budget table there. Its handler also does not
-		// recompute budget_reset_at. Only those null clears and an already-
-		// validated duration replay use /budget/update, after /project/update.
-		if err := r.client.DoRequestWithResponse(ctx, "POST", "/budget/update", directBudgetPatch, &result); err != nil {
-			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("LiteLLM accepted any preceding project update, but the reset/clear budget update failed; prior Terraform state was retained: %s", err))
+		if err := r.client.DoRequestWithResponse(ctx, http.MethodPost, "/budget/update", directBudgetPatch, &result); err != nil {
+			retainPriorWithBudget(context.WithoutCancel(ctx))
+			resp.Diagnostics.AddError("Project Budget Update Not Confirmed", "A preceding project update may have committed, but the reset or clear phase could not be confirmed. Prior state was retained.")
 			return
 		}
 		confirmedID, ok := result["budget_id"].(string)
 		if !ok || confirmedID != budgetID {
-			resp.Diagnostics.AddError("Invalid API Response", "LiteLLM accepted the reset/clear budget update but did not return the matching budget_id; prior Terraform state was retained.")
+			retainPriorWithBudget(context.WithoutCancel(ctx))
+			resp.Diagnostics.AddError("Project Budget Update Not Confirmed", "The reset or clear phase returned a malformed response. Prior state was retained.")
 			return
 		}
 	}
 	desired := plan
 	seedProjectClearOwnership(&plan, &state)
-	if err := r.readProject(ctx, &plan); err != nil {
-		resp.Diagnostics.AddError("Read Error", fmt.Sprintf("Project update was accepted but authoritative read-back failed; prior state was retained: %s", err))
+	readOwnership := projectSemanticOwnership{provenance: priorProvenance}
+	if metadataChanged {
+		readOwnership = confirmationOwnership
+	}
+	if err := r.readProjectWithOwnership(ctx, &plan, false, readOwnership); err != nil {
+		if metadataChanged {
+			retainPrior(context.WithoutCancel(ctx))
+			resp.Diagnostics.AddError("Project Metadata Update Not Confirmed", "LiteLLM accepted the update, but one authoritative identity-bound read did not confirm the complete metadata transition. Prior public and private state were retained.")
+		} else {
+			resp.Diagnostics.AddError("Project Update Readback Failed", "The project update was accepted, but authoritative readback failed. Prior state was retained; response, identity, URL, and transport details were omitted.")
+		}
 		return
 	}
-	if field, ok := projectChangedFieldMismatch(&desired, &state, &plan); ok {
-		resp.Diagnostics.AddError("Project Update Did Not Converge", fmt.Sprintf("LiteLLM accepted the update but authoritative read-back did not match planned %s; prior Terraform state was retained.", field))
+	if _, ok := projectChangedFieldMismatch(&desired, &state, &plan); ok {
+		if metadataChanged {
+			retainPrior(context.WithoutCancel(ctx))
+		}
+		resp.Diagnostics.AddError("Project Update Did Not Converge", "LiteLLM accepted the update, but authoritative readback did not match the plan. Prior state was retained.")
 		return
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 	if !resp.Diagnostics.HasError() && resp.Private != nil {
-		transitions := []struct {
-			importKey, pendingKey string
-			pending               bool
-		}{
-			{importKey: organizationProjectImportedBudgetPrivateKey, pendingKey: organizationProjectBudgetOwnershipPendingPrivateKey},
-			{importKey: projectImportedAliasPrivateKey, pendingKey: projectAliasOwnershipPendingPrivateKey},
-			{importKey: projectImportedDescriptionPrivateKey, pendingKey: projectDescriptionOwnershipPendingPrivateKey},
-		}
-		for index := range transitions {
-			marker, diagnostics := resp.Private.GetKey(ctx, transitions[index].pendingKey)
-			resp.Diagnostics.Append(diagnostics...)
-			transitions[index].pending = string(marker) == "true"
-		}
-		if resp.Diagnostics.HasError() {
-			return
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, projectMetadataJSONProvenancePrivateKey, newProvenanceRaw)...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, projectPendingUpdatePrivateKey, nil)...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, projectPendingBudgetPrivateKey, nil)...)
+		transitions := []struct{ importKey, pendingKey string }{
+			{organizationProjectImportedBudgetPrivateKey, organizationProjectBudgetOwnershipPendingPrivateKey},
+			{projectImportedAliasPrivateKey, projectAliasOwnershipPendingPrivateKey},
+			{projectImportedDescriptionPrivateKey, projectDescriptionOwnershipPendingPrivateKey},
 		}
 		for _, transition := range transitions {
-			if !transition.pending {
-				continue
+			marker, diagnostics := resp.Private.GetKey(ctx, transition.pendingKey)
+			resp.Diagnostics.Append(diagnostics...)
+			if string(marker) == "true" {
+				resp.Diagnostics.Append(resp.Private.SetKey(ctx, transition.importKey, nil)...)
+				resp.Diagnostics.Append(resp.Private.SetKey(ctx, transition.pendingKey, nil)...)
 			}
-			resp.Diagnostics.Append(resp.Private.SetKey(ctx, transition.importKey, nil)...)
-			resp.Diagnostics.Append(resp.Private.SetKey(ctx, transition.pendingKey, nil)...)
 		}
 	}
 }
@@ -419,21 +707,79 @@ func (r *ProjectResource) Update(ctx context.Context, req resource.UpdateRequest
 func (r *ProjectResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	var data ProjectResourceModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
+	var acceptedRaw, pendingRaw, pendingBudgetRaw []byte
+	if req.Private != nil {
+		var diagnostics diag.Diagnostics
+		acceptedRaw, diagnostics = req.Private.GetKey(ctx, projectAcceptedCreateRecoveryPrivateKey)
+		resp.Diagnostics.Append(diagnostics...)
+		pendingRaw, diagnostics = req.Private.GetKey(ctx, projectPendingUpdatePrivateKey)
+		resp.Diagnostics.Append(diagnostics...)
+		pendingBudgetRaw, diagnostics = req.Private.GetKey(ctx, projectPendingBudgetPrivateKey)
+		resp.Diagnostics.Append(diagnostics...)
+	}
+	if len(pendingRaw) != 0 {
+		resp.Diagnostics.AddError("Project Recovery Required", "A prior semantic metadata update has not been reconciled. Refresh must reconcile it before deletion can be sent.")
+		return
+	}
+	if len(pendingBudgetRaw) != 0 {
+		resp.Diagnostics.AddError("Project Recovery Required", "A prior project budget update has not been reconciled. Refresh must reconcile it before deletion can be sent.")
+		return
+	}
+	if string(acceptedRaw) == "true" {
+		resp.Diagnostics.AddError("Project Recovery Required", "A prior project create was accepted without complete readback. Refresh must reconcile it before deletion can be sent.")
+		return
+	}
+	if len(acceptedRaw) != 0 {
+		resp.Diagnostics.AddError("Invalid Project Recovery State", "Accepted-create recovery state is malformed. No project deletion was sent.")
+		return
+	}
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	if err := r.client.DoRequestWithResponse(ctx, "DELETE", "/project/delete", map[string]interface{}{"project_ids": []string{data.ID.ValueString()}}, nil); err != nil && !IsNotFoundError(err) {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to delete project: %s", err))
+	if err := r.client.DoRequestWithResponse(ctx, http.MethodDelete, "/project/delete", map[string]interface{}{"project_ids": []string{data.ID.ValueString()}}, nil); err != nil && !IsNotFoundError(err) {
+		resp.Diagnostics.AddError("Project Delete Failed", "The project deletion failed. Response, identity, URL, and transport details were omitted.")
 	}
 }
 
 func (r *ProjectResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+	provenance, err := encodeProjectSemanticProvenance(ctx, projectUnconfiguredSemanticProvenance())
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Semantic Dictionary Provenance", "Import ownership could not be initialized safely.")
+		return
+	}
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("metadata_json"), types.StringNull())...)
 	if resp.Private != nil {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, projectMetadataJSONProvenancePrivateKey, provenance)...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, projectAcceptedCreateRecoveryPrivateKey, nil)...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, projectPendingUpdatePrivateKey, nil)...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, projectPendingBudgetPrivateKey, nil)...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, []byte("true"))...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, organizationProjectImportedBudgetPrivateKey, []byte("true"))...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, projectImportedAliasPrivateKey, []byte("true"))...)
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, projectImportedDescriptionPrivateKey, []byte("true"))...)
+	}
+}
+
+// UpgradeState performs the direct v0-to-v1 migration without adopting any
+// remotely observed metadata.
+func (r *ProjectResource) UpgradeState(context.Context) map[int64]resource.StateUpgrader {
+	return map[int64]resource.StateUpgrader{
+		0: {
+			PriorSchema: nil,
+			StateUpgrader: func(_ context.Context, req resource.UpgradeStateRequest, resp *resource.UpgradeStateResponse) {
+				if req.RawState == nil {
+					resp.Diagnostics.AddError("Unable to Upgrade State", "Prior project state is unavailable.")
+					return
+				}
+				upgraded, err := marshalProjectUpgrade(req.RawState.JSON)
+				if err != nil {
+					resp.Diagnostics.AddError("Unable to Upgrade State", "Prior project state could not be decoded safely.")
+					return
+				}
+				resp.DynamicValue = &tfprotov6.DynamicValue{JSON: upgraded}
+			},
+		},
 	}
 }
 
@@ -628,6 +974,38 @@ func projectMetadataPayload(ctx context.Context, data *ProjectResourceModel) (ma
 	return metadata, managed, nil
 }
 
+func (r *ProjectResource) getFreshExactProjectInfo(ctx context.Context, projectID string) (map[string]interface{}, error) {
+	if projectID == "" {
+		return nil, errSemanticDictionaryTraversal
+	}
+	var result map[string]interface{}
+	query := url.Values{"project_id": []string{projectID}}
+	endpoint := endpointWithQuery("/project/info", query)
+	if err := r.client.doFreshRequestWithResponse(ctx, http.MethodGet, endpoint, nil, &result); err != nil {
+		return nil, err
+	}
+	object, err := unwrapObjectEnvelope(result, "project_info", "data")
+	if err != nil || validateImportedObjectIdentity(true, "project", object, "project_id", projectID) != nil {
+		return nil, errSemanticDictionaryTraversal
+	}
+	return object, nil
+}
+
+func validateProjectBudgetFromInfo(object map[string]interface{}, configured types.String) (string, error) {
+	table, err := parseBudgetTable(object)
+	if err != nil {
+		return "", err
+	}
+	budgetID, presence, err := budgetTableID(object, table)
+	if err != nil || presence != apiValuePresent {
+		return "", errSemanticDictionaryTraversal
+	}
+	if knownString(configured) && configured.ValueString() != budgetID {
+		return "", errSemanticDictionaryTraversal
+	}
+	return budgetID, nil
+}
+
 func (r *ProjectResource) lookupProjectBudgetID(ctx context.Context, projectID string, configured types.String) (string, error) {
 	var result map[string]interface{}
 	query := url.Values{"project_id": []string{projectID}}
@@ -660,30 +1038,67 @@ func (r *ProjectResource) lookupProjectBudgetID(ctx context.Context, projectID s
 }
 
 func (r *ProjectResource) readProject(ctx context.Context, data *ProjectResourceModel) error {
-	return r.readProjectWithNumericOwnership(ctx, data, false)
+	return r.readProjectWithOwnership(ctx, data, false, projectSemanticOwnership{provenance: projectUnconfiguredSemanticProvenance()})
 }
 
 func (r *ProjectResource) readProjectWithNumericOwnership(ctx context.Context, data *ProjectResourceModel, imported bool) error {
+	return r.readProjectWithOwnership(ctx, data, imported, projectSemanticOwnership{provenance: projectUnconfiguredSemanticProvenance()})
+}
+
+func (r *ProjectResource) readProjectWithOwnership(ctx context.Context, data *ProjectResourceModel, imported bool, ownership projectSemanticOwnership) error {
 	projectID := data.ID.ValueString()
 	if projectID == "" {
 		return fmt.Errorf("project ID is empty, cannot read project")
 	}
-	var result map[string]interface{}
-	query := url.Values{"project_id": []string{projectID}}
-	endpoint := endpointWithQuery("/project/info", query)
-	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
-		return err
+	var object map[string]interface{}
+	var err error
+	if ownership.fresh {
+		object, err = r.getFreshExactProjectInfo(ctx, projectID)
+	} else {
+		var result map[string]interface{}
+		query := url.Values{"project_id": []string{projectID}}
+		endpoint := endpointWithQuery("/project/info", query)
+		if err = r.client.DoRequestWithResponse(ctx, http.MethodGet, endpoint, nil, &result); err == nil {
+			object, err = unwrapObjectEnvelope(result, "project_info", "data")
+			if err == nil {
+				err = validateImportedObjectIdentity(true, "project", object, "project_id", projectID)
+			}
+		}
 	}
-	object, err := unwrapObjectEnvelope(result, "project_info", "data")
 	if err != nil {
 		return err
 	}
-	if err := validateImportedObjectIdentity(true, "project", object, "project_id", projectID); err != nil {
+	metadataObject, err := projectMetadataObject(ctx, object)
+	if err != nil {
 		return err
 	}
-	if err := requireImportedStringField(imported, "project", object, "team_id"); err != nil {
-		return err
+	if ownership.pending.any() {
+		var reconcile keySemanticPendingReconcile
+		ownership, reconcile, err = resolveProjectSemanticPending(ctx, metadataObject, ownership)
+		if err != nil {
+			return errSemanticDictionaryTraversal
+		}
+		if ownership.reconcile != nil {
+			*ownership.reconcile = reconcile
+		}
 	}
+	remoteTeam, teamPresence, err := apiValueAt(object, "team_id")
+	if err != nil || teamPresence != apiValuePresent {
+		return errSemanticDictionaryTraversal
+	}
+	teamID, ok := remoteTeam.(string)
+	if !ok || teamID == "" {
+		return errSemanticDictionaryTraversal
+	}
+	// team_id is required public configuration and cannot be repaired through
+	// the project update endpoint. Every authoritative read must confirm the
+	// configured association instead of silently adopting a reassignment.
+	if knownString(data.TeamID) && teamID != data.TeamID.ValueString() {
+		return errSemanticDictionaryTraversal
+	}
+	original := data
+	next := *data
+	data = &next
 	table, err := parseBudgetTable(object)
 	if err != nil {
 		return err
@@ -692,16 +1107,40 @@ func (r *ProjectResource) readProjectWithNumericOwnership(ctx context.Context, d
 	if err != nil {
 		return err
 	}
-	budgetOwned := imported || knownString(data.BudgetID)
+	if table.presence == apiValuePresent {
+		_, nestedPresence, nestedErr := table.value("budget_id")
+		if nestedErr != nil || nestedPresence == apiValueNull {
+			// A present relation originates from a database row whose primary key is
+			// non-null. Explicit null is malformed, not authoritative absence.
+			return errSemanticDictionaryTraversal
+		}
+	}
+	knownBudgetID := knownString(data.BudgetID)
+	budgetOwned := imported || knownBudgetID
 	if budgetPresence == apiValuePresent && budgetOwned {
-		if !imported && knownString(data.BudgetID) && data.BudgetID.ValueString() != remoteBudgetID {
-			return fmt.Errorf("project budget reassociation detected: state budget_id %q, API budget_id %q", data.BudgetID.ValueString(), remoteBudgetID)
+		// Project budget authority is the nested relation. The top-level foreign
+		// key is only a consistency copy and cannot establish import ownership,
+		// consume recovery, or replace a configured/imported identity by itself.
+		nestedBudgetID, nestedPresence, nestedErr := table.value("budget_id")
+		if nestedErr != nil || nestedPresence != apiValuePresent {
+			return errSemanticDictionaryTraversal
+		}
+		nestedString, ok := nestedBudgetID.(string)
+		if !ok || nestedString == "" || nestedString != remoteBudgetID {
+			return errSemanticDictionaryTraversal
+		}
+		if knownBudgetID && data.BudgetID.ValueString() != remoteBudgetID {
+			return errSemanticDictionaryTraversal
 		}
 		data.BudgetID = types.StringValue(remoteBudgetID)
-	} else if budgetOwned && budgetPresence != apiValuePresent {
-		data.BudgetID = types.StringNull()
-	} else if !budgetOwned && data.BudgetID.IsUnknown() {
-		// Do not adopt LiteLLM's generated budget for an ordinary omitted create.
+	} else if knownString(data.BudgetID) && budgetPresence != apiValuePresent {
+		// A retained budget identity represents configured/imported authority.
+		// Missing readback cannot prove that association and project update cannot
+		// repair it, so preserve prior state by failing the transactional read.
+		return errSemanticDictionaryTraversal
+	} else if imported || data.BudgetID.IsUnknown() {
+		// Imports may authoritatively establish that no shared budget exists. An
+		// ordinary omitted create must likewise not adopt LiteLLM's generated ID.
 		data.BudgetID = types.StringNull()
 	}
 	data.ID = types.StringValue(projectID)
@@ -774,36 +1213,61 @@ func (r *ProjectResource) readProjectWithNumericOwnership(ctx context.Context, d
 	if err := updateLegacyProjectModelMaxBudget(&data.ModelMaxBudget, table); err != nil {
 		return err
 	}
+	// A failed second-phase /budget/update must not let refresh adopt values
+	// already written by /project/update, or Terraform would lose the diff that
+	// retries reset initialization and explicit clears. The marker stores only
+	// field names; desired/prior values remain in normal public state.
+	if ownership.pendingBudget["max_budget"] {
+		data.MaxBudget = original.MaxBudget
+	}
+	if ownership.pendingBudget["soft_budget"] {
+		data.SoftBudget = original.SoftBudget
+	}
+	if ownership.pendingBudget["budget_duration"] {
+		data.BudgetDuration = original.BudgetDuration
+	}
+	if ownership.pendingBudget["tpm_limit"] {
+		data.TPMLimit = original.TPMLimit
+	}
+	if ownership.pendingBudget["rpm_limit"] {
+		data.RPMLimit = original.RPMLimit
+	}
+	if ownership.pendingBudget["max_parallel_requests"] {
+		data.MaxParallelRequests = original.MaxParallelRequests
+	}
+	if ownership.pendingBudget["model_max_budget"] {
+		data.ModelMaxBudget = original.ModelMaxBudget
+	}
 
-	metadataState, metadataPresence, err := stringMapFromAPI(object, "metadata", "tags", "model_rpm_limit", "model_tpm_limit")
+	nextMetadata, err := projectProjectLegacyMetadata(ctx, data.Metadata, metadataObject, ownership)
 	if err != nil {
 		return err
 	}
-	if metadataPresence != apiValuePresent {
-		metadataState = types.MapNull(types.StringType)
+	nextJSON, err := projectProjectSemanticMetadata(ctx, data.MetadataJSON, metadataObject, ownership)
+	if err != nil {
+		return err
 	}
-	data.Metadata = metadataState
-	if metadataObject, ok := object["metadata"].(map[string]interface{}); ok {
-		tags, presence, err := stringListFromAPI(metadataObject, "tags")
-		if err != nil {
-			return fmt.Errorf("invalid response field metadata.tags: %w", err)
-		}
-		if presence == apiValuePresent {
-			data.Tags = tags
-		} else {
-			data.Tags = types.ListNull(types.StringType)
-		}
+	nextTags := data.Tags
+	tags, tagsPresence, diagnostics := strictAPIStringList(ctx, metadataObject, "tags", path.Root("tags"))
+	if err := collectionProjectionError(ctx, diagnostics); err != nil {
+		return err
+	}
+	if tagsPresence == apiValuePresent {
+		nextTags = tags
 	} else {
-		data.Tags = types.ListNull(types.StringType)
+		nextTags = types.ListNull(types.StringType)
 	}
-	rpmOwned := imported || knownMap(data.ModelRPMLimit)
-	if err := updateInt64MapFromAPI(&data.ModelRPMLimit, object, rpmOwned, rpmOwned, "metadata", "model_rpm_limit"); err != nil {
+	nextRPM, nextTPM := data.ModelRPMLimit, data.ModelTPMLimit
+	rpmOwned := imported || knownMap(nextRPM)
+	if err := updateInt64MapFromAPI(&nextRPM, object, rpmOwned, rpmOwned, "metadata", "model_rpm_limit"); err != nil {
 		return err
 	}
-	tpmOwned := imported || knownMap(data.ModelTPMLimit)
-	if err := updateInt64MapFromAPI(&data.ModelTPMLimit, object, tpmOwned, tpmOwned, "metadata", "model_tpm_limit"); err != nil {
+	tpmOwned := imported || knownMap(nextTPM)
+	if err := updateInt64MapFromAPI(&nextTPM, object, tpmOwned, tpmOwned, "metadata", "model_tpm_limit"); err != nil {
 		return err
 	}
+	data.Metadata, data.MetadataJSON, data.Tags, data.ModelRPMLimit, data.ModelTPMLimit = nextMetadata, nextJSON, nextTags, nextRPM, nextTPM
+	*original = *data
 	return nil
 }
 
@@ -844,7 +1308,7 @@ func projectChangedFieldMismatch(desired, prior, actual *ProjectResourceModel) (
 	}{
 		{"project_alias", desired.ProjectAlias, prior.ProjectAlias, actual.ProjectAlias}, {"description", desired.Description, prior.Description, actual.Description},
 		{"models", desired.Models, prior.Models, actual.Models}, {"blocked", desired.Blocked, prior.Blocked, actual.Blocked},
-		{"metadata", desired.Metadata, prior.Metadata, actual.Metadata}, {"tags", desired.Tags, prior.Tags, actual.Tags},
+		{"metadata", desired.Metadata, prior.Metadata, actual.Metadata}, {"metadata_json", desired.MetadataJSON, prior.MetadataJSON, actual.MetadataJSON}, {"tags", desired.Tags, prior.Tags, actual.Tags},
 		{"max_budget", desired.MaxBudget, prior.MaxBudget, actual.MaxBudget}, {"soft_budget", desired.SoftBudget, prior.SoftBudget, actual.SoftBudget},
 		{"budget_duration", desired.BudgetDuration, prior.BudgetDuration, actual.BudgetDuration},
 		{"tpm_limit", desired.TPMLimit, prior.TPMLimit, actual.TPMLimit}, {"rpm_limit", desired.RPMLimit, prior.RPMLimit, actual.RPMLimit},

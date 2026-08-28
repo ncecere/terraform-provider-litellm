@@ -533,6 +533,7 @@ func TestReadProjectRemoteNumericClearsAreVisible(t *testing.T) {
 
 	server, client := jsonServer(t, map[string]interface{}{
 		"project_id": "project-1",
+		"team_id":    "team-1",
 		"litellm_budget_table": map[string]interface{}{
 			"max_budget":            nil,
 			"soft_budget":           nil,
