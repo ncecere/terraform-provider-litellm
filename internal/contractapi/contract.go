@@ -1261,11 +1261,12 @@ var reviewedPaginationFunctions = map[string]bool{
 // raw-identity helpers and promptEnvironment. Any implementation or dependency
 // change must be independently reviewed before its new proof is admitted here.
 var reviewedRawIdentityProofs = map[string]string{
-	"keyDataSourceLookup":          "f08481c1c2e15199e9c41d00951db05a4c7a4f9b2c47808b8cc856064292f54c",
-	"keyLookupIdentifier":          "f49ebea85202b2949fdd44b9aab7cc8c417a72d3d187733f2796194962471652",
-	"keyBlockStateIdentity":        "565265e0425d3c4820d1bd198c0fed6f1b641e4dc4790752c269de3bd49eb08f",
-	"batchTeamID":                  "c568cb284d64ec148f22093cc28d161db0f7f00d88a7728f53b44d9d12fd3c04",
-	"teamMemberConfiguredIdentity": "f7f74ec5327d73d2f6a935213553eaab298068b93fe1b081734d619a51adfc3d",
+	"keyDataSourceLookup":           "f08481c1c2e15199e9c41d00951db05a4c7a4f9b2c47808b8cc856064292f54c",
+	"mcpToolsetRecoveredIdentifier": "d033f5fb1197863e7de681d0665ec565ad9f43147b2b1defccafdc4d5083be40",
+	"keyLookupIdentifier":           "f638e6ceae941566d90284c9ca00290bd11a785e58b168c06f21c7d6e6a5b55d",
+	"keyBlockStateIdentity":         "565265e0425d3c4820d1bd198c0fed6f1b641e4dc4790752c269de3bd49eb08f",
+	"batchTeamID":                   "c568cb284d64ec148f22093cc28d161db0f7f00d88a7728f53b44d9d12fd3c04",
+	"teamMemberConfiguredIdentity":  "f7f74ec5327d73d2f6a935213553eaab298068b93fe1b081734d619a51adfc3d",
 }
 
 var reviewedPromptEnvironmentProof = "9796a2c10e9c247caa736ddc593d0fff808ff9b1f846541349008174604f2920"

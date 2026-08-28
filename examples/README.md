@@ -11,6 +11,7 @@ This directory contains example configurations for the LiteLLM Terraform provide
 | [multi-provider](./multi-provider/) | Configuring multiple LLM providers (OpenAI, Anthropic, Azure, Bedrock) |
 | [data-sources](./data-sources/) | Using data sources to reference existing resources |
 | [mcp-servers](./mcp-servers/) | MCP server configurations (HTTP, SSE, OAuth, stdio) |
+| [mcp-toolsets](./mcp-toolsets/) | MCP toolset definitions |
 | [search-tools](./search-tools/) | Search tool configurations (Tavily, Serper, Bing, Google) |
 
 ## Prerequisites and Compatibility
@@ -108,6 +109,10 @@ Complete examples of MCP server configurations:
 - **SSE transport**: Zapier automation
 - **OAuth**: Enterprise API with OAuth2
 - **Stdio**: Local development tools
+
+### MCP Toolsets (`mcp-toolsets/`)
+
+Shows populated and empty MCP toolset definitions and assignments to keys and teams.
 
 ### Search Tools (`search-tools/`)
 

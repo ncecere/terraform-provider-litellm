@@ -14,8 +14,8 @@ func TestKeySemanticDictionarySchemaAndDirectUpgrades(t *testing.T) {
 	ctx := context.Background()
 	var schemaResponse frameworkresource.SchemaResponse
 	(&KeyResource{}).Schema(ctx, frameworkresource.SchemaRequest{}, &schemaResponse)
-	if schemaResponse.Schema.Version != 2 {
-		t.Fatalf("schema version = %d, want 2", schemaResponse.Schema.Version)
+	if schemaResponse.Schema.Version != 3 {
+		t.Fatalf("schema version = %d, want 3", schemaResponse.Schema.Version)
 	}
 	for _, name := range []string{"metadata_json", "config_json", "permissions_json"} {
 		attribute, ok := schemaResponse.Schema.Attributes[name]

@@ -27,6 +27,7 @@ var (
 		"examples/complete/main.tf",
 		"examples/data-sources/main.tf",
 		"examples/mcp-servers/main.tf",
+		"examples/mcp-toolsets/main.tf",
 		"examples/minimal/main.tf",
 		"examples/multi-provider/main.tf",
 		"examples/search-tools/main.tf",

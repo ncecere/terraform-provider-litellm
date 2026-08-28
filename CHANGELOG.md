@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`litellm_mcp_toolset` and assignments**: Manage LiteLLM v1.98 MCP toolset definitions with stable ID import, unordered server/tool membership, empty toolsets, and create, read, update, and delete lifecycle support. Keys and teams manage unordered toolset assignments with explicit clear, omission-based ownership release, and import behavior; assignment mutations are transactional and retain prior state until an authoritative readback confirms them. Toolset creates distinguish rejected, accepted-unconfirmed, and dispatched-uncertain outcomes, recover accepted creates only through exact-name evidence with direct-ID and definition confirmation, fail closed on unknown values and terminal recovery answers, and use context-aware bounded backoff. `litellm_key` state upgrades to schema v3 and `litellm_team` to v2 with direct upgraders from every prior version. User assignments are out of scope for this change. ([#207](https://github.com/ncecere/terraform-provider-litellm/issues/207))
+
 ## [2.1.0] - 2026-08-29
 
 ### Upgrade Notes

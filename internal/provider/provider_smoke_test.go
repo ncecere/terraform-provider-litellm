@@ -32,6 +32,7 @@ var expectedResourceTypeNames = []string{
 	"litellm_team_member",
 	"litellm_team_member_add",
 	"litellm_mcp_server",
+	"litellm_mcp_toolset",
 	"litellm_credential",
 	"litellm_vector_store",
 	"litellm_organization",
@@ -413,13 +414,17 @@ func TestResourcesImportState(t *testing.T) {
 			continue
 		}
 
+		identityPath := path.Root("id")
+		if metaResp.TypeName == "litellm_mcp_toolset" {
+			identityPath = path.Root("toolset_id")
+		}
 		var id string
-		if diags := importResp.State.GetAttribute(context.Background(), path.Root("id"), &id); diags.HasError() {
+		if diags := importResp.State.GetAttribute(context.Background(), identityPath, &id); diags.HasError() {
 			t.Errorf("resource %q: reading imported id: %v", metaResp.TypeName, diags.Errors())
 			continue
 		}
 		if id == "" {
-			t.Errorf("resource %q: ImportState did not populate id", metaResp.TypeName)
+			t.Errorf("resource %q: ImportState did not populate identity", metaResp.TypeName)
 		}
 	}
 }

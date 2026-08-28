@@ -72,6 +72,7 @@ type TeamResourceModel struct {
 	TeamMemberRPMLimit    types.Int64   `tfsdk:"team_member_rpm_limit"`
 	TeamMemberTPMLimit    types.Int64   `tfsdk:"team_member_tpm_limit"`
 	RouterSettings        types.Object  `tfsdk:"router_settings"`
+	MCPToolsetIDs         types.Set     `tfsdk:"mcp_toolset_ids"`
 }
 
 func teamChangedFieldMismatch(desired, prior, actual TeamResourceModel) (string, bool) {
@@ -102,6 +103,7 @@ func teamChangedFieldMismatch(desired, prior, actual TeamResourceModel) (string,
 		{"team_member_rpm_limit", desired.TeamMemberRPMLimit, prior.TeamMemberRPMLimit, actual.TeamMemberRPMLimit},
 		{"team_member_tpm_limit", desired.TeamMemberTPMLimit, prior.TeamMemberTPMLimit, actual.TeamMemberTPMLimit},
 		{"router_settings", desired.RouterSettings, prior.RouterSettings, actual.RouterSettings},
+		{"mcp_toolset_ids", desired.MCPToolsetIDs, prior.MCPToolsetIDs, actual.MCPToolsetIDs},
 	} {
 		if !field.desired.IsUnknown() && !field.desired.Equal(field.prior) && !field.desired.Equal(field.actual) {
 			return field.name, true
@@ -145,6 +147,7 @@ func partialTeamState(teamID string) TeamResourceModel {
 		ID:                    types.StringValue(teamID),
 		TeamID:                types.StringValue(teamID),
 		AccessGroupIDs:        types.SetNull(types.StringType),
+		MCPToolsetIDs:         types.SetNull(types.StringType),
 		Metadata:              types.MapNull(types.StringType),
 		MetadataJSON:          types.StringNull(),
 		Models:                types.ListNull(types.StringType),
@@ -219,7 +222,7 @@ func (r *TeamResource) Metadata(ctx context.Context, req resource.MetadataReques
 func (r *TeamResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		Description: "Manages a LiteLLM team.",
-		Version:     1,
+		Version:     2,
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Description: "The unique identifier for this team.",
@@ -252,6 +255,14 @@ func (r *TeamResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 				Description: "Access group IDs associated with this team. Order is ignored. Set an empty collection to detach all access groups.",
 				Optional:    true,
 				Computed:    true,
+				ElementType: types.StringType,
+				Validators: []validator.Set{
+					setvalidator.ValueStringsAre(stringvalidator.LengthAtLeast(1)),
+				},
+			},
+			"mcp_toolset_ids": schema.SetAttribute{
+				Description: "MCP toolset IDs allowed for keys in this team. LiteLLM treats a nonempty set as a ceiling, not an inherited grant; a null or empty set imposes no ceiling, so an empty set removes the ceiling rather than denying all toolsets. Omit this attribute to leave the remote value unmanaged.",
+				Optional:    true,
 				ElementType: types.StringType,
 				Validators: []validator.Set{
 					setvalidator.ValueStringsAre(stringvalidator.LengthAtLeast(1)),
@@ -824,6 +835,10 @@ func (r *TeamResource) Update(ctx context.Context, req resource.UpdateRequest, r
 		memberBudgetReinsert = reinsert
 	}
 
+	// LiteLLM persists object_permission before the team row, so a dispatched
+	// update that carries assignments may commit partially and must retain
+	// prior state until an authoritative readback confirms convergence.
+	_, assignmentMutation := teamReq["object_permission"]
 	pendingMember := changedTeamPendingMemberDefaults(data, state, teamReq)
 	clearReq := extractTeamMemberBudgetClears(teamReq, data.ID.ValueString())
 	pendingMemberPrivate, err := encodeTeamPendingMemberDefaults(ctx, pendingMember)
@@ -856,7 +871,7 @@ func (r *TeamResource) Update(ctx context.Context, req resource.UpdateRequest, r
 	if err := r.client.DoRequestWithResponse(ctx, http.MethodPost, "/team/update", teamReq, nil); err != nil {
 		dispatched := ClassifyHTTPFailure(err).RequestDispatched
 		memberRecovery := len(pendingMember) != 0 && (memberDefaultsMayHaveCommitted || dispatched)
-		if metadataChanged || clearReq != nil || memberRecovery {
+		if metadataChanged || clearReq != nil || memberRecovery || (assignmentMutation && dispatched) {
 			retainPrior(context.WithoutCancel(ctx), dispatched, memberRecovery)
 			resp.Diagnostics.AddError("Team Update Not Confirmed", "The team update may have partially committed, but its complete outcome was not confirmed. Prior public and private state were retained.")
 		} else {
@@ -880,7 +895,7 @@ func (r *TeamResource) Update(ctx context.Context, req resource.UpdateRequest, r
 		readOwnership.expectMemberBudgetID = memberBudgetReinsert
 	}
 	if err := r.readTeamWithOwnership(ctx, &data, false, readOwnership); err != nil {
-		if metadataChanged || clearReq != nil || memberDefaultsMayHaveCommitted {
+		if metadataChanged || clearReq != nil || memberDefaultsMayHaveCommitted || assignmentMutation {
 			retainPrior(context.WithoutCancel(ctx), true, memberDefaultsMayHaveCommitted)
 		}
 		resp.Diagnostics.AddError("Team Update Readback Failed", "LiteLLM accepted the update, but authoritative identity-bound readback did not confirm convergence. Prior state was retained.")
@@ -888,10 +903,18 @@ func (r *TeamResource) Update(ctx context.Context, req resource.UpdateRequest, r
 	}
 	preserveTeamMutationRepresentations(planned, &data)
 	if _, mismatch := teamChangedFieldMismatch(planned, state, data); mismatch {
-		if metadataChanged || clearReq != nil || memberDefaultsMayHaveCommitted {
+		if metadataChanged || clearReq != nil || memberDefaultsMayHaveCommitted || assignmentMutation {
 			retainPrior(context.WithoutCancel(ctx), true, memberDefaultsMayHaveCommitted)
 		}
 		resp.Diagnostics.AddError("Team Update Did Not Converge", "LiteLLM accepted the update, but authoritative readback did not match the plan. Prior state was retained.")
+		return
+	}
+	// The changed-field comparison skips fields equal to prior state, but a
+	// dispatched assignment payload must converge even when the configured set
+	// did not change, because a partial write can drop the ceiling silently.
+	if assignmentMutation && !data.MCPToolsetIDs.Equal(planned.MCPToolsetIDs) {
+		retainPrior(context.WithoutCancel(ctx), true, memberDefaultsMayHaveCommitted)
+		resp.Diagnostics.AddError("MCP Toolset Assignment Did Not Converge", "LiteLLM accepted the team update, but authoritative readback did not match the planned toolset assignments. Prior state was retained.")
 		return
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
@@ -949,19 +972,25 @@ func (r *TeamResource) ImportState(ctx context.Context, req resource.ImportState
 	}
 }
 
+// UpgradeState handles direct migrations to schema v2. Version 0 initializes
+// metadata_json as an unconfigured null; every prior version initializes
+// mcp_toolset_ids as an unmanaged null and preserves the other attributes.
 func (r *TeamResource) UpgradeState(context.Context) map[int64]resource.StateUpgrader {
-	return map[int64]resource.StateUpgrader{0: {PriorSchema: nil, StateUpgrader: func(_ context.Context, req resource.UpgradeStateRequest, resp *resource.UpgradeStateResponse) {
-		if req.RawState == nil {
-			resp.Diagnostics.AddError("Unable to Upgrade State", "Prior team state is unavailable.")
-			return
-		}
-		upgraded, err := marshalTeamUpgrade(req.RawState.JSON)
-		if err != nil {
-			resp.Diagnostics.AddError("Unable to Upgrade State", "Prior team state could not be decoded safely.")
-			return
-		}
-		resp.DynamicValue = &tfprotov6.DynamicValue{JSON: upgraded}
-	}}}
+	upgrade := func(resetMetadataJSON bool) resource.StateUpgrader {
+		return resource.StateUpgrader{PriorSchema: nil, StateUpgrader: func(_ context.Context, req resource.UpgradeStateRequest, resp *resource.UpgradeStateResponse) {
+			if req.RawState == nil {
+				resp.Diagnostics.AddError("Unable to Upgrade State", "Prior team state is unavailable.")
+				return
+			}
+			upgraded, err := marshalTeamUpgrade(req.RawState.JSON, resetMetadataJSON)
+			if err != nil {
+				resp.Diagnostics.AddError("Unable to Upgrade State", "Prior team state could not be decoded safely.")
+				return
+			}
+			resp.DynamicValue = &tfprotov6.DynamicValue{JSON: upgraded}
+		}}
+	}
+	return map[int64]resource.StateUpgrader{0: upgrade(true), 1: upgrade(false)}
 }
 
 func (r *TeamResource) buildTeamRequest(ctx context.Context, data *TeamResourceModel, teamID string) (map[string]interface{}, error) {
@@ -1123,6 +1152,9 @@ func (r *TeamResource) buildTeamRequest(ctx context.Context, data *TeamResourceM
 		teamReq["router_settings"] = routerSettings
 	} else if data.RouterSettings.IsNull() {
 		teamReq["router_settings"] = map[string]interface{}{}
+	}
+	if toolsetDiagnostics := addMCPToolsetIDsToRequest(ctx, teamReq, data.MCPToolsetIDs); toolsetDiagnostics.HasError() {
+		return nil, fmt.Errorf("invalid mcp_toolset_ids collection")
 	}
 
 	return teamReq, nil

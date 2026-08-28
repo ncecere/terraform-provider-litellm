@@ -138,8 +138,8 @@ func TestResolvedOperationTableHasReviewedPathModes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(operations) != 108 {
-		t.Fatalf("operation count = %d, want 108", len(operations))
+	if len(operations) != 113 {
+		t.Fatalf("operation count = %d, want 113", len(operations))
 	}
 	captures := map[string]bool{
 		"GET /credentials/by_name/{credential_name}": true,
@@ -710,8 +710,8 @@ func TestProductionRawIdentityFlowsKeepLexicalIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	operations, err := ResolveOperations(extracted, contracts)
-	if err != nil || len(operations) != 108 {
-		t.Fatalf("shadowed production operation inventory = %d, want 108: %v", len(operations), err)
+	if err != nil || len(operations) != 113 {
+		t.Fatalf("shadowed production operation inventory = %d, want 113: %v", len(operations), err)
 	}
 
 	for _, pattern := range patterns {
@@ -3188,8 +3188,44 @@ func TestManifestPinnedMetadataCountsAndReviewInventory(t *testing.T) {
 	if err != nil || json.Unmarshal(pinsData, &pins) != nil {
 		t.Fatalf("load reviewed pins: %v", err)
 	}
-	if pins.Upstream.UV != "0.12.6" || pins.Artifacts.ProviderGolden.OperationCount != 108 || pins.Artifacts.Classification.OperationCount != 693 || len(pins.LazyFeatures) != 33 {
+	if pins.Upstream.UV != "0.12.6" || pins.Artifacts.ProviderGolden.OperationCount != 113 || pins.Artifacts.Classification.OperationCount != 688 || len(pins.LazyFeatures) != 33 {
 		t.Fatalf("reviewed pins changed unexpectedly: artifacts=%+v lazy=%d", pins.Artifacts, len(pins.LazyFeatures))
+	}
+}
+
+func TestMCPToolsetOperationsAreExactSupportedInventory(t *testing.T) {
+	root := repositoryRoot(t)
+	var golden []Operation
+	if err := readJSONFile(filepath.Join(root, "internal", "contractapi", "testdata", "provider-operations.golden.json"), &golden); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"GET /v1/mcp/toolset":                 "",
+		"POST /v1/mcp/toolset":                "",
+		"PUT /v1/mcp/toolset":                 "",
+		"DELETE /v1/mcp/toolset/{toolset_id}": "",
+		"GET /v1/mcp/toolset/{toolset_id}":    "",
+	}
+	seen := map[string]string{}
+	for _, operation := range golden {
+		key := operation.Method + " " + operation.Path
+		if _, reviewed := want[key]; reviewed {
+			seen[key] = strings.Join(operation.QueryParameters, ",")
+		}
+	}
+	if !reflect.DeepEqual(seen, want) {
+		t.Fatalf("MCP toolset provider inventory = %#v, want %#v", seen, want)
+	}
+
+	var classification ReviewedClassification
+	if err := readJSONFile(filepath.Join(root, "internal", "contract", "reviewed-operation-classification.json"), &classification); err != nil {
+		t.Fatal(err)
+	}
+	for _, operation := range classification.Operations {
+		key := operation.Method + " " + operation.Path
+		if _, supported := want[key]; supported {
+			t.Fatalf("supported MCP toolset operation remains classified as unsupported: %s", key)
+		}
 	}
 }
 
@@ -3381,7 +3417,6 @@ func TestLazyExpansionHasExactReviewedClassification(t *testing.T) {
 		t.Fatalf("lazy expansion counts changed: %v", counts)
 	}
 	for key, category := range map[string]string{
-		"GET /v1/mcp/toolset":                             "mcp_toolset_management",
 		"POST /v1/mcp/server/{server_id}/user-credential": "mcp_credential_configuration",
 		"GET /prompts/{prompt_id}/info":                   "agent_prompt_tool_management",
 		"POST /prompts/test":                              "testing_validation",

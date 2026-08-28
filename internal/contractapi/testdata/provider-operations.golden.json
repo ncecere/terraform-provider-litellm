@@ -460,7 +460,7 @@
     "evidence": [
       {
         "file": "internal/provider/resource_key.go",
-        "line": 1049
+        "line": 1076
       }
     ]
   },
@@ -472,11 +472,11 @@
     "evidence": [
       {
         "file": "internal/provider/resource_key.go",
-        "line": 633
+        "line": 643
       },
       {
         "file": "internal/provider/resource_key.go",
-        "line": 635
+        "line": 645
       }
     ]
   },
@@ -494,15 +494,15 @@
       },
       {
         "file": "internal/provider/resource_key.go",
-        "line": 1416
+        "line": 1476
       },
       {
         "file": "internal/provider/resource_key.go",
-        "line": 1433
+        "line": 1493
       },
       {
         "file": "internal/provider/resource_key.go",
-        "line": 1478
+        "line": 1538
       },
       {
         "file": "internal/provider/resource_key_block.go",
@@ -551,11 +551,11 @@
     "evidence": [
       {
         "file": "internal/provider/resource_key.go",
-        "line": 633
+        "line": 643
       },
       {
         "file": "internal/provider/resource_key.go",
-        "line": 635
+        "line": 645
       }
     ]
   },
@@ -579,7 +579,7 @@
     "evidence": [
       {
         "file": "internal/provider/resource_key.go",
-        "line": 979
+        "line": 995
       },
       {
         "file": "internal/provider/resource_unified_access_group.go",
@@ -1156,7 +1156,7 @@
     "evidence": [
       {
         "file": "internal/provider/resource_team.go",
-        "line": 926
+        "line": 949
       }
     ]
   },
@@ -1174,11 +1174,11 @@
       },
       {
         "file": "internal/provider/resource_team.go",
-        "line": 1268
+        "line": 1300
       },
       {
         "file": "internal/provider/resource_team.go",
-        "line": 1281
+        "line": 1313
       },
       {
         "file": "internal/provider/resource_team_block.go",
@@ -1280,7 +1280,7 @@
     "evidence": [
       {
         "file": "internal/provider/resource_team.go",
-        "line": 580
+        "line": 591
       }
     ]
   },
@@ -1298,7 +1298,7 @@
       },
       {
         "file": "internal/provider/resource_team.go",
-        "line": 1395
+        "line": 1427
       }
     ]
   },
@@ -1310,7 +1310,7 @@
     "evidence": [
       {
         "file": "internal/provider/resource_team.go",
-        "line": 872
+        "line": 887
       }
     ]
   },
@@ -1334,11 +1334,11 @@
     "evidence": [
       {
         "file": "internal/provider/resource_team.go",
-        "line": 847
+        "line": 862
       },
       {
         "file": "internal/provider/resource_team.go",
-        "line": 856
+        "line": 871
       }
     ]
   },
@@ -1684,6 +1684,78 @@
       {
         "file": "internal/provider/resource_mcp_server.go",
         "line": 2322
+      }
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/v1/mcp/toolset",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_mcp_toolset.go",
+        "line": 477
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "path": "/v1/mcp/toolset",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_mcp_toolset.go",
+        "line": 404
+      }
+    ]
+  },
+  {
+    "method": "PUT",
+    "path": "/v1/mcp/toolset",
+    "path_parameters": [],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_mcp_toolset.go",
+        "line": 551
+      }
+    ]
+  },
+  {
+    "method": "DELETE",
+    "path": "/v1/mcp/toolset/{toolset_id}",
+    "path_parameters": [
+      "toolset_id"
+    ],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_mcp_toolset.go",
+        "line": 569
+      }
+    ]
+  },
+  {
+    "method": "GET",
+    "path": "/v1/mcp/toolset/{toolset_id}",
+    "path_parameters": [
+      "toolset_id"
+    ],
+    "query_parameters": [],
+    "evidence": [
+      {
+        "file": "internal/provider/resource_mcp_toolset.go",
+        "line": 505
+      },
+      {
+        "file": "internal/provider/resource_mcp_toolset.go",
+        "line": 532
+      },
+      {
+        "file": "internal/provider/resource_mcp_toolset.go",
+        "line": 559
       }
     ]
   },

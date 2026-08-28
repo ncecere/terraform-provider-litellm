@@ -224,6 +224,7 @@ rm -f "$mcp_evidence"
 SMOKE_MCP_EVIDENCE=$mcp_evidence run_mcp_import_case
 emit_controlled_record import litellm_mcp_server passed '' '' "$mcp_evidence"
 rm -f "$mcp_evidence"
+run_case mcp_toolset resources mcp_server_minimal.tf,mcp_toolset.tf
 run_case model resources model_minimal.tf datasources model.tf,models_list.tf
 run_case model_semantic_json resources model_semantic_json.tf
 run_case model_params_semantic_json resources model_params_semantic_json.tf
@@ -247,5 +248,5 @@ run_case vector_store resources vector_store_minimal.tf datasources vector_store
 if [ "$ASSEMBLY_ONLY" = "1" ]; then
   printf '\nAcceptance assembly passed: every matrix case produced collision-free, parseable HCL.\n'
 else
-  printf '\nAcceptance passed: 23/24 resources (project is enterprise-only).\n'
+  printf '\nAcceptance passed: 24/25 resources (project is enterprise-only).\n'
 fi

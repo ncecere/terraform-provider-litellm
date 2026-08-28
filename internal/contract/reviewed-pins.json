@@ -2,14 +2,14 @@
   "artifacts": {
     "classification": {
       "excluded_non_durable_count": 504,
-      "operation_count": 693,
+      "operation_count": 688,
       "path": "internal/contract/reviewed-operation-classification.json",
-      "sha256": "c1fa3c7f88f6d738cc30dfc94c402f0eddce0a5663f45890692714cadef3c393",
-      "unsupported_durable_count": 189
+      "sha256": "7812184edd3beb358e0f7e6e054507197ff30f9d5a5da325f970499ff3e7b053",
+      "unsupported_durable_count": 184
     },
     "manifest": {
       "path": "internal/contract/manifest.json",
-      "sha256": "7738abd950f1ebb6b5be1ebadb626a9370e8ec7fd0adda3719239f97f16cb1c1"
+      "sha256": "441bba08bbb588b1047dfbf4e9a1b236bb6a9a4d212a667cd219ee7227e15e3a"
     },
     "openapi": {
       "operation_count": 800,
@@ -18,9 +18,9 @@
       "sha256": "ab876dc970a8cc835e30cbdf65ece45a7bfd90bad0c7585bd4557d27c4a7615a"
     },
     "provider_golden": {
-      "operation_count": 108,
+      "operation_count": 113,
       "path": "internal/contractapi/testdata/provider-operations.golden.json",
-      "sha256": "a1a5114f93cc432a97f4da76def86ce238d712fba471dbb2d703768e7cecfe51"
+      "sha256": "3a4296f6974e11d5611978fd1e171b99993f350c129c0e3b2c2ac790f57e2e95"
     },
     "supplemental": {
       "operation_count": 1,

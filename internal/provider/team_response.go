@@ -142,6 +142,11 @@ func projectTeamInfoResponseWithSemantic(ctx context.Context, prior TeamResource
 	}
 	next.AccessGroupIDs = projectTeamSet(prior.AccessGroupIDs, accessGroups, presence)
 
+	next.MCPToolsetIDs, err = readMCPToolsetIDs(ctx, teamInfo, prior.MCPToolsetIDs, imported)
+	if err != nil {
+		return prior, err
+	}
+
 	for _, field := range []struct {
 		name   string
 		target *types.Int64

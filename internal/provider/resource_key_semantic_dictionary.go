@@ -384,6 +384,11 @@ func keyHasNonSemanticConfigurationChange(config, state KeyResourceModel) bool {
 			return true
 		}
 	}
+	// mcp_toolset_ids is Optional-only: a null configuration releases ownership
+	// rather than retaining state, so null-versus-managed also plans an update.
+	if config.MCPToolsetIDs.IsUnknown() || !config.MCPToolsetIDs.Equal(state.MCPToolsetIDs) {
+		return true
+	}
 	for _, value := range []struct{ config, state types.Float64 }{
 		{config.MaxBudget, state.MaxBudget}, {config.SoftBudget, state.SoftBudget},
 	} {

@@ -444,6 +444,29 @@ REVIEWED_ISSUE208_TOKEN_EXCHANGE_RUNTIME_DIFF_SHA256 = (
     "50e347c4db02128671bab10b0611592a88180dba2cf84bc176ccb994815d8b09"
 )
 
+REVIEWED_ISSUE207_TOOLSETS_BASE = "f4f369df2180805961d475866296a06c64f3a1c5"
+REVIEWED_ISSUE207_TOOLSETS_PATHS = (
+    "internal/provider/mcp_toolset_assignment_protocol_test.go",
+    "internal/provider/mcp_toolset_assignments.go",
+    "internal/provider/mcp_toolset_assignments_test.go",
+    "internal/provider/mcp_toolset_lifecycle_protocol_test.go",
+    "internal/provider/provider.go",
+    "internal/provider/provider_smoke_test.go",
+    "internal/provider/resource_key.go",
+    "internal/provider/resource_key_semantic_dictionary.go",
+    "internal/provider/resource_key_semantic_dictionary_test.go",
+    "internal/provider/resource_mcp_toolset.go",
+    "internal/provider/resource_mcp_toolset_test.go",
+    "internal/provider/resource_team.go",
+    "internal/provider/resource_team_semantic_dictionary.go",
+    "internal/provider/resource_team_semantic_dictionary_protocol_test.go",
+    "internal/provider/resource_team_semantic_dictionary_test.go",
+    "internal/provider/team_response.go",
+)
+REVIEWED_ISSUE207_TOOLSETS_RUNTIME_DIFF_SHA256 = (
+    "584b1463dfcfb418d0e5a117a1bb647261fdfa97438ce41ff09fb2da96574ef5"
+)
+
 REVIEWED_V198_RELEASE_BASE = "82b1d0ecc2ca413c39a4254c99c7f950268ea7c7"
 REVIEWED_V198_RELEASE_PATHS = (
     'internal/provider/access_group_safe_read_protocol_test.go',
@@ -915,6 +938,12 @@ def main() -> int:
             and digest == REVIEWED_ISSUE208_TOKEN_EXCHANGE_RUNTIME_DIFF_SHA256
         ):
             reviewed = "issue208-token-exchange"
+        elif (
+            comparison == REVIEWED_ISSUE207_TOOLSETS_BASE
+            and changed_paths == REVIEWED_ISSUE207_TOOLSETS_PATHS
+            and digest == REVIEWED_ISSUE207_TOOLSETS_RUNTIME_DIFF_SHA256
+        ):
+            reviewed = "issue207-toolsets"
         elif (
             comparison == REVIEWED_V198_RELEASE_BASE
             and changed_paths == REVIEWED_V198_RELEASE_PATHS

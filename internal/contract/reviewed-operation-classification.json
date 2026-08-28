@@ -2606,31 +2606,6 @@
       "path": "/v1/mcp/tools"
     },
     {
-      "category": "mcp_toolset_management",
-      "method": "GET",
-      "path": "/v1/mcp/toolset"
-    },
-    {
-      "category": "mcp_toolset_management",
-      "method": "POST",
-      "path": "/v1/mcp/toolset"
-    },
-    {
-      "category": "mcp_toolset_management",
-      "method": "PUT",
-      "path": "/v1/mcp/toolset"
-    },
-    {
-      "category": "mcp_toolset_management",
-      "method": "DELETE",
-      "path": "/v1/mcp/toolset/{toolset_id}"
-    },
-    {
-      "category": "mcp_toolset_management",
-      "method": "GET",
-      "path": "/v1/mcp/toolset/{toolset_id}"
-    },
-    {
       "category": "mcp_credential_configuration",
       "method": "GET",
       "path": "/v1/mcp/user-credentials"

@@ -617,11 +617,16 @@ func partialTeamSemanticRecoveryState(identity string) TeamResourceModel {
 	return partialTeamState(identity)
 }
 
-func marshalTeamUpgrade(raw []byte) ([]byte, error) {
+func marshalTeamUpgrade(raw []byte, resetMetadataJSON bool) ([]byte, error) {
 	var prior map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &prior); err != nil {
 		return nil, err
 	}
-	prior["metadata_json"] = json.RawMessage("null")
+	if resetMetadataJSON {
+		prior["metadata_json"] = json.RawMessage("null")
+	}
+	if _, present := prior["mcp_toolset_ids"]; !present {
+		prior["mcp_toolset_ids"] = json.RawMessage("null")
+	}
 	return json.Marshal(prior)
 }

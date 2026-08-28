@@ -48,6 +48,17 @@ resource "litellm_team" "engineering" {
 
 `access_group_ids` is unordered. Set it to `[]` to detach all access groups; omitting it allows the provider to read the current API associations.
 
+### With MCP Toolsets
+
+```hcl
+resource "litellm_team" "responders" {
+  team_alias      = "Responders"
+  mcp_toolset_ids = [litellm_mcp_toolset.incident_response.toolset_id]
+}
+```
+
+LiteLLM treats the team's toolset IDs as the ceiling for toolsets assigned to its keys. The team assignment does not grant the toolsets to those keys automatically.
+
 ### Full
 
 ```hcl
@@ -163,6 +174,7 @@ The following arguments are supported:
 * `team_id` - (Optional, Computed, Forces replacement) Stable LiteLLM team identifier. Supply a predetermined value for external identity or JWT group mapping, or omit it to let the provider generate a UUID.
 * `organization_id` - (Optional) The ID of the organization this team belongs to.
 * `access_group_ids` - (Optional, Computed) Unordered set of access group IDs associated with the team. Use `[]` to detach all groups.
+* `mcp_toolset_ids` - (Optional) Unordered set of MCP toolset IDs that keys in this team may request. A nonempty set constrains key grants to that ceiling. LiteLLM treats a null and an empty team assignment the same way: no ceiling. Setting `[]` therefore removes the ceiling rather than denying all toolsets, and it does not change sibling object permissions. Omit the attribute to leave the remote value unmanaged.
 * `max_budget` - (Optional) Maximum budget allocated to the team.
 * `budget_duration` - (Optional) Recurring team budget reset interval. Use a positive integer followed by `s`, `m`, `h`, `d`, or `w` (for example, `30d`, `24h`, or `1w`); one of the exact aliases `hourly`, `daily`, `weekly`, or `monthly`; or exactly `1mo`. Zero values, other month counts such as `2mo` or `12mo`, case variants, and malformed aliases or units are rejected.
 * `tpm_limit` - (Optional) Tokens per minute limit for the team.
