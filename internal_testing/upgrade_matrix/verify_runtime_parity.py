@@ -315,6 +315,18 @@ REVIEWED_ISSUE202_ACCESS_GROUP_PATHS = (
 REVIEWED_ISSUE202_ACCESS_GROUP_RUNTIME_DIFF_SHA256 = (
     "fce5c422ec5dcd9859337d8a2376193d4f6f8b0337f397a2d82bfbf7c4e391ae"
 )
+REVIEWED_ISSUE202_USER_BASE = "3e25ecfdf57276c2ea96cfacf21c5d0ec917990d"
+REVIEWED_ISSUE202_USER_PATHS = (
+    "internal/provider/datasource_user.go",
+    "internal/provider/numeric_import_ownership_test.go",
+    "internal/provider/numeric_import_protocol_additional_test.go",
+    "internal/provider/resource_user.go",
+    "internal/provider/user_safe_read_protocol_test.go",
+    "internal/provider/user_safe_read_test.go",
+)
+REVIEWED_ISSUE202_USER_RUNTIME_DIFF_SHA256 = (
+    "915a0810f0f8e3e93e50656dc943172a6df430a53e7a9b0ae3379c03384e54c1"
+)
 
 
 def git(*args: str) -> str:
@@ -470,6 +482,12 @@ def main() -> int:
             and digest == REVIEWED_ISSUE202_ACCESS_GROUP_RUNTIME_DIFF_SHA256
         ):
             reviewed = "issue202-access-group"
+        elif (
+            comparison == REVIEWED_ISSUE202_USER_BASE
+            and changed_paths == REVIEWED_ISSUE202_USER_PATHS
+            and digest == REVIEWED_ISSUE202_USER_RUNTIME_DIFF_SHA256
+        ):
+            reviewed = "issue202-user"
         if reviewed is not None:
             print(
                 f"Provider runtime parity verified: reviewed={reviewed} "

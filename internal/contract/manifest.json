@@ -16,7 +16,7 @@
   "provider_golden": {
     "operation_count": 108,
     "path": "internal/contractapi/testdata/provider-operations.golden.json",
-    "sha256": "3549829ee6da567c6c2c839da032828c4d09ec33c898b983bff5b335e36e1a79"
+    "sha256": "863756ee45d99001875a4c42bbdb0592026d206bd897d8cd54f606bf981ffc1e"
   },
   "provider_operations": [
     {
@@ -1228,7 +1228,7 @@
         },
         {
           "file": "internal/provider/resource_user.go",
-          "line": 814
+          "line": 862
         }
       ],
       "method": "POST",
@@ -1252,7 +1252,7 @@
         },
         {
           "file": "internal/provider/resource_user.go",
-          "line": 820
+          "line": 868
         }
       ],
       "method": "POST",
@@ -1354,7 +1354,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_user.go",
-          "line": 336
+          "line": 337
         }
       ],
       "method": "POST",
@@ -1366,7 +1366,7 @@
       "evidence": [
         {
           "file": "internal/provider/datasource_user.go",
-          "line": 137
+          "line": 138
         },
         {
           "file": "internal/provider/invite_email.go",
@@ -1374,7 +1374,11 @@
         },
         {
           "file": "internal/provider/resource_user.go",
-          "line": 581
+          "line": 594
+        },
+        {
+          "file": "internal/provider/resource_user.go",
+          "line": 596
         }
       ],
       "method": "GET",
@@ -1400,7 +1404,7 @@
         },
         {
           "file": "internal/provider/resource_user.go",
-          "line": 375
+          "line": 376
         }
       ],
       "method": "GET",
@@ -1419,7 +1423,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_user.go",
-          "line": 204
+          "line": 205
         }
       ],
       "method": "POST",
@@ -1431,11 +1435,11 @@
       "evidence": [
         {
           "file": "internal/provider/resource_user.go",
-          "line": 302
+          "line": 303
         },
         {
           "file": "internal/provider/resource_user.go",
-          "line": 473
+          "line": 474
         }
       ],
       "method": "POST",

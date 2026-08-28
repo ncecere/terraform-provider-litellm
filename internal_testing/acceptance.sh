@@ -13,6 +13,7 @@ CLI_SUPPORTS_111=$(python3 -c 'import sys; p=tuple(int(v) for v in sys.argv[1].s
 unset SMOKE_SUPPLEMENTAL_ONLY SMOKE_FALLBACK_DELETE_UNSUPPORTED SMOKE_FALLBACK_DELETE_ADDRESS SMOKE_FALLBACK_IMPORT
 unset SMOKE_SEARCH_TOOL_EXTERNAL_DELETE SMOKE_SEARCH_TOOL_DELETE_ADDRESS
 unset SMOKE_ACCESS_GROUP_EXTERNAL_DELETE SMOKE_ACCESS_GROUP_DELETE_ADDRESS
+unset SMOKE_USER_EXTERNAL_DELETE SMOKE_USER_DELETE_ADDRESS
 unset SMOKE_DIAGNOSTIC_OUTPUT SMOKE_LOG_OVERRIDE
 
 if [ "$ASSEMBLY_ONLY" != "1" ]; then
@@ -126,6 +127,13 @@ run_access_group_external_delete_case() {
     sh "$REPO_ROOT/internal_testing/smoke.sh" "$REPO_ROOT" resources model_access_group.tf,access_group_minimal.tf
 }
 
+run_user_external_delete_case() {
+  printf '\n===== ACCEPTANCE: user_external_delete =====\n'
+  SMOKE_ASSEMBLY_ONLY=$ASSEMBLY_ONLY SMOKE_SUPPLEMENTAL_ONLY=1 \
+    SMOKE_USER_EXTERNAL_DELETE=1 SMOKE_USER_DELETE_ADDRESS=litellm_user.minimal \
+    sh "$REPO_ROOT/internal_testing/smoke.sh" "$REPO_ROOT" resources user_minimal.tf
+}
+
 # Explicit coverage table. litellm_project is enterprise-only and intentionally
 # excluded; every other registered resource has a lifecycle case here.
 run_case access_group resources model_access_group.tf,access_group_minimal.tf datasources access_group.tf,access_groups_list.tf
@@ -207,6 +215,7 @@ run_case team_member resources team_minimal.tf,team_member_minimal.tf
 run_case team_member_add resources team_minimal.tf,team_member_add_minimal.tf
 run_case unified_access_group resources unified_access_group_minimal.tf datasources unified_access_group.tf,unified_access_groups_list.tf
 run_case user resources user_minimal.tf datasources user.tf,users_list.tf
+run_user_external_delete_case
 run_case vector_store resources vector_store_minimal.tf datasources vector_store.tf
 
 if [ "$ASSEMBLY_ONLY" = "1" ]; then
