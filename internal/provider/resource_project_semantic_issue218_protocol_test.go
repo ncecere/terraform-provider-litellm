@@ -645,7 +645,7 @@ func TestProjectSemanticConfiguredBudgetCreateRecoveryProtocol(t *testing.T) {
 			_ = json.NewEncoder(writer).Encode(map[string]interface{}{"project_id": "wrong-response-identity"})
 		case request.Method == http.MethodGet && request.URL.Path == "/project/info":
 			object := map[string]interface{}{
-				"project_id": projectID, "team_id": teamID, "models": []interface{}{}, "metadata": map[string]interface{}{}, "blocked": false,
+				"project_id": projectID, "team_id": teamID, "budget_id": budgetID, "models": []interface{}{}, "metadata": map[string]interface{}{}, "blocked": false,
 				"litellm_budget_table": map[string]interface{}{},
 			}
 			if includeBudget.Load() {

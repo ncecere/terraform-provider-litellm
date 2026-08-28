@@ -254,6 +254,26 @@ func TestProjectSemanticAcceptedCreateRequiresExactTeam(t *testing.T) {
 	}
 }
 
+func TestProjectSemanticKnownImportedBudgetMismatchFailsClosed(t *testing.T) {
+	ctx := context.Background()
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+			"project_id": "project-budget-drift", "team_id": "team-budget-drift", "budget_id": "budget-new", "metadata": map[string]interface{}{},
+			"litellm_budget_table": map[string]interface{}{"budget_id": "budget-new"},
+		})
+	}))
+	defer server.Close()
+	data := ProjectResourceModel{ID: types.StringValue("project-budget-drift"), TeamID: types.StringValue("team-budget-drift"), BudgetID: types.StringValue("budget-old")}
+	resource := &ProjectResource{client: &Client{APIBase: server.URL, APIKey: "test", HTTPClient: server.Client()}}
+	if err := resource.readProjectWithOwnership(ctx, &data, true, projectSemanticOwnership{provenance: projectUnconfiguredSemanticProvenance()}); err == nil {
+		t.Fatal("known imported shared-budget reassignment was adopted")
+	}
+	if data.BudgetID.ValueString() != "budget-old" {
+		t.Fatalf("failed read changed prior budget authority: %s", data.BudgetID)
+	}
+}
+
 func TestProjectSemanticFormattingPendingReconciliationAndPrivateValidation(t *testing.T) {
 	ctx := context.Background()
 	prior, _ := prepareProjectSemanticDictionary(ctx, types.StringValue(`{"b":2,"a":1}`), types.MapNull(types.StringType))

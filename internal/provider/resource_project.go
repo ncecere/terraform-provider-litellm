@@ -1107,9 +1107,23 @@ func (r *ProjectResource) readProjectWithOwnership(ctx context.Context, data *Pr
 	if err != nil {
 		return err
 	}
-	budgetOwned := imported || knownString(data.BudgetID)
+	knownBudgetID := knownString(data.BudgetID)
+	if knownBudgetID {
+		// Project budget authority is the nested relation. The top-level foreign
+		// key is only a consistency copy and cannot consume recovery or replace a
+		// configured/imported identity by itself.
+		nestedBudgetID, nestedPresence, nestedErr := table.value("budget_id")
+		if nestedErr != nil || nestedPresence != apiValuePresent {
+			return errSemanticDictionaryTraversal
+		}
+		nestedString, ok := nestedBudgetID.(string)
+		if !ok || nestedString == "" || nestedString != data.BudgetID.ValueString() {
+			return errSemanticDictionaryTraversal
+		}
+	}
+	budgetOwned := imported || knownBudgetID
 	if budgetPresence == apiValuePresent && budgetOwned {
-		if !imported && knownString(data.BudgetID) && data.BudgetID.ValueString() != remoteBudgetID {
+		if knownBudgetID && data.BudgetID.ValueString() != remoteBudgetID {
 			return fmt.Errorf("project budget reassociation detected: state budget_id %q, API budget_id %q", data.BudgetID.ValueString(), remoteBudgetID)
 		}
 		data.BudgetID = types.StringValue(remoteBudgetID)
