@@ -53,6 +53,7 @@ func TestInternalMetadataContract(t *testing.T) {
 		"GoMinimum":              metadata.GoMinimum,
 		"WriteOnlyClientMinimum": metadata.WriteOnlyClientMinimum,
 		"TestedLiteLLMVersion":   metadata.TestedLiteLLMVersion,
+		"CurrentProviderVersion": metadata.CurrentProviderVersion,
 		"MinimumProviderVersion": metadata.MinimumProviderVersion,
 	} {
 		if _, err := parseVersion(value); err != nil {
@@ -61,6 +62,12 @@ func TestInternalMetadataContract(t *testing.T) {
 	}
 	if !versionSatisfies(t, metadata.MinimumProviderVersion, metadata.ExampleProviderConstraint) {
 		t.Fatalf("minimum provider version %q does not satisfy example constraint %q", metadata.MinimumProviderVersion, metadata.ExampleProviderConstraint)
+	}
+	if !versionSatisfies(t, metadata.CurrentProviderVersion, metadata.ExampleProviderConstraint) {
+		t.Fatalf("current provider version %q does not satisfy example constraint %q", metadata.CurrentProviderVersion, metadata.ExampleProviderConstraint)
+	}
+	if compareVersion(mustParseVersion(t, metadata.CurrentProviderVersion), mustParseVersion(t, metadata.MinimumProviderVersion)) < 0 {
+		t.Fatalf("current provider version %q predates supported minimum %q", metadata.CurrentProviderVersion, metadata.MinimumProviderVersion)
 	}
 	if !versionSatisfies(t, metadata.TerraformMinimum, metadata.TerraformRequiredVersion) {
 		t.Fatalf("Terraform minimum %q does not satisfy required_version %q", metadata.TerraformMinimum, metadata.TerraformRequiredVersion)
@@ -87,7 +94,7 @@ func TestMakeInstallDefaultsMatchPublishedContract(t *testing.T) {
 		"HOSTNAME":  sourceParts[0],
 		"NAMESPACE": sourceParts[1],
 		"NAME":      sourceParts[2],
-		"VERSION":   metadata.MinimumProviderVersion,
+		"VERSION":   metadata.CurrentProviderVersion,
 		"OS_ARCH":   "$(shell go env GOOS)_$(shell go env GOARCH)",
 	}
 	for name, expected := range want {
@@ -106,7 +113,7 @@ func TestMakeInstallDefaultsMatchPublishedContract(t *testing.T) {
 	}
 
 	documentedPath := "~/.terraform.d/plugins/" + defaults["HOSTNAME"] + "/" + defaults["NAMESPACE"] + "/" + defaults["NAME"] + "/" + defaults["VERSION"] + "/GOOS_GOARCH/terraform-provider-" + defaults["NAME"] + "_v" + defaults["VERSION"]
-	wantPath := "~/.terraform.d/plugins/" + metadata.ProviderSource + "/" + metadata.MinimumProviderVersion + "/GOOS_GOARCH/terraform-provider-" + sourceParts[2] + "_v" + metadata.MinimumProviderVersion
+	wantPath := "~/.terraform.d/plugins/" + metadata.ProviderSource + "/" + metadata.CurrentProviderVersion + "/GOOS_GOARCH/terraform-provider-" + sourceParts[2] + "_v" + metadata.CurrentProviderVersion
 	if documentedPath != wantPath {
 		t.Fatalf("rendered make install path = %q, want canonical metadata path %q", documentedPath, wantPath)
 	}
@@ -261,8 +268,8 @@ func TestPublishedCompatibilityProseMatchesMetadata(t *testing.T) {
 				"require Terraform or OpenTofu >= " + metadata.WriteOnlyClientMinimum,
 			},
 		},
-		"CHANGELOG.md [Unreleased]": {
-			body: changelogUnreleasedSection(t, readFile(t, filepath.Join(root, "CHANGELOG.md"))),
+		"CHANGELOG.md [" + metadata.CurrentProviderVersion + "]": {
+			body: changelogVersionSection(t, readFile(t, filepath.Join(root, "CHANGELOG.md")), metadata.CurrentProviderVersion),
 			fragments: []string{
 				metadata.ProviderSource,
 				"provider to `" + metadata.ExampleProviderConstraint + "`",
@@ -320,11 +327,11 @@ func assertContainsAll(t *testing.T, name, body string, expected []string) {
 	}
 }
 
-func changelogUnreleasedSection(t *testing.T, changelog string) string {
+func changelogVersionSection(t *testing.T, changelog, version string) string {
 	t.Helper()
-	const heading = "## [Unreleased]"
+	heading := "## [" + version + "]"
 	if strings.Count(changelog, heading) != 1 {
-		t.Fatalf("CHANGELOG Unreleased heading count = %d, want 1", strings.Count(changelog, heading))
+		t.Fatalf("CHANGELOG %s heading count = %d, want 1", version, strings.Count(changelog, heading))
 	}
 	start := strings.Index(changelog, heading) + len(heading)
 	section := changelog[start:]

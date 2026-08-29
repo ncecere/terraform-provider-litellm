@@ -24,6 +24,9 @@ const (
 	// harness. Other backend versions are not implied by this literal.
 	TestedLiteLLMVersion = "1.98.0"
 
+	// CurrentProviderVersion is the release prepared by this source tree.
+	CurrentProviderVersion = "2.1.0"
+
 	// MinimumProviderVersion is the stable lower bound for published examples.
 	// It must not move merely because a later compatible 2.x release is tagged.
 	MinimumProviderVersion    = "2.0.1"

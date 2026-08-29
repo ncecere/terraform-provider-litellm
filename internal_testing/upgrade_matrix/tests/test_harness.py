@@ -49,6 +49,20 @@ class HarnessTests(unittest.TestCase):
             matrix["upgrade_expected_private_plan_triggers"],
             {"litellm_agent": ["id"]},
         )
+        self.assertEqual(matrix["upgrade_expected_schema_migrations"], {
+            "litellm_key": [1, 2],
+            "litellm_key_block": [0, 1],
+            "litellm_mcp_server": [1, 8],
+            "litellm_organization": [0, 1],
+            "litellm_project": [0, 1],
+            "litellm_team": [0, 1],
+        })
+        self.assertEqual(matrix["upgrade_expected_computed_migrations"]["litellm_mcp_server"], [
+            "alias", "available_on_public_internet", "byok_description",
+            "delegate_auth_to_upstream", "field_ownership_generation", "is_byok",
+            "mcp_info_ownership_generation", "oauth_passthrough",
+            "tool_name_to_description", "tool_name_to_display_name", "updated_at", "updated_by",
+        ])
         nested = [
             (resource_type, path)
             for resource_type, paths in matrix["upgrade_expected_computed_migrations"].items()
@@ -64,6 +78,9 @@ class HarnessTests(unittest.TestCase):
         self.assertIn("upgrade-reviewed-private-migration", harness.EVIDENCE_CODES)
         self.assertIn(
             "upgrade-private-plan-trigger-migration", harness.ASSERTION_CODES
+        )
+        self.assertIn(
+            "import-fail-closed-inconclusive-absence", harness.ASSERTION_CODES
         )
 
     def test_diagnostic_evidence_binds_exact_failed_command_result(self):

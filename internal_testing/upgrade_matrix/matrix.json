@@ -57,6 +57,7 @@
     "litellm_agent": ["extra_headers"],
     "litellm_credential": ["credential_info_json", "credential_source", "credential_values_active"],
     "litellm_key": ["blocked"],
+    "litellm_mcp_server": ["alias", "available_on_public_internet", "byok_description", "delegate_auth_to_upstream", "field_ownership_generation", "is_byok", "mcp_info_ownership_generation", "oauth_passthrough", "tool_name_to_description", "tool_name_to_display_name", "updated_at", "updated_by"],
     "litellm_model": ["additional_litellm_params_configured", "additional_model_info", "additional_model_info_configured"],
     "litellm_organization": ["model_rpm_limit", "model_tpm_limit"],
     "litellm_prompt": ["created_at", "environment", "updated_at", "version"],
@@ -71,7 +72,12 @@
     }
   },
   "upgrade_expected_schema_migrations": {
-    "litellm_key_block": [0, 1]
+    "litellm_key": [1, 2],
+    "litellm_key_block": [0, 1],
+    "litellm_mcp_server": [1, 8],
+    "litellm_organization": [0, 1],
+    "litellm_project": [0, 1],
+    "litellm_team": [0, 1]
   },
   "upgrade_expected_identity_migrations": {
     "litellm_key_block": "sha256-of-prior-id"
@@ -93,7 +99,7 @@
   ],
   "failure_recovery_scenarios": [
     {"name":"model_failed_create_retry","fixture":"fixtures/failure_recovery/model_failed_create.tf","fault_endpoint":"/model/new","dependency_address":"","target_address":"litellm_model.failed_create","expected_diagnostic_title":"Client Error","expected_diagnostic_code":"model-create-error","cleanup_required":true},
-    {"name":"team_failed_create_retry","fixture":"fixtures/failure_recovery/team_failed_create.tf","fault_endpoint":"/team/new","dependency_address":"","target_address":"litellm_team.failed_create","expected_diagnostic_title":"Client Error","expected_diagnostic_code":"team-create-error","cleanup_required":true}
+    {"name":"team_failed_create_retry","fixture":"fixtures/failure_recovery/team_failed_create.tf","fault_endpoint":"/team/new","dependency_address":"","target_address":"litellm_team.failed_create","expected_diagnostic_title":"Team Creation Outcome Uncertain","expected_diagnostic_code":"team-create-outcome-uncertain","cleanup_required":true}
   ],
   "optional_features": ["key_wo", "send_invite_email", "jwt_key_mapping_key_wo"],
   "documentation_scenarios": ["registry-examples-format-validate","resource-import-doc-contract","release-artifact-manifest-contract"],

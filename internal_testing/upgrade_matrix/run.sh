@@ -24,6 +24,7 @@ IMPORT_ID_FILE=
 PROXY_PID=
 SESSION=
 MATRIX_LEDGER_KEY_FILE=
+SCENARIO_ASSERTION_OVERRIDE=
 COMMAND_TIMEOUT=${MATRIX_COMMAND_TIMEOUT:-300}
 case $COMMAND_TIMEOUT in ''|*[!0-9]*) printf '%s\n' 'Matrix failed: invalid command timeout' >&2; exit 1 ;; esac
 [ "$COMMAND_TIMEOUT" -ge 1 ] && [ "$COMMAND_TIMEOUT" -le 900 ] || { printf '%s\n' 'Matrix failed: command timeout is out of bounds' >&2; exit 1; }
@@ -92,7 +93,7 @@ cleanup() {
       if [ "$controller_absence_status" -eq 0 ]; then
         cleanup_status=1
       else
-        assert_authoritative_not_found "$SCRATCH/controller-absence.out" "$IMPORT_RESOURCE_TYPE" || cleanup_status=1
+        assert_post_destroy_import_rejected "$SCRATCH/controller-absence.out" "$IMPORT_RESOURCE_TYPE" || cleanup_status=1
       fi
     fi
   fi
@@ -310,10 +311,12 @@ record() {
   diagnostic_evidence=${SCENARIO_DIAGNOSTIC_EVIDENCE:-}
   diagnostic_override=${SCENARIO_DIAGNOSTIC_CODE_OVERRIDE:-auto}
   fallback_presence_evidence=${SCENARIO_FALLBACK_PRESENCE_EVIDENCE:-}
+  assertion_override=$SCENARIO_ASSERTION_OVERRIDE
   SCENARIO_EVIDENCE=
   SCENARIO_DIAGNOSTIC_EVIDENCE=
   SCENARIO_DIAGNOSTIC_CODE_OVERRIDE=
   SCENARIO_FALLBACK_PRESENCE_EVIDENCE=
+  SCENARIO_ASSERTION_OVERRIDE=
   log_size=$(wc -c <"$LOG")
   [ "$log_size" -le 10485760 ] || fail 'private child log exceeded its bounded size'
   assertion=terraform-plan-state-api
@@ -335,10 +338,18 @@ record() {
     documentation) assertion=validated-documentation ;;
   esac
   [ "$status" != skipped ] || assertion=allowlisted-unavailability
+  case "$assertion_override" in
+    '') ;;
+    import-fail-closed-inconclusive-absence)
+      [ "$category" = import ] && [ "$status" = passed ] || fail 'inconclusive import assertion was assigned outside a passed import'
+      assertion=$assertion_override
+      ;;
+    *) fail 'scenario assertion override was not reviewed' ;;
+  esac
   diagnostic=
   case "$name" in
     failure_recovery:model_failed_create_retry) diagnostic=model-create-error ;;
-    failure_recovery:team_failed_create_retry) diagnostic=team-create-error ;;
+    failure_recovery:team_failed_create_retry) diagnostic=team-create-outcome-uncertain ;;
     import:litellm_agent) [ "$status" != skipped ] || diagnostic=agent-role-redacted-read ;;
     import:litellm_fallback) [ "$status" != skipped ] || diagnostic=fallback-delete-not-authoritative ;;
     optional_feature:key_wo) [ "$status" != skipped ] || diagnostic=key-write-only-endpoint-unavailable ;;
@@ -523,6 +534,19 @@ assert_authoritative_not_found() {
   # "not found" or HTTP-status text can describe unrelated plugin failures.
   python3 "$SCRIPT_DIR/absence_diagnostic.py" "$evidence" "$resource_type" || \
     fail 'post-destroy check was not an exact provider/API not-found result'
+}
+
+assert_post_destroy_import_rejected() {
+  evidence=$1 resource_type=$2
+  if [ "$resource_type" = litellm_prompt ]; then
+    # LiteLLM v1.98 cannot distinguish Prisma-backed Prompt absence from its
+    # process-local registry fallback. Require the exact value-free fail-closed
+    # diagnostic without claiming authoritative remote absence.
+    python3 "$SCRIPT_DIR/prompt_import_diagnostic.py" "$evidence" || \
+      fail 'post-destroy Prompt import was not the exact fail-closed diagnostic'
+    return
+  fi
+  assert_authoritative_not_found "$evidence" "$resource_type"
 }
 
 assert_fallback_delete_unconfirmed() {
@@ -805,7 +829,7 @@ PY
   set -e
   cat "$SCRATCH/import-absence.out" >>"$LOG"
   [ "$absence_status" -ne 0 ] || fail 'destroyed import target remained authoritative'
-  assert_authoritative_not_found "$SCRATCH/import-absence.out" "$resource_type"
+  assert_post_destroy_import_rejected "$SCRATCH/import-absence.out" "$resource_type"
   CLEANUP_MODE=none
   rm -rf "$producer" "$importer"
   WORKSPACE=
@@ -815,6 +839,9 @@ PY
   IMPORT_RESOURCE_TYPE=
   IMPORT_ID_FILE=
   SCENARIO_EVIDENCE=$SCRATCH/import-absence.out
+  if [ "$resource_type" = litellm_prompt ]; then
+    SCENARIO_ASSERTION_OVERRIDE=import-fail-closed-inconclusive-absence
+  fi
   record "import:$resource_type" import passed ''
 }
 
@@ -970,6 +997,12 @@ EOF
   fi
   port_file=$SCRATCH/fault-port.json
   stats_file=$SCRATCH/fault-stats.json
+  [ -z "$PROXY_PID" ] || fail 'a prior controlled fault proxy is still active'
+  # Each scenario requires a newly created readiness file and independent
+  # statistics. The proxy itself opens both with O_EXCL, so stale files must be
+  # removed explicitly rather than being mistaken for a newly ready process.
+  rm -f -- "$port_file" "$stats_file"
+  [ ! -e "$port_file" ] && [ ! -e "$stats_file" ] || fail 'controlled fault proxy evidence paths were not reset'
   python3 "$SCRIPT_DIR/fault_proxy.py" --endpoint "$endpoint" --port-file "$port_file" --stats-file "$stats_file" >>"$LOG" 2>&1 &
   PROXY_PID=$!
   attempt=0
@@ -991,7 +1024,7 @@ PYPORT
 import json,sys
 allowed={
  "model_failed_create_retry":("Client Error","model-create-error"),
- "team_failed_create_retry":("Client Error","team-create-error"),
+ "team_failed_create_retry":("Team Creation Outcome Uncertain","team-create-outcome-uncertain"),
 }
 name,expected,code=sys.argv[2:]
 if allowed.get(name)!=(expected,code): raise SystemExit(1)
@@ -1010,12 +1043,45 @@ value=json.load(open(sys.argv[1],encoding="utf-8"))
 if value.get("attempted") != 1 or value.get("faulted_before_forward") != 1 or value.get("target_forwarded") != 0: raise SystemExit(1)
 if not isinstance(value.get("other_forwarded"),int) or value["other_forwarded"] < 0: raise SystemExit(1)
 PYSTATS
-  if (cd "$WORKSPACE" && run_cli state list 2>>"$LOG" | grep -Fx "$target" >/dev/null); then
-    fail 'failed pre-commit target leaked identity/private state'
-  fi
   kill "$PROXY_PID" 2>/dev/null || true
   wait "$PROXY_PID" 2>/dev/null || true
   PROXY_PID=
+  if [ "$name" = team_failed_create_retry ]; then
+    # Team create generates its identity before dispatch and correctly retains
+    # it when any dispatched request has an uncertain outcome. The controlled
+    # proxy proves this request was never forwarded, but that test-only fact is
+    # unavailable to the provider. Require the retained address, validate its
+    # exact generated identity privately, independently prove authoritative
+    # API absence, and only then detach it so the retry cannot duplicate a row.
+    (cd "$WORKSPACE" && run_cli state list) >"$SCRATCH/team-recovery-state.list" 2>>"$LOG" || fail 'team recovery state inspection failed'
+    [ "$(grep -Fxc "$target" "$SCRATCH/team-recovery-state.list" || true)" -eq 1 ] || fail 'uncertain team create did not retain its exact recovery address'
+    (cd "$WORKSPACE" && run_cli show -json) >"$SCRATCH/team-recovery-state.json" 2>>"$LOG" || fail 'team recovery state capture failed'
+    python3 - "$SCRATCH/team-recovery-state.json" "$target" >"$SCRATCH/team-recovery-id" <<'PYTEAMID' || fail 'uncertain team create retained an invalid generated identity'
+import json,sys,uuid
+value=json.load(open(sys.argv[1],encoding="utf-8")); wanted=sys.argv[2]
+resources=value.get("values",{}).get("root_module",{}).get("resources",[])
+matches=[r for r in resources if r.get("address")==wanted]
+if len(matches)!=1: raise SystemExit(1)
+state=matches[0].get("values",{}); identity=state.get("id")
+if not isinstance(identity,str) or state.get("team_id")!=identity: raise SystemExit(1)
+if str(uuid.UUID(identity))!=identity: raise SystemExit(1)
+sys.stdout.write(identity)
+PYTEAMID
+    python3 - "$SCRATCH/team-recovery-id" "$SCRATCH/team-recovery-absence.json" <<'PYTEAMABSENCE' || fail 'unforwarded team identity was not authoritatively absent'
+import sys,urllib.error,urllib.parse,urllib.request
+identity=open(sys.argv[1],encoding="utf-8").read()
+request=urllib.request.Request("http://127.0.0.1:4000/team/info?team_id="+urllib.parse.quote(identity,safe=""),headers={"Authorization":"Bearer sk-testing-key"})
+try:
+  response=urllib.request.urlopen(request,timeout=15); status=response.status; body=response.read(1024*1024+1)
+except urllib.error.HTTPError as error:
+  status=error.code; body=error.read(1024*1024+1)
+if status!=404 or len(body)>1024*1024: raise SystemExit(1)
+open(sys.argv[2],"xb").write(body)
+PYTEAMABSENCE
+    (cd "$WORKSPACE" && run_cli state rm "$target") >>"$LOG" 2>&1 || fail 'authoritatively absent team recovery state detach failed'
+  elif (cd "$WORKSPACE" && run_cli state list 2>>"$LOG" | grep -Fx "$target" >/dev/null); then
+    fail 'definitive failed pre-commit target leaked identity/private state'
+  fi
   (cd "$WORKSPACE" && run_cli apply -auto-approve -var=recover_create=true) >>"$LOG" 2>&1 || fail 'controlled-fault recovery apply failed'
   (cd "$WORKSPACE" && run_cli output -raw matrix_recovery_id) >"$SCRATCH/recovery-id" 2>>"$LOG" || fail 'recovery identity capture failed'
   set +e
@@ -1084,6 +1150,11 @@ SMOKE_DELETE_LOGS=1
 mkdir -m 700 "$SMOKE_PRIVATE_ROOT"
 export PROVIDER_DIR SMOKE_PRIVATE_ROOT SMOKE_DELETE_LOGS
 LITELLM_ACCEPTANCE_ASSEMBLY_ONLY=0 sh "$REPO_ROOT/internal_testing/acceptance.sh" >>"$LOG" 2>&1 || fail 'lifecycle/data-source matrix failed'
+# The PATH shim bounds the acceptance script's historical `terraform` calls.
+# Direct matrix commands already use run_cli's bounded supervisor, so restore
+# the selected executable to prevent nested supervisors from emitting duplicate
+# command receipts for one diagnostic.
+CLI=$selected_cli
 # Project is the only registered resource and pair of data sources unavailable
 # in the pinned OSS edition. These are explicit execution records, never passes.
 record 'resource_coverage:litellm_project' resource_coverage skipped enterprise-license-required

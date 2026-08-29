@@ -74,7 +74,7 @@ EVIDENCE_CODES = {
 }
 DIAGNOSTIC_TITLE_CODES = {
     "model_failed_create_retry": ("Client Error", "model-create-error"),
-    "team_failed_create_retry": ("Client Error", "team-create-error"),
+    "team_failed_create_retry": ("Team Creation Outcome Uncertain", "team-create-outcome-uncertain"),
     "agent_role_redacted_import": ("Unsupported Agent Clear", "agent-role-redacted-read"),
     "agent_import_public_projection": ("Provider produced invalid plan", "agent-import-public-projection-unavailable"),
     "fallback_delete_not_authoritative": ("Fallback Delete Unconfirmed", "fallback-delete-not-authoritative"),
@@ -84,7 +84,8 @@ DIAGNOSTIC_CODES = {value[1] for value in DIAGNOSTIC_TITLE_CODES.values()}
 ASSERTION_CODES = {
     "terraform-plan-state-api", "upgrade-state-migration",
     "upgrade-private-plan-trigger-migration", "import-authoritative-absence",
-    "import-immediate-no-drift-provenance", "replacement-plan-state",
+    "import-fail-closed-inconclusive-absence", "import-immediate-no-drift-provenance",
+    "replacement-plan-state",
     "fault-endpoint-diagnostic-state", "bounded-feature-attempt",
     "validated-documentation", "allowlisted-unavailability",
     "refresh-only-config-state-zero-drift",
