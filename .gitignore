@@ -2,16 +2,17 @@
 **/.terraform/*
 test_litellm/*
 
-# Local dev Terraform workspace (ignored; keep docs and reusable runner only)
-dev_testing/*
-!dev_testing/.gitkeep
-!dev_testing/README.md
-!dev_testing/e2e/
-dev_testing/e2e/*
-!dev_testing/e2e/run_case.sh
+# Local dev validation workspace; never commit its contents
+/dev_testing/
 
-# Smoke test workspace (generated; per-file state and copied .tf removed between files, directory kept)
+# Isolated smoke-test workspaces and retained logs
 internal_testing/.smoke/
+internal_testing/.smoke.*/
+internal_testing/.smoke-logs/
+internal_testing/upgrade-matrix-results.json
+
+# Generated dev_overrides CLI config for the manual smoke walkthrough
+internal_testing/.dev.tfrc
 
 # .tfstate files
 *.tfstate
@@ -35,8 +36,9 @@ override.tf.json
 .terraformrc
 terraform.rc
 
-# Binary files
+# Binary and release-package files
 terraform-provider-litellm
+/dist/
 
 # IDE and editor files
 .idea/
@@ -65,6 +67,11 @@ Thumbs.db
 *.out
 go.work
 
+# CI test and coverage artifacts
+junit.xml
+coverage.html
+coverage.txt
+
 # Dependency directories (remove the comment below to include it)
 # vendor/
 
@@ -78,5 +85,11 @@ go.work
 # Log files
 *.log
 
-# Environment files
+# Local environment and credential files
+/dev.env
 .env
+.env.*
+*.env
+*.env.*
+!.env.example
+!*.env.example

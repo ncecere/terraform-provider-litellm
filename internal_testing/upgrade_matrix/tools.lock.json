@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "terraform": {
+    "1.1.0": {
+      "base_url": "https://releases.hashicorp.com/terraform/1.1.0",
+      "archives": {
+        "darwin_arm64": {"file":"terraform_1.1.0_darwin_arm64.zip","sha256":"7955e173c7eadb87123fc0633c3ee67d5ba3b7d6c7f485fe803efed9f99dce54"},
+        "linux_amd64": {"file":"terraform_1.1.0_linux_amd64.zip","sha256":"763378aa75500ce5ba67d0cba8aa605670cd28bf8bafc709333a30908441acb5"}
+      }
+    },
+    "1.11.4": {
+      "base_url": "https://releases.hashicorp.com/terraform/1.11.4",
+      "archives": {
+        "darwin_arm64": {"file":"terraform_1.11.4_darwin_arm64.zip","sha256":"867e0808fa971217043e25b7a792b10720c79b1546f8a68479b74f138be73e18"},
+        "linux_amd64": {"file":"terraform_1.11.4_linux_amd64.zip","sha256":"1ce994251c00281d6845f0f268637ba50c0005657eb3cf096b92f753b42ef4dc"}
+      }
+    }
+  },
+  "opentofu": {
+    "1.6.3": {
+      "base_url": "https://github.com/opentofu/opentofu/releases/download/v1.6.3",
+      "archives": {
+        "darwin_arm64": {"file":"tofu_1.6.3_darwin_arm64.zip","sha256":"1f987e8f3b4f9bfd870e8afbb95028a6108431c614af75c5ac1ed9929021d15f"},
+        "linux_amd64": {"file":"tofu_1.6.3_linux_amd64.zip","sha256":"7069cf8b59b91d09bfe6fceb1a0a4f3e01473ea634dc83da56ac7f4d210b89ce"}
+      }
+    },
+    "1.11.1": {
+      "base_url": "https://github.com/opentofu/opentofu/releases/download/v1.11.1",
+      "archives": {
+        "darwin_arm64": {"file":"tofu_1.11.1_darwin_arm64.zip","sha256":"1ad4f7affb6947a36f03142c655c5d84bb5bd0bf5a350d3c84519dfd6acd6697"},
+        "linux_amd64": {"file":"tofu_1.11.1_linux_amd64.zip","sha256":"bbfaf9baff1e5baf2775a4a9e7ba9e3c0152841f29f4ee7cf4610feb48f2db1c"}
+      }
+    }
+  },
+  "previous_provider": {
+    "version":"2.0.1",
+    "release":"github:ncecere/terraform-provider-litellm@v2.0.1",
+    "registry_metadata_sha256":{"darwin_arm64":"0d426ce5fc1f8a14620228cb96ffc033a6c5e09e36d24ae68e69b314c076bac1","linux_amd64":"8961954c6446729e912ae3f1ace5e55871640f8ee90fafc8016b81faba651ca0"},
+    "checksums_file_sha256":"47e71bf3b3878c3b357c9e9ef0320acae3a07943e8045a950adf480fa7271e63",
+    "signature_sha256":"6f85f1f7a2bfe47e6776f41dd8d4b05ebcb0ec9c07924703bcc288f6b15a1316",
+    "manifest_sha256":"f809ab383cca0a5f83072981c64208cbd7fa67e986a86ee02dd2c82333221e32",
+    "schema_sha256_by_cli":{"terraform-1.1.0":"8aa617ec21be77222b0f45e81fbec282c37adf8195a435abd29f9b78f906f746","terraform-1.11.4":"381ea455515fd2ecb7f1e154051b7d64e92a7d8e18c495414a33fe74a017187e","opentofu-1.6.3":"381ea455515fd2ecb7f1e154051b7d64e92a7d8e18c495414a33fe74a017187e","opentofu-1.11.1":"381ea455515fd2ecb7f1e154051b7d64e92a7d8e18c495414a33fe74a017187e"},
+    "signing_key": {
+      "file":"release-key.asc",
+      "sha256":"ac65972f56daa9dd741708a6d5d2ee61ce6777bdde76261a67e7a56469f1e94c",
+      "fingerprint":"C753834A70062246C92CEF56F0A1AEC231353F8B",
+      "key_id":"F0A1AEC231353F8B"
+    },
+    "archives": {
+      "darwin_arm64":{"sha256":"3cc94f775f8161f459601864e2db00ef439aad8b21e417303f87291f61576bd5","executable_sha256":"c76ca1cdce96ce0aff3530d30c5d8cd71d48ae7f168150004b09eadfc21e2350"},
+      "linux_amd64":{"sha256":"81777dae4c993db90950516b37a2c13c1891bd55c058b87ffdd485cf3a4a40be","executable_sha256":"60f0c8d0826c590d11460e8c729e7cb9b92d219a36785cb560f88e8d959ca665"}
+    }
+  }
+}

@@ -2,8 +2,8 @@ package provider
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"sort"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
@@ -34,6 +34,9 @@ type BudgetListItemModel struct {
 	RPMLimit            types.Int64   `tfsdk:"rpm_limit"`
 	BudgetDuration      types.String  `tfsdk:"budget_duration"`
 	ModelMaxBudget      types.String  `tfsdk:"model_max_budget"`
+	BudgetResetAt       types.String  `tfsdk:"budget_reset_at"`
+	CreatedAt           types.String  `tfsdk:"created_at"`
+	UpdatedAt           types.String  `tfsdk:"updated_at"`
 }
 
 func (d *BudgetsListDataSource) Metadata(ctx context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
@@ -85,6 +88,18 @@ func (d *BudgetsListDataSource) Schema(ctx context.Context, req datasource.Schem
 							Description: "JSON string for per-model budget configuration.",
 							Computed:    true,
 						},
+						"budget_reset_at": schema.StringAttribute{
+							Description: "Timestamp when the budget will next reset.",
+							Computed:    true,
+						},
+						"created_at": schema.StringAttribute{
+							Description: "Timestamp when the budget was created.",
+							Computed:    true,
+						},
+						"updated_at": schema.StringAttribute{
+							Description: "Timestamp when the budget was last updated.",
+							Computed:    true,
+						},
 					},
 				},
 			},
@@ -112,50 +127,81 @@ func (d *BudgetsListDataSource) Configure(ctx context.Context, req datasource.Co
 func (d *BudgetsListDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
 	var data BudgetsListDataSourceModel
 
-	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	var results []map[string]interface{}
-	if err := d.client.DoRequestWithResponse(ctx, "GET", "/budget/list", nil, &results); err != nil {
+	results, err := fetchTopLevelListObjects(ctx, d.client, "/budget/list", "budget item")
+	if err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to list budgets: %s", err))
 		return
 	}
 
 	budgets := make([]BudgetListItemModel, 0, len(results))
+	seen := make(map[string]struct{}, len(results))
 	for _, result := range results {
 		budget := BudgetListItemModel{}
 
-		if budgetID, ok := result["budget_id"].(string); ok {
-			budget.BudgetID = types.StringValue(budgetID)
+		budget.BudgetID, err = dataSourceRequiredStringAt(result, "budget_id")
+		if err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", "/budget/list returned a budget object without a canonical budget_id")
+			return
 		}
-		if maxBudget, ok := result["max_budget"].(float64); ok {
-			budget.MaxBudget = types.Float64Value(maxBudget)
+		if err := dataSourceListIdentity(seen, budget.BudgetID.ValueString(), "/budget/list", "budget_id"); err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", err.Error())
+			return
 		}
-		if softBudget, ok := result["soft_budget"].(float64); ok {
-			budget.SoftBudget = types.Float64Value(softBudget)
-		}
-		if maxParallel, ok := result["max_parallel_requests"].(float64); ok {
-			budget.MaxParallelRequests = types.Int64Value(int64(maxParallel))
-		}
-		if tpmLimit, ok := result["tpm_limit"].(float64); ok {
-			budget.TPMLimit = types.Int64Value(int64(tpmLimit))
-		}
-		if rpmLimit, ok := result["rpm_limit"].(float64); ok {
-			budget.RPMLimit = types.Int64Value(int64(rpmLimit))
-		}
-		if budgetDuration, ok := result["budget_duration"].(string); ok {
-			budget.BudgetDuration = types.StringValue(budgetDuration)
-		}
-		if modelMaxBudget, ok := result["model_max_budget"].(map[string]interface{}); ok && len(modelMaxBudget) > 0 {
-			if jsonBytes, err := json.Marshal(modelMaxBudget); err == nil {
-				budget.ModelMaxBudget = types.StringValue(string(jsonBytes))
+		for _, field := range []struct {
+			name   string
+			target *types.Float64
+		}{
+			{"max_budget", &budget.MaxBudget},
+			{"soft_budget", &budget.SoftBudget},
+		} {
+			value, fieldErr := dataSourceNullableFloat64At(result, field.name)
+			if fieldErr != nil {
+				resp.Diagnostics.AddError("Invalid API Response", fieldErr.Error())
+				return
 			}
+			*field.target = value
+		}
+		for _, field := range []struct {
+			name   string
+			target *types.Int64
+		}{
+			{"max_parallel_requests", &budget.MaxParallelRequests},
+			{"tpm_limit", &budget.TPMLimit},
+			{"rpm_limit", &budget.RPMLimit},
+		} {
+			value, fieldErr := dataSourceNullableInt64At(result, field.name)
+			if fieldErr != nil {
+				resp.Diagnostics.AddError("Invalid API Response", fieldErr.Error())
+				return
+			}
+			*field.target = value
+		}
+		for _, field := range []struct {
+			name   string
+			target *types.String
+		}{
+			{"budget_duration", &budget.BudgetDuration},
+			{"budget_reset_at", &budget.BudgetResetAt},
+			{"created_at", &budget.CreatedAt},
+			{"updated_at", &budget.UpdatedAt},
+		} {
+			value, fieldErr := dataSourceNullableStringAt(result, field.name)
+			if fieldErr != nil {
+				resp.Diagnostics.AddError("Invalid API Response", fieldErr.Error())
+				return
+			}
+			*field.target = value
+		}
+		if err := updateModelBudgetStringState(&budget.ModelMaxBudget, result, "model_max_budget", true); err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", err.Error())
+			return
 		}
 
 		budgets = append(budgets, budget)
 	}
+	sort.SliceStable(budgets, func(i, j int) bool {
+		return budgets[i].BudgetID.ValueString() < budgets[j].BudgetID.ValueString()
+	})
 
 	data.ID = types.StringValue("budgets")
 	data.Budgets = budgets

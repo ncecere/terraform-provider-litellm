@@ -6,6 +6,7 @@ import (
 	"log"
 
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
+	"github.com/nicholas-cecere/terraform-provider-litellm/internal/metadata"
 	"github.com/nicholas-cecere/terraform-provider-litellm/internal/provider"
 )
 
@@ -18,13 +19,15 @@ func main() {
 	flag.BoolVar(&debug, "debug", false, "set to true to run the provider with support for debuggers like delve")
 	flag.Parse()
 
-	opts := providerserver.ServeOpts{
-		Address: "registry.terraform.io/nicholas-cecere/litellm",
-		Debug:   debug,
-	}
-
-	err := providerserver.Serve(context.Background(), provider.New(version), opts)
+	err := providerserver.Serve(context.Background(), provider.New(version), serveOptions(debug))
 	if err != nil {
 		log.Fatal(err.Error())
+	}
+}
+
+func serveOptions(debug bool) providerserver.ServeOpts {
+	return providerserver.ServeOpts{
+		Address: metadata.ProviderSource,
+		Debug:   debug,
 	}
 }

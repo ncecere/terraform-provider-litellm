@@ -1,7 +1,5 @@
 # LiteLLM Terraform Provider
 
-> Heads-up: In January 2026 this provider will undergo a major rewrite. Releases will track LiteLLM versions directly (provider version = targeted LiteLLM version), with monthly updates on stable LiteLLM releases only. Expect breaking changes during this transition.
-
 This Terraform provider allows you to manage LiteLLM resources through Infrastructure as Code. It provides support for managing models, teams, team members, and API keys via the LiteLLM REST API.
 
 ## Features
@@ -16,10 +14,14 @@ This Terraform provider allows you to manage LiteLLM resources through Infrastru
 - Manage API keys with fine-grained controls
 - Support for reasoning effort configuration in the model resource
 
-## Requirements
+## Compatibility
 
-- [Terraform](https://www.terraform.io/downloads.html) >= 0.13.x
-- [Go](https://golang.org/doc/install) >= 1.16 (for development)
+- [Terraform](https://developer.hashicorp.com/terraform/install) >= 1.1.0 (provider protocol 6.0)
+- [OpenTofu](https://opentofu.org/docs/intro/install/) >= 1.6.0
+- [Go](https://go.dev/doc/install) >= 1.24.0 for provider development
+- Tested backend: exactly LiteLLM 1.98.0
+
+The provider's global client baseline is Terraform 1.1.0 or OpenTofu 1.6.0. Terraform 1.0 is not supported because its `ignore_changes` planning behavior can erase the distinction between an omitted map and an explicitly empty map before the provider receives the configuration. The optional write-only attributes `litellm_key.key_wo`, `litellm_key.send_invite_email`, and `litellm_user.send_invite_email` require Terraform or OpenTofu 1.11.0 or later only when they are configured.
 
 ## Using the Provider
 
@@ -27,10 +29,12 @@ To use the LiteLLM provider in your Terraform configuration, you need to declare
 
 ```hcl
 terraform {
+  required_version = ">= 1.1.0"
+
   required_providers {
     litellm = {
-      source  = "ncecere/litellm"
-      version = "~> 0.3.11"
+      source  = "registry.terraform.io/ncecere/litellm"
+      version = ">= 2.0.1, < 3.0.0"
     }
   }
 }
@@ -39,6 +43,17 @@ provider "litellm" {
   api_base = var.litellm_api_base
   api_key  = var.litellm_api_key
 }
+```
+
+Run `terraform init -upgrade` (or `tofu init -upgrade`) after changing the version constraint. The published source is exactly `registry.terraform.io/ncecere/litellm`.
+
+Correcting the provider binary's served address to that published source does not change protocol 6, provider or resource schemas, HCL types, state values, IDs, or import formats. Normal state created with the published `ncecere/litellm` source needs no migration. If development-only configuration actually recorded state under the unpublished `registry.terraform.io/nicholas-cecere/litellm` address, migrate it explicitly; the provider does not silently alias addresses:
+
+```sh
+terraform state replace-provider \
+  registry.terraform.io/nicholas-cecere/litellm \
+  registry.terraform.io/ncecere/litellm
+# OpenTofu users can run the equivalent `tofu state replace-provider` command.
 ```
 
 Then, you can use the provider to manage LiteLLM resources. Here's an example of creating a model configuration:
@@ -135,18 +150,39 @@ For full details on the <code>litellm_key</code> resource, see the [key resource
 ### Available Resources
 
 - <code>litellm_model</code>: Manage model configurations. [Documentation](docs/resources/model.md)
-- <code>litellm_team</code>: Manage teams. [Documentation](docs/resources/team.md)
-- <code>litellm_team_member</code>: Manage team members. [Documentation](docs/resources/team_member.md)
-- <code>litellm_team_member_add</code>: Add multiple members to teams. [Documentation](docs/resources/team_member_add.md)
 - <code>litellm_key</code>: Manage API keys. [Documentation](docs/resources/key.md)
+- <code>litellm_key_block</code>: Block/unblock an API key. [Documentation](docs/resources/key_block.md)
+- <code>litellm_team</code>: Manage teams. [Documentation](docs/resources/team.md)
+- <code>litellm_team_block</code>: Block/unblock a team. [Documentation](docs/resources/team_block.md)
+- <code>litellm_team_member</code>: Manage an individual team member. [Documentation](docs/resources/team_member.md)
+- <code>litellm_team_member_add</code>: Manage a batch of team members. [Documentation](docs/resources/team_member_add.md)
+- <code>litellm_organization</code>: Manage organizations. [Documentation](docs/resources/organization.md)
+- <code>litellm_organization_member</code>: Manage organization members. [Documentation](docs/resources/organization_member.md)
+- <code>litellm_project</code>: Manage projects (between teams and keys in the hierarchy). [Documentation](docs/resources/project.md)
+- <code>litellm_user</code>: Manage users. [Documentation](docs/resources/user.md)
+- <code>litellm_budget</code>: Manage reusable budgets and rate limits. [Documentation](docs/resources/budget.md)
+- <code>litellm_tag</code>: Manage tags for categorizing resources. [Documentation](docs/resources/tag.md)
+- <code>litellm_access_group</code>: Manage model access groups. [Documentation](docs/resources/access_group.md)
+- <code>litellm_unified_access_group</code>: Manage access groups via the `/v1/access_group` API. [Documentation](docs/resources/unified_access_group.md)
+- <code>litellm_fallback</code>: Manage model fallback configuration. [Documentation](docs/resources/fallback.md)
+- <code>litellm_guardrail</code>: Manage content-safety guardrails. [Documentation](docs/resources/guardrail.md)
+- <code>litellm_prompt</code>: Manage reusable prompt templates. [Documentation](docs/resources/prompt.md)
+- <code>litellm_agent</code>: Manage LiteLLM Agents (A2A). [Documentation](docs/resources/agent.md)
+- <code>litellm_search_tool</code>: Manage web-search tool configurations. [Documentation](docs/resources/search_tool.md)
 - <code>litellm_mcp_server</code>: Manage MCP (Model Context Protocol) servers. [Documentation](docs/resources/mcp_server.md)
 - <code>litellm_credential</code>: Manage credentials for secure authentication. [Documentation](docs/resources/credential.md)
 - <code>litellm_vector_store</code>: Manage vector stores for embeddings and RAG. [Documentation](docs/resources/vector_store.md)
+- <code>litellm_jwt_key_mapping</code>: Manage JWT string claim-to-existing-virtual-key mappings. [Documentation](docs/resources/jwt_key_mapping.md)
 
 ### Available Data Sources
 
-- <code>litellm_credential</code>: Retrieve information about existing credentials. [Documentation](docs/data-sources/credential.md)
-- <code>litellm_vector_store</code>: Retrieve information about existing vector stores. [Documentation](docs/data-sources/vector_store.md)
+Single-item lookups:
+
+- <code>litellm_model</code> ([docs](docs/data-sources/model.md)), <code>litellm_key</code> ([docs](docs/data-sources/key.md)), <code>litellm_team</code> ([docs](docs/data-sources/team.md)), <code>litellm_organization</code> ([docs](docs/data-sources/organization.md)), <code>litellm_project</code> ([docs](docs/data-sources/project.md)), <code>litellm_user</code> ([docs](docs/data-sources/user.md)), <code>litellm_budget</code> ([docs](docs/data-sources/budget.md)), <code>litellm_tag</code> ([docs](docs/data-sources/tag.md)), <code>litellm_access_group</code> ([docs](docs/data-sources/access_group.md)), <code>litellm_unified_access_group</code> ([docs](docs/data-sources/unified_access_group.md)), <code>litellm_prompt</code> ([docs](docs/data-sources/prompt.md)), <code>litellm_guardrail</code> ([docs](docs/data-sources/guardrail.md)), <code>litellm_agent</code> ([docs](docs/data-sources/agent.md)), <code>litellm_search_tool</code> ([docs](docs/data-sources/search_tool.md)), <code>litellm_fallback</code> ([docs](docs/data-sources/fallback.md)), <code>litellm_mcp_server</code> ([docs](docs/data-sources/mcp_server.md)), <code>litellm_credential</code> ([docs](docs/data-sources/credential.md)), <code>litellm_vector_store</code> ([docs](docs/data-sources/vector_store.md)), <code>litellm_jwt_key_mapping</code> ([docs](docs/data-sources/jwt_key_mapping.md))
+
+List data sources (return all items of a type):
+
+- <code>litellm_models</code> ([docs](docs/data-sources/models.md)), <code>litellm_keys</code> ([docs](docs/data-sources/keys.md)), <code>litellm_teams</code> ([docs](docs/data-sources/teams.md)), <code>litellm_organizations</code> ([docs](docs/data-sources/organizations.md)), <code>litellm_projects</code> ([docs](docs/data-sources/projects.md)), <code>litellm_users</code> ([docs](docs/data-sources/users.md)), <code>litellm_budgets</code> ([docs](docs/data-sources/budgets.md)), <code>litellm_tags</code> ([docs](docs/data-sources/tags.md)), <code>litellm_access_groups</code> ([docs](docs/data-sources/access_groups.md)), <code>litellm_unified_access_groups</code> ([docs](docs/data-sources/unified_access_groups.md)), <code>litellm_prompts</code> ([docs](docs/data-sources/prompts.md)), <code>litellm_guardrails</code> ([docs](docs/data-sources/guardrails.md)), <code>litellm_agents</code> ([docs](docs/data-sources/agents.md)), <code>litellm_search_tools</code> ([docs](docs/data-sources/search_tools.md)), <code>litellm_mcp_servers</code> ([docs](docs/data-sources/mcp_servers.md)), <code>litellm_jwt_key_mappings</code> ([docs](docs/data-sources/jwt_key_mappings.md))
 
 ## Development
 
@@ -156,28 +192,48 @@ The project is organized as follows:
 
 ```
 terraform-provider-litellm/
-├── litellm/
-│   ├── provider.go
-│   ├── resource_model.go
-│   ├── resource_model_crud.go
-│   ├── resource_team.go
-│   ├── resource_team_member.go
-│   ├── resource_key.go
-│   ├── resource_key_utils.go
-│   ├── types.go
-│   └── utils.go
-├── main.go
+├── internal/
+│   └── provider/               # the provider implementation (registered in main.go)
+│       ├── provider.go         # provider schema + resource/data-source registration
+│       ├── client.go           # LiteLLM API HTTP client
+│       ├── resource_*.go       # resource implementations and helpers
+│       ├── datasource_*.go     # data-source implementations and helpers
+│       └── *_test.go           # unit tests
+├── docs/                       # resource & data-source documentation
+├── internal_testing/           # docker compose LiteLLM + smoke-test configs
+├── main.go                     # provider entrypoint
 ├── go.mod
 ├── go.sum
 ├── Makefile
 └── ...
 ```
 
+### Implementation and compatibility
+
+This repository publishes a Terraform provider binary and its HCL interface; it
+is not a supported external Go library API. Provider implementation packages are
+internal details. The binary entry point in `main.go` serves only the Terraform
+Plugin Framework implementation in `internal/provider`.
+
+The former top-level `litellm/` Terraform Plugin SDKv2 implementation was left
+behind by the Framework migration and was never registered by the migrated
+provider binary. Removing that dead implementation does not require a state
+migration: the provider type name, registered resource and data-source type
+names, schema versions and types, state values and IDs, and import formats are
+unchanged. Provider source identity and the one development-only migration case
+are documented in [Using the Provider](#using-the-provider).
+
+The checked LiteLLM OpenAPI, hidden-route supplement, provider-operation golden,
+exact operation classification, separately reviewed pins, and offline Go verifier
+protect the provider's HTTP API boundary without adding any runtime Python or
+source dependency. See [API contract maintenance](docs/development/api-contract.md)
+for reproduction, upgrade review, and FastAPI/Pydantic limitations.
+
 ### Building the Provider
 
 1. Clone the repository:
 ```sh
-git clone https://github.com/your-username/terraform-provider-litellm.git
+git clone https://github.com/ncecere/terraform-provider-litellm.git
 ```
 
 2. Enter the repository directory:
@@ -190,6 +246,8 @@ cd terraform-provider-litellm
 make install
 ```
 
+The historical Go module identifier is retained for provider-build compatibility. This repository is distributed as a Terraform provider executable and does not expose a supported Go library API. Use `registry.terraform.io/ncecere/litellm` in Terraform or OpenTofu configurations rather than importing the Go module.
+
 ### Development Commands
 
 The Makefile provides several useful commands for development:
@@ -199,6 +257,10 @@ The Makefile provides several useful commands for development:
 - `make test`: Runs the test suite
 - `make fmt`: Formats the code
 - `make vet`: Runs go vet
+- `make contract-check`: Verifies the checked LiteLLM API contract offline
+- `make contract-update`: Regenerates the contract from the exact pinned upstream source
+- `make contract-diff`: Reproduces and compares the pinned contract without modifying files
+- `make contract-update-atomicity-test`: Verifies exclusive-writer locking plus rollback, permissions, signal/failure cleanup, concurrent interleavings, and stale-lock refusal
 - `make lint`: Runs golangci-lint
 - `make clean`: Removes build artifacts and installed provider
 
@@ -210,7 +272,7 @@ The Makefile provides several useful commands for development:
 make test
 ```
 
-**Smoke tests** (manual run against a local LiteLLM proxy) exercise real plan/apply/destroy for selected resources and data sources. Results are written to `internal_testing/.smoke/smoke.log`.
+**Smoke tests** (manual run against a local LiteLLM proxy) exercise real plan/apply/destroy for selected resources and data sources. Results are written to timestamped files under `internal_testing/.smoke-logs/`.
 
 1. Start the proxy and DB: `make local` (runs `docker compose up -d` in `internal_testing/`).
 2. Optionally follow logs: `make logs`.
@@ -222,9 +284,9 @@ make test
    make smoke resources=model_minimal.tf,key_minimal.tf datasources=keys_list.tf,model.tf
    ```
 
-   All listed files are applied in a single Terraform run (shared state). Requires `make build` and a valid `internal_testing/terraform.tfvars` (copy from `terraform.tfvars.example`).
+   All listed files are applied in a single Terraform run (shared state). The harness builds the provider and copies its checked local test variables into an isolated private workspace.
 
-4. Inspect output: `internal_testing/.smoke/smoke.log` (no-color, section headers PLAN / APPLY / DESTROY / SUMMARY).
+4. Inspect the timestamped private log under `internal_testing/.smoke-logs/`.
 
 See [internal_testing/README.md](internal_testing/README.md) for full details (Docker layout, directory structure, tfvars).
 

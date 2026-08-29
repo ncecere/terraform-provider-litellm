@@ -4,7 +4,7 @@
 # config). If it is not there, Terraform will report the API error, which is fine.
 
 data "litellm_fallback" "lookup" {
-  model         = "smoke-fallback-full-fallback"
+  model         = litellm_fallback.minimal.model
   fallback_type = "general"
 }
 

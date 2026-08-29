@@ -1,41 +1,153 @@
 # Terraform Provider release workflow.
 name: Release
 
-# This GitHub action creates a release when a tag that matches the pattern
-# "v*" (e.g. v0.1.0) is created.
 on:
   push:
     tags:
       - 'v*'
 
-# Releases need permissions to read and write the repository contents.
-# GitHub considers creating releases and uploading assets as writing contents.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  goreleaser:
+  full-cli-gate:
+    name: Exact-tag full matrix (${{ matrix.product }} ${{ matrix.version }})
+    if: github.repository == 'ncecere/terraform-provider-litellm'
     runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - product: terraform
+            version: 1.1.0
+            executable: terraform
+          - product: terraform
+            version: 1.11.4
+            executable: terraform
+          - product: opentofu
+            version: 1.6.3
+            executable: tofu
+          - product: opentofu
+            version: 1.11.1
+            executable: tofu
     steps:
-      - uses: actions/checkout@eef61447b9ff4aafe5dcd4e0bbf5d482be7e7871 # v4.2.1
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
-          # Allow goreleaser to access older tag information.
           fetch-depth: 0
-      - uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
-          go-version-file: 'go.mod'
+          go-version-file: go.mod
           cache: true
+      - name: Verify tag is on the actual default-branch history
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          git fetch --no-tags origin "$DEFAULT_BRANCH"
+          git merge-base --is-ancestor "$GITHUB_SHA" "origin/$DEFAULT_BRANCH"
+          base=$(git rev-parse "origin/$DEFAULT_BRANCH")
+          python3 internal_testing/upgrade_matrix/verify_runtime_parity.py \
+            --event release --base "$base" --head "$GITHUB_SHA"
+      - name: Verify checked LiteLLM API contract
+        run: make contract-check
+      - name: Install exact CLI and build exact-tag provider
+        run: |
+          python3 internal_testing/upgrade_matrix/harness.py install-tool \
+            "${{ matrix.product }}" "${{ matrix.version }}" --cache "$RUNNER_TEMP/tools"
+          install -d -m 700 "$RUNNER_TEMP/provider" "$RUNNER_TEMP/report"
+          go build -o "$RUNNER_TEMP/provider/terraform-provider-litellm" .
+      - name: Start exact disposable LiteLLM backend
+        timeout-minutes: 5
+        run: |
+          internal_testing/compose.sh up -d
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent --connect-timeout 3 --max-time 10 \
+              http://localhost:4000/health/liveliness >/dev/null; then exit 0; fi
+            sleep 2
+          done
+          exit 1
+      - name: Execute full exact-tag lane
+        env:
+          TF_ACC: '1'
+          LITELLM_ACCEPTANCE_CONFIRM: local-v1.98.0
+          MATRIX_CLI: ${{ runner.temp }}/tools/${{ matrix.product }}/${{ matrix.version }}/linux_amd64/${{ matrix.executable }}
+          MATRIX_PROVIDER_BINARY: ${{ runner.temp }}/provider/terraform-provider-litellm
+          MATRIX_CACHE: ${{ runner.temp }}/matrix-cache
+          MATRIX_REPORT: ${{ runner.temp }}/report/result.json
+        run: sh internal_testing/upgrade_matrix/run.sh local
+      - name: Verify report is bound to the exact tagged SHA and lane
+        env:
+          EXPECTED_LANE: ${{ matrix.product }}-${{ matrix.version }}
+        run: |
+          python3 - "$RUNNER_TEMP/report/result.json" "$GITHUB_SHA" "$EXPECTED_LANE" <<'PY'
+          import json,sys
+          value=json.load(open(sys.argv[1],encoding='utf-8'))
+          provenance=value['provenance']
+          actual=f"{provenance['cli_product']}-{provenance['cli_version']}"
+          if provenance['candidate_commit'] != sys.argv[2] or actual != sys.argv[3]:
+              raise SystemExit('release evidence is not bound to the exact tag/lane')
+          PY
+      - name: Destroy isolated backend fallback
+        if: always()
+        timeout-minutes: 10
+        run: internal_testing/compose.sh down -v
+      - name: Preserve redacted report and safe evidence ledger
+        if: success()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-gate-${{ matrix.product }}-${{ matrix.version }}-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/report/result.json
+            ${{ runner.temp }}/report/result.evidence.jsonl
+          if-no-files-found: error
+
+  goreleaser:
+    name: Build and sign exact gated tag
+    needs: full-cli-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Verify checked LiteLLM API contract
+        run: make contract-check
+      - name: Generate exact-tag release notes
+        run: |
+          go run ./internal/cmd/release-notes \
+            -tag "${GITHUB_REF_NAME}" \
+            -changelog CHANGELOG.md \
+            -output "${RUNNER_TEMP}/release-notes.md"
       - name: Import GPG key
         uses: crazy-max/ghaction-import-gpg@01dd5d3ca463c7f10f7f4f7b4f177225ac661ee4 # v6.1.0
         id: import_gpg
         with:
           gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
           passphrase: ${{ secrets.PASSPHRASE }}
-      - name: Run GoReleaser
+      - name: Verify Registry signing-key continuity
+        env:
+          IMPORTED_FINGERPRINT: ${{ steps.import_gpg.outputs.fingerprint }}
+        run: |
+          expected="$(jq -er '.previous_provider.signing_key.fingerprint' internal_testing/upgrade_matrix/tools.lock.json)"
+          actual="$(printf '%s' "$IMPORTED_FINGERPRINT" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')"
+          if ! printf '%s' "$actual" | grep -Eq '^[0-9A-F]{40}$' || [ "$actual" != "$expected" ]; then
+            echo 'Imported release key does not match the reviewed Registry signing key.' >&2
+            exit 1
+          fi
+      - name: Run GoReleaser only after all four full lanes
         uses: goreleaser/goreleaser-action@286f3b13b1b49da4ac219696163fb8c1c93e1200 # v6.0.0
         with:
-          args: release --clean
+          distribution: goreleaser
+          version: v2.12.7
+          args: release --clean --release-notes=${{ runner.temp }}/release-notes.md
         env:
-          # GitHub sets the GITHUB_TOKEN secret automatically.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GPG_FINGERPRINT: ${{ steps.import_gpg.outputs.fingerprint }}

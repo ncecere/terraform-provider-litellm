@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
@@ -55,8 +56,8 @@ func (d *UnifiedAccessGroupsListDataSource) Configure(ctx context.Context, req d
 }
 
 func (d *UnifiedAccessGroupsListDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
-	var result []map[string]interface{}
-	if err := d.client.DoRequestWithResponse(ctx, "GET", "/v1/access_group", nil, &result); err != nil {
+	result, err := fetchTopLevelListObjects(ctx, d.client, "/v1/access_group", "unified access group item")
+	if err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to list unified access groups: %s", err))
 		return
 	}
@@ -64,25 +65,60 @@ func (d *UnifiedAccessGroupsListDataSource) Read(ctx context.Context, req dataso
 	data := UnifiedAccessGroupsListDataSourceModel{
 		AccessGroups: make([]UnifiedAccessGroupDataSourceModel, 0, len(result)),
 	}
-	for _, item := range result {
-		resourceData := UnifiedAccessGroupResourceModel{}
-		readUnifiedAccessGroupResponse(ctx, item, &resourceData)
-		data.AccessGroups = append(data.AccessGroups, UnifiedAccessGroupDataSourceModel{
-			ID:                 resourceData.ID,
-			AccessGroupID:      resourceData.AccessGroupID,
-			AccessGroupName:    resourceData.AccessGroupName,
-			Description:        resourceData.Description,
-			AccessModelNames:   resourceData.AccessModelNames,
-			AccessMCPServerIDs: resourceData.AccessMCPServerIDs,
-			AccessAgentIDs:     resourceData.AccessAgentIDs,
-			AssignedTeamIDs:    resourceData.AssignedTeamIDs,
-			AssignedKeyIDs:     resourceData.AssignedKeyIDs,
-			CreatedAt:          resourceData.CreatedAt,
-			CreatedBy:          resourceData.CreatedBy,
-			UpdatedAt:          resourceData.UpdatedAt,
-			UpdatedBy:          resourceData.UpdatedBy,
-		})
+	seen := make(map[string]struct{}, len(result))
+	for _, raw := range result {
+		item := UnifiedAccessGroupDataSourceModel{}
+		item.AccessGroupID, err = dataSourceRequiredStringAt(raw, "access_group_id")
+		if err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", "/v1/access_group returned an access group object without a canonical access_group_id")
+			return
+		}
+		item.ID = item.AccessGroupID
+		if err := dataSourceListIdentity(seen, item.AccessGroupID.ValueString(), "/v1/access_group", "access_group_id"); err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", err.Error())
+			return
+		}
+		for _, field := range []struct {
+			name   string
+			target *types.String
+		}{
+			{"access_group_name", &item.AccessGroupName}, {"description", &item.Description},
+			{"created_at", &item.CreatedAt}, {"created_by", &item.CreatedBy},
+			{"updated_at", &item.UpdatedAt}, {"updated_by", &item.UpdatedBy},
+		} {
+			*field.target, err = dataSourceNullableStringAt(raw, field.name)
+			if err != nil {
+				resp.Diagnostics.AddError("Invalid API Response", err.Error())
+				return
+			}
+		}
+		for _, field := range []struct {
+			name   string
+			target *types.List
+		}{
+			{"access_model_names", &item.AccessModelNames}, {"access_mcp_server_ids", &item.AccessMCPServerIDs},
+			{"access_agent_ids", &item.AccessAgentIDs}, {"assigned_team_ids", &item.AssignedTeamIDs},
+			{"assigned_key_ids", &item.AssignedKeyIDs},
+		} {
+			*field.target, err = dataSourceNullableStringListAt(raw, field.name)
+			if err != nil {
+				resp.Diagnostics.AddError("Invalid API Response", err.Error())
+				return
+			}
+		}
+		if !item.AssignedKeyIDs.IsNull() {
+			for _, value := range item.AssignedKeyIDs.Elements() {
+				if _, keyErr := unifiedAccessGroupKeyHash(value.(types.String).ValueString()); keyErr != nil {
+					resp.Diagnostics.AddError("Invalid API Response", "/v1/access_group returned an invalid assigned_key_ids element")
+					return
+				}
+			}
+		}
+		data.AccessGroups = append(data.AccessGroups, item)
 	}
+	sort.SliceStable(data.AccessGroups, func(i, j int) bool {
+		return data.AccessGroups[i].AccessGroupID.ValueString() < data.AccessGroups[j].AccessGroupID.ValueString()
+	})
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }

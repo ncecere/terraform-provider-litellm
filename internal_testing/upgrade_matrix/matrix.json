@@ -1,0 +1,138 @@
+{
+  "schema_version": 1,
+  "provider_source": "registry.terraform.io/ncecere/litellm",
+  "previous_release": "2.0.1",
+  "local_litellm": "1.98.0",
+  "remote_target": "dev.api.ai.it.ufl.edu",
+  "resources": [
+    {"type":"litellm_model","fixture":["issue210_model_v201.tf"],"import_fixture":["issue210_model_import.tf"],"address":"litellm_model.upgrade","import_expression":"litellm_model.upgrade.id","lane":"oss","action":false},
+    {"type":"litellm_key","fixture":["key_minimal.tf"],"address":"litellm_key.minimal","import_expression":"litellm_key.minimal.key","lane":"oss","action":false,"limitations":["key-regeneration-blocked"]},
+    {"type":"litellm_jwt_key_mapping","fixture":["key_minimal.tf","jwt_key_mapping.tf"],"import_fixture":["key_minimal.tf","issue210_jwt_key_mapping_import.tf"],"address":"litellm_jwt_key_mapping.acceptance","import_expression":"litellm_jwt_key_mapping.acceptance.id","import_stale_outputs":["jwt_key_mapping_id"],"lane":"requires-1.11","action":false,"introduced_after_previous":true,"limitations":["previous-release-resource-unavailable","cli-version-below-1.11"]},
+    {"type":"litellm_key_block","fixture":["key_minimal.tf","key_block_minimal.tf"],"address":"litellm_key_block.minimal","import_expression":"litellm_key_block.minimal.id","lane":"oss","action":true},
+    {"type":"litellm_team","fixture":["team_minimal.tf"],"address":"litellm_team.minimal","import_expression":"litellm_team.minimal.id","lane":"oss","action":false},
+    {"type":"litellm_team_block","fixture":["team_minimal.tf","team_block_minimal.tf"],"address":"litellm_team_block.minimal","import_expression":"litellm_team_block.minimal.id","lane":"oss","action":true},
+    {"type":"litellm_team_member","fixture":["team_minimal.tf","issue210_team_member_v201.tf"],"import_fixture":["team_minimal.tf","issue210_team_member_import.tf"],"address":"litellm_team_member.upgrade","import_expression":"litellm_team_member.upgrade.id","lane":"oss","action":false},
+    {"type":"litellm_team_member_add","fixture":["team_minimal.tf","team_member_add_minimal.tf"],"address":"litellm_team_member_add.minimal","import_expression":"composite_team_member_add(litellm_team_member_add.minimal)","lane":"oss","action":false},
+    {"type":"litellm_mcp_server","fixture":["mcp_server_minimal.tf"],"address":"litellm_mcp_server.minimal","import_expression":"litellm_mcp_server.minimal.id","lane":"oss","action":false},
+    {"type":"litellm_credential","fixture":["issue210_credential_v201.tf"],"import_fixture":["issue210_credential_import.tf"],"address":"litellm_credential.upgrade","import_expression":"litellm_credential.upgrade.id","import_stale_outputs":["issue210_credential_upgrade_id"],"lane":"oss","action":false,"limitations":["masked-values-metadata-only-import"]},
+    {"type":"litellm_vector_store","fixture":["vector_store_minimal.tf"],"address":"litellm_vector_store.minimal","import_expression":"litellm_vector_store.minimal.id","lane":"oss","action":false},
+    {"type":"litellm_organization","fixture":["organization_minimal.tf"],"address":"litellm_organization.minimal","import_expression":"litellm_organization.minimal.id","lane":"oss","action":false},
+    {"type":"litellm_organization_member","fixture":["organization_minimal.tf","organization_member_minimal.tf"],"address":"litellm_organization_member.minimal","import_expression":"litellm_organization_member.minimal.id","lane":"oss","action":false},
+    {"type":"litellm_user","fixture":["user_minimal.tf"],"address":"litellm_user.minimal","import_expression":"litellm_user.minimal.id","lane":"oss","action":false,"optional_scenarios":[{"name":"send_invite_email","minimum_cli":"1.11.0"}]},
+    {"type":"litellm_budget","fixture":["budget_minimal.tf"],"address":"litellm_budget.minimal","import_expression":"litellm_budget.minimal.id","lane":"oss","action":false},
+    {"type":"litellm_tag","fixture":["tag_minimal.tf"],"address":"litellm_tag.minimal","import_expression":"litellm_tag.minimal.id","lane":"oss","action":false},
+    {"type":"litellm_access_group","fixture":["model_access_group.tf","access_group_minimal.tf"],"address":"litellm_access_group.minimal","import_expression":"litellm_access_group.minimal.id","lane":"oss","action":false},
+    {"type":"litellm_unified_access_group","fixture":["unified_access_group_minimal.tf"],"address":"litellm_unified_access_group.minimal","import_expression":"litellm_unified_access_group.minimal.id","lane":"oss","action":false},
+    {"type":"litellm_prompt","fixture":["issue210_prompt_v201.tf"],"address":"litellm_prompt.upgrade","import_expression":"litellm_prompt.upgrade.id","lane":"oss","action":false},
+    {"type":"litellm_guardrail","fixture":["issue210_guardrail_v201.tf"],"address":"litellm_guardrail.upgrade","import_expression":"litellm_guardrail.upgrade.id","lane":"oss","action":false,"limitations":["masked-parameters-require-admin"]},
+    {"type":"litellm_search_tool","fixture":["search_tool_minimal.tf"],"address":"litellm_search_tool.minimal","import_expression":"litellm_search_tool.minimal.id","lane":"oss","action":false},
+    {"type":"litellm_fallback","fixture":["fallback_minimal.tf"],"address":"litellm_fallback.minimal","import_expression":"litellm_fallback.minimal.id","lane":"oss","action":false,"lifecycle_skip_reason":"fallback-delete-not-authoritative","lifecycle_skip_diagnostic_code":"fallback-delete-not-authoritative","import_skip_reason":"fallback-delete-not-authoritative","limitations":["fallback-delete-not-authoritative"]},
+    {"type":"litellm_agent","fixture":["agent_minimal.tf"],"address":"litellm_agent.minimal","import_expression":"litellm_agent.minimal.id","lane":"oss","action":false,"import_skip_reason":"role-redacted-state-requires-admin","limitations":["role-redacted-state-requires-admin","cli-version-below-1.11-agent-import-projection"]},
+    {"type":"litellm_project","fixture":["team_minimal.tf","issue210_project_v201.tf"],"address":"litellm_project.upgrade","import_expression":"litellm_project.upgrade.id","lane":"enterprise","action":false,"limitations":["enterprise-license-required"]}
+  ],
+  "non_importable_resources": [],
+  "action_resources": ["litellm_key_block", "litellm_team_block"],
+  "data_sources": [
+    "litellm_model","litellm_key","litellm_jwt_key_mapping","litellm_team","litellm_credential","litellm_vector_store","litellm_organization","litellm_user","litellm_budget","litellm_tag","litellm_access_group","litellm_unified_access_group","litellm_prompt","litellm_guardrail","litellm_mcp_server","litellm_search_tool","litellm_fallback","litellm_agent","litellm_project",
+    "litellm_models","litellm_keys","litellm_jwt_key_mappings","litellm_teams","litellm_organizations","litellm_users","litellm_budgets","litellm_tags","litellm_access_groups","litellm_unified_access_groups","litellm_prompts","litellm_guardrails","litellm_mcp_servers","litellm_search_tools","litellm_agents","litellm_projects"
+  ],
+  "data_source_expected_limitations": {
+    "litellm_project":"enterprise-license-required",
+    "litellm_projects":"enterprise-license-required",
+    "litellm_agents":"inventory-endpoint-may-be-unavailable",
+    "litellm_prompts":"inventory-endpoint-may-be-unavailable"
+  },
+  "scenario_counts": {
+    "resource_coverage":24,
+    "upgrade":24,
+    "lifecycle":24,
+    "import":24,
+    "drift":24,
+    "replacement":3,
+    "failure_recovery":2,
+    "data_source":35,
+    "documentation":3
+  },
+  "upgrade_expected_computed_migrations": {
+    "litellm_agent": ["extra_headers"],
+    "litellm_credential": ["credential_info_json", "credential_source", "credential_values_active"],
+    "litellm_key": ["blocked"],
+    "litellm_mcp_server": ["alias", "available_on_public_internet", "byok_description", "delegate_auth_to_upstream", "field_ownership_generation", "is_byok", "mcp_info_ownership_generation", "oauth_passthrough", "tool_name_to_description", "tool_name_to_display_name", "updated_at", "updated_by"],
+    "litellm_model": ["additional_litellm_params_configured", "additional_model_info", "additional_model_info_configured"],
+    "litellm_organization": ["model_rpm_limit", "model_tpm_limit"],
+    "litellm_prompt": ["created_at", "environment", "updated_at", "version"],
+    "litellm_team": ["access_group_ids", "model_rpm_limit", "model_tpm_limit", "team_id"],
+    "litellm_team_member_add": ["member[*].user_id"],
+    "litellm_vector_store": ["litellm_credential_name_configured", "litellm_params_configured", "vector_store_description_configured", "vector_store_metadata", "vector_store_metadata_configured"]
+  },
+  "upgrade_expected_representation_migrations": {
+    "litellm_agent": {
+      "agent_card.signatures": "missing-to-empty-list-block",
+      "agent_card.supports_authenticated_extended_card": "missing-to-null-bool"
+    }
+  },
+  "upgrade_expected_schema_migrations": {
+    "litellm_key": [1, 2],
+    "litellm_key_block": [0, 1],
+    "litellm_mcp_server": [1, 8],
+    "litellm_organization": [0, 1],
+    "litellm_project": [0, 1],
+    "litellm_team": [0, 1]
+  },
+  "upgrade_expected_identity_migrations": {
+    "litellm_key_block": "sha256-of-prior-id"
+  },
+  "upgrade_expected_private_migrations": [
+    "litellm_agent", "litellm_budget", "litellm_guardrail", "litellm_key",
+    "litellm_mcp_server", "litellm_model", "litellm_organization",
+    "litellm_organization_member", "litellm_project", "litellm_prompt",
+    "litellm_search_tool", "litellm_tag", "litellm_team",
+    "litellm_team_member", "litellm_user", "litellm_vector_store"
+  ],
+  "upgrade_expected_private_plan_triggers": {
+    "litellm_agent": ["id"]
+  },
+  "replacement_scenarios": [
+    {"name":"model_unsupported_clear","fixture":"fixtures/replacement/model_unsupported_clear.tf","address":"litellm_model.replacement","dependency_address":"litellm_team.replacement_dependency","compare":"hmac-sha256","dependency_check":true,"expected_actions":["create","delete"],"ordering":"create-before-destroy-safe-distinct-server-id","post_replacement_no_drift":true},
+    {"name":"team_member_immutable_identity","fixture":"fixtures/replacement/team_member_identity.tf","address":"litellm_team_member.replacement","dependency_address":"litellm_team_member_add.replacement_dependency","compare":"hmac-sha256","dependency_check":true,"expected_actions":["create","delete"],"ordering":"destination-before-source-removal-safe-distinct-user-id","post_replacement_no_drift":true},
+    {"name":"jwt_claim_pair_identity","fixture":"fixtures/replacement/jwt_claim_pair_identity.tf","address":"litellm_jwt_key_mapping.replacement","dependency_address":"litellm_key.replacement_dependency","compare":"hmac-sha256","dependency_check":true,"expected_actions":["create","delete"],"ordering":"create-before-destroy-safe-distinct-claim-pair","post_replacement_no_drift":true,"minimum_cli":"1.11.0"}
+  ],
+  "failure_recovery_scenarios": [
+    {"name":"model_failed_create_retry","fixture":"fixtures/failure_recovery/model_failed_create.tf","fault_endpoint":"/model/new","dependency_address":"","target_address":"litellm_model.failed_create","expected_diagnostic_title":"Client Error","expected_diagnostic_code":"model-create-error","cleanup_required":true},
+    {"name":"team_failed_create_retry","fixture":"fixtures/failure_recovery/team_failed_create.tf","fault_endpoint":"/team/new","dependency_address":"","target_address":"litellm_team.failed_create","expected_diagnostic_title":"Team Creation Outcome Uncertain","expected_diagnostic_code":"team-create-outcome-uncertain","cleanup_required":true}
+  ],
+  "optional_features": ["key_wo", "send_invite_email", "jwt_key_mapping_key_wo"],
+  "documentation_scenarios": ["registry-examples-format-validate","resource-import-doc-contract","release-artifact-manifest-contract"],
+  "current_provider_only_scenarios": [
+    {"name":"mcp-immediate-import-no-drift-provenance","fixture":"mcp_server_import.tf","resource_type":"litellm_mcp_server","scenario":"import:litellm_mcp_server","prior_release_expected":false,"assertions":["immediate-import","two-refresh-only-no-drift","provenance-preserved"]}
+  ],
+  "terraform_1_11_4_expected_skips": [
+    {"category":"resource_coverage","subject":"litellm_project","reason":"enterprise-license-required"},
+    {"category":"upgrade","subject":"litellm_jwt_key_mapping","reason":"previous-release-resource-unavailable"},
+    {"category":"upgrade","subject":"litellm_project","reason":"enterprise-license-required"},
+    {"category":"lifecycle","subject":"litellm_project","reason":"enterprise-license-required"},
+    {"category":"import","subject":"litellm_agent","reason":"role-redacted-state-requires-admin"},
+    {"category":"import","subject":"litellm_project","reason":"enterprise-license-required"},
+    {"category":"drift","subject":"litellm_project","reason":"enterprise-license-required"},
+    {"category":"data_source","subject":"litellm_project","reason":"enterprise-license-required"},
+    {"category":"data_source","subject":"litellm_projects","reason":"enterprise-license-required"},
+    {"category":"optional_feature","subject":"key_wo","reason":"api-endpoint-unavailable"}
+  ],
+  "terraform_1_11_4_conditional_skips": [
+    {"category":"lifecycle","subject":"litellm_fallback","reason":"fallback-delete-not-authoritative"},
+    {"category":"import","subject":"litellm_fallback","reason":"fallback-delete-not-authoritative"}
+  ],
+  "allowed_skip_reasons": [
+    "enterprise-license-required",
+    "inventory-endpoint-may-be-unavailable",
+    "api-endpoint-unavailable",
+    "key-regeneration-blocked",
+    "masked-values-metadata-only-import",
+    "masked-parameters-require-admin",
+    "role-redacted-state-requires-admin",
+    "cli-version-below-1.11-agent-import-projection",
+    "cli-version-below-1.11",
+    "previous-release-resource-unavailable",
+    "fallback-delete-not-authoritative"
+  ]
+}

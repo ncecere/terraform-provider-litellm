@@ -60,7 +60,7 @@ func unifiedAccessGroupDataSourceAttributes(requireID bool) map[string]schema.At
 		"access_mcp_server_ids": schema.ListAttribute{Description: "MCP server IDs this access group grants access to.", Computed: true, ElementType: types.StringType},
 		"access_agent_ids":      schema.ListAttribute{Description: "Agent IDs this access group grants access to.", Computed: true, ElementType: types.StringType},
 		"assigned_team_ids":     schema.ListAttribute{Description: "Team IDs assigned to this access group.", Computed: true, ElementType: types.StringType},
-		"assigned_key_ids":      schema.ListAttribute{Description: "Key IDs assigned to this access group.", Computed: true, ElementType: types.StringType},
+		"assigned_key_ids":      schema.ListAttribute{Description: "Hash-shaped key IDs reported on the access-group row. This data source does not confirm the corresponding key rows.", Computed: true, ElementType: types.StringType},
 		"created_at":            schema.StringAttribute{Description: "Timestamp when the access group was created.", Computed: true},
 		"created_by":            schema.StringAttribute{Description: "User who created the access group.", Computed: true},
 		"updated_at":            schema.StringAttribute{Description: "Timestamp when the access group was last updated.", Computed: true},
@@ -87,15 +87,26 @@ func (d *UnifiedAccessGroupDataSource) Read(ctx context.Context, req datasource.
 		return
 	}
 
-	endpoint := fmt.Sprintf("/v1/access_group/%s", data.AccessGroupID.ValueString())
+	endpoint := endpointWithPathSegment("/v1/access_group/", data.AccessGroupID.ValueString(), "")
 	var result map[string]interface{}
 	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read unified access group: %s", err))
 		return
 	}
 
+	if err := validateUnifiedAccessGroupIdentity(result, data.AccessGroupID.ValueString(), ""); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned an identity-invalid unified access group response.")
+		return
+	}
+	if err := validateUnifiedAccessGroupResponseCollections(ctx, result); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned a malformed unified access group collection. No partial state was published.")
+		return
+	}
 	resourceData := UnifiedAccessGroupResourceModel{AccessGroupID: data.AccessGroupID}
-	readUnifiedAccessGroupResponse(ctx, result, &resourceData)
+	if err := readUnifiedAccessGroupResponse(ctx, result, &resourceData); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned a unified access group collection that could not be projected atomically.")
+		return
+	}
 	data.ID = resourceData.ID
 	data.AccessGroupID = resourceData.AccessGroupID
 	data.AccessGroupName = resourceData.AccessGroupName
@@ -104,7 +115,10 @@ func (d *UnifiedAccessGroupDataSource) Read(ctx context.Context, req datasource.
 	data.AccessMCPServerIDs = resourceData.AccessMCPServerIDs
 	data.AccessAgentIDs = resourceData.AccessAgentIDs
 	data.AssignedTeamIDs = resourceData.AssignedTeamIDs
-	data.AssignedKeyIDs = resourceData.AssignedKeyIDs
+	if err := setSafeAssignedKeyListFromResponse(ctx, &data.AssignedKeyIDs, result["assigned_key_ids"]); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned malformed or unsafe assigned key identifiers. No partial state was published.")
+		return
+	}
 	data.CreatedAt = resourceData.CreatedAt
 	data.CreatedBy = resourceData.CreatedBy
 	data.UpdatedAt = resourceData.UpdatedAt

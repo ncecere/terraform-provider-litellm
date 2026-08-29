@@ -1,10 +1,13 @@
 # Complete LiteLLM Provider Configuration
-# This example demonstrates a full enterprise setup with all resource types
+# This broad enterprise-oriented example demonstrates selected resource types.
 
 terraform {
+  required_version = ">= 1.1.0"
+
   required_providers {
     litellm = {
-      source = "registry.terraform.io/ncecere/litellm"
+      source  = "registry.terraform.io/ncecere/litellm"
+      version = ">= 2.0.1, < 3.0.0"
     }
   }
 }
@@ -234,8 +237,10 @@ resource "litellm_tag" "cost_center_rd" {
 # =============================================================================
 
 resource "litellm_prompt" "support_agent" {
-  prompt_id   = "customer-support-agent"
-  prompt_type = "db"
+  prompt_id          = "customer-support-agent"
+  environment        = "production"
+  prompt_integration = "dotprompt"
+  prompt_type        = "db"
 
   dotprompt_content = <<-EOT
     You are a helpful customer support agent for Enterprise Corp.
@@ -251,8 +256,10 @@ resource "litellm_prompt" "support_agent" {
 }
 
 resource "litellm_prompt" "code_assistant" {
-  prompt_id   = "code-assistant"
-  prompt_type = "db"
+  prompt_id          = "code-assistant"
+  environment        = "production"
+  prompt_integration = "dotprompt"
+  prompt_type        = "db"
 
   dotprompt_content = <<-EOT
     You are an expert software developer assistant.
@@ -293,15 +300,15 @@ resource "litellm_guardrail" "content_safety" {
 # =============================================================================
 
 resource "litellm_mcp_server" "github" {
-  server_name = "github-integration"
+  server_name = "github_integration"
   alias       = "github"
   description = "GitHub MCP server for repository operations"
   url         = "https://api.github.com/mcp"
   transport   = "http"
-  auth_type   = "bearer"
+  auth_type   = "bearer_token"
 
   credentials = {
-    "token" = var.github_token
+    "auth_value" = var.github_token
   }
 
   allowed_tools = ["read_file", "list_repos", "search_code"]

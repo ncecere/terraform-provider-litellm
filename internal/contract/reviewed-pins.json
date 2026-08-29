@@ -1,0 +1,644 @@
+{
+  "artifacts": {
+    "classification": {
+      "excluded_non_durable_count": 504,
+      "operation_count": 693,
+      "path": "internal/contract/reviewed-operation-classification.json",
+      "sha256": "c1fa3c7f88f6d738cc30dfc94c402f0eddce0a5663f45890692714cadef3c393",
+      "unsupported_durable_count": 189
+    },
+    "manifest": {
+      "path": "internal/contract/manifest.json",
+      "sha256": "7738abd950f1ebb6b5be1ebadb626a9370e8ec7fd0adda3719239f97f16cb1c1"
+    },
+    "openapi": {
+      "operation_count": 800,
+      "path": "openapi.json",
+      "path_count": 586,
+      "sha256": "ab876dc970a8cc835e30cbdf65ece45a7bfd90bad0c7585bd4557d27c4a7615a"
+    },
+    "provider_golden": {
+      "operation_count": 108,
+      "path": "internal/contractapi/testdata/provider-operations.golden.json",
+      "sha256": "a1a5114f93cc432a97f4da76def86ce238d712fba471dbb2d703768e7cecfe51"
+    },
+    "supplemental": {
+      "operation_count": 1,
+      "path": "internal/contract/supplemental-routes.json",
+      "sha256": "351791e3bc2985d25874b911778068fb08dda83da7f3cb58a26b8fa6d90c845a"
+    }
+  },
+  "categories": [
+    {
+      "disposition": "unsupported_durable",
+      "id": "credential_inventory",
+      "issue": "#248",
+      "rationale": "Credential collection inventory is durable but its sensitivity, pagination, and ownership semantics require a separate resource decision."
+    },
+    {
+      "disposition": "unsupported_durable",
+      "id": "vector_store_management",
+      "issue": "#249",
+      "rationale": "Vector-store inventories and alternate durable CRUD surfaces require a separate identity and ownership decision."
+    },
+    {
+      "disposition": "unsupported_durable",
+      "id": "pass_through_configuration",
+      "issue": "#251",
+      "rationale": "Configured pass-through endpoint records can contain routing and secret-bearing data and need an explicit lifecycle design."
+    },
+    {
+      "disposition": "unsupported_durable",
+      "id": "policy_version_attachment_management",
+      "issue": "#252",
+      "rationale": "Policy records, versions, and many-to-many attachments require independent import, replacement, and drift semantics."
+    },
+    {
+      "disposition": "unsupported_durable",
+      "id": "mcp_toolset_management",
+      "issue": "#207",
+      "rationale": "MCP toolset records and assignments have identities distinct from supported MCP server lifecycle ownership."
+    },
+    {
+      "disposition": "unsupported_durable",
+      "id": "mcp_credential_configuration",
+      "issue": "#207",
+      "rationale": "Per-user MCP credentials and environment records are durable sensitive configuration with separate ownership semantics."
+    },
+    {
+      "disposition": "unsupported_durable",
+      "id": "mcp_server_management",
+      "issue": "#207",
+      "rationale": "MCP submission inventory is a durable management surface not covered by the supported server resource lifecycle."
+    },
+    {
+      "disposition": "unsupported_durable",
+      "id": "customer_end_user_management",
+      "issue": "#207",
+      "rationale": "Customer and end-user records overlap external identity systems and require explicit authority and import decisions."
+    },
+    {
+      "disposition": "unsupported_durable",
+      "id": "scim_directory_management",
+      "issue": "#207",
+      "rationale": "SCIM users and groups are synchronization records whose source of authority cannot be assumed by Terraform."
+    },
+    {
+      "disposition": "unsupported_durable",
+      "id": "global_proxy_configuration",
+      "issue": "#207",
+      "rationale": "Global proxy, integration, router, discount, and secret-backend settings have shared merge and restart semantics not modeled by current resources."
+    },
+    {
+      "disposition": "unsupported_durable",
+      "id": "integration_callback_configuration",
+      "issue": "#207",
+      "rationale": "Callback, email, plugin, and marketplace plugin configuration requires dedicated identity and sensitive-value lifecycle review."
+    },
+    {
+      "disposition": "unsupported_durable",
+      "id": "model_management",
+      "issue": "#207",
+      "rationale": "Alternate model and router management operations are not covered by the provider's reviewed model lifecycle."
+    },
+    {
+      "disposition": "unsupported_durable",
+      "id": "key_management",
+      "issue": "#207",
+      "rationale": "Alternate key aliases and key-management records require separate ownership and import semantics."
+    },
+    {
+      "disposition": "unsupported_durable",
+      "id": "team_management",
+      "issue": "#207",
+      "rationale": "Alternate team bulk and membership management operations are outside the supported resource lifecycle contract."
+    },
+    {
+      "disposition": "unsupported_durable",
+      "id": "organization_project_management",
+      "issue": "#207",
+      "rationale": "Alternate organization and project management operations require separate lifecycle and authority review."
+    },
+    {
+      "disposition": "unsupported_durable",
+      "id": "user_budget_management",
+      "issue": "#207",
+      "rationale": "Additional durable user, budget, tag, and allowlist configuration is not owned by current resource lifecycles."
+    },
+    {
+      "disposition": "unsupported_durable",
+      "id": "access_control_management",
+      "issue": "#207",
+      "rationale": "Alternate access-group and unified access-control records require distinct identity and assignment ownership review."
+    },
+    {
+      "disposition": "unsupported_durable",
+      "id": "guardrail_management",
+      "issue": "#207",
+      "rationale": "Additional guardrail definitions and submission records are durable but not covered by the supported guardrail lifecycle."
+    },
+    {
+      "disposition": "unsupported_durable",
+      "id": "agent_prompt_tool_management",
+      "issue": "#207",
+      "rationale": "Alternate agent, prompt-info, and tool definition operations are durable surfaces outside current lifecycle ownership."
+    },
+    {
+      "disposition": "unsupported_durable",
+      "id": "workflow_memory_management",
+      "issue": "#207",
+      "rationale": "Workflow and memory records require separate stable identity, import, and retention semantics."
+    },
+    {
+      "disposition": "excluded_non_durable",
+      "id": "inference_workload",
+      "rationale": "Inference, pass-through forwarding, embeddings, media, MCP execution, and workload APIs execute requests rather than declare provider-owned configuration."
+    },
+    {
+      "disposition": "excluded_non_durable",
+      "id": "operational_action",
+      "rationale": "One-shot reset, migration, approval, cancellation, publication, and export actions have no durable Terraform identity."
+    },
+    {
+      "disposition": "excluded_non_durable",
+      "id": "health",
+      "rationale": "Health, readiness, connectivity, and runtime status probes report operational state rather than desired state."
+    },
+    {
+      "disposition": "excluded_non_durable",
+      "id": "spend_analytics",
+      "rationale": "Spend, usage, logs, audit, activity, and analytics routes expose observations or one-shot calculations rather than durable configuration."
+    },
+    {
+      "disposition": "excluded_non_durable",
+      "id": "cache_flush",
+      "rationale": "Cache deletion and flush routes are one-shot runtime actions with no durable identity."
+    },
+    {
+      "disposition": "excluded_non_durable",
+      "id": "suggestion_discovery",
+      "rationale": "Discovery, schema, comparison, resolution, marketplace, and suggestion routes return advisory or derived data."
+    },
+    {
+      "disposition": "excluded_non_durable",
+      "id": "authentication_flow",
+      "rationale": "OAuth, token, registration, callback, and well-known routes participate in runtime authentication protocols."
+    },
+    {
+      "disposition": "excluded_non_durable",
+      "id": "testing_validation",
+      "rationale": "Dry-run, validation, conversion, compliance-check, and test-connection routes perform transient checks."
+    },
+    {
+      "disposition": "excluded_non_durable",
+      "id": "public_metadata",
+      "rationale": "Public catalogs and available-object metadata are observational discovery surfaces."
+    },
+    {
+      "disposition": "excluded_non_durable",
+      "id": "audit_observability",
+      "rationale": "Debug and control-plane log ingestion routes are runtime observability surfaces."
+    }
+  ],
+  "lazy_features": [
+    {
+      "attribute": "router",
+      "module": "litellm.proxy.guardrails.guardrail_endpoints",
+      "mount_prefix": "",
+      "name": "guardrails",
+      "path_prefixes": [
+        "/guardrails",
+        "/v2/guardrails",
+        "/apply_guardrail",
+        "/policies/usage"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "module": "litellm.proxy.management_endpoints.policy_endpoints",
+      "mount_prefix": "",
+      "name": "policies",
+      "path_prefixes": [
+        "/policy/",
+        "/utils/test_policies_and_guardrails"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "module": "litellm.proxy.policy_engine.policy_endpoints",
+      "mount_prefix": "",
+      "name": "policy_engine",
+      "path_prefixes": [
+        "/policies"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "module": "litellm.proxy.policy_engine.policy_resolve_endpoints",
+      "mount_prefix": "",
+      "name": "policy_resolve",
+      "path_prefixes": [
+        "/policies/resolve",
+        "/policies/attachments/estimate-impact"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "module": "litellm.proxy.agent_endpoints.endpoints",
+      "mount_prefix": "",
+      "name": "agents",
+      "path_prefixes": [
+        "/v1/agents",
+        "/agents",
+        "/agent/"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "module": "litellm.proxy.google_endpoints.agents_endpoints",
+      "mount_prefix": "",
+      "name": "gemini_agents",
+      "path_prefixes": [
+        "/v1beta/agents"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "module": "litellm.proxy.agent_endpoints.a2a_endpoints",
+      "mount_prefix": "",
+      "name": "a2a",
+      "path_prefixes": [
+        "/a2a"
+      ],
+      "path_suffixes": [
+        "/message/send"
+      ],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "module": "litellm.proxy.a2a.endpoints",
+      "mount_prefix": "",
+      "name": "a2a_registration",
+      "path_prefixes": [
+        "/v1/a2a/discover"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "module": "litellm.proxy.vector_store_endpoints.endpoints",
+      "mount_prefix": "",
+      "name": "vector_stores",
+      "path_prefixes": [
+        "/v1/vector_stores",
+        "/vector_stores",
+        "/v1/indexes"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "module": "litellm.proxy.vector_store_endpoints.management_endpoints",
+      "mount_prefix": "",
+      "name": "vector_store_management",
+      "path_prefixes": [
+        "/vector_store/",
+        "/v1/vector_store/"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "module": "litellm.proxy.vector_store_files_endpoints.endpoints",
+      "mount_prefix": "",
+      "name": "vector_store_files",
+      "path_prefixes": [
+        "/v1/vector_stores",
+        "/vector_stores"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "module": "litellm.proxy.management_endpoints.tool_management_endpoints",
+      "mount_prefix": "",
+      "name": "tools",
+      "path_prefixes": [
+        "/v1/tool",
+        "/tool"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "module": "litellm.proxy.search_endpoints.search_tool_management",
+      "mount_prefix": "",
+      "name": "search_tools",
+      "path_prefixes": [
+        "/search_tools"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "module": "litellm.proxy.management_endpoints.mcp_management_endpoints",
+      "mount_prefix": "",
+      "name": "mcp_management",
+      "path_prefixes": [
+        "/v1/mcp/"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "module": "litellm.proxy._experimental.mcp_server.byok_oauth_endpoints",
+      "mount_prefix": "",
+      "name": "mcp_byok_oauth",
+      "path_prefixes": [
+        "/v1/mcp/oauth",
+        "/.well-known/oauth-"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "module": "litellm.proxy._experimental.mcp_server.discoverable_endpoints",
+      "mount_prefix": "",
+      "name": "mcp_discoverable",
+      "path_prefixes": [
+        "/.well-known/oauth-",
+        "/.well-known/openid-configuration",
+        "/.well-known/jwks.json",
+        "/authorize",
+        "/token",
+        "/callback",
+        "/register"
+      ],
+      "path_suffixes": [
+        "/authorize",
+        "/token",
+        "/register"
+      ],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "module": "litellm.proxy._experimental.mcp_server.rest_endpoints",
+      "mount_prefix": "",
+      "name": "mcp_rest",
+      "path_prefixes": [
+        "/mcp-rest"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "app",
+      "module": "litellm.proxy._experimental.mcp_server.server",
+      "mount_prefix": "/mcp",
+      "name": "mcp_app",
+      "path_prefixes": [
+        "/mcp"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": true,
+      "registration": "mount_app"
+    },
+    {
+      "attribute": "router",
+      "module": "litellm.proxy.management_endpoints.config_override_endpoints",
+      "mount_prefix": "",
+      "name": "config_overrides",
+      "path_prefixes": [
+        "/config_overrides"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "module": "litellm.proxy.realtime_endpoints.endpoints",
+      "mount_prefix": "",
+      "name": "realtime",
+      "path_prefixes": [
+        "/openai/v1/realtime",
+        "/v1/realtime",
+        "/realtime"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "module": "litellm.proxy.anthropic_endpoints.endpoints",
+      "mount_prefix": "",
+      "name": "anthropic_passthrough",
+      "path_prefixes": [
+        "/v1/messages",
+        "/anthropic",
+        "/api/event_logging"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "module": "litellm.proxy.anthropic_endpoints.skills_endpoints",
+      "mount_prefix": "",
+      "name": "anthropic_skills",
+      "path_prefixes": [
+        "/v1/skills",
+        "/skills"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "module": "litellm.proxy.vertex_ai_endpoints.langfuse_endpoints",
+      "mount_prefix": "",
+      "name": "langfuse_passthrough",
+      "path_prefixes": [
+        "/langfuse"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "module": "litellm.proxy.openai_evals_endpoints.endpoints",
+      "mount_prefix": "",
+      "name": "evals",
+      "path_prefixes": [
+        "/v1/evals",
+        "/evals"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "claude_code_marketplace_router",
+      "module": "litellm.proxy.anthropic_endpoints.claude_code_endpoints",
+      "mount_prefix": "",
+      "name": "claude_code_marketplace",
+      "path_prefixes": [
+        "/claude-code"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "scim_router",
+      "module": "litellm.proxy.management_endpoints.scim.scim_v2",
+      "mount_prefix": "",
+      "name": "scim",
+      "path_prefixes": [
+        "/scim"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "module": "litellm.proxy.spend_tracking.cloudzero_endpoints",
+      "mount_prefix": "",
+      "name": "cloudzero",
+      "path_prefixes": [
+        "/cloudzero"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "module": "litellm.proxy.spend_tracking.vantage_endpoints",
+      "mount_prefix": "",
+      "name": "vantage",
+      "path_prefixes": [
+        "/vantage"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "module": "litellm.proxy.management_endpoints.usage_endpoints",
+      "mount_prefix": "",
+      "name": "usage_ai",
+      "path_prefixes": [
+        "/usage/ai"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "module": "litellm.proxy.prompts.prompt_endpoints",
+      "mount_prefix": "",
+      "name": "prompts",
+      "path_prefixes": [
+        "/prompts",
+        "/utils/dotprompt_json_converter"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "module": "litellm.proxy.management_endpoints.jwt_key_mapping_endpoints",
+      "mount_prefix": "",
+      "name": "jwt_mappings",
+      "path_prefixes": [
+        "/jwt/key/mapping"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "module": "litellm.proxy.management_endpoints.compliance_endpoints",
+      "mount_prefix": "",
+      "name": "compliance",
+      "path_prefixes": [
+        "/compliance"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "module": "litellm.proxy.management_endpoints.access_group_endpoints",
+      "mount_prefix": "",
+      "name": "access_groups",
+      "path_prefixes": [
+        "/access_group",
+        "/v1/access_group",
+        "/v1/unified_access_group"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    }
+  ],
+  "schema_version": 1,
+  "upstream": {
+    "commit": "d8f71d7bdbd7c9873d98293f83d64c6db72847e6",
+    "python": "3.12.14",
+    "repository": "https://github.com/BerriAI/litellm",
+    "tag": "v1.98.0",
+    "uv": "0.12.6",
+    "uv_lock_sha256": "a7cc57875c67de85bbae0f82b834f31fc9d0c029073ef29e0883787a31a985e8"
+  }
+}

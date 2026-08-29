@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
@@ -103,62 +102,72 @@ func (d *BudgetDataSource) Configure(ctx context.Context, req datasource.Configu
 }
 
 func (d *BudgetDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
-	var data BudgetDataSourceModel
-
-	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
+	var config BudgetDataSourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
-	budgetID := data.BudgetID.ValueString()
-
-	// /budget/info expects POST with budgets array
-	infoReq := map[string]interface{}{
-		"budgets": []string{budgetID},
+	budgetID := config.BudgetID.ValueString()
+	if config.BudgetID.IsNull() || config.BudgetID.IsUnknown() || budgetID == "" {
+		resp.Diagnostics.AddError("Invalid Budget Lookup", "budget_id must be known and nonempty")
+		return
 	}
+
+	// /budget/info expects POST with a budgets array.
+	infoReq := map[string]interface{}{"budgets": []string{budgetID}}
 
 	var results []map[string]interface{}
 	if err := d.client.DoRequestWithResponse(ctx, "POST", "/budget/info", infoReq, &results); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read budget: %s", err))
 		return
 	}
-
-	if len(results) == 0 {
-		resp.Diagnostics.AddError("Not Found", fmt.Sprintf("Budget not found: %s", budgetID))
+	if len(results) != 1 {
+		if len(results) == 0 {
+			resp.Diagnostics.AddError("Not Found", fmt.Sprintf("Budget not found: %s", budgetID))
+		} else {
+			resp.Diagnostics.AddError("Invalid API Response", "Budget lookup did not return exactly one object.")
+		}
+		return
+	}
+	result := results[0]
+	actualBudgetID, err := dataSourceRequiredStringAt(result, "budget_id")
+	if err != nil || actualBudgetID.ValueString() != budgetID {
+		resp.Diagnostics.AddError("Invalid API Response", "Budget response identity did not match the requested budget.")
 		return
 	}
 
-	result := results[0]
-
-	// Populate the data model
-	data.ID = types.StringValue(budgetID)
-
-	if maxBudget, ok := result["max_budget"].(float64); ok {
-		data.MaxBudget = types.Float64Value(maxBudget)
+	data := BudgetDataSourceModel{ID: actualBudgetID, BudgetID: config.BudgetID}
+	if data.MaxBudget, err = dataSourceNullableFloat64At(result, "max_budget"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
 	}
-	if softBudget, ok := result["soft_budget"].(float64); ok {
-		data.SoftBudget = types.Float64Value(softBudget)
+	if data.SoftBudget, err = dataSourceNullableFloat64At(result, "soft_budget"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
 	}
-	if maxParallel, ok := result["max_parallel_requests"].(float64); ok {
-		data.MaxParallelRequests = types.Int64Value(int64(maxParallel))
+	if data.MaxParallelRequests, err = dataSourceNullableInt64At(result, "max_parallel_requests"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
 	}
-	if tpmLimit, ok := result["tpm_limit"].(float64); ok {
-		data.TPMLimit = types.Int64Value(int64(tpmLimit))
+	if data.TPMLimit, err = dataSourceNullableInt64At(result, "tpm_limit"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
 	}
-	if rpmLimit, ok := result["rpm_limit"].(float64); ok {
-		data.RPMLimit = types.Int64Value(int64(rpmLimit))
+	if data.RPMLimit, err = dataSourceNullableInt64At(result, "rpm_limit"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
 	}
-	if budgetDuration, ok := result["budget_duration"].(string); ok {
-		data.BudgetDuration = types.StringValue(budgetDuration)
+	if data.BudgetDuration, err = dataSourceNullableStringAt(result, "budget_duration"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
 	}
-	if budgetResetAt, ok := result["budget_reset_at"].(string); ok {
-		data.BudgetResetAt = types.StringValue(budgetResetAt)
+	if data.BudgetResetAt, err = dataSourceNullableStringAt(result, "budget_reset_at"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
 	}
-	if modelMaxBudget, ok := result["model_max_budget"].(map[string]interface{}); ok && len(modelMaxBudget) > 0 {
-		if jsonBytes, err := json.Marshal(modelMaxBudget); err == nil {
-			data.ModelMaxBudget = types.StringValue(string(jsonBytes))
-		}
+	if data.ModelMaxBudget, err = dataSourceNullableCanonicalJSONObjectAt(result, "model_max_budget"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
 	}
-
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }

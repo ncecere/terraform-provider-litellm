@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -18,7 +19,10 @@ func TestBuildProjectRequest_Minimal(t *testing.T) {
 		TeamID: types.StringValue("team-123"),
 	}
 
-	req := r.buildProjectRequest(context.Background(), data)
+	req, err := r.buildProjectRequest(context.Background(), data)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if req["team_id"] != "team-123" {
 		t.Errorf("expected team_id 'team-123', got %v", req["team_id"])
@@ -48,12 +52,22 @@ func TestBuildProjectRequest_Full(t *testing.T) {
 		Models:       stringListValue("gpt-4o", "gpt-4o-mini"),
 		Tags:         stringListValue("production", "team-a"),
 		Metadata: stringMapValue(map[string]string{
-			"env":    "prod",
-			"config": `{"retries":3}`,
+			"env":             "prod",
+			"config":          `{"retries":3}`,
+			"model_rpm_limit": `{"must":"not win"}`,
+		}),
+		ModelRPMLimit: types.MapValueMust(types.Int64Type, map[string]attr.Value{
+			"gpt-4o": types.Int64Value(9007199254740993),
+		}),
+		ModelTPMLimit: types.MapValueMust(types.Int64Type, map[string]attr.Value{
+			"gpt-4o": types.Int64Value(50000),
 		}),
 	}
 
-	req := r.buildProjectRequest(context.Background(), data)
+	req, err := r.buildProjectRequest(context.Background(), data)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if req["team_id"] != "team-456" {
 		t.Errorf("expected team_id 'team-456', got %v", req["team_id"])
@@ -87,6 +101,20 @@ func TestBuildProjectRequest_Full(t *testing.T) {
 	if _, ok := meta["config"].(map[string]interface{}); !ok {
 		t.Errorf("expected config to be native map, got %T", meta["config"])
 	}
+	rpm, ok := meta["model_rpm_limit"].(map[string]int64)
+	if !ok || rpm["gpt-4o"] != int64(9007199254740993) {
+		t.Fatalf("model_rpm_limit must use exact metadata source: %#v", meta["model_rpm_limit"])
+	}
+	tpm, ok := meta["model_tpm_limit"].(map[string]int64)
+	if !ok || tpm["gpt-4o"] != int64(50000) {
+		t.Fatalf("model_tpm_limit must use exact metadata source: %#v", meta["model_tpm_limit"])
+	}
+	if _, exists := req["model_rpm_limit"]; exists {
+		t.Fatal("project request fabricated top-level model_rpm_limit")
+	}
+	if _, exists := req["model_tpm_limit"]; exists {
+		t.Fatal("project request fabricated top-level model_tpm_limit")
+	}
 }
 
 func TestReadProject_PopulatesState(t *testing.T) {
@@ -100,17 +128,17 @@ func TestReadProject_PopulatesState(t *testing.T) {
 			"description":   "A test project",
 			"team_id":       "team-456",
 			"models":        []interface{}{"gpt-4o"},
-			"tags":          []interface{}{"production"},
 			"metadata": map[string]interface{}{
-				"env": "prod",
+				"env":             "prod",
+				"tags":            []interface{}{"production"},
+				"model_rpm_limit": map[string]interface{}{"gpt-4o": float64(100)},
+				"model_tpm_limit": map[string]interface{}{"gpt-4o": float64(10000)},
 			},
-			"blocked":         false,
-			"model_rpm_limit": map[string]interface{}{"gpt-4o": float64(100)},
-			"model_tpm_limit": map[string]interface{}{"gpt-4o": float64(10000)},
-			"created_at":      "2026-03-20T10:00:00Z",
-			"updated_at":      "2026-03-20T11:00:00Z",
-			"created_by":      "admin",
-			"updated_by":      "admin",
+			"blocked":    false,
+			"created_at": "2026-03-20T10:00:00Z",
+			"updated_at": "2026-03-20T11:00:00Z",
+			"created_by": "admin",
+			"updated_by": "admin",
 		})
 	}))
 	defer server.Close()
@@ -125,6 +153,8 @@ func TestReadProject_PopulatesState(t *testing.T) {
 
 	data := ProjectResourceModel{
 		ID:             types.StringValue("proj-abc-123"),
+		ProjectAlias:   types.StringValue("configured-project"),
+		Description:    types.StringValue("configured description"),
 		Models:         types.ListUnknown(types.StringType),
 		Tags:           types.ListUnknown(types.StringType),
 		Metadata:       types.MapUnknown(types.StringType),

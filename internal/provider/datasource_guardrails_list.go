@@ -2,8 +2,8 @@ package provider
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"sort"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
@@ -76,6 +76,7 @@ func (d *GuardrailsListDataSource) Schema(ctx context.Context, req datasource.Sc
 						"litellm_params": schema.StringAttribute{
 							Description: "JSON string containing additional provider-specific parameters.",
 							Computed:    true,
+							Sensitive:   true,
 						},
 						"created_at": schema.StringAttribute{
 							Description: "Timestamp when the guardrail was created.",
@@ -109,95 +110,94 @@ func (d *GuardrailsListDataSource) Configure(ctx context.Context, req datasource
 	d.client = client
 }
 
+func guardrailListItemFromAPI(raw map[string]interface{}) (GuardrailListItemModel, error) {
+	var item GuardrailListItemModel
+	observed, err := decodeGuardrailAPIObject(raw, "", true)
+	if err != nil {
+		return item, err
+	}
+	if observed.Params == nil {
+		return item, fmt.Errorf("guardrail response omitted required litellm_params")
+	}
+	guardrail, ok := observed.Params["guardrail"].(string)
+	if !ok || guardrail == "" {
+		return item, fmt.Errorf("guardrail response omitted required litellm_params.guardrail")
+	}
+	mode, present, err := guardrailModeFromAPI(observed.Params)
+	if err != nil || !present {
+		return item, fmt.Errorf("guardrail response omitted or returned invalid litellm_params.mode")
+	}
+
+	item.GuardrailID = types.StringValue(observed.ID)
+	item.GuardrailName = types.StringValue(observed.Name)
+	item.Guardrail = types.StringValue(guardrail)
+	item.Mode = types.StringValue(mode)
+	item.DefaultOn = types.BoolNull()
+	item.LitellmParams = types.StringNull()
+	item.CreatedAt = types.StringNull()
+	item.UpdatedAt = types.StringNull()
+	if value, exists := observed.Params["default_on"]; exists && value != nil {
+		defaultOn, ok := value.(bool)
+		if !ok {
+			return item, fmt.Errorf("guardrail response returned invalid litellm_params.default_on")
+		}
+		item.DefaultOn = types.BoolValue(defaultOn)
+	}
+	additional := guardrailAdditionalParams(observed.Params)
+	encoded, err := canonicalGuardrailJSONObject(additional, "litellm_params")
+	if err != nil {
+		return item, err
+	}
+	item.LitellmParams = types.StringValue(encoded)
+	if observed.CreatedAt != nil {
+		item.CreatedAt = types.StringValue(*observed.CreatedAt)
+	}
+	if observed.UpdatedAt != nil {
+		item.UpdatedAt = types.StringValue(*observed.UpdatedAt)
+	}
+	return item, nil
+}
+
+func fetchGuardrailListItems(ctx context.Context, client *Client) ([]GuardrailListItemModel, error) {
+	const endpoint = "/v2/guardrails/list"
+	results, err := fetchEnvelopeListObjects(ctx, client, endpoint, "guardrails", "guardrail item")
+	if err != nil {
+		return nil, err
+	}
+	guardrails := make([]GuardrailListItemModel, 0, len(results))
+	seen := make(map[string]struct{}, len(results))
+	for _, result := range results {
+		guardrail, err := guardrailListItemFromAPI(result)
+		if err != nil {
+			return nil, err
+		}
+		if err := dataSourceListIdentity(seen, guardrail.GuardrailID.ValueString(), endpoint, "guardrail_id"); err != nil {
+			return nil, err
+		}
+		guardrails = append(guardrails, guardrail)
+	}
+	return guardrails, nil
+}
+
 func (d *GuardrailsListDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
 	var data GuardrailsListDataSourceModel
 
-	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	var rawResult interface{}
-	if err := d.client.DoRequestWithResponse(ctx, "GET", "/guardrails/list", nil, &rawResult); err != nil {
+	guardrails, err := fetchGuardrailListItems(ctx, d.client)
+	if err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to list guardrails: %s", err))
 		return
 	}
-
-	results := parseGuardrailsListResult(rawResult)
-	guardrails := make([]GuardrailListItemModel, 0, len(results))
-	for _, result := range results {
-		guardrail := GuardrailListItemModel{}
-
-		if guardrailID, ok := result["guardrail_id"].(string); ok {
-			guardrail.GuardrailID = types.StringValue(guardrailID)
+	sort.SliceStable(guardrails, func(i, j int) bool {
+		leftID := guardrails[i].GuardrailID.ValueString()
+		rightID := guardrails[j].GuardrailID.ValueString()
+		if leftID != rightID {
+			return leftID < rightID
 		}
-		if name, ok := result["guardrail_name"].(string); ok {
-			guardrail.GuardrailName = types.StringValue(name)
-		}
-		if createdAt, ok := result["created_at"].(string); ok {
-			guardrail.CreatedAt = types.StringValue(createdAt)
-		}
-		if updatedAt, ok := result["updated_at"].(string); ok {
-			guardrail.UpdatedAt = types.StringValue(updatedAt)
-		}
-
-		// Handle litellm_params
-		if litellmParams, ok := result["litellm_params"].(map[string]interface{}); ok {
-			if g, ok := litellmParams["guardrail"].(string); ok {
-				guardrail.Guardrail = types.StringValue(g)
-			}
-			if defaultOn, ok := litellmParams["default_on"].(bool); ok {
-				guardrail.DefaultOn = types.BoolValue(defaultOn)
-			}
-
-			// Handle mode
-			if mode, ok := litellmParams["mode"].(string); ok {
-				guardrail.Mode = types.StringValue(mode)
-			} else if modeArray, ok := litellmParams["mode"].([]interface{}); ok {
-				if jsonBytes, err := json.Marshal(modeArray); err == nil {
-					guardrail.Mode = types.StringValue(string(jsonBytes))
-				}
-			}
-
-			// Store other litellm_params as JSON
-			otherParams := make(map[string]interface{})
-			for k, v := range litellmParams {
-				if k != "guardrail" && k != "mode" && k != "default_on" {
-					otherParams[k] = v
-				}
-			}
-			if len(otherParams) > 0 {
-				if jsonBytes, err := json.Marshal(otherParams); err == nil {
-					guardrail.LitellmParams = types.StringValue(string(jsonBytes))
-				}
-			}
-		}
-
-		guardrails = append(guardrails, guardrail)
-	}
+		return guardrails[i].GuardrailName.ValueString() < guardrails[j].GuardrailName.ValueString()
+	})
 
 	data.ID = types.StringValue("guardrails")
 	data.Guardrails = guardrails
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
-}
-
-func parseGuardrailsListResult(rawResult interface{}) []map[string]interface{} {
-	var rawGuardrails []interface{}
-	switch typed := rawResult.(type) {
-	case []interface{}:
-		rawGuardrails = typed
-	case map[string]interface{}:
-		if guardrails, ok := typed["guardrails"].([]interface{}); ok {
-			rawGuardrails = guardrails
-		}
-	}
-
-	results := make([]map[string]interface{}, 0, len(rawGuardrails))
-	for _, item := range rawGuardrails {
-		if guardrail, ok := item.(map[string]interface{}); ok {
-			results = append(results, guardrail)
-		}
-	}
-	return results
 }

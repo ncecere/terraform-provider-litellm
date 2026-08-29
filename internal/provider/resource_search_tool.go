@@ -2,14 +2,15 @@ package provider
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"net/http"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -84,8 +85,9 @@ func (r *SearchToolResource) Schema(ctx context.Context, req resource.SchemaRequ
 				Optional:    true,
 			},
 			"search_tool_info": schema.StringAttribute{
-				Description: "Additional search tool configuration as a JSON string.",
+				Description: "Additional search tool configuration as a validated JSON object string.",
 				Optional:    true,
+				Validators:  []validator.String{jsonShapeStringValidator{shape: '{'}},
 			},
 		},
 	}
@@ -116,7 +118,11 @@ func (r *SearchToolResource) Create(ctx context.Context, req resource.CreateRequ
 		return
 	}
 
-	searchToolBody := r.buildSearchToolRequest(ctx, &data)
+	searchToolBody, err := r.buildSearchToolRequest(ctx, &data)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Search Tool JSON", err.Error())
+		return
+	}
 	// API expects {"search_tool": {...}}
 	searchReq := map[string]interface{}{
 		"search_tool": searchToolBody,
@@ -133,14 +139,19 @@ func (r *SearchToolResource) Create(ctx context.Context, req resource.CreateRequ
 	if nested, ok := result["search_tool"].(map[string]interface{}); ok {
 		searchToolResult = nested
 	}
-	if searchToolID, ok := searchToolResult["search_tool_id"].(string); ok {
+	if searchToolID, ok := searchToolResult["search_tool_id"].(string); ok && searchToolID != "" {
 		data.SearchToolID = types.StringValue(searchToolID)
 		data.ID = types.StringValue(searchToolID)
+	} else {
+		resp.Diagnostics.AddError("Invalid API Response", "LiteLLM accepted the search tool create but did not return a recoverable search_tool_id.")
+		return
 	}
 
-	// Read back for full state
 	if err := r.readSearchTool(ctx, &data); err != nil {
-		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Search tool created but failed to read back: %s", err))
+		recovery := SearchToolResourceModel{ID: data.ID, SearchToolID: data.SearchToolID}
+		resp.Diagnostics.Append(resp.State.Set(ctx, &recovery)...)
+		resp.Diagnostics.AddError("Search Tool Create Not Confirmed", fmt.Sprintf("Search tool created but authoritative read-back failed: %s", err))
+		return
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
@@ -150,20 +161,26 @@ func (r *SearchToolResource) Read(ctx context.Context, req resource.ReadRequest,
 	var data SearchToolResourceModel
 
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
+	importedMarker, privateDiags := req.Private.GetKey(ctx, numericImportedPrivateKey)
+	resp.Diagnostics.Append(privateDiags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	imported := string(importedMarker) == "true"
 
-	if err := r.readSearchTool(ctx, &data); err != nil {
-		if IsNotFoundError(err) {
+	if err := r.refreshSearchToolWithNumericOwnership(ctx, &data, imported); err != nil {
+		if IsAPIErrorStatus(err, http.StatusNotFound) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read search tool: %s", err))
+		resp.Diagnostics.AddError("Client Error", "Unable to read search tool. Response and request details were omitted.")
 		return
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	if !resp.Diagnostics.HasError() && imported {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, nil)...)
+	}
 }
 
 func (r *SearchToolResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
@@ -184,22 +201,26 @@ func (r *SearchToolResource) Update(ctx context.Context, req resource.UpdateRequ
 	data.ID = state.ID
 	data.SearchToolID = state.SearchToolID
 
-	searchToolBody := r.buildSearchToolRequest(ctx, &data)
+	searchToolBody, err := r.buildSearchToolRequest(ctx, &data)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Search Tool JSON", err.Error())
+		return
+	}
 	searchToolBody["search_tool_id"] = data.SearchToolID.ValueString()
 	// API expects {"search_tool": {...}}
 	searchReq := map[string]interface{}{
 		"search_tool": searchToolBody,
 	}
 
-	endpoint := fmt.Sprintf("/search_tools/%s", data.SearchToolID.ValueString())
+	endpoint := endpointWithPathSegment("/search_tools/", data.SearchToolID.ValueString(), "")
 	if err := r.client.DoRequestWithResponse(ctx, "PUT", endpoint, searchReq, nil); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to update search tool: %s", err))
 		return
 	}
 
-	// Read back for full state
 	if err := r.readSearchTool(ctx, &data); err != nil {
-		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("Search tool updated but failed to read back: %s", err))
+		resp.Diagnostics.AddError("Search Tool Update Not Confirmed", fmt.Sprintf("Search tool updated but authoritative read-back failed: %s", err))
+		return
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
@@ -218,7 +239,7 @@ func (r *SearchToolResource) Delete(ctx context.Context, req resource.DeleteRequ
 		searchToolID = data.ID.ValueString()
 	}
 
-	endpoint := fmt.Sprintf("/search_tools/%s", searchToolID)
+	endpoint := endpointWithPathSegment("/search_tools/", searchToolID, "")
 	if err := r.client.DoRequestWithResponse(ctx, "DELETE", endpoint, nil, nil); err != nil {
 		if !IsNotFoundError(err) {
 			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to delete search tool: %s", err))
@@ -230,9 +251,12 @@ func (r *SearchToolResource) Delete(ctx context.Context, req resource.DeleteRequ
 func (r *SearchToolResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("search_tool_id"), req.ID)...)
+	if resp.Private != nil {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, []byte("true"))...)
+	}
 }
 
-func (r *SearchToolResource) buildSearchToolRequest(ctx context.Context, data *SearchToolResourceModel) map[string]interface{} {
+func (r *SearchToolResource) buildSearchToolRequest(ctx context.Context, data *SearchToolResourceModel) (map[string]interface{}, error) {
 	searchReq := map[string]interface{}{
 		"search_tool_name": data.SearchToolName.ValueString(),
 	}
@@ -263,64 +287,121 @@ func (r *SearchToolResource) buildSearchToolRequest(ctx context.Context, data *S
 	searchReq["litellm_params"] = litellmParams
 
 	if !data.SearchToolInfo.IsNull() && !data.SearchToolInfo.IsUnknown() && data.SearchToolInfo.ValueString() != "" {
-		var searchToolInfo map[string]interface{}
-		if err := json.Unmarshal([]byte(data.SearchToolInfo.ValueString()), &searchToolInfo); err == nil {
-			searchReq["search_tool_info"] = searchToolInfo
-		} else {
-			searchReq["search_tool_info"] = data.SearchToolInfo.ValueString()
+		searchToolInfo, err := decodeRequestJSONObject(data.SearchToolInfo.ValueString(), "search_tool_info")
+		if err != nil {
+			return nil, err
 		}
+		searchReq["search_tool_info"] = searchToolInfo
 	}
 
-	return searchReq
+	return searchReq, nil
 }
 
 func (r *SearchToolResource) readSearchTool(ctx context.Context, data *SearchToolResourceModel) error {
+	return r.readSearchToolWithNumericOwnership(ctx, data, false)
+}
+
+// readSearchToolWithNumericOwnership is reserved for operation-coupled
+// Create/Update confirmation. It deliberately performs one request.
+func (r *SearchToolResource) readSearchToolWithNumericOwnership(ctx context.Context, data *SearchToolResourceModel, imported bool) error {
 	searchToolID := data.SearchToolID.ValueString()
 	if searchToolID == "" {
 		searchToolID = data.ID.ValueString()
 	}
 
-	endpoint := fmt.Sprintf("/search_tools/%s", searchToolID)
-
+	endpoint := endpointWithPathSegment("/search_tools/", searchToolID, "")
 	var result map[string]interface{}
-	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
+	if err := r.client.DoRequestWithResponse(ctx, http.MethodGet, endpoint, nil, &result); err != nil {
 		return err
 	}
+	return projectSearchToolResourceAPIObject(data, result, searchToolID, imported)
+}
 
-	// Update fields from response
-	if stID, ok := result["search_tool_id"].(string); ok {
-		data.SearchToolID = types.StringValue(stID)
-		data.ID = types.StringValue(stID)
+// refreshSearchToolWithNumericOwnership is the ordinary Terraform refresh
+// path. Only this singular DB-authoritative GET uses bounded safe-read retries.
+func (r *SearchToolResource) refreshSearchToolWithNumericOwnership(ctx context.Context, data *SearchToolResourceModel, imported bool) error {
+	searchToolID := data.SearchToolID.ValueString()
+	if searchToolID == "" {
+		searchToolID = data.ID.ValueString()
 	}
 
-	if searchToolName, ok := result["search_tool_name"].(string); ok {
-		data.SearchToolName = types.StringValue(searchToolName)
+	endpoint := endpointWithPathSegment("/search_tools/", searchToolID, "")
+	var result map[string]interface{}
+	if err := r.client.DoReadWithResponse(ctx, http.MethodGet, endpoint, nil, &result); err != nil {
+		return err
+	}
+	return projectSearchToolResourceAPIObject(data, result, searchToolID, imported)
+}
+
+// projectSearchToolResourceAPIObject validates and projects atomically so a
+// malformed successful response cannot partially mutate the caller's model.
+func projectSearchToolResourceAPIObject(data *SearchToolResourceModel, result map[string]interface{}, expectedID string, imported bool) error {
+	if err := validateSearchToolAPIObject(result, expectedID); err != nil {
+		return err
+	}
+	candidate := *data
+
+	candidate.SearchToolID = types.StringValue(result["search_tool_id"].(string))
+	candidate.ID = candidate.SearchToolID
+	candidate.SearchToolName = types.StringValue(result["search_tool_name"].(string))
+
+	litellmParams := result["litellm_params"].(map[string]interface{})
+	candidate.SearchProvider = types.StringValue(litellmParams["search_provider"].(string))
+	apiBase, apiBasePresence, err := apiValueAt(litellmParams, "api_base")
+	if err != nil {
+		return err
+	}
+	switch apiBasePresence {
+	case apiValueAbsent, apiValueNull:
+		candidate.APIBase = types.StringNull()
+	case apiValuePresent:
+		apiBaseString, ok := apiBase.(string)
+		if !ok {
+			return fmt.Errorf("invalid response field %q: expected a string", "litellm_params.api_base")
+		}
+		candidate.APIBase = types.StringValue(apiBaseString)
+	}
+	timeoutOwned := imported || (!candidate.Timeout.IsNull() && !candidate.Timeout.IsUnknown())
+	if err := updateFloat64FromAPI(&candidate.Timeout, litellmParams, timeoutOwned, timeoutOwned, "timeout"); err != nil {
+		return err
+	}
+	retriesOwned := imported || (!candidate.MaxRetries.IsNull() && !candidate.MaxRetries.IsUnknown())
+	if err := updateInt64FromAPI(&candidate.MaxRetries, litellmParams, retriesOwned, retriesOwned, "max_retries"); err != nil {
+		return err
+	}
+	// API key is intentionally retained because the management read masks it.
+
+	searchToolInfoOwned := imported || (!candidate.SearchToolInfo.IsNull() && !candidate.SearchToolInfo.IsUnknown())
+	if err := updateJSONObjectStringState(&candidate.SearchToolInfo, result, "search_tool_info", searchToolInfoOwned); err != nil {
+		return err
+	}
+	if !searchToolInfoOwned && candidate.SearchToolInfo.IsUnknown() {
+		candidate.SearchToolInfo = types.StringNull()
 	}
 
-	// Handle litellm_params
-	if litellmParams, ok := result["litellm_params"].(map[string]interface{}); ok {
-		if searchProvider, ok := litellmParams["search_provider"].(string); ok {
-			data.SearchProvider = types.StringValue(searchProvider)
-		}
-		if apiBase, ok := litellmParams["api_base"].(string); ok {
-			data.APIBase = types.StringValue(apiBase)
-		}
-		if timeout, ok := litellmParams["timeout"].(float64); ok {
-			data.Timeout = types.Float64Value(timeout)
-		}
-		if maxRetries, ok := litellmParams["max_retries"].(float64); ok {
-			data.MaxRetries = types.Int64Value(int64(maxRetries))
-		}
-		// Note: API key is not read back for security reasons
-	}
+	*data = candidate
+	return nil
+}
 
-	if searchToolInfo, ok := result["search_tool_info"].(string); ok {
-		data.SearchToolInfo = types.StringValue(searchToolInfo)
-	} else if searchToolInfoMap, ok := result["search_tool_info"].(map[string]interface{}); ok && len(searchToolInfoMap) > 0 {
-		if jsonBytes, err := json.Marshal(searchToolInfoMap); err == nil {
-			data.SearchToolInfo = types.StringValue(string(jsonBytes))
-		}
+func validateSearchToolAPIObject(result map[string]interface{}, expectedID string) error {
+	actualID, ok := result["search_tool_id"].(string)
+	if !ok || actualID == "" {
+		return fmt.Errorf("search tool response omitted required search_tool_id")
 	}
-
+	if actualID != expectedID {
+		return fmt.Errorf("search tool response identity did not match the requested search tool")
+	}
+	name, ok := result["search_tool_name"].(string)
+	if !ok || name == "" {
+		return fmt.Errorf("search tool response omitted required search_tool_name")
+	}
+	litellmParams, ok := result["litellm_params"].(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("search tool response omitted required litellm_params object")
+	}
+	provider, ok := litellmParams["search_provider"].(string)
+	if !ok || provider == "" {
+		return fmt.Errorf("search tool response omitted required litellm_params.search_provider")
+	}
 	return nil
 }

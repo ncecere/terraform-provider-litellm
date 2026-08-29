@@ -21,33 +21,50 @@ type MCPServerDataSource struct {
 }
 
 type MCPServerDataSourceModel struct {
-	ID               types.String `tfsdk:"id"`
-	ServerID         types.String `tfsdk:"server_id"`
-	ServerName       types.String `tfsdk:"server_name"`
-	Alias            types.String `tfsdk:"alias"`
-	Description      types.String `tfsdk:"description"`
-	URL              types.String `tfsdk:"url"`
-	Transport        types.String `tfsdk:"transport"`
-	SpecVersion      types.String `tfsdk:"spec_version"`
-	AuthType         types.String `tfsdk:"auth_type"`
-	MCPAccessGroups  types.List   `tfsdk:"mcp_access_groups"`
-	Command          types.String `tfsdk:"command"`
-	Args             types.List   `tfsdk:"args"`
-	Env              types.Map    `tfsdk:"env"`
-	AllowedTools     types.List   `tfsdk:"allowed_tools"`
-	ExtraHeaders     types.List   `tfsdk:"extra_headers"`
-	StaticHeaders    types.Map    `tfsdk:"static_headers"`
-	AuthorizationURL types.String `tfsdk:"authorization_url"`
-	TokenURL         types.String `tfsdk:"token_url"`
-	RegistrationURL  types.String `tfsdk:"registration_url"`
-	AllowAllKeys     types.Bool   `tfsdk:"allow_all_keys"`
-	CreatedAt        types.String `tfsdk:"created_at"`
-	CreatedBy        types.String `tfsdk:"created_by"`
-	UpdatedAt        types.String `tfsdk:"updated_at"`
-	UpdatedBy        types.String `tfsdk:"updated_by"`
-	Status           types.String `tfsdk:"status"`
-	LastHealthCheck  types.String `tfsdk:"last_health_check"`
-	HealthCheckError types.String `tfsdk:"health_check_error"`
+	ID                        types.String  `tfsdk:"id"`
+	ServerID                  types.String  `tfsdk:"server_id"`
+	ServerName                types.String  `tfsdk:"server_name"`
+	Alias                     types.String  `tfsdk:"alias"`
+	Description               types.String  `tfsdk:"description"`
+	URL                       types.String  `tfsdk:"url"`
+	SpecPath                  types.String  `tfsdk:"spec_path"`
+	Transport                 types.String  `tfsdk:"transport"`
+	SpecVersion               types.String  `tfsdk:"spec_version"`
+	AuthType                  types.String  `tfsdk:"auth_type"`
+	MCPAccessGroups           types.List    `tfsdk:"mcp_access_groups"`
+	MCPInfoJSON               types.String  `tfsdk:"mcp_info_json"`
+	Command                   types.String  `tfsdk:"command"`
+	Args                      types.List    `tfsdk:"args"`
+	Env                       types.Map     `tfsdk:"env"`
+	AllowedTools              types.List    `tfsdk:"allowed_tools"`
+	ExtraHeaders              types.List    `tfsdk:"extra_headers"`
+	StaticHeaders             types.Map     `tfsdk:"static_headers"`
+	AuthorizationURL          types.String  `tfsdk:"authorization_url"`
+	TokenURL                  types.String  `tfsdk:"token_url"`
+	RegistrationURL           types.String  `tfsdk:"registration_url"`
+	AllowAllKeys              types.Bool    `tfsdk:"allow_all_keys"`
+	AvailableOnPublicInternet types.Bool    `tfsdk:"available_on_public_internet"`
+	OAuth2Flow                types.String  `tfsdk:"oauth2_flow"`
+	Instructions              types.String  `tfsdk:"instructions"`
+	ToolNameToDisplayName     types.Map     `tfsdk:"tool_name_to_display_name"`
+	ToolNameToDescription     types.Map     `tfsdk:"tool_name_to_description"`
+	DelegateAuthToUpstream    types.Bool    `tfsdk:"delegate_auth_to_upstream"`
+	OAuthPassthrough          types.Bool    `tfsdk:"oauth_passthrough"`
+	DCRBridge                 types.Bool    `tfsdk:"dcr_bridge"`
+	IsBYOK                    types.Bool    `tfsdk:"is_byok"`
+	BYOKDescription           types.List    `tfsdk:"byok_description"`
+	BYOKAPIKeyHelpURL         types.String  `tfsdk:"byok_api_key_help_url"`
+	SourceURL                 types.String  `tfsdk:"source_url"`
+	Timeout                   types.Float64 `tfsdk:"timeout"`
+	MaxConcurrentRequests     types.Int64   `tfsdk:"max_concurrent_requests"`
+	CreatedAt                 types.String  `tfsdk:"created_at"`
+	CreatedBy                 types.String  `tfsdk:"created_by"`
+	UpdatedAt                 types.String  `tfsdk:"updated_at"`
+	UpdatedBy                 types.String  `tfsdk:"updated_by"`
+	Status                    types.String  `tfsdk:"status"`
+	LastHealthCheck           types.String  `tfsdk:"last_health_check"`
+	HealthCheckError          types.String  `tfsdk:"health_check_error"`
+	UpstreamResource          types.String  `tfsdk:"upstream_resource"`
 }
 
 func (d *MCPServerDataSource) Metadata(ctx context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
@@ -79,20 +96,32 @@ func (d *MCPServerDataSource) Schema(ctx context.Context, req datasource.SchemaR
 				Computed:    true,
 			},
 			"url": schema.StringAttribute{
-				Description: "URL of the MCP server.",
+				Description: "URL of the MCP server, when configured.",
 				Computed:    true,
+				Sensitive:   true,
+			},
+			"spec_path": schema.StringAttribute{
+				Description: "Path or URL of the server's OpenAPI specification, when configured.",
+				Computed:    true,
+				Sensitive:   true,
 			},
 			"transport": schema.StringAttribute{
 				Description: "Transport type for the MCP server (http, sse, stdio).",
 				Computed:    true,
 			},
 			"spec_version": schema.StringAttribute{
-				Description: "MCP specification version.",
-				Computed:    true,
+				Description:        "Deprecated compatibility field. LiteLLM v1.98 does not return an MCP specification version.",
+				DeprecationMessage: "spec_version is retained only for state compatibility and is not returned by LiteLLM v1.98.",
+				Computed:           true,
 			},
 			"auth_type": schema.StringAttribute{
-				Description: "Authentication type (none, bearer, basic).",
+				Description: "Authentication type reported by LiteLLM.",
 				Computed:    true,
+			},
+			"mcp_info_json": schema.StringAttribute{
+				Description: "Sensitive canonical complete MCP info JSON object, or null when LiteLLM masks or omits it.",
+				Computed:    true,
+				Sensitive:   true,
 			},
 			"mcp_access_groups": schema.ListAttribute{
 				Description: "List of access groups for the MCP server.",
@@ -102,15 +131,18 @@ func (d *MCPServerDataSource) Schema(ctx context.Context, req datasource.SchemaR
 			"command": schema.StringAttribute{
 				Description: "Command to run for stdio transport.",
 				Computed:    true,
+				Sensitive:   true,
 			},
 			"args": schema.ListAttribute{
 				Description: "Arguments for the command (stdio transport).",
 				Computed:    true,
+				Sensitive:   true,
 				ElementType: types.StringType,
 			},
 			"env": schema.MapAttribute{
 				Description: "Environment variables for the command (stdio transport).",
 				Computed:    true,
+				Sensitive:   true,
 				ElementType: types.StringType,
 			},
 			"allowed_tools": schema.ListAttribute{
@@ -126,22 +158,85 @@ func (d *MCPServerDataSource) Schema(ctx context.Context, req datasource.SchemaR
 			"static_headers": schema.MapAttribute{
 				Description: "Static headers to always include with requests.",
 				Computed:    true,
+				Sensitive:   true,
 				ElementType: types.StringType,
 			},
 			"authorization_url": schema.StringAttribute{
 				Description: "OAuth authorization URL for the MCP server.",
 				Computed:    true,
+				Sensitive:   true,
 			},
 			"token_url": schema.StringAttribute{
 				Description: "OAuth token URL for the MCP server.",
 				Computed:    true,
+				Sensitive:   true,
 			},
 			"registration_url": schema.StringAttribute{
 				Description: "OAuth registration URL for the MCP server.",
 				Computed:    true,
+				Sensitive:   true,
 			},
 			"allow_all_keys": schema.BoolAttribute{
 				Description: "Whether all API keys are allowed to access this MCP server.",
+				Computed:    true,
+			},
+			"available_on_public_internet": schema.BoolAttribute{
+				Description: "Whether the MCP server is available from the public internet.",
+				Computed:    true,
+			},
+			"oauth2_flow": schema.StringAttribute{
+				Description: "OAuth2 flow persisted by LiteLLM.",
+				Computed:    true,
+			},
+			"instructions": schema.StringAttribute{
+				Description: "Instructions associated with the MCP server.",
+				Computed:    true,
+			},
+			"tool_name_to_display_name": schema.MapAttribute{
+				Description: "Tool-name display overrides.",
+				Computed:    true,
+				ElementType: types.StringType,
+			},
+			"tool_name_to_description": schema.MapAttribute{
+				Description: "Tool-name description overrides.",
+				Computed:    true,
+				ElementType: types.StringType,
+			},
+			"delegate_auth_to_upstream": schema.BoolAttribute{
+				Description: "Whether authentication is delegated to the upstream MCP server.",
+				Computed:    true,
+			},
+			"oauth_passthrough": schema.BoolAttribute{
+				Description: "Whether OAuth Authorization headers are passed through.",
+				Computed:    true,
+			},
+			"dcr_bridge": schema.BoolAttribute{
+				Description: "Whether the dynamic client registration bridge is enabled.",
+				Computed:    true,
+			},
+			"is_byok": schema.BoolAttribute{
+				Description: "Whether bring-your-own-key configuration is enabled.",
+				Computed:    true,
+			},
+			"byok_description": schema.ListAttribute{
+				Description: "Bring-your-own-key setup description lines.",
+				Computed:    true,
+				ElementType: types.StringType,
+			},
+			"byok_api_key_help_url": schema.StringAttribute{
+				Description: "Bring-your-own-key API key help URL.",
+				Computed:    true,
+			},
+			"source_url": schema.StringAttribute{
+				Description: "Source URL associated with the MCP server.",
+				Computed:    true,
+			},
+			"timeout": schema.Float64Attribute{
+				Description: "Positive finite request timeout.",
+				Computed:    true,
+			},
+			"max_concurrent_requests": schema.Int64Attribute{
+				Description: "Positive maximum number of concurrent requests.",
 				Computed:    true,
 			},
 			"created_at": schema.StringAttribute{
@@ -172,6 +267,10 @@ func (d *MCPServerDataSource) Schema(ctx context.Context, req datasource.SchemaR
 				Description: "Error message from the last health check, if any.",
 				Computed:    true,
 			},
+			"upstream_resource": schema.StringAttribute{
+				Description: "Non-secret RFC 8707 upstream resource indicator retained by LiteLLM in the otherwise redacted credentials object.",
+				Computed:    true,
+			},
 		},
 	}
 }
@@ -194,164 +293,295 @@ func (d *MCPServerDataSource) Configure(ctx context.Context, req datasource.Conf
 }
 
 func (d *MCPServerDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
-	var data MCPServerDataSourceModel
-
-	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
+	var config MCPServerDataSourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
-	serverID := data.ServerID.ValueString()
-	endpoint := fmt.Sprintf("/v1/mcp/server/%s", serverID)
-
-	var result map[string]interface{}
-	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read MCP server '%s': %s", serverID, err))
+	if config.ServerID.IsNull() || config.ServerID.IsUnknown() || config.ServerID.ValueString() == "" {
+		resp.Diagnostics.AddError("Invalid Data Source Configuration", "The MCP server lookup requires a known nonempty server_id.")
 		return
 	}
 
-	// Update fields from response
-	if sid, ok := result["server_id"].(string); ok {
-		data.ServerID = types.StringValue(sid)
-		data.ID = types.StringValue(sid)
-	}
-	if serverName, ok := result["server_name"].(string); ok {
-		data.ServerName = types.StringValue(serverName)
-	}
-	if alias, ok := result["alias"].(string); ok {
-		data.Alias = types.StringValue(alias)
-	}
-	if desc, ok := result["description"].(string); ok {
-		data.Description = types.StringValue(desc)
-	}
-	if url, ok := result["url"].(string); ok {
-		data.URL = types.StringValue(url)
-	}
-	if transport, ok := result["transport"].(string); ok {
-		data.Transport = types.StringValue(transport)
-	}
-	if specVersion, ok := result["spec_version"].(string); ok {
-		data.SpecVersion = types.StringValue(specVersion)
-	}
-	if authType, ok := result["auth_type"].(string); ok {
-		data.AuthType = types.StringValue(authType)
-	}
-	if command, ok := result["command"].(string); ok {
-		data.Command = types.StringValue(command)
-	}
-	if createdAt, ok := result["created_at"].(string); ok {
-		data.CreatedAt = types.StringValue(createdAt)
-	}
-	if createdBy, ok := result["created_by"].(string); ok {
-		data.CreatedBy = types.StringValue(createdBy)
-	}
-	if updatedAt, ok := result["updated_at"].(string); ok {
-		data.UpdatedAt = types.StringValue(updatedAt)
-	}
-	if updatedBy, ok := result["updated_by"].(string); ok {
-		data.UpdatedBy = types.StringValue(updatedBy)
-	}
-	if status, ok := result["status"].(string); ok {
-		data.Status = types.StringValue(status)
-	}
-	if lastHealthCheck, ok := result["last_health_check"].(string); ok {
-		data.LastHealthCheck = types.StringValue(lastHealthCheck)
-	}
-	if healthCheckError, ok := result["health_check_error"].(string); ok {
-		data.HealthCheckError = types.StringValue(healthCheckError)
+	serverID := config.ServerID.ValueString()
+	var result map[string]interface{}
+	if err := d.client.DoRequestWithResponse(ctx, "GET", mcpServerEndpoint(serverID), nil, &result); err != nil {
+		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read MCP server: %s", err))
+		return
 	}
 
-	// Handle access groups
-	if accessGroups, ok := result["mcp_access_groups"].([]interface{}); ok {
-		groups := make([]attr.Value, len(accessGroups))
-		for i, g := range accessGroups {
-			if str, ok := g.(string); ok {
-				groups[i] = types.StringValue(str)
-			}
-		}
-		data.MCPAccessGroups, _ = types.ListValue(types.StringType, groups)
-	} else {
-		data.MCPAccessGroups, _ = types.ListValue(types.StringType, []attr.Value{})
+	data, err := projectMCPServerDataSource(result, serverID)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned a malformed MCP server response.")
+		return
 	}
-
-	// Handle args
-	if args, ok := result["args"].([]interface{}); ok {
-		argsList := make([]attr.Value, len(args))
-		for i, a := range args {
-			if str, ok := a.(string); ok {
-				argsList[i] = types.StringValue(str)
-			}
-		}
-		data.Args, _ = types.ListValue(types.StringType, argsList)
-	} else {
-		data.Args, _ = types.ListValue(types.StringType, []attr.Value{})
-	}
-
-	// Handle env
-	if env, ok := result["env"].(map[string]interface{}); ok {
-		envMap := make(map[string]attr.Value)
-		for k, v := range env {
-			if str, ok := v.(string); ok {
-				envMap[k] = types.StringValue(str)
-			}
-		}
-		data.Env, _ = types.MapValue(types.StringType, envMap)
-	} else {
-		data.Env, _ = types.MapValue(types.StringType, map[string]attr.Value{})
-	}
-
-	// Handle allowed_tools
-	if allowedTools, ok := result["allowed_tools"].([]interface{}); ok {
-		tools := make([]attr.Value, len(allowedTools))
-		for i, t := range allowedTools {
-			if str, ok := t.(string); ok {
-				tools[i] = types.StringValue(str)
-			}
-		}
-		data.AllowedTools, _ = types.ListValue(types.StringType, tools)
-	} else {
-		data.AllowedTools, _ = types.ListValue(types.StringType, []attr.Value{})
-	}
-
-	// Handle extra_headers
-	if extraHeaders, ok := result["extra_headers"].([]interface{}); ok {
-		headers := make([]attr.Value, 0, len(extraHeaders))
-		for _, v := range extraHeaders {
-			if str, ok := v.(string); ok {
-				headers = append(headers, types.StringValue(str))
-			}
-		}
-		data.ExtraHeaders, _ = types.ListValue(types.StringType, headers)
-	} else {
-		data.ExtraHeaders, _ = types.ListValue(types.StringType, []attr.Value{})
-	}
-
-	// Handle static_headers
-	if staticHeaders, ok := result["static_headers"].(map[string]interface{}); ok {
-		headersMap := make(map[string]attr.Value)
-		for k, v := range staticHeaders {
-			if str, ok := v.(string); ok {
-				headersMap[k] = types.StringValue(str)
-			}
-		}
-		data.StaticHeaders, _ = types.MapValue(types.StringType, headersMap)
-	} else {
-		data.StaticHeaders, _ = types.MapValue(types.StringType, map[string]attr.Value{})
-	}
-
-	// Handle OAuth URLs
-	if authURL, ok := result["authorization_url"].(string); ok {
-		data.AuthorizationURL = types.StringValue(authURL)
-	}
-	if tokenURL, ok := result["token_url"].(string); ok {
-		data.TokenURL = types.StringValue(tokenURL)
-	}
-	if regURL, ok := result["registration_url"].(string); ok {
-		data.RegistrationURL = types.StringValue(regURL)
-	}
-	if allowAllKeys, ok := result["allow_all_keys"].(bool); ok {
-		data.AllowAllKeys = types.BoolValue(allowAllKeys)
-	}
-
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+}
+
+type mcpServerDataSourceProjectionRole uint8
+
+const (
+	mcpServerSingularProjection mcpServerDataSourceProjectionRole = iota
+	mcpServerManagerListProjection
+)
+
+// projectMCPServerDataSource remains the compatibility entry point for
+// existing singular callers and focused projection tests.
+func projectMCPServerDataSource(result map[string]interface{}, expectedServerID string) (MCPServerDataSourceModel, error) {
+	return projectMCPServerDataSourceForRole(result, expectedServerID, mcpServerSingularProjection)
+}
+
+func projectMCPServerManagerListDataSource(result map[string]interface{}, expectedServerID string) (MCPServerDataSourceModel, error) {
+	return projectMCPServerDataSourceForRole(result, expectedServerID, mcpServerManagerListProjection)
+}
+
+func projectMCPServerDataSourceForRole(result map[string]interface{}, expectedServerID string, role mcpServerDataSourceProjectionRole) (MCPServerDataSourceModel, error) {
+	var data MCPServerDataSourceModel
+	serverID, err := dataSourceRequiredStringAt(result, "server_id")
+	if err != nil || serverID.ValueString() != expectedServerID {
+		return data, fmt.Errorf("MCP server response identity mismatch")
+	}
+	transport, err := dataSourceRequiredStringAt(result, "transport")
+	if err != nil || !mcpDataSourceTransportValid(transport.ValueString()) {
+		return data, fmt.Errorf("MCP server response transport is invalid")
+	}
+
+	data.ID = serverID
+	data.ServerID = serverID
+	data.Transport = transport
+	data.SpecVersion = types.StringNull()
+	if data.ServerName, err = dataSourceNullableStringAt(result, "server_name"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.Alias, err = dataSourceNullableStringAt(result, "alias"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.Description, err = dataSourceNullableStringAt(result, "description"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.URL, err = dataSourceNullableStringAt(result, "url"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.SpecPath, err = dataSourceNullableStringAt(result, "spec_path"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.AuthType, err = dataSourceNullableStringAt(result, "auth_type"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.MCPAccessGroups, err = mcpAmbiguousDataSourceStringListAt(result, "mcp_access_groups"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.MCPInfoJSON, err = mcpInfoDataSourceValue(result); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.Command, err = dataSourceNullableStringAt(result, "command"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.Args, err = mcpAmbiguousDataSourceStringListAt(result, "args"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.Env, err = mcpAmbiguousDataSourceStringMapAt(result, "env"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.AllowedTools, err = mcpAmbiguousDataSourceStringListAt(result, "allowed_tools"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.ExtraHeaders, err = mcpAmbiguousDataSourceStringListAt(result, "extra_headers"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.StaticHeaders, err = dataSourceNullableStringMapAt(result, "static_headers"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.AuthorizationURL, err = dataSourceNullableStringAt(result, "authorization_url"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.TokenURL, err = dataSourceNullableStringAt(result, "token_url"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.RegistrationURL, err = dataSourceNullableStringAt(result, "registration_url"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.AllowAllKeys, err = dataSourceNullableBoolAt(result, "allow_all_keys"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.AvailableOnPublicInternet, err = dataSourceNullableBoolAt(result, "available_on_public_internet"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.OAuth2Flow, err = dataSourceNullableStringAt(result, "oauth2_flow"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if !data.OAuth2Flow.IsNull() {
+		valid := false
+		for _, allowed := range mcpOAuth2FlowsV198 {
+			valid = valid || data.OAuth2Flow.ValueString() == allowed
+		}
+		if !valid {
+			return MCPServerDataSourceModel{}, fmt.Errorf("MCP server response OAuth2 flow is invalid")
+		}
+	}
+	if data.Instructions, err = dataSourceNullableStringAt(result, "instructions"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.ToolNameToDisplayName, err = dataSourceNullableStringMapAt(result, "tool_name_to_display_name"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.ToolNameToDescription, err = dataSourceNullableStringMapAt(result, "tool_name_to_description"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.DelegateAuthToUpstream, err = mcpDefaultFalseDataSourceBoolAt(result, "delegate_auth_to_upstream"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.OAuthPassthrough, err = mcpDefaultFalseDataSourceBoolAt(result, "oauth_passthrough"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.DCRBridge, err = dataSourceNullableBoolAt(result, "dcr_bridge"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.IsBYOK, err = mcpDefaultFalseDataSourceBoolAt(result, "is_byok"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.BYOKDescription, err = mcpNonNullDataSourceStringListAt(result, "byok_description"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.BYOKAPIKeyHelpURL, err = dataSourceNullableStringAt(result, "byok_api_key_help_url"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.SourceURL, err = dataSourceNullableStringAt(result, "source_url"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.Timeout, err = dataSourceNullableFloat64At(result, "timeout"); err != nil || (!data.Timeout.IsNull() && data.Timeout.ValueFloat64() <= 0) {
+		return MCPServerDataSourceModel{}, fmt.Errorf("MCP server response timeout is malformed")
+	}
+	if data.MaxConcurrentRequests, err = dataSourceNullableInt64At(result, "max_concurrent_requests"); err != nil {
+		return MCPServerDataSourceModel{}, fmt.Errorf("MCP server response maximum concurrency is malformed")
+	}
+	if data.CreatedAt, err = dataSourceNullableStringAt(result, "created_at"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.UpdatedAt, err = dataSourceNullableStringAt(result, "updated_at"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.Status, err = dataSourceNullableStringAt(result, "status"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+
+	if role == mcpServerManagerListProjection {
+		if credentials, present := result["credentials"]; present && credentials != nil {
+			return MCPServerDataSourceModel{}, fmt.Errorf("MCP server list response contains credentials")
+		}
+		data.UpstreamResource = types.StringNull()
+		data.CreatedBy = types.StringNull()
+		data.UpdatedBy = types.StringNull()
+		data.LastHealthCheck = types.StringNull()
+		data.HealthCheckError = types.StringNull()
+		return data, nil
+	}
+
+	if data.UpstreamResource, err = mcpUpstreamResourceDataSourceValue(result); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.CreatedBy, err = dataSourceNullableStringAt(result, "created_by"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.UpdatedBy, err = dataSourceNullableStringAt(result, "updated_by"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.LastHealthCheck, err = dataSourceNullableStringAt(result, "last_health_check"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.HealthCheckError, err = dataSourceNullableStringAt(result, "health_check_error"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	return data, nil
+}
+
+func mcpDefaultFalseDataSourceBoolAt(result map[string]interface{}, name string) (types.Bool, error) {
+	value, err := dataSourceNullableBoolAt(result, name)
+	if err != nil {
+		return types.BoolNull(), err
+	}
+	if value.IsNull() {
+		return types.BoolValue(false), nil
+	}
+	return value, nil
+}
+
+func mcpNonNullDataSourceStringListAt(result map[string]interface{}, name string) (types.List, error) {
+	value, err := dataSourceNullableStringListAt(result, name)
+	if err != nil {
+		return types.ListNull(types.StringType), err
+	}
+	if value.IsNull() {
+		empty, diagnostics := types.ListValue(types.StringType, []attr.Value{})
+		if diagnostics.HasError() {
+			return types.ListNull(types.StringType), fmt.Errorf("MCP server string-list projection is malformed")
+		}
+		return empty, nil
+	}
+	return value, nil
+}
+
+func mcpAmbiguousDataSourceStringListAt(result map[string]interface{}, name string) (types.List, error) {
+	value, err := dataSourceNullableStringListAt(result, name)
+	if err != nil || value.IsNull() || len(value.Elements()) == 0 {
+		return types.ListNull(types.StringType), err
+	}
+	return value, nil
+}
+
+func mcpAmbiguousDataSourceStringMapAt(result map[string]interface{}, name string) (types.Map, error) {
+	value, err := dataSourceNullableStringMapAt(result, name)
+	if err != nil || value.IsNull() || len(value.Elements()) == 0 {
+		return types.MapNull(types.StringType), err
+	}
+	return value, nil
+}
+
+func mcpInfoDataSourceValue(result map[string]interface{}) (types.String, error) {
+	document, presence, err := mcpInfoDocumentFromResponse(result)
+	if err != nil || presence != apiValuePresent {
+		return types.StringNull(), err
+	}
+	canonical, err := canonicalMCPInfoJSONObject(document)
+	if err != nil {
+		return types.StringNull(), err
+	}
+	return types.StringValue(canonical), nil
+}
+
+func mcpUpstreamResourceDataSourceValue(result map[string]interface{}) (types.String, error) {
+	raw, present := result["credentials"]
+	if !present || raw == nil {
+		return types.StringNull(), nil
+	}
+
+	var credentials map[string]interface{}
+	switch value := raw.(type) {
+	case map[string]interface{}:
+		credentials = value
+	case map[string]string:
+		credentials = make(map[string]interface{}, len(value))
+		for name, member := range value {
+			credentials[name] = member
+		}
+	default:
+		return types.StringNull(), fmt.Errorf("MCP server credentials projection is malformed")
+	}
+	if len(credentials) != 1 {
+		return types.StringNull(), fmt.Errorf("MCP server credentials projection is malformed")
+	}
+	upstreamResource, ok := credentials["upstream_resource"].(string)
+	if !ok || upstreamResource == "" {
+		return types.StringNull(), fmt.Errorf("MCP server credentials projection is malformed")
+	}
+	return types.StringValue(upstreamResource), nil
+}
+
+func mcpDataSourceTransportValid(transport string) bool {
+	for _, allowed := range mcpTransportsV198 {
+		if transport == allowed {
+			return true
+		}
+	}
+	return false
 }

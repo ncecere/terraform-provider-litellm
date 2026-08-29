@@ -3,6 +3,7 @@
 
 resource "litellm_prompt" "full" {
   prompt_id          = "test-prompt-full"
+  environment        = "staging"
   prompt_integration = "dotprompt"
   prompt_type        = "db"
 
@@ -20,4 +21,8 @@ resource "litellm_prompt" "full" {
 
 output "prompt_full_id" {
   value = litellm_prompt.full.id
+}
+
+output "prompt_full_version" {
+  value = litellm_prompt.full.version
 }

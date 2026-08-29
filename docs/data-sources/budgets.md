@@ -39,4 +39,9 @@ This data source has no required arguments.
   * `tpm_limit` - Tokens per minute limit.
   * `rpm_limit` - Requests per minute limit.
   * `budget_duration` - Budget reset duration.
-  * `model_max_budget` - JSON string of per-model budget limits.
+  * `model_max_budget` - Canonical JSON object string of per-model `BudgetConfig` values. Empty `{}` remains distinct from null; malformed or wrong-shaped API values fail the list read.
+  * `budget_reset_at` - Timestamp when the budget will next reset.
+  * `created_at` - Timestamp when the budget was created.
+  * `updated_at` - Timestamp when the budget was last updated.
+
+Results are sorted deterministically by budget ID.

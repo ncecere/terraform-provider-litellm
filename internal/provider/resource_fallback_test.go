@@ -3,12 +3,20 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	resourceschema "github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-go/tftypes"
 )
 
 func TestFallbackBuildFallbackRequest(t *testing.T) {
@@ -27,7 +35,10 @@ func TestFallbackBuildFallbackRequest(t *testing.T) {
 		FallbackType:   types.StringValue("general"),
 	}
 
-	req := r.buildFallbackRequest(ctx, data)
+	req, diagnostics := r.buildFallbackRequest(ctx, data)
+	if diagnostics.HasError() {
+		t.Fatalf("build fallback request: %v", diagnostics)
+	}
 
 	if req["model"] != "gpt-3.5-turbo" {
 		t.Errorf("model = %v, want gpt-3.5-turbo", req["model"])
@@ -55,6 +66,7 @@ func TestFallbackReadFallback_populatesState(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"model":           "gpt-3.5-turbo",
 			"fallback_models": []interface{}{"gpt-4o", "gpt-4o-mini"},
 			"fallback_type":   "general",
 		})
@@ -99,6 +111,7 @@ func TestFallbackReadFallback_handlesEmptyFallbackModels(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"model":           "my-model",
 			"fallback_models": []interface{}{},
 			"fallback_type":   "context_window",
 		})
@@ -128,6 +141,393 @@ func TestFallbackReadFallback_handlesEmptyFallbackModels(t *testing.T) {
 	if len(data.FallbackModels.Elements()) != 0 {
 		t.Errorf("fallback_models should be empty, got %d elements", len(data.FallbackModels.Elements()))
 	}
+}
+
+func TestParseFallbackImportIDFromSupportedRightSuffix(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		importID, model, fallbackType string
+	}{
+		{"legacy-simple-model", "legacy-simple-model", "general"},
+		{"simple:general", "simple", "general"},
+		{"llama3:8b:general", "llama3:8b", "general"},
+		{"model:general:context_window", "model:general", "context_window"},
+		{"tenant/model?revision=1&weight=50%:雪:content_policy", "tenant/model?revision=1&weight=50%:雪", "content_policy"},
+	}
+	for _, test := range tests {
+		t.Run(test.fallbackType+"/"+test.model, func(t *testing.T) {
+			model, fallbackType, err := parseFallbackImportID(test.importID)
+			if err != nil {
+				t.Fatalf("parseFallbackImportID returned error: %v", err)
+			}
+			if model != test.model || fallbackType != test.fallbackType {
+				t.Fatalf("parsed (%q, %q), want (%q, %q)", model, fallbackType, test.model, test.fallbackType)
+			}
+		})
+	}
+}
+
+func TestParseFallbackImportIDRejectsInvalidIDsWithoutEchoingContent(t *testing.T) {
+	t.Parallel()
+
+	for name, importID := range map[string]string{
+		"empty":                             "",
+		"empty suffix":                      "sensitive-model:",
+		"empty model":                       ":general",
+		"unknown suffix":                    "sensitive-model:unknown-secret-type",
+		"supported token before bad suffix": "sensitive-model:general:unknown-secret-type",
+		"wrong case":                        "sensitive-model:GENERAL",
+	} {
+		t.Run(name, func(t *testing.T) {
+			model, fallbackType, err := parseFallbackImportID(importID)
+			if err == nil || model != "" || fallbackType != "" {
+				t.Fatalf("parse result = (%q, %q, %v), want empty components and error", model, fallbackType, err)
+			}
+			for _, sensitive := range []string{"sensitive-model", "unknown-secret-type", importID} {
+				if sensitive != "" && strings.Contains(err.Error(), sensitive) {
+					t.Fatalf("diagnostic exposed import content: %v", err)
+				}
+			}
+			if !strings.Contains(err.Error(), "<model>:<fallback_type>") && !strings.Contains(err.Error(), "general") {
+				t.Fatalf("diagnostic is not actionable: %v", err)
+			}
+		})
+	}
+}
+
+func TestFallbackEndpointEscapesSpecialModelExactlyOnce(t *testing.T) {
+	t.Parallel()
+
+	model := "tenant/route?revision=1&literal=%2F:雪"
+	endpoint := fallbackEndpoint(model, "context_window")
+	want := "/fallback/tenant%2Froute%3Frevision=1&literal=%252F:%E9%9B%AA?fallback_type=context_window"
+	if endpoint != want {
+		t.Fatalf("endpoint = %q, want %q", endpoint, want)
+	}
+	for model, wantPath := range map[string]string{
+		".":  "/fallback/%2E?fallback_type=general",
+		"..": "/fallback/%2E%2E?fallback_type=general",
+	} {
+		if got := fallbackEndpoint(model, "general"); got != wantPath {
+			t.Errorf("dot endpoint = %q, want %q", got, wantPath)
+		}
+	}
+}
+
+func TestFallbackSlashExceptionRetainsV198RouteLevel404(t *testing.T) {
+	t.Parallel()
+
+	model := "tenant/private-model"
+	endpoint := fallbackEndpoint(model, "general")
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		requests++
+		if request.RequestURI != endpoint {
+			t.Errorf("RequestURI = %q, want %q", request.RequestURI, endpoint)
+		}
+		http.NotFound(writer, request)
+	}))
+	defer server.Close()
+
+	client := &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}
+	err := client.DoRequestWithResponse(context.Background(), http.MethodGet, endpoint, nil, nil)
+	if !IsAPIErrorStatus(err, http.StatusNotFound) || requests != 1 {
+		t.Fatalf("fallback slash result: err=%v requests=%d", err, requests)
+	}
+	if !strings.Contains(endpoint, "tenant%2Fprivate-model") {
+		t.Fatalf("fallback identity was not escaped exactly once: %q", endpoint)
+	}
+}
+
+func TestFallbackResourceAndDataSourceBuildEscapedSlashIdentityRequests(t *testing.T) {
+	t.Parallel()
+
+	// This transport-level test verifies exact-once escaping in every provider
+	// call path. LiteLLM v1.98's non-path-capturing /fallback/{model} route
+	// rejects decoded slash identities before its handler runs; it does not make
+	// a slash-bearing identity lifecycle-capable on that server version.
+	model := "tenant/route?revision=1&literal=%2F:雪"
+	fallbackType := "content_policy"
+	wantURI := fallbackEndpoint(model, fallbackType)
+	requests := make(chan string, 3)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests <- r.Method + " " + r.RequestURI
+		if got := r.URL.Query().Get("fallback_type"); got != fallbackType {
+			t.Errorf("fallback_type query = %q, want %q", got, fallbackType)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"model": model, "fallback_type": fallbackType, "fallback_models": []string{"secondary"},
+		})
+	}))
+	defer server.Close()
+
+	client := &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}
+	resourceData := &FallbackResourceModel{Model: types.StringValue(model), FallbackType: types.StringValue(fallbackType)}
+	if err := (&FallbackResource{client: client}).readFallback(context.Background(), resourceData); err != nil {
+		t.Fatalf("resource read: %v", err)
+	}
+	dataSourceData := &FallbackDataSourceModel{Model: types.StringValue(model), FallbackType: types.StringValue(fallbackType)}
+	if err := (&FallbackDataSource{client: client}).readFallback(context.Background(), dataSourceData); err != nil {
+		t.Fatalf("data source read: %v", err)
+	}
+	if err := client.DoRequestWithResponse(context.Background(), http.MethodDelete, fallbackEndpoint(model, fallbackType), nil, nil); err != nil {
+		t.Fatalf("delete request: %v", err)
+	}
+	for _, method := range []string{http.MethodGet, http.MethodGet, http.MethodDelete} {
+		if got := <-requests; got != method+" "+wantURI {
+			t.Fatalf("request = %q, want %q", got, method+" "+wantURI)
+		}
+	}
+}
+
+func TestFallbackReadRemovesRemotelyDeletedSpecialIdentity(t *testing.T) {
+	t.Parallel()
+
+	model := "tenant/model%雪"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.RequestURI, fallbackEndpoint(model, "general"); got != want {
+			t.Errorf("remote deletion request URI = %q, want %q", got, want)
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	ctx := context.Background()
+	var schemaResponse resource.SchemaResponse
+	resourceUnderTest := &FallbackResource{
+		client:           &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()},
+		readMaxAttempts:  1,
+		readInitialDelay: 0,
+		readMaxDelay:     0,
+	}
+	resourceUnderTest.Schema(ctx, resource.SchemaRequest{}, &schemaResponse)
+	state := fallbackTestState(t, schemaResponse.Schema, FallbackResourceModel{
+		ID:             types.StringValue(model + ":general"),
+		Model:          types.StringValue(model),
+		FallbackType:   types.StringValue("general"),
+		FallbackModels: types.ListValueMust(types.StringType, []attr.Value{types.StringValue("secondary")}),
+	})
+	response := &resource.ReadResponse{State: state}
+	resourceUnderTest.Read(ctx, resource.ReadRequest{State: state}, response)
+	if response.Diagnostics.HasError() {
+		t.Fatalf("remote deletion diagnostics: %v", response.Diagnostics)
+	}
+	if !response.State.Raw.IsNull() {
+		t.Fatal("remote deletion did not remove resource state")
+	}
+}
+
+func TestFallbackDeleteRequiresAuthoritativeReadAbsence(t *testing.T) {
+	t.Parallel()
+
+	for name, deleteStatus := range map[string]int{
+		"delete success":              http.StatusOK,
+		"already absent delete":       http.StatusNotFound,
+		"ambiguous server-side error": http.StatusInternalServerError,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			var deletes, reads int
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				switch request.Method {
+				case http.MethodDelete:
+					deletes++
+					writer.WriteHeader(deleteStatus)
+				case http.MethodGet:
+					reads++
+					writer.WriteHeader(http.StatusNotFound)
+				default:
+					writer.WriteHeader(http.StatusMethodNotAllowed)
+				}
+			}))
+			defer server.Close()
+
+			resourceUnderTest, state := fallbackDeleteTestResource(t, server)
+			response := &resource.DeleteResponse{State: state}
+			resourceUnderTest.Delete(context.Background(), resource.DeleteRequest{State: state}, response)
+			if response.Diagnostics.HasError() {
+				t.Fatalf("confirmed delete diagnostics: %v", response.Diagnostics)
+			}
+			if deletes != 1 || reads != 1 {
+				t.Fatalf("requests: deletes=%d reads=%d, want 1 and 1", deletes, reads)
+			}
+		})
+	}
+}
+
+func TestFallbackDeleteTransportAmbiguityUsesAuthoritativeGET(t *testing.T) {
+	t.Parallel()
+
+	var requests int
+	client := &Client{
+		APIBase: "https://fallback.invalid",
+		APIKey:  "test-key",
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			requests++
+			if request.Method == http.MethodDelete {
+				return nil, io.ErrUnexpectedEOF
+			}
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{}`)),
+				Request:    request,
+			}, nil
+		})},
+	}
+	resourceUnderTest, state := fallbackDeleteTestResourceWithClient(t, client, "test-model")
+	response := &resource.DeleteResponse{State: state}
+	resourceUnderTest.Delete(context.Background(), resource.DeleteRequest{State: state}, response)
+	if response.Diagnostics.HasError() {
+		t.Fatalf("confirmed transport-ambiguous delete diagnostics: %v", response.Diagnostics)
+	}
+	if requests != 2 {
+		t.Fatalf("requests = %d, want DELETE and confirming GET", requests)
+	}
+}
+
+func TestFallbackDeleteRetainsStateWhenDelete404DisagreesWithGET(t *testing.T) {
+	t.Parallel()
+
+	const secretModel = "secret-model-do-not-print"
+	var deletes, reads int
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		switch request.Method {
+		case http.MethodDelete:
+			deletes++
+			writer.WriteHeader(http.StatusNotFound)
+			_, _ = writer.Write([]byte(`{}`))
+		case http.MethodGet:
+			reads++
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+				"model": secretModel, "fallback_type": "general", "fallback_models": []string{"secondary"},
+			})
+		default:
+			writer.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}))
+	defer server.Close()
+
+	resourceUnderTest, state := fallbackDeleteTestResourceWithModel(t, server, secretModel)
+	resourceUnderTest.deleteMaxAttempts = 2
+	resourceUnderTest.deleteInitialDelay = 0
+	resourceUnderTest.deleteMaxDelay = 0
+	response := &resource.DeleteResponse{State: state}
+	resourceUnderTest.Delete(context.Background(), resource.DeleteRequest{State: state}, response)
+	if !response.Diagnostics.HasError() {
+		t.Fatal("DELETE 404 plus GET 200 did not fail closed")
+	}
+	if response.State.Raw.IsNull() {
+		t.Fatal("unconfirmed deletion removed prior state")
+	}
+	if deletes != 1 || reads != 2 {
+		t.Fatalf("requests: deletes=%d reads=%d, want 1 and 2", deletes, reads)
+	}
+	diagnostic := fmt.Sprint(response.Diagnostics)
+	for _, forbidden := range []string{secretModel, server.URL, "secondary"} {
+		if strings.Contains(diagnostic, forbidden) {
+			t.Fatalf("delete diagnostic exposed %q: %s", forbidden, diagnostic)
+		}
+	}
+	if !strings.Contains(diagnostic, "Fallback Delete Unconfirmed") || !strings.Contains(diagnostic, fallbackDeleteStillPresentDiagnostic) {
+		t.Fatalf("delete diagnostic did not classify authoritative retained presence: %s", diagnostic)
+	}
+}
+
+func TestFallbackDeleteRejectsMalformedConfirmationResponse(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		if request.Method == http.MethodDelete {
+			_, _ = writer.Write([]byte(`{}`))
+			return
+		}
+		_, _ = writer.Write([]byte(`{"model":"wrong","fallback_type":"general","fallback_models":[]}`))
+	}))
+	defer server.Close()
+
+	resourceUnderTest, state := fallbackDeleteTestResource(t, server)
+	resourceUnderTest.deleteMaxAttempts = 1
+	response := &resource.DeleteResponse{State: state}
+	resourceUnderTest.Delete(context.Background(), resource.DeleteRequest{State: state}, response)
+	if !response.Diagnostics.HasError() || response.State.Raw.IsNull() {
+		t.Fatalf("malformed confirmation did not retain state: diagnostics=%v", response.Diagnostics)
+	}
+}
+
+func TestFallbackDeleteConfirmationHonorsCancellation(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		if request.Method == http.MethodDelete {
+			_, _ = writer.Write([]byte(`{}`))
+			return
+		}
+		cancel()
+		_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+			"model": "test-model", "fallback_type": "general", "fallback_models": []string{"secondary"},
+		})
+	}))
+	defer server.Close()
+
+	resourceUnderTest, state := fallbackDeleteTestResource(t, server)
+	resourceUnderTest.deleteMaxAttempts = 2
+	resourceUnderTest.deleteInitialDelay = time.Hour
+	resourceUnderTest.deleteMaxDelay = time.Hour
+	response := &resource.DeleteResponse{State: state}
+	resourceUnderTest.Delete(ctx, resource.DeleteRequest{State: state}, response)
+	if !response.Diagnostics.HasError() || response.State.Raw.IsNull() {
+		t.Fatalf("cancelled confirmation did not retain state: diagnostics=%v", response.Diagnostics)
+	}
+	diagnostic := fmt.Sprint(response.Diagnostics)
+	if !strings.Contains(diagnostic, "Fallback Delete Unconfirmed") {
+		t.Fatalf("cancellation diagnostic was not actionable: %v", response.Diagnostics)
+	}
+	if strings.Contains(diagnostic, fallbackDeleteStillPresentDiagnostic) {
+		t.Fatalf("cancellation was misclassified as authoritative retained presence: %v", response.Diagnostics)
+	}
+}
+
+func fallbackDeleteTestResource(t *testing.T, server *httptest.Server) (*FallbackResource, tfsdk.State) {
+	t.Helper()
+	return fallbackDeleteTestResourceWithModel(t, server, "test-model")
+}
+
+func fallbackDeleteTestResourceWithModel(t *testing.T, server *httptest.Server, model string) (*FallbackResource, tfsdk.State) {
+	t.Helper()
+	client := &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}
+	return fallbackDeleteTestResourceWithClient(t, client, model)
+}
+
+func fallbackDeleteTestResourceWithClient(t *testing.T, client *Client, model string) (*FallbackResource, tfsdk.State) {
+	t.Helper()
+	ctx := context.Background()
+	resourceUnderTest := &FallbackResource{client: client}
+	var schemaResponse resource.SchemaResponse
+	resourceUnderTest.Schema(ctx, resource.SchemaRequest{}, &schemaResponse)
+	state := fallbackTestState(t, schemaResponse.Schema, FallbackResourceModel{
+		ID:             types.StringValue(model + ":general"),
+		Model:          types.StringValue(model),
+		FallbackType:   types.StringValue("general"),
+		FallbackModels: types.ListValueMust(types.StringType, []attr.Value{types.StringValue("secondary")}),
+	})
+	return resourceUnderTest, state
+}
+
+func fallbackTestState(t *testing.T, schema resourceschema.Schema, model FallbackResourceModel) tfsdk.State {
+	t.Helper()
+	ctx := context.Background()
+	state := tfsdk.State{Raw: tftypes.NewValue(schema.Type().TerraformType(ctx), nil), Schema: schema}
+	if diagnostics := state.Set(ctx, &model); diagnostics.HasError() {
+		t.Fatalf("set fallback state: %v", diagnostics)
+	}
+	return state
 }
 
 func TestFallbackCreateSendsCorrectBody(t *testing.T) {
@@ -164,7 +564,10 @@ func TestFallbackCreateSendsCorrectBody(t *testing.T) {
 		FallbackType:   types.StringValue("general"),
 	}
 
-	req := res.buildFallbackRequest(ctx, &plan)
+	req, diagnostics := res.buildFallbackRequest(ctx, &plan)
+	if diagnostics.HasError() {
+		t.Fatalf("build fallback request: %v", diagnostics)
+	}
 	if err := res.client.DoRequestWithResponse(ctx, "POST", "/fallback", req, nil); err != nil {
 		t.Fatalf("POST /fallback: %v", err)
 	}

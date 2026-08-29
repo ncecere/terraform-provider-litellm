@@ -39,5 +39,5 @@ resource "litellm_team" "new_team" {
 * `tpm_limit` - Tokens per minute limit.
 * `rpm_limit` - Requests per minute limit.
 * `max_parallel_requests` - Maximum parallel requests allowed.
-* `model_max_budget` - JSON string of per-model budget limits.
+* `model_max_budget` - Canonical JSON object string of per-model `BudgetConfig` values. Empty `{}` remains distinct from null; malformed or wrong-shaped API values fail the read.
 * `budget_reset_at` - Datetime when the budget is next reset.

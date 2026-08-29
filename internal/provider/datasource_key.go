@@ -2,15 +2,22 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
+	"net/url"
+	"strings"
 
-	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework-validators/datasourcevalidator"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
 var _ datasource.DataSource = &KeyDataSource{}
+var _ datasource.DataSourceWithConfigValidators = &KeyDataSource{}
 
 func NewKeyDataSource() datasource.DataSource {
 	return &KeyDataSource{}
@@ -23,6 +30,7 @@ type KeyDataSource struct {
 type KeyDataSourceModel struct {
 	ID                  types.String  `tfsdk:"id"`
 	Key                 types.String  `tfsdk:"key"`
+	KeyHash             types.String  `tfsdk:"key_hash"`
 	KeyAlias            types.String  `tfsdk:"key_alias"`
 	Models              types.List    `tfsdk:"models"`
 	MaxBudget           types.Float64 `tfsdk:"max_budget"`
@@ -38,6 +46,16 @@ type KeyDataSourceModel struct {
 	Metadata            types.Map     `tfsdk:"metadata"`
 	Tags                types.List    `tfsdk:"tags"`
 	Blocked             types.Bool    `tfsdk:"blocked"`
+	RouterSettings      types.Object  `tfsdk:"router_settings"`
+}
+
+func (d *KeyDataSource) ConfigValidators(ctx context.Context) []datasource.ConfigValidator {
+	return []datasource.ConfigValidator{
+		datasourcevalidator.ExactlyOneOf(
+			path.MatchRoot("key"),
+			path.MatchRoot("key_hash"),
+		),
+	}
 }
 
 func (d *KeyDataSource) Metadata(ctx context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
@@ -49,13 +67,20 @@ func (d *KeyDataSource) Schema(ctx context.Context, req datasource.SchemaRequest
 		Description: "Retrieves information about a LiteLLM API key.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
-				Description: "The unique identifier for this key.",
+				Description: "Non-sensitive SHA256 management identifier for this key.",
 				Computed:    true,
 			},
 			"key": schema.StringAttribute{
-				Description: "The API key value to look up.",
-				Required:    true,
+				Description: "The raw API key value to look up. Conflicts with key_hash.",
+				Optional:    true,
 				Sensitive:   true,
+			},
+			"key_hash": schema.StringAttribute{
+				Description: "A sha256:<64-hex> management identifier used to look up a write-only key without reintroducing the raw token into Terraform state. Conflicts with key.",
+				Optional:    true,
+				Validators: []validator.String{
+					redactingKeyHashValidator{},
+				},
 			},
 			"key_alias": schema.StringAttribute{
 				Description: "User-friendly alias for the key.",
@@ -109,6 +134,7 @@ func (d *KeyDataSource) Schema(ctx context.Context, req datasource.SchemaRequest
 			"metadata": schema.MapAttribute{
 				Description: "Metadata for the key.",
 				Computed:    true,
+				Sensitive:   true,
 				ElementType: types.StringType,
 			},
 			"tags": schema.ListAttribute{
@@ -120,6 +146,7 @@ func (d *KeyDataSource) Schema(ctx context.Context, req datasource.SchemaRequest
 				Description: "Whether the key is blocked.",
 				Computed:    true,
 			},
+			"router_settings": keyRouterSettingsDataSourceAttribute(),
 		},
 	}
 }
@@ -141,6 +168,31 @@ func (d *KeyDataSource) Configure(ctx context.Context, req datasource.ConfigureR
 	d.client = client
 }
 
+func keyDataSourceLookup(data *KeyDataSourceModel) (string, string, error) {
+	if !data.KeyHash.IsNull() && !data.KeyHash.IsUnknown() {
+		hash, err := keyHashFromID(data.KeyHash.ValueString())
+		if err != nil {
+			return "", "", err
+		}
+		hash = strings.ToLower(hash)
+		return hash, "sha256:" + hash, nil
+	}
+	if data.Key.IsNull() || data.Key.IsUnknown() || data.Key.ValueString() == "" {
+		return "", "", fmt.Errorf("exactly one of key or key_hash must be known and non-empty")
+	}
+	key := data.Key.ValueString()
+	return key, hashKeyForID(key), nil
+}
+
+func keyDataSourceReadError(err error) string {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		return fmt.Sprintf("LiteLLM returned HTTP %d while reading the key. The response body was omitted because it may contain the lookup token.", apiErr.StatusCode)
+	}
+	// Go transport errors can embed the complete query URL, including a raw key.
+	return "The key read request failed at the transport layer. Error details were omitted because they may contain the lookup token."
+}
+
 func (d *KeyDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
 	var data KeyDataSourceModel
 
@@ -149,116 +201,152 @@ func (d *KeyDataSource) Read(ctx context.Context, req datasource.ReadRequest, re
 		return
 	}
 
-	keyValue := data.Key.ValueString()
-	endpoint := fmt.Sprintf("/key/info?key=%s", keyValue)
-
-	var result map[string]interface{}
-	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read key: %s", err))
+	lookupValue, managementID, err := keyDataSourceLookup(&data)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Key Lookup", err.Error())
 		return
 	}
 
-	// The /key/info endpoint may return key data nested inside "info"
-	info := result
-	if nested, ok := result["info"].(map[string]interface{}); ok {
-		info = nested
+	query := url.Values{"key": []string{lookupValue}}
+	endpoint := endpointWithQuery("/key/info", query)
+
+	var result map[string]interface{}
+	if err := d.client.DoReadWithResponse(ctx, http.MethodGet, endpoint, nil, &result); err != nil {
+		resp.Diagnostics.AddError("Key Read Error", keyDataSourceReadError(err))
+		return
 	}
 
-	// Set ID
-	data.ID = data.Key
+	complete, err := projectKeyDataSourceAPIObject(data, result, lookupValue, managementID)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned a malformed or identity-mismatched key response. Response and request details were omitted.")
+		return
+	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, &complete)...)
+}
 
-	// Update fields from response
-	if keyAlias, ok := info["key_alias"].(string); ok {
-		data.KeyAlias = types.StringValue(keyAlias)
+func projectKeyDataSourceAPIObject(data KeyDataSourceModel, result map[string]interface{}, lookupValue, managementID string) (KeyDataSourceModel, error) {
+	rawInfo, presence, err := apiValueAt(result, "info")
+	if err != nil || presence != apiValuePresent || rawInfo == nil {
+		return KeyDataSourceModel{}, fmt.Errorf("invalid key response envelope")
 	}
-	if userID, ok := info["user_id"].(string); ok {
-		data.UserID = types.StringValue(userID)
+	info, ok := rawInfo.(map[string]interface{})
+	if !ok {
+		return KeyDataSourceModel{}, fmt.Errorf("invalid key response envelope")
 	}
-	if teamID, ok := info["team_id"].(string); ok {
-		data.TeamID = types.StringValue(teamID)
-	}
-	if projectID, ok := info["project_id"].(string); ok {
-		data.ProjectID = types.StringValue(projectID)
-	}
-	if budgetDuration, ok := info["budget_duration"].(string); ok {
-		data.BudgetDuration = types.StringValue(budgetDuration)
-	}
-
-	// Numeric fields
-	if maxBudget, ok := info["max_budget"].(float64); ok {
-		data.MaxBudget = types.Float64Value(maxBudget)
-	}
-	if spend, ok := info["spend"].(float64); ok {
-		data.Spend = types.Float64Value(spend)
-	}
-	if softBudget, ok := info["soft_budget"].(float64); ok {
-		data.SoftBudget = types.Float64Value(softBudget)
-	}
-	if maxParallel, ok := info["max_parallel_requests"].(float64); ok {
-		data.MaxParallelRequests = types.Int64Value(int64(maxParallel))
-	}
-	if tpmLimit, ok := info["tpm_limit"].(float64); ok {
-		data.TPMLimit = types.Int64Value(int64(tpmLimit))
-	}
-	if rpmLimit, ok := info["rpm_limit"].(float64); ok {
-		data.RPMLimit = types.Int64Value(int64(rpmLimit))
+	if err := validateExactKeyInfoIdentity(result, info, lookupValue); err != nil {
+		return KeyDataSourceModel{}, fmt.Errorf("invalid key response identity")
 	}
 
-	// Boolean fields
-	if blocked, ok := info["blocked"].(bool); ok {
-		data.Blocked = types.BoolValue(blocked)
-	} else {
-		data.Blocked = types.BoolValue(false)
+	complete := KeyDataSourceModel{ID: types.StringValue(managementID), Key: data.Key, KeyHash: data.KeyHash}
+	if complete.KeyAlias, err = dataSourceRoleRedactedNullableStringAt(info, "key_alias"); err != nil {
+		return KeyDataSourceModel{}, err
 	}
+	if complete.UserID, err = dataSourceRoleRedactedNullableStringAt(info, "user_id"); err != nil {
+		return KeyDataSourceModel{}, err
+	}
+	if complete.TeamID, err = dataSourceRoleRedactedNullableStringAt(info, "team_id"); err != nil {
+		return KeyDataSourceModel{}, err
+	}
+	if complete.ProjectID, err = dataSourceRoleRedactedNullableStringAt(info, "project_id"); err != nil {
+		return KeyDataSourceModel{}, err
+	}
+	if complete.BudgetDuration, err = dataSourceRoleRedactedNullableStringAt(info, "budget_duration"); err != nil {
+		return KeyDataSourceModel{}, err
+	}
+	if complete.Models, err = dataSourceRoleRedactedNullableStringListAt(info, "models"); err != nil {
+		return KeyDataSourceModel{}, err
+	}
+	if complete.MaxBudget, err = keyDataSourceNullableFloat64AtPaths(info, []string{"max_budget"}, []string{"litellm_budget_table", "max_budget"}); err != nil {
+		return KeyDataSourceModel{}, err
+	}
+	if complete.SoftBudget, err = keyDataSourceNullableFloat64AtPaths(info, []string{"litellm_budget_table", "soft_budget"}, []string{"soft_budget"}); err != nil {
+		return KeyDataSourceModel{}, err
+	}
+	if complete.Spend, err = dataSourceRoleRedactedNullableFloat64At(info, "spend"); err != nil {
+		return KeyDataSourceModel{}, err
+	}
+	if complete.MaxParallelRequests, err = dataSourceRoleRedactedNullableInt64At(info, "max_parallel_requests"); err != nil {
+		return KeyDataSourceModel{}, err
+	}
+	if complete.TPMLimit, err = dataSourceRoleRedactedNullableInt64At(info, "tpm_limit"); err != nil {
+		return KeyDataSourceModel{}, err
+	}
+	if complete.RPMLimit, err = dataSourceRoleRedactedNullableInt64At(info, "rpm_limit"); err != nil {
+		return KeyDataSourceModel{}, err
+	}
+	if complete.Blocked, err = dataSourceRoleRedactedNullableBoolAt(info, "blocked"); err != nil {
+		return KeyDataSourceModel{}, err
+	}
+	if complete.Tags, complete.Metadata, err = keyDataSourceCollections(info); err != nil {
+		return KeyDataSourceModel{}, err
+	}
+	if complete.RouterSettings, _, err = keyRouterSettingsFromAPI(info["router_settings"], types.ObjectNull(keyRouterSettingsAttrTypes)); err != nil {
+		return KeyDataSourceModel{}, err
+	}
+	return complete, nil
+}
 
-	// Handle models list
-	if models, ok := info["models"].([]interface{}); ok {
-		modelsList := make([]attr.Value, len(models))
-		for i, m := range models {
-			if str, ok := m.(string); ok {
-				modelsList[i] = types.StringValue(str)
-			}
+func keyDataSourceNullableFloat64AtPaths(object map[string]interface{}, paths ...[]string) (types.Float64, error) {
+	selected, err := firstAPIFieldPath(object, paths...)
+	if err != nil {
+		return types.Float64Null(), err
+	}
+	if selected == nil {
+		return types.Float64Null(), nil
+	}
+	return dataSourceNullableFloat64At(object, selected...)
+}
+
+func keyDataSourceCollections(info map[string]interface{}) (types.List, types.Map, error) {
+	metadataRaw, metadataPresence, err := apiValueAt(info, "metadata")
+	if err != nil {
+		return types.ListNull(types.StringType), types.MapNull(types.StringType), err
+	}
+	var metadataObject map[string]interface{}
+	if metadataPresence == apiValuePresent {
+		var ok bool
+		metadataObject, ok = metadataRaw.(map[string]interface{})
+		if !ok {
+			return types.ListNull(types.StringType), types.MapNull(types.StringType), dataSourceShapeError([]string{"metadata"}, "an object of strings or null")
 		}
-		data.Models, _ = types.ListValue(types.StringType, modelsList)
-	} else {
-		data.Models, _ = types.ListValue(types.StringType, []attr.Value{})
 	}
 
-	// Handle tags list.
-	// LiteLLM stores tags inside metadata["tags"] rather than as a top-level field in /key/info,
-	// so we check both locations.
-	var rawTags []interface{}
-	if tags, ok := info["tags"].([]interface{}); ok {
-		rawTags = tags
-	} else if metadata, ok := info["metadata"].(map[string]interface{}); ok {
-		if tags, ok := metadata["tags"].([]interface{}); ok {
-			rawTags = tags
+	// LiteLLM stores tags in metadata while historical versions also projected
+	// them at the top level. Validate both locations before applying the
+	// top-level compatibility precedence.
+	metadataTags := types.ListNull(types.StringType)
+	if metadataPresence == apiValuePresent {
+		metadataTags, err = dataSourceNullableStringListAt(info, "metadata", "tags")
+		if err != nil {
+			return types.ListNull(types.StringType), types.MapNull(types.StringType), err
 		}
 	}
-	if len(rawTags) > 0 {
-		tagsList := make([]attr.Value, 0, len(rawTags))
-		for _, t := range rawTags {
-			if str, ok := t.(string); ok {
-				tagsList = append(tagsList, types.StringValue(str))
-			}
+	_, topTagsPresence, err := apiValueAt(info, "tags")
+	if err != nil {
+		return types.ListNull(types.StringType), types.MapNull(types.StringType), err
+	}
+	tags := metadataTags
+	if topTagsPresence != apiValueAbsent {
+		tags, err = dataSourceNullableStringListAt(info, "tags")
+		if err != nil {
+			return types.ListNull(types.StringType), types.MapNull(types.StringType), err
 		}
-		data.Tags, _ = types.ListValue(types.StringType, tagsList)
-	} else {
-		data.Tags, _ = types.ListValue(types.StringType, []attr.Value{})
 	}
 
-	// Handle metadata map
-	if metadata, ok := info["metadata"].(map[string]interface{}); ok {
-		metaMap := make(map[string]attr.Value)
-		for k, v := range metadata {
-			if str, ok := v.(string); ok {
-				metaMap[k] = types.StringValue(str)
-			}
-		}
-		data.Metadata, _ = types.MapValue(types.StringType, metaMap)
-	} else {
-		data.Metadata, _ = types.MapValue(types.StringType, map[string]attr.Value{})
+	if metadataPresence != apiValuePresent {
+		metadata, mapErr := dataSourceNullableStringMapAt(info, "metadata")
+		return tags, metadata, mapErr
 	}
-
-	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	projected := make(map[string]interface{}, len(metadataObject))
+	for key, value := range metadataObject {
+		if key != "tags" {
+			projected[key] = value
+		}
+	}
+	wrapper := map[string]interface{}{"metadata": projected}
+	metadata, err := dataSourceNullableStringMapAt(wrapper, "metadata")
+	if err != nil {
+		return types.ListNull(types.StringType), types.MapNull(types.StringType), err
+	}
+	return tags, metadata, nil
 }

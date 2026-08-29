@@ -7,18 +7,22 @@ This directory contains example configurations for the LiteLLM Terraform provide
 | Directory | Description |
 |-----------|-------------|
 | [minimal](./minimal/) | Simplest possible setup with basic model, team, and key |
-| [complete](./complete/) | Full enterprise setup with all resource types |
+| [complete](./complete/) | Broad enterprise-oriented setup across common resource types |
 | [multi-provider](./multi-provider/) | Configuring multiple LLM providers (OpenAI, Anthropic, Azure, Bedrock) |
 | [data-sources](./data-sources/) | Using data sources to reference existing resources |
 | [mcp-servers](./mcp-servers/) | MCP server configurations (HTTP, SSE, OAuth, stdio) |
 | [search-tools](./search-tools/) | Search tool configurations (Tavily, Serper, Bing, Google) |
 
-## Prerequisites
+## Prerequisites and Compatibility
+
+Every runnable example pins the published source `registry.terraform.io/ncecere/litellm`, requires Terraform >= 1.1.0, and constrains the provider to `>= 2.0.1, < 3.0.0`. OpenTofu >= 1.6.0 is also supported. Provider development requires Go >= 1.24.0. The provider is tested against exactly LiteLLM 1.98.0.
+
+The global client baseline does not require 1.11.0. Only configurations using the optional write-only `key_wo` or key/user `send_invite_email` attributes require Terraform or OpenTofu >= 1.11.0.
 
 Before running any example:
 
-1. **Install Terraform** (>= 1.0)
-2. **Have a running LiteLLM instance**
+1. **Install Terraform >= 1.1.0 or OpenTofu >= 1.6.0**
+2. **Have a running LiteLLM 1.98.0 instance for the tested backend combination**
 3. **Set environment variables**:
    ```bash
    export LITELLM_API_BASE="https://your-litellm-instance.com"
@@ -31,9 +35,8 @@ Before running any example:
 
 ```bash
 cd minimal
-cp terraform.tfvars.example terraform.tfvars
-# Edit terraform.tfvars with your values
-terraform init
+export TF_VAR_openai_api_key="your-openai-api-key"
+terraform init -upgrade
 terraform plan
 terraform apply
 ```
@@ -42,9 +45,14 @@ terraform apply
 
 ```bash
 cd complete
-cp terraform.tfvars.example terraform.tfvars
-# Edit terraform.tfvars with your values
-terraform init
+# Inputs are declared in variables.tf. These values are needed for the full example.
+export TF_VAR_litellm_api_base="https://your-litellm-instance.com"
+export TF_VAR_litellm_api_key="your-litellm-admin-key"
+export TF_VAR_openai_api_key="your-openai-api-key"
+export TF_VAR_anthropic_api_key="your-anthropic-api-key"
+export TF_VAR_github_token="your-github-token"
+export TF_VAR_tavily_api_key="your-tavily-api-key"
+terraform init -upgrade
 terraform plan
 terraform apply
 ```
@@ -62,7 +70,7 @@ Perfect for testing and development.
 
 ### Complete (`complete/`)
 
-A full enterprise setup demonstrating:
+A broad enterprise-oriented setup demonstrating selected resource types, including:
 - Credential management
 - Multiple model configurations
 - Organization and team hierarchy
@@ -119,22 +127,17 @@ Search tool configurations for different providers:
 5. **Use access groups**: Simplify model access management
 6. **Configure guardrails**: Protect against harmful content
 
-## Variable Files
+## Input Variables
 
-Each example includes a `variables.tf` file. Create a `terraform.tfvars` file with your values:
-
-```hcl
-# terraform.tfvars example
-litellm_api_base = "https://litellm.example.com"
-litellm_api_key  = "sk-your-api-key"
-openai_api_key   = "sk-your-openai-key"
-```
-
-Or use environment variables:
+Example inputs are declared in each example's `.tf` files. Supply required values with `TF_VAR_*` environment variables or create your own untracked `terraform.tfvars` file. Examples with an empty `provider "litellm" {}` block use `LITELLM_API_BASE` and `LITELLM_API_KEY`; examples that set `api_base` and `api_key` from variables require the corresponding `TF_VAR_litellm_api_base` and `TF_VAR_litellm_api_key` values instead.
 
 ```bash
+export LITELLM_API_BASE="https://litellm.example.com"
+export LITELLM_API_KEY="sk-your-api-key"
 export TF_VAR_openai_api_key="sk-your-openai-key"
 ```
+
+Do not commit credentials or local variable files.
 
 ## Troubleshooting
 

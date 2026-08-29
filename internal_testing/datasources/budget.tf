@@ -2,7 +2,7 @@
 # Note: budget_id must reference an existing budget
 
 data "litellm_budget" "lookup" {
-  budget_id = litellm_budget.full.budget_id
+  budget_id = litellm_budget.minimal.budget_id
 }
 
 output "ds_budget_max_budget" {

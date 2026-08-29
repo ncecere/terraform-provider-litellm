@@ -3,11 +3,14 @@ package provider
 import (
 	"context"
 	"fmt"
-	"net/url"
+	"net/http"
+	"time"
 
-	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -43,11 +46,17 @@ func (d *FallbackDataSource) Schema(ctx context.Context, req datasource.SchemaRe
 			"model": schema.StringAttribute{
 				Description: "The model name to get fallbacks for.",
 				Required:    true,
+				Validators: []validator.String{
+					stringvalidator.LengthAtLeast(1),
+				},
 			},
 			"fallback_type": schema.StringAttribute{
-				Description: "Type of fallback: 'general', 'context_window', or 'content_policy'. Defaults to 'general'.",
+				Description: "Type of fallback: general, context_window, or content_policy. Defaults to general.",
 				Optional:    true,
 				Computed:    true,
+				Validators: []validator.String{
+					stringvalidator.OneOf(supportedFallbackTypes...),
+				},
 			},
 			"fallback_models": schema.ListAttribute{
 				Description: "List of fallback model names in order of priority.",
@@ -85,30 +94,41 @@ func (d *FallbackDataSource) Read(ctx context.Context, req datasource.ReadReques
 		fallbackType = "general"
 	}
 
-	endpoint := fmt.Sprintf("/fallback/%s?fallback_type=%s",
-		url.PathEscape(data.Model.ValueString()),
-		url.QueryEscape(fallbackType))
-
-	var result map[string]interface{}
-	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read fallback for model '%s': %s", data.Model.ValueString(), err))
+	data.FallbackType = types.StringValue(fallbackType)
+	if err := d.readFallbackWithRetry(ctx, &data, fallbackReadMaxAttempts, fallbackReadInitialDelay, fallbackReadMaxDelay); err != nil {
+		resp.Diagnostics.AddError("Fallback Data Source Read Error", fallbackOperationDiagnostic("read", err))
 		return
 	}
 
-	data.ID = types.StringValue(data.Model.ValueString() + ":" + fallbackType)
-	data.FallbackType = types.StringValue(fallbackType)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+}
 
-	if fallbackModels, ok := result["fallback_models"].([]interface{}); ok {
-		list := make([]attr.Value, 0, len(fallbackModels))
-		for _, m := range fallbackModels {
-			if s, ok := m.(string); ok {
-				list = append(list, types.StringValue(s))
-			}
-		}
-		data.FallbackModels, _ = types.ListValue(types.StringType, list)
-	} else {
-		data.FallbackModels, _ = types.ListValue(types.StringType, []attr.Value{})
+func (d *FallbackDataSource) readFallbackWithRetry(ctx context.Context, data *FallbackDataSourceModel, maxAttempts int, initialDelay, maxDelay time.Duration) error {
+	return retryFallbackRead(ctx, maxAttempts, initialDelay, maxDelay, func() error {
+		return d.readFallback(ctx, data)
+	})
+}
+
+func (d *FallbackDataSource) readFallback(ctx context.Context, data *FallbackDataSourceModel) error {
+	endpoint := fallbackEndpoint(data.Model.ValueString(), data.FallbackType.ValueString())
+
+	var result map[string]interface{}
+	if err := d.client.DoRequestWithResponse(ctx, http.MethodGet, endpoint, nil, &result); err != nil {
+		return err
 	}
 
-	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	if err := validateFallbackReadResponse(result, data.Model.ValueString(), data.FallbackType.ValueString()); err != nil {
+		return err
+	}
+	data.ID = types.StringValue(data.Model.ValueString() + ":" + data.FallbackType.ValueString())
+	fallbackModels, presence, diagnostics := strictAPIStringList(ctx, result, "fallback_models", path.Root("fallback_models"))
+	if diagnostics.HasError() {
+		return collectionProjectionError(ctx, diagnostics)
+	}
+	if presence != apiValuePresent {
+		return fmt.Errorf("fallback response omitted its models collection")
+	}
+	data.FallbackModels = fallbackModels
+
+	return nil
 }

@@ -59,7 +59,7 @@ The following arguments are supported:
 
 The following attributes are exported:
 
-* `id` - Placeholder identifier.
+* `id` - Stable historical identifier (`teams`), unchanged by filters.
 * `teams` - List of team objects, each containing:
   * `team_id` - The unique identifier.
   * `team_alias` - The human-readable alias.
@@ -69,3 +69,5 @@ The following attributes are exported:
   * `tpm_limit` - Tokens per minute limit.
   * `rpm_limit` - Requests per minute limit.
   * `blocked` - Whether the team is blocked.
+
+Results are sorted deterministically by team ID. The v1.98 `/team/list` endpoint is unpaginated, so the provider makes one escaped, single-snapshot request.

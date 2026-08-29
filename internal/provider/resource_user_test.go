@@ -5,11 +5,354 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	resourceschema "github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
+
+func TestFindExistingUserByExactEmailPaginatesAndIgnoresPartialMatches(t *testing.T) {
+	t.Parallel()
+
+	const email = "exact+tag@example.com"
+	var pages atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/user/list" || request.URL.Query().Get("user_email") != email || request.URL.Query().Get("page_size") != "100" {
+			http.Error(writer, "unexpected request", http.StatusBadRequest)
+			return
+		}
+		page := request.URL.Query().Get("page")
+		pages.Add(1)
+		writer.Header().Set("Content-Type", "application/json")
+		if page == "1" {
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+				"users":       []interface{}{map[string]interface{}{"user_id": "partial", "user_email": "prefix-" + email}},
+				"total_pages": 2,
+			})
+			return
+		}
+		_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+			"users":       []interface{}{map[string]interface{}{"user_id": "exact-id", "user_email": email}},
+			"total_pages": 2,
+		})
+	}))
+	defer server.Close()
+
+	resource := &UserResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
+	userID, err := resource.findExistingUserByExactEmail(context.Background(), email)
+	if err != nil {
+		t.Fatalf("findExistingUserByExactEmail returned error: %v", err)
+	}
+	if userID != "exact-id" || pages.Load() != 2 {
+		t.Fatalf("user_id = %q, pages = %d", userID, pages.Load())
+	}
+}
+
+func TestFindExistingUserByExactEmailRejectsPartialOnly(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+			"users":       []interface{}{map[string]interface{}{"user_id": "partial", "user_email": "prefix-target@example.com"}},
+			"total_pages": 1,
+		})
+	}))
+	defer server.Close()
+
+	resource := &UserResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
+	if _, err := resource.findExistingUserByExactEmail(context.Background(), "target@example.com"); err == nil {
+		t.Fatal("partial-only email match was accepted")
+	}
+}
+
+func TestFindExistingUserByExactEmailRejectsAmbiguousMatches(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+			"users": []interface{}{
+				map[string]interface{}{"user_id": "user-a", "user_email": "same@example.com"},
+				map[string]interface{}{"user_id": "user-b", "user_email": "same@example.com"},
+			},
+			"total_pages": 1,
+		})
+	}))
+	defer server.Close()
+
+	resource := &UserResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
+	if _, err := resource.findExistingUserByExactEmail(context.Background(), "same@example.com"); err == nil {
+		t.Fatal("ambiguous exact matches were accepted")
+	}
+}
+
+func TestAdoptExistingUserVerifiesAndConvergesWithoutCreatingKey(t *testing.T) {
+	t.Parallel()
+
+	var updated atomic.Bool
+	var membershipUpdated atomic.Bool
+	var memberAdds atomic.Int32
+	var memberDeletes atomic.Int32
+	var updateBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/user/list":
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+				"users":       []interface{}{map[string]interface{}{"user_id": "existing-id", "user_email": "existing@example.com"}},
+				"total_pages": 1,
+			})
+		case request.Method == http.MethodGet && request.URL.Path == "/user/info":
+			alias := "old-alias"
+			role := "internal_user"
+			teams := []interface{}{"team-a"}
+			if updated.Load() {
+				alias = "managed-alias"
+				role = "internal_user_viewer"
+			}
+			if membershipUpdated.Load() {
+				teams = []interface{}{"team-b"}
+			}
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{"user_info": map[string]interface{}{
+				"user_id": "existing-id", "user_email": "existing@example.com", "user_alias": alias,
+				"user_role": role, "teams": teams, "models": []interface{}{}, "metadata": map[string]interface{}{},
+			}})
+		case request.Method == http.MethodPost && request.URL.Path == "/user/update":
+			if err := json.NewDecoder(request.Body).Decode(&updateBody); err != nil {
+				t.Errorf("decode update body: %v", err)
+			}
+			updated.Store(true)
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{"status": "ok"})
+		case request.Method == http.MethodPost && request.URL.Path == "/team/member_add":
+			memberAdds.Add(1)
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{"status": "ok"})
+		case request.Method == http.MethodPost && request.URL.Path == "/team/member_delete":
+			memberDeletes.Add(1)
+			membershipUpdated.Store(true)
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{"status": "ok"})
+		default:
+			http.Error(writer, "unexpected request", http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+
+	resource := &UserResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
+	data := UserResourceModel{
+		UserID:        types.StringUnknown(),
+		UserEmail:     types.StringValue("existing@example.com"),
+		UserAlias:     types.StringValue("managed-alias"),
+		UserRole:      types.StringValue("internal_user_viewer"),
+		AutoCreateKey: types.BoolValue(true),
+		Teams:         stringListValue("team-b"),
+		Models:        types.ListNull(types.StringType),
+		Metadata:      types.MapNull(types.StringType),
+		Key:           types.StringUnknown(),
+	}
+
+	mutated, err := resource.adoptExistingUser(context.Background(), &data)
+	if err != nil {
+		t.Fatalf("adoptExistingUser returned error: %v", err)
+	}
+	if !mutated {
+		t.Fatal("successful adoption did not report mutation")
+	}
+	if data.ID.ValueString() != "existing-id" || data.UserID.ValueString() != "existing-id" || data.UserAlias.ValueString() != "managed-alias" {
+		t.Fatalf("unexpected adopted state: %#v", data)
+	}
+	if !data.Key.IsNull() {
+		t.Fatalf("adoption exposed an unexpected key: %v", data.Key)
+	}
+	if updateBody["user_id"] != "existing-id" || updateBody["user_email"] != "existing@example.com" || updateBody["user_alias"] != "managed-alias" {
+		t.Fatalf("unexpected update request: %#v", updateBody)
+	}
+	if _, exists := updateBody["auto_create_key"]; exists {
+		t.Fatalf("adoption update requested an inaccessible key: %#v", updateBody)
+	}
+	if _, exists := updateBody["teams"]; exists {
+		t.Fatalf("adoption sent teams through /user/update: %#v", updateBody)
+	}
+	if memberAdds.Load() != 1 || memberDeletes.Load() != 1 || !userTeamMembershipEqual(data.Teams, []string{"team-b"}) {
+		t.Fatalf("team membership did not converge: adds=%d deletes=%d teams=%v", memberAdds.Load(), memberDeletes.Load(), data.Teams)
+	}
+}
+
+func TestAdoptExistingUserRejectsMissingVerifiedIdentity(t *testing.T) {
+	t.Parallel()
+
+	for _, omitted := range []string{"user_id", "user_email"} {
+		omitted := omitted
+		t.Run(omitted, func(t *testing.T) {
+			t.Parallel()
+			var updates atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				writer.Header().Set("Content-Type", "application/json")
+				if request.URL.Path == "/user/list" {
+					_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+						"users":       []interface{}{map[string]interface{}{"user_id": "existing-id", "user_email": "existing@example.com"}},
+						"total_pages": 1,
+					})
+					return
+				}
+				if request.URL.Path == "/user/info" {
+					identity := map[string]interface{}{"user_id": "existing-id", "user_email": "existing@example.com"}
+					delete(identity, omitted)
+					_ = json.NewEncoder(writer).Encode(map[string]interface{}{"user_info": identity})
+					return
+				}
+				updates.Add(1)
+				http.Error(writer, "unexpected mutation", http.StatusInternalServerError)
+			}))
+			defer server.Close()
+
+			resource := &UserResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
+			data := UserResourceModel{UserEmail: types.StringValue("existing@example.com")}
+			if mutated, err := resource.adoptExistingUser(context.Background(), &data); err == nil || mutated {
+				t.Fatalf("missing %s was accepted: mutated=%v err=%v", omitted, mutated, err)
+			}
+			if updates.Load() != 0 {
+				t.Fatalf("missing %s triggered mutation", omitted)
+			}
+		})
+	}
+}
+
+func TestAdoptExistingUserRequiresKnownEmail(t *testing.T) {
+	t.Parallel()
+
+	resource := &UserResource{}
+	for _, email := range []types.String{types.StringNull(), types.StringUnknown(), types.StringValue("")} {
+		data := UserResourceModel{UserEmail: email}
+		if mutated, err := resource.adoptExistingUser(context.Background(), &data); err == nil || mutated {
+			t.Fatalf("unsafe email %v was accepted for adoption", email)
+		}
+	}
+}
+
+func TestAdoptExistingUserRejectsConfiguredIDMismatch(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+			"users":       []interface{}{map[string]interface{}{"user_id": "existing-id", "user_email": "existing@example.com"}},
+			"total_pages": 1,
+		})
+	}))
+	defer server.Close()
+
+	resource := &UserResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
+	data := UserResourceModel{UserID: types.StringValue("different-id"), UserEmail: types.StringValue("existing@example.com")}
+	if mutated, err := resource.adoptExistingUser(context.Background(), &data); err == nil || mutated {
+		t.Fatal("configured user_id mismatch was accepted")
+	}
+}
+
+func TestAdoptExistingUserRejectsUnsupportedEmptyClearsBeforeMutation(t *testing.T) {
+	t.Parallel()
+
+	var mutations atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		switch request.URL.Path {
+		case "/user/list":
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+				"users":       []interface{}{map[string]interface{}{"user_id": "existing-id", "user_email": "existing@example.com"}},
+				"total_pages": 1,
+			})
+		case "/user/info":
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{"user_info": map[string]interface{}{
+				"user_id": "existing-id", "user_email": "existing@example.com", "user_alias": "existing-alias",
+				"models": []interface{}{"legacy"}, "metadata": map[string]interface{}{"owner": "external"},
+			}})
+		default:
+			mutations.Add(1)
+			http.Error(writer, "unexpected mutation", http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+
+	resource := &UserResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
+	data := UserResourceModel{
+		UserEmail: types.StringValue("existing@example.com"),
+		Models:    stringListValue(),
+		Metadata:  types.MapValueMust(types.StringType, map[string]attr.Value{}),
+	}
+	mutated, err := resource.adoptExistingUser(context.Background(), &data)
+	if err == nil || mutated || mutations.Load() != 0 {
+		t.Fatalf("unsupported clear was not rejected safely: mutated=%v requests=%d err=%v", mutated, mutations.Load(), err)
+	}
+}
+
+func TestAdoptExistingUserFailureAfterMutationKeepsRecoverableState(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		switch request.URL.Path {
+		case "/user/list":
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+				"users":       []interface{}{map[string]interface{}{"user_id": "existing-id", "user_email": "existing@example.com"}},
+				"total_pages": 1,
+			})
+		case "/user/info":
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{"user_info": map[string]interface{}{
+				"user_id": "existing-id", "user_email": "existing@example.com", "teams": []interface{}{"team-a"},
+				"models": []interface{}{}, "metadata": map[string]interface{}{},
+			}})
+		case "/user/update":
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{"status": "ok"})
+		case "/team/member_add":
+			http.Error(writer, "injected membership failure", http.StatusInternalServerError)
+		default:
+			http.Error(writer, "unexpected request", http.StatusBadRequest)
+		}
+	}))
+	defer server.Close()
+
+	resource := &UserResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
+	data := UserResourceModel{
+		UserEmail: types.StringValue("existing@example.com"),
+		Teams:     stringListValue("team-b"),
+		Models:    types.ListUnknown(types.StringType),
+		Metadata:  types.MapUnknown(types.StringType),
+		Key:       types.StringUnknown(),
+	}
+	mutated, err := resource.adoptExistingUser(context.Background(), &data)
+	if err == nil || !mutated {
+		t.Fatalf("post-mutation failure = mutated %v, error %v", mutated, err)
+	}
+	if data.ID.ValueString() != "existing-id" || data.UserID.ValueString() != "existing-id" || !data.Key.IsNull() {
+		t.Fatalf("failure did not retain recoverable identity state: %#v", data)
+	}
+	if data.Models.IsUnknown() || data.Metadata.IsUnknown() || data.Teams.IsUnknown() {
+		t.Fatalf("failure retained unknown state: %#v", data)
+	}
+}
+
+func TestBuildUserRequestIncludesExplicitEmptyCollections(t *testing.T) {
+	t.Parallel()
+
+	resource := &UserResource{}
+	data := UserResourceModel{
+		Models:   stringListValue(),
+		Metadata: types.MapValueMust(types.StringType, map[string]attr.Value{}),
+	}
+	request, diagnostics := resource.buildUserRequest(context.Background(), &data)
+	if diagnostics.HasError() {
+		t.Fatalf("build user request: %v", diagnostics)
+	}
+	models, modelsOK := request["models"].([]string)
+	metadata, metadataOK := request["metadata"].(map[string]string)
+	if !modelsOK || len(models) != 0 || !metadataOK || len(metadata) != 0 {
+		t.Fatalf("explicit empty collections were omitted: %#v", request)
+	}
+}
 
 func TestReadUserDoesNotSetAPIInjectedDefaultsWhenUnconfigured(t *testing.T) {
 	t.Parallel()
@@ -56,6 +399,9 @@ func TestReadUserDoesNotSetAPIInjectedDefaultsWhenUnconfigured(t *testing.T) {
 		t.Fatalf("readUser returned error: %v", err)
 	}
 
+	if !data.UserAlias.IsNull() {
+		t.Fatalf("user_alias should remain null when unconfigured, got %q", data.UserAlias.ValueString())
+	}
 	if !data.UserRole.IsNull() {
 		t.Fatalf("user_role should remain null when unconfigured, got %q", data.UserRole.ValueString())
 	}
@@ -252,6 +598,215 @@ func TestNullMapPreservation(t *testing.T) {
 // Before the fix, readUser would unconditionally set teams to [] from the API
 // response even when the user didn't specify teams, causing:
 // "Provider produced inconsistent result after apply: .teams: was null, but now cty.ListValEmpty(cty.String)"
+func TestReconcileUnorderedUserTeams(t *testing.T) {
+	t.Parallel()
+
+	configured := types.ListValueMust(types.StringType, []attr.Value{
+		types.StringValue("team-b"),
+		types.StringValue("team-a"),
+	})
+
+	tests := []struct {
+		name    string
+		current types.List
+		remote  []interface{}
+		want    types.List
+	}{
+		{
+			name:    "reordered API membership preserves configured order",
+			current: configured,
+			remote:  []interface{}{"team-a", "team-b"},
+			want:    configured,
+		},
+		{
+			name:    "actual membership drift is sorted canonically",
+			current: configured,
+			remote:  []interface{}{"team-c", "team-a"},
+			want: types.ListValueMust(types.StringType, []attr.Value{
+				types.StringValue("team-a"),
+				types.StringValue("team-c"),
+			}),
+		},
+		{
+			name:    "unconfigured empty membership remains null",
+			current: types.ListNull(types.StringType),
+			remote:  []interface{}{},
+			want:    types.ListNull(types.StringType),
+		},
+		{
+			name:    "configured membership cleared remotely becomes empty",
+			current: configured,
+			remote:  []interface{}{},
+			want:    types.ListValueMust(types.StringType, []attr.Value{}),
+		},
+		{
+			name:    "unknown import state adopts canonical API order",
+			current: types.ListUnknown(types.StringType),
+			remote:  []interface{}{"team-b", "team-a"},
+			want: types.ListValueMust(types.StringType, []attr.Value{
+				types.StringValue("team-a"),
+				types.StringValue("team-b"),
+			}),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			got := reconcileUnorderedUserTeams(test.current, test.remote)
+			if !got.Equal(test.want) {
+				t.Fatalf("teams = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestReconcileUserTeamsUsesDedicatedEndpoints(t *testing.T) {
+	t.Parallel()
+
+	type capturedRequest struct {
+		path string
+		body map[string]interface{}
+	}
+	var requests []capturedRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		var body map[string]interface{}
+		_ = json.NewDecoder(request.Body).Decode(&body)
+		requests = append(requests, capturedRequest{path: request.URL.Path, body: body})
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	resource := &UserResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
+	current := types.ListValueMust(types.StringType, []attr.Value{
+		types.StringValue("team-b"),
+		types.StringValue("team-a"),
+	})
+	planned := types.ListValueMust(types.StringType, []attr.Value{
+		types.StringValue("team-c"),
+		types.StringValue("team-a"),
+	})
+
+	if err := resource.reconcileUserTeams(context.Background(), "user-1", current, planned); err != nil {
+		t.Fatalf("reconcileUserTeams returned error: %v", err)
+	}
+	if len(requests) != 2 {
+		t.Fatalf("request count = %d, want 2", len(requests))
+	}
+	member, ok := requests[0].body["member"].(map[string]interface{})
+	if requests[0].path != "/team/member_add" || requests[0].body["team_id"] != "team-c" || !ok || member["user_id"] != "user-1" || member["role"] != "user" {
+		t.Fatalf("unexpected add request: %#v", requests[0])
+	}
+	if requests[1].path != "/team/member_delete" || requests[1].body["team_id"] != "team-b" || requests[1].body["user_id"] != "user-1" {
+		t.Fatalf("unexpected delete request: %#v", requests[1])
+	}
+}
+
+func TestReconcileUserTeamsDoesNotRemoveWhenAdditionFails(t *testing.T) {
+	t.Parallel()
+
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		paths = append(paths, request.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		if request.URL.Path == "/team/member_add" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"detail":"destination team does not exist"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	resource := &UserResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
+	current := types.ListValueMust(types.StringType, []attr.Value{types.StringValue("team-old")})
+	planned := types.ListValueMust(types.StringType, []attr.Value{types.StringValue("team-invalid")})
+	if err := resource.reconcileUserTeams(context.Background(), "user-1", current, planned); err == nil {
+		t.Fatal("reconcileUserTeams returned nil error for failed addition")
+	}
+	if len(paths) != 1 || paths[0] != "/team/member_add" {
+		t.Fatalf("requests after failed addition = %v, want only /team/member_add", paths)
+	}
+}
+
+func TestReadUserTeamsAfterUpdateRequiresStableMembership(t *testing.T) {
+	t.Parallel()
+
+	var reads atomic.Int32
+	sequence := [][]interface{}{
+		{"team-c", "team-a"},
+		{"team-b", "team-a"},
+		{"team-a", "team-c"},
+		{"team-c", "team-a"},
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		index := int(reads.Add(1)) - 1
+		if index >= len(sequence) {
+			index = len(sequence) - 1
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"user_info": map[string]interface{}{
+				"user_id": "user-1",
+				"teams":   sequence[index],
+			},
+		})
+	}))
+	defer server.Close()
+
+	resource := &UserResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
+	data := UserResourceModel{
+		ID:     types.StringValue("user-1"),
+		UserID: types.StringValue("user-1"),
+		Teams: types.ListValueMust(types.StringType, []attr.Value{
+			types.StringValue("team-c"),
+			types.StringValue("team-a"),
+		}),
+	}
+
+	if err := resource.readUserTeamsAfterUpdate(context.Background(), &data, 5); err != nil {
+		t.Fatalf("readUserTeamsAfterUpdate returned error: %v", err)
+	}
+	if got := reads.Load(); got != 4 {
+		t.Fatalf("read count = %d, want 4", got)
+	}
+	want := types.ListValueMust(types.StringType, []attr.Value{
+		types.StringValue("team-c"),
+		types.StringValue("team-a"),
+	})
+	if !data.Teams.Equal(want) {
+		t.Fatalf("teams = %v, want planned order %v", data.Teams, want)
+	}
+}
+
+func TestUserTeamsRejectDuplicateMemberships(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	var schemaResp resource.SchemaResponse
+	(&UserResource{}).Schema(ctx, resource.SchemaRequest{}, &schemaResp)
+	attribute, ok := schemaResp.Schema.Attributes["teams"].(resourceschema.ListAttribute)
+	if !ok {
+		t.Fatal("teams is not a list attribute")
+	}
+
+	var validationResp validator.ListResponse
+	request := validator.ListRequest{
+		Path: path.Root("teams"),
+		ConfigValue: types.ListValueMust(types.StringType, []attr.Value{
+			types.StringValue("team-a"),
+			types.StringValue("team-a"),
+		}),
+	}
+	for _, listValidator := range attribute.Validators {
+		listValidator.ValidateList(ctx, request, &validationResp)
+	}
+	if !validationResp.Diagnostics.HasError() {
+		t.Fatal("duplicate team membership did not produce a validation error")
+	}
+}
+
 func TestOldBehaviorWouldFail(t *testing.T) {
 	t.Run("OLD behavior: null teams overwritten to empty list (the bug)", func(t *testing.T) {
 		// Simulate old readUser behavior:

@@ -3,8 +3,8 @@ package provider
 import (
 	"context"
 	"fmt"
+	"sort"
 
-	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -43,7 +43,7 @@ func (d *AccessGroupsListDataSource) Schema(ctx context.Context, req datasource.
 				Computed:    true,
 			},
 			"access_groups": schema.ListNestedAttribute{
-				Description: "List of access groups.",
+				Description: "List of access groups sorted by name.",
 				Computed:    true,
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: map[string]schema.Attribute{
@@ -52,7 +52,7 @@ func (d *AccessGroupsListDataSource) Schema(ctx context.Context, req datasource.
 							Computed:    true,
 						},
 						"model_names": schema.ListAttribute{
-							Description: "List of model names in this access group.",
+							Description: "Sorted, deduplicated list of model names in this access group.",
 							Computed:    true,
 							ElementType: types.StringType,
 						},
@@ -83,56 +83,45 @@ func (d *AccessGroupsListDataSource) Configure(ctx context.Context, req datasour
 func (d *AccessGroupsListDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
 	var data AccessGroupsListDataSourceModel
 
-	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	var rawResult interface{}
-	if err := d.client.DoRequestWithResponse(ctx, "GET", "/access_group/list", nil, &rawResult); err != nil {
+	groups, err := fetchEnvelopeListObjects(ctx, d.client, "/access_group/list", "access_groups", "access group item")
+	if err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to list access groups: %s", err))
 		return
 	}
 
-	var rawGroups []interface{}
-	if result, ok := rawResult.(map[string]interface{}); ok {
-		if groups, ok := result["access_groups"].([]interface{}); ok {
-			rawGroups = groups
-		} else {
-			// Older shape: {"group-name": ["model-a", "model-b"]}
-			for accessGroup, models := range result {
-				rawGroups = append(rawGroups, map[string]interface{}{
-					"access_group": accessGroup,
-					"model_names":  models,
-				})
-			}
-		}
-	}
-
-	accessGroups := make([]AccessGroupListItemModel, 0, len(rawGroups))
-	for _, rawGroup := range rawGroups {
-		groupMap, ok := rawGroup.(map[string]interface{})
-		if !ok {
-			continue
-		}
+	accessGroups := make([]AccessGroupListItemModel, 0, len(groups))
+	seen := make(map[string]struct{}, len(groups))
+	for _, groupMap := range groups {
 		item := AccessGroupListItemModel{}
-		if accessGroup, ok := groupMap["access_group"].(string); ok {
-			item.AccessGroup = types.StringValue(accessGroup)
+		item.AccessGroup, err = dataSourceRequiredStringAt(groupMap, "access_group")
+		if err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", "/access_group/list returned an access group object without a canonical access_group")
+			return
+		}
+		if err := dataSourceListIdentity(seen, item.AccessGroup.ValueString(), "/access_group/list", "access_group"); err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", err.Error())
+			return
 		}
 
-		var modelsList []attr.Value
-		if modelNames, ok := groupMap["model_names"].([]interface{}); ok {
-			modelsList = make([]attr.Value, 0, len(modelNames))
-			for _, m := range modelNames {
-				if str, ok := m.(string); ok {
-					modelsList = append(modelsList, types.StringValue(str))
-				}
+		modelNames, err := dataSourceNullableStringListAt(groupMap, "model_names")
+		if err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", "Unable to decode model_names for an access group.")
+			return
+		}
+		if !modelNames.IsNull() {
+			modelNames, err = reconcileAccessGroupModelNames(ctx, types.ListNull(types.StringType), groupMap["model_names"])
+			if err != nil {
+				resp.Diagnostics.AddError("Invalid API Response", "Unable to decode model_names for an access group.")
+				return
 			}
 		}
-		item.ModelNames, _ = types.ListValue(types.StringType, modelsList)
+		item.ModelNames = modelNames
 
 		accessGroups = append(accessGroups, item)
 	}
+	sort.Slice(accessGroups, func(i, j int) bool {
+		return accessGroups[i].AccessGroup.ValueString() < accessGroups[j].AccessGroup.ValueString()
+	})
 
 	data.ID = types.StringValue("access_groups")
 	data.AccessGroups = accessGroups

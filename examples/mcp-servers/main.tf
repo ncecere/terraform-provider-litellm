@@ -2,9 +2,12 @@
 # This example demonstrates configuring various MCP server types
 
 terraform {
+  required_version = ">= 1.1.0"
+
   required_providers {
     litellm = {
-      source = "registry.terraform.io/ncecere/litellm"
+      source  = "registry.terraform.io/ncecere/litellm"
+      version = ">= 2.0.1, < 3.0.0"
     }
   }
 }
@@ -29,23 +32,22 @@ resource "litellm_team" "automation" {
 
 # Minimal HTTP server
 resource "litellm_mcp_server" "simple_http" {
-  server_name = "simple-api"
+  server_name = "simple_api"
   url         = "https://api.example.com/mcp"
   transport   = "http"
 }
 
 # Full HTTP server with authentication
 resource "litellm_mcp_server" "github" {
-  server_name  = "github-integration"
-  alias        = "github"
-  description  = "GitHub API integration for repository operations"
-  url          = "https://api.github.com/mcp"
-  transport    = "http"
-  auth_type    = "bearer"
-  spec_version = "2024-11-05"
+  server_name = "github_integration"
+  alias       = "github"
+  description = "GitHub API integration for repository operations"
+  url         = "https://api.github.com/mcp"
+  transport   = "http"
+  auth_type   = "bearer_token"
 
   credentials = {
-    "token" = var.github_token
+    "auth_value" = var.github_token
   }
 
   allowed_tools = [
@@ -55,9 +57,7 @@ resource "litellm_mcp_server" "github" {
     "create_issue"
   ]
 
-  extra_headers = {
-    "X-GitHub-Api-Version" = "2022-11-28"
-  }
+  extra_headers = ["X-GitHub-Api-Version"]
 
   mcp_access_groups = [litellm_team.developers.team_id]
   allow_all_keys    = false
@@ -84,15 +84,15 @@ resource "litellm_mcp_server" "github" {
 
 # Zapier integration with SSE
 resource "litellm_mcp_server" "zapier" {
-  server_name = "zapier-automation"
+  server_name = "zapier_automation"
   alias       = "zapier"
   description = "Zapier workflow automation"
   url         = "https://actions.zapier.com/mcp/sse"
   transport   = "sse"
-  auth_type   = "bearer"
+  auth_type   = "bearer_token"
 
   credentials = {
-    "api_key" = var.zapier_api_key
+    "auth_value" = var.zapier_api_key
   }
 
   mcp_access_groups = [litellm_team.automation.team_id]
@@ -118,25 +118,64 @@ resource "litellm_mcp_server" "zapier" {
 # =============================================================================
 
 resource "litellm_mcp_server" "oauth_protected" {
-  server_name = "enterprise-api"
+  server_name = "enterprise_api"
   alias       = "enterprise"
   description = "Enterprise API with OAuth authentication"
   url         = "https://api.enterprise.com/mcp"
   transport   = "http"
-  auth_type   = "bearer"
+  auth_type   = "oauth2"
 
   authorization_url = "https://auth.enterprise.com/oauth/authorize"
   token_url         = "https://auth.enterprise.com/oauth/token"
   registration_url  = "https://auth.enterprise.com/oauth/register"
+  oauth2_flow       = "authorization_code"
+  oauth_scopes      = ["mcp.read", "mcp.write"]
 
-  credentials = {
-    "client_id"     = var.oauth_client_id
-    "client_secret" = var.oauth_client_secret
+  available_on_public_internet = false
+  instructions                 = "Prefer read-only tools unless a write is explicitly requested."
+  delegate_auth_to_upstream    = true
+  is_byok                      = true
+  byok_description             = ["Create a personal API key in the enterprise portal."]
+  byok_api_key_help_url        = "https://enterprise.com/help/api-key"
+  source_url                   = "https://github.com/example/enterprise-mcp"
+  timeout                      = 15.5
+  max_concurrent_requests      = 4
+
+  tool_name_to_display_name = {
+    list_records   = "List_Records"
+    update_records = "Update_Records"
   }
 
+  tool_name_to_description = {
+    list_records   = "List enterprise records"
+    update_records = "Update enterprise records"
+  }
+
+  credentials = {
+    "client_id"         = var.oauth_client_id
+    "client_secret"     = var.oauth_client_secret
+    "upstream_resource" = "auto"
+  }
+
+  env_vars = [
+    {
+      name        = "ENTERPRISE_API_KEY"
+      value       = var.enterprise_api_key
+      scope       = "global"
+      description = "Shared enterprise credential"
+    },
+    {
+      name        = "USER_TOKEN"
+      scope       = "user"
+      description = "Personal enterprise token"
+    }
+  ]
+
   static_headers = {
-    "Accept"       = "application/json"
-    "Content-Type" = "application/json"
+    "Accept"           = "application/json"
+    "Content-Type"     = "application/json"
+    "X-Enterprise-Key" = "$${ENTERPRISE_API_KEY}"
+    "X-User-Token"     = "$${USER_TOKEN}"
   }
 
   allow_all_keys = false
@@ -146,15 +185,44 @@ resource "litellm_mcp_server" "oauth_protected" {
   ]
 }
 
+# RFC 8693 token exchange. Canonical fields must not be duplicated in credentials.
+resource "litellm_mcp_server" "token_exchange" {
+  server_name = "partner_obo"
+  description = "Partner API using caller-token exchange"
+  url         = "https://partner.example.com/mcp"
+  transport   = "http"
+  auth_type   = "oauth2_token_exchange"
+
+  issuer                  = "https://identity.example.com"
+  token_exchange_endpoint = "https://identity.example.com/oauth2/token"
+  audience                = "api://partner"
+  subject_token_type      = "urn:ietf:params:oauth:token-type:access_token"
+  token_exchange_profile  = "rfc8693"
+  oauth_scopes            = ["partner.read"]
+
+  credentials = {
+    "client_id"                  = var.token_exchange_client_id
+    "client_secret"              = var.token_exchange_client_secret
+    "token_endpoint_auth_method" = "client_secret_basic"
+  }
+}
+
+# OpenAPI-backed server. spec_path is resolved by the LiteLLM runtime.
+resource "litellm_mcp_server" "inventory_openapi" {
+  server_name = "inventory_api"
+  description = "Inventory tools generated from an OpenAPI document"
+  transport   = "http"
+  spec_path   = "/etc/litellm/openapi/inventory.json"
+}
+
 # =============================================================================
-# STDIO MCP SERVERS (Local)
+# STDIO MCP SERVERS (executed by the LiteLLM runtime)
 # =============================================================================
 
 resource "litellm_mcp_server" "local_python" {
-  server_name = "local-python-tools"
-  alias       = "python-tools"
+  server_name = "local_python_tools"
+  alias       = "python_tools"
   description = "Local Python development tools"
-  url         = "stdio://python-tools"
   transport   = "stdio"
   auth_type   = "none"
 
@@ -178,10 +246,9 @@ resource "litellm_mcp_server" "local_python" {
 }
 
 resource "litellm_mcp_server" "local_nodejs" {
-  server_name = "local-nodejs-tools"
-  alias       = "nodejs-tools"
+  server_name = "local_nodejs_tools"
+  alias       = "nodejs_tools"
   description = "Local Node.js development tools"
-  url         = "stdio://nodejs-tools"
   transport   = "stdio"
   auth_type   = "none"
 
@@ -192,6 +259,12 @@ resource "litellm_mcp_server" "local_nodejs" {
     "NODE_ENV"  = "development"
     "LOG_LEVEL" = "debug"
   }
+}
+
+# Singular reads expose only LiteLLM's non-secret upstream_resource credential
+# member. No credential map or secret credential member is projected.
+data "litellm_mcp_server" "oauth_protected" {
+  server_id = litellm_mcp_server.oauth_protected.server_id
 }
 
 # =============================================================================
@@ -221,6 +294,23 @@ variable "oauth_client_secret" {
   sensitive   = true
 }
 
+variable "enterprise_api_key" {
+  description = "Shared enterprise API key"
+  type        = string
+  sensitive   = true
+}
+
+variable "token_exchange_client_id" {
+  description = "OAuth client ID used for token exchange"
+  type        = string
+}
+
+variable "token_exchange_client_secret" {
+  description = "OAuth client secret used for token exchange"
+  type        = string
+  sensitive   = true
+}
+
 # =============================================================================
 # OUTPUTS
 # =============================================================================
@@ -230,7 +320,12 @@ output "mcp_server_ids" {
     github       = litellm_mcp_server.github.server_id
     zapier       = litellm_mcp_server.zapier.server_id
     enterprise   = litellm_mcp_server.oauth_protected.server_id
+    token_obo    = litellm_mcp_server.token_exchange.server_id
     python_local = litellm_mcp_server.local_python.server_id
     nodejs_local = litellm_mcp_server.local_nodejs.server_id
   }
+}
+
+output "oauth_upstream_resource" {
+  value = data.litellm_mcp_server.oauth_protected.upstream_resource
 }

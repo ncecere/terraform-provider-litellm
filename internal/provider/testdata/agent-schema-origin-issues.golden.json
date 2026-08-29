@@ -1,0 +1,23 @@
+{
+  "version": 0,
+  "agent_card_nesting": "SINGLE",
+  "skills_nesting": "LIST",
+  "signatures_nesting": "LIST",
+  "skills_attributes": [
+    "description",
+    "examples",
+    "id",
+    "input_modes",
+    "name",
+    "output_modes",
+    "security",
+    "security_json",
+    "tags"
+  ],
+  "signatures_attributes": [
+    "header",
+    "header_json",
+    "protected",
+    "signature"
+  ]
+}

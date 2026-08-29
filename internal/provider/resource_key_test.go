@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,6 +14,172 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
 )
+
+func mustBuildKeyRequest(t *testing.T, r *KeyResource, data *KeyResourceModel) map[string]interface{} {
+	t.Helper()
+	request, err := r.buildKeyRequest(context.Background(), data)
+	if err != nil {
+		t.Fatalf("buildKeyRequest: %v", err)
+	}
+	return request
+}
+
+func TestKeyWriteOnlySchemaAndValidators(t *testing.T) {
+	t.Parallel()
+
+	keyResource := &KeyResource{}
+	var response resource.SchemaResponse
+	keyResource.Schema(context.Background(), resource.SchemaRequest{}, &response)
+	if response.Diagnostics.HasError() {
+		t.Fatalf("schema diagnostics: %v", response.Diagnostics)
+	}
+	keyWO, ok := response.Schema.Attributes["key_wo"]
+	if !ok || !keyWO.IsWriteOnly() || !keyWO.IsSensitive() {
+		t.Fatalf("key_wo must be sensitive and write-only: %#v", keyWO)
+	}
+	version, ok := response.Schema.Attributes["key_wo_version"]
+	if !ok || version.IsWriteOnly() || version.IsSensitive() {
+		t.Fatalf("key_wo_version must be persisted and non-sensitive: %#v", version)
+	}
+	if got := len(keyResource.ConfigValidators(context.Background())); got != 2 {
+		t.Fatalf("config validators = %d, want 2", got)
+	}
+}
+
+func TestKeyLookupIdentifier(t *testing.T) {
+	t.Parallel()
+
+	raw := "sk-write-only-test"
+	id := hashKeyForID(raw)
+	hash := strings.TrimPrefix(id, "sha256:")
+	tests := map[string]struct {
+		data    KeyResourceModel
+		want    string
+		wantErr bool
+	}{
+		"stateful plaintext": {
+			data: KeyResourceModel{Key: types.StringValue(raw), KeyWOVersion: types.StringNull()},
+			want: raw,
+		},
+		"write-only hash": {
+			data: KeyResourceModel{ID: types.StringValue(id), Key: types.StringNull(), KeyWOVersion: types.StringValue("1")},
+			want: hash,
+		},
+		"invalid write-only ID": {
+			data:    KeyResourceModel{ID: types.StringValue("sha256:not-a-hash"), KeyWOVersion: types.StringValue("1")},
+			wantErr: true,
+		},
+		"missing stateful key": {
+			data:    KeyResourceModel{Key: types.StringNull(), KeyWOVersion: types.StringNull()},
+			wantErr: true,
+		},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			got, err := keyLookupIdentifier(&test.data)
+			if test.wantErr {
+				if err == nil {
+					t.Fatalf("keyLookupIdentifier() = %q, want error", got)
+				}
+				return
+			}
+			if err != nil || got != test.want {
+				t.Fatalf("keyLookupIdentifier() = %q, %v; want %q", got, err, test.want)
+			}
+		})
+	}
+}
+
+func TestWriteOnlyKeyCreateErrorOmitsEchoedSecret(t *testing.T) {
+	t.Parallel()
+
+	secret := `sk-write-only-echoed-"secret"`
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+		}
+		writer.WriteHeader(http.StatusBadRequest)
+		_, _ = writer.Write(body)
+	}))
+	defer server.Close()
+
+	client := &Client{APIBase: server.URL, APIKey: "admin-key", HTTPClient: server.Client()}
+	err := client.DoRequestWithResponse(
+		context.Background(),
+		http.MethodPost,
+		"/key/generate",
+		map[string]interface{}{"key": secret},
+		nil,
+	)
+	if err == nil {
+		t.Fatal("expected echoed API error")
+	}
+	message := writeOnlyKeyCreateError(err)
+	if strings.Contains(message, secret) || strings.Contains(message, `\\\"secret\\\"`) {
+		t.Fatalf("safe diagnostic exposed write-only key: %q", message)
+	}
+	if !strings.Contains(message, "HTTP 400") || !strings.Contains(message, "response body was omitted") {
+		t.Fatalf("safe diagnostic = %q, want status without response body", message)
+	}
+}
+
+func TestReadKeyWriteOnlyUsesHashAndKeepsPlaintextNull(t *testing.T) {
+	t.Parallel()
+
+	raw := "sk-write-only-read-test"
+	id := hashKeyForID(raw)
+	hash := strings.TrimPrefix(id, "sha256:")
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/key/info" || request.URL.Query().Get("key") != hash {
+			http.Error(writer, "unexpected key identifier", http.StatusBadRequest)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+			"key": hash,
+			"info": map[string]interface{}{
+				"token":     hash,
+				"key_alias": "write-only",
+				"models":    []interface{}{"gpt-4o"},
+			},
+		})
+	}))
+	defer server.Close()
+
+	resource := &KeyResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
+	data := KeyResourceModel{
+		ID:           types.StringValue(id),
+		Key:          types.StringNull(),
+		KeyWO:        types.StringNull(),
+		KeyWOVersion: types.StringValue("1"),
+		Models:       stringListValue("gpt-4o"),
+	}
+	if err := resource.readKey(context.Background(), &data); err != nil {
+		t.Fatalf("readKey returned error: %v", err)
+	}
+	if !data.Key.IsNull() || !data.KeyWO.IsNull() || data.ID.ValueString() != id {
+		t.Fatalf("write-only read changed secret state: %#v", data)
+	}
+}
+
+func TestKeyMetadataSchemaIsSensitive(t *testing.T) {
+	t.Parallel()
+
+	var response resource.SchemaResponse
+	(&KeyResource{}).Schema(context.Background(), resource.SchemaRequest{}, &response)
+	if response.Diagnostics.HasError() {
+		t.Fatalf("schema diagnostics: %v", response.Diagnostics)
+	}
+	metadata, ok := response.Schema.Attributes["metadata"]
+	if !ok {
+		t.Fatal("metadata schema attribute is missing")
+	}
+	if !metadata.IsSensitive() {
+		t.Fatal("metadata schema attribute must be sensitive")
+	}
+}
 
 func TestHashKeyForID(t *testing.T) {
 	t.Parallel()
@@ -69,7 +236,7 @@ func TestCreateKeyUsesHashedID(t *testing.T) {
 		Key: types.StringUnknown(),
 	}
 
-	keyReq := r.buildKeyRequest(context.Background(), data)
+	keyReq := mustBuildKeyRequest(t, r, data)
 	var result map[string]interface{}
 	if err := r.client.DoRequestWithResponse(context.Background(), "POST", "/key/generate", keyReq, &result); err != nil {
 		t.Fatalf("POST /key/generate: %v", err)
@@ -102,7 +269,7 @@ func TestBuildKeyRequestIncludesProjectID(t *testing.T) {
 		ProjectID: types.StringValue("project-123"),
 	}
 
-	keyReq := r.buildKeyRequest(context.Background(), data)
+	keyReq := mustBuildKeyRequest(t, r, data)
 
 	if keyReq["project_id"] != "project-123" {
 		t.Fatalf("expected project_id 'project-123', got %v", keyReq["project_id"])
@@ -302,7 +469,7 @@ func TestPredefinedKeyIsSentToAPI(t *testing.T) {
 		Key: types.StringValue("sk-my-predefined-key"),
 	}
 
-	keyReq := r.buildKeyRequest(context.Background(), data)
+	keyReq := mustBuildKeyRequest(t, r, data)
 
 	// Verify the predefined key is included in the request body
 	if keyReq["key"] != "sk-my-predefined-key" {
@@ -597,29 +764,31 @@ func TestReadKeyWithNestedInfoResponse(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"key": "sk-test-key-123",
 			"info": map[string]interface{}{
-				"token":                  "sk-test-key-123",
-				"key_alias":              "my-test-key",
-				"spend":                  0.05,
-				"max_budget":             100.0,
-				"tpm_limit":              5000.0,
-				"rpm_limit":              500.0,
-				"blocked":                false,
-				"organization_id":        "org-1",
-				"team_id":                "team-1",
-				"user_id":                "user-1",
-				"models":                 []interface{}{"gpt-4", "gpt-3.5-turbo"},
-				"aliases":                map[string]interface{}{"fast": "gpt-3.5-turbo"},
-				"config":                 map[string]interface{}{},
-				"permissions":            map[string]interface{}{},
-				"allowed_routes":         []interface{}{"llm_api_routes"},
-				"tags":                   []interface{}{"production"},
-				"metadata":               map[string]interface{}{"env": "prod"},
+				"token":           "sk-test-key-123",
+				"key_alias":       "my-test-key",
+				"spend":           0.05,
+				"max_budget":      100.0,
+				"tpm_limit":       5000.0,
+				"rpm_limit":       500.0,
+				"blocked":         false,
+				"organization_id": "org-1",
+				"team_id":         "team-1",
+				"user_id":         "user-1",
+				"models":          []interface{}{"gpt-4", "gpt-3.5-turbo"},
+				"aliases":         map[string]interface{}{"fast": "gpt-3.5-turbo"},
+				"config":          map[string]interface{}{},
+				"permissions":     map[string]interface{}{},
+				"allowed_routes":  []interface{}{"llm_api_routes"},
+				"tags":            []interface{}{"production"},
+				"metadata": map[string]interface{}{
+					"env":             "prod",
+					"model_rpm_limit": map[string]interface{}{},
+					"model_tpm_limit": map[string]interface{}{},
+				},
 				"guardrails":             []interface{}{},
 				"prompts":                []interface{}{},
 				"enforced_params":        []interface{}{},
 				"model_max_budget":       map[string]interface{}{},
-				"model_rpm_limit":        map[string]interface{}{},
-				"model_tpm_limit":        map[string]interface{}{},
 				"allowed_cache_controls": []interface{}{},
 			},
 		})
@@ -639,6 +808,7 @@ func TestReadKeyWithNestedInfoResponse(t *testing.T) {
 	data := KeyResourceModel{
 		ID:                       types.StringValue(hashKeyForID("sk-test-key-123")),
 		Key:                      types.StringValue("sk-test-key-123"),
+		MaxBudget:                types.Float64Value(1),
 		Models:                   types.ListUnknown(types.StringType),
 		AllowedRoutes:            types.ListUnknown(types.StringType),
 		AllowedPassthroughRoutes: types.ListUnknown(types.StringType),
@@ -838,6 +1008,49 @@ func TestReadKeyMetadataWithComplexValues(t *testing.T) {
 	}
 }
 
+func TestReadKeyMetadataPreservesEncryptedLeaves(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"key": "sk-meta-encrypted",
+			"info": map[string]interface{}{
+				"token": "sk-meta-encrypted",
+				"metadata": map[string]interface{}{
+					"logging": []interface{}{
+						map[string]interface{}{
+							"callback_name": "langfuse_otel",
+							"callback_vars": map[string]interface{}{
+								"host":       "https://example.invalid",
+								"public_key": "litellm_enc::opaque-public",
+								"secret_key": "litellm_enc::opaque-secret",
+							},
+						},
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	resource := &KeyResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
+	configured := `[{"callback_name":"langfuse_otel","callback_vars":{"host":"https://example.invalid","public_key":"public-original","secret_key":"secret-original"}}]`
+	originalMetadata := stringMapValue(map[string]string{"logging": configured})
+	data := KeyResourceModel{
+		ID:       types.StringValue(hashKeyForID("sk-meta-encrypted")),
+		Key:      types.StringValue("sk-meta-encrypted"),
+		Metadata: originalMetadata,
+	}
+
+	if err := resource.readKey(context.Background(), &data); err != nil {
+		t.Fatalf("readKey returned error: %v", err)
+	}
+	if !data.Metadata.Equal(originalMetadata) {
+		t.Fatalf("metadata = %v, want configured encrypted leaves preserved", data.Metadata)
+	}
+}
+
 // TestBuildKeyRequestMetadataWithJSON verifies that metadata values containing
 // JSON strings are decoded to native types in the API request body (issue #71).
 func TestBuildKeyRequestMetadataWithJSON(t *testing.T) {
@@ -851,7 +1064,7 @@ func TestBuildKeyRequestMetadataWithJSON(t *testing.T) {
 		}),
 	}
 
-	req := r.buildKeyRequest(context.Background(), data)
+	req := mustBuildKeyRequest(t, r, data)
 
 	meta, ok := req["metadata"].(map[string]interface{})
 	if !ok {
@@ -957,7 +1170,7 @@ func TestMinimalKeyNoKeyAliasNoServiceAccountID(t *testing.T) {
 	}
 
 	// 1. buildKeyRequest must NOT include key_alias when neither field is set.
-	keyReq := r.buildKeyRequest(context.Background(), data)
+	keyReq := mustBuildKeyRequest(t, r, data)
 	if _, exists := keyReq["key_alias"]; exists {
 		t.Errorf("key_alias must not appear in request when neither key_alias nor service_account_id is configured, got %v", keyReq["key_alias"])
 	}
@@ -1014,7 +1227,7 @@ func TestServiceAccountIDDefaultsKeyAlias(t *testing.T) {
 		KeyAlias: types.StringNull(),
 	}
 
-	keyReq := r.buildKeyRequest(context.Background(), data)
+	keyReq := mustBuildKeyRequest(t, r, data)
 
 	if keyReq["key_alias"] != "github-ci" {
 		t.Errorf("expected key_alias 'github-ci', got %v", keyReq["key_alias"])
@@ -1043,7 +1256,7 @@ func TestServiceAccountIDKeyAliasExplicitOverride(t *testing.T) {
 		KeyAlias:         types.StringValue("my-custom-alias"),
 	}
 
-	keyReq := r.buildKeyRequest(context.Background(), data)
+	keyReq := mustBuildKeyRequest(t, r, data)
 
 	if keyReq["key_alias"] != "my-custom-alias" {
 		t.Errorf("expected explicit key_alias 'my-custom-alias', got %v", keyReq["key_alias"])

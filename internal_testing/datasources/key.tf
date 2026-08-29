@@ -30,5 +30,14 @@ output "ds_key_tags" {
 }
 
 output "ds_key_metadata" {
-  value = data.litellm_key.lookup.metadata
+  value     = data.litellm_key.lookup.metadata
+  sensitive = true
+}
+
+data "litellm_key" "router_settings" {
+  key_hash = litellm_key.router_settings.id
+}
+
+output "ds_key_router_settings" {
+  value = data.litellm_key.router_settings.router_settings
 }

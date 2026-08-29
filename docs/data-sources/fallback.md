@@ -29,8 +29,8 @@ output "id" {
 
 ## Argument Reference
 
-- `model` - (Required) The model name to get fallback configuration for.
-- `fallback_type` - (Optional) Type of fallback. Defaults to `general`. One of `general`, `context_window`, or `content_policy`.
+- `model` - (Required) The non-empty model name to get fallback configuration for. Supply the raw model identifier rather than a URL-encoded value; the provider escapes path characters exactly once.
+- `fallback_type` - (Optional) Type of fallback. Defaults to `general`. One of `general`, `context_window`, or `content_policy`; the exact case-sensitive LiteLLM v1.98 query enum is validated during planning.
 
 ## Attribute Reference
 
@@ -41,4 +41,5 @@ output "id" {
 
 ## Notes
 
-- If no fallback is configured for the given model and type, the read will fail with an API error (e.g. 404). Ensure the fallback exists (e.g. created by a `litellm_fallback` resource) before using this data source.
+- Model names containing colons, percent signs, query delimiters, Unicode, and other special characters retain their raw identity in state. LiteLLM must support that model identity on its fallback route.
+- If no fallback is configured for the given model and type, the read will fail with a content-safe diagnostic. Ensure the fallback exists (e.g. created by a `litellm_fallback` resource) before using this data source; consult trusted proxy logs for server-side details.

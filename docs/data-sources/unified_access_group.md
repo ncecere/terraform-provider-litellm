@@ -23,7 +23,7 @@ data "litellm_unified_access_group" "engineering" {
 * `access_mcp_server_ids` - MCP server IDs this access group grants access to.
 * `access_agent_ids` - Agent IDs this access group grants access to.
 * `assigned_team_ids` - Team IDs assigned to this access group.
-* `assigned_key_ids` - Key IDs assigned to this access group.
+* `assigned_key_ids` - Hash-shaped key IDs reported on the access-group row. This data source does not read each key row, so these values are discovery data rather than confirmed two-sided membership. Use the resource/import lifecycle when convergence must be verified.
 * `created_at` - Timestamp when the access group was created.
 * `created_by` - User who created the access group.
 * `updated_at` - Timestamp when the access group was last updated.

@@ -21,12 +21,12 @@ resource "litellm_model" "with_additional" {
 
   # Additional parameters not exposed as first-class arguments
   additional_litellm_params = {
-    "use_fine_tune"          = "true"                           # becomes boolean true
-    "max_context"            = "16384"                          # becomes integer 16384
-    "temperature_scale"      = "0.75"                           # becomes float 0.75
-    "experimental_feature"   = "enabled"                        # stays string "enabled"
-    "complex_config"         = "{\"nested\": {\"value\": 42}}"  # parsed as JSON object
-    "additional_drop_params" = "[\"reasoningEffort\"]"          # removes reasoningEffort parameter
+    "use_fine_tune"          = "true"                          # becomes boolean true
+    "max_context"            = "16384"                         # becomes integer 16384
+    "temperature_scale"      = "0.75"                          # becomes float 0.75
+    "experimental_feature"   = "enabled"                       # stays string "enabled"
+    "complex_config"         = "{\"nested\": {\"value\": 42}}" # parsed as JSON object
+    "additional_drop_params" = "[\"reasoningEffort\"]"         # removes reasoningEffort parameter
     # You may also pass non-string values (they will be passed through unchanged)
     # "raw_flag" = true
   }
@@ -54,4 +54,51 @@ resource "litellm_model" "azure_with_drop_params" {
 
   input_cost_per_million_tokens  = 0.25
   output_cost_per_million_tokens = 2.00
+}
+
+# Lossless heterogeneous litellm_params values. This sensitive JSON sibling
+# is recursively owned, cannot overlap the legacy map or dedicated fields, and
+# is replacement-managed for every semantic change or removal.
+resource "litellm_model" "typed_litellm_params" {
+  model_name          = "typed-litellm-params"
+  custom_llm_provider = "openai"
+  model_api_key       = var.openai_api_key
+  base_model          = "gpt-4o-mini"
+
+  additional_litellm_params = {
+    legacy_disjoint = "legacy-value"
+  }
+
+  additional_litellm_params_json = jsonencode({
+    native_false = false
+    large_number = 9007199254740993
+    options = {
+      null_text  = "null"
+      api_secret = "authoritative-plaintext"
+      items      = [1, true, "1"]
+    }
+  })
+}
+
+# Lossless heterogeneous model_info values. The JSON sibling is sensitive,
+# cannot overlap the legacy map or dedicated model fields, and is
+# replacement-managed for every semantic change or removal.
+resource "litellm_model" "typed_model_info" {
+  model_name          = "typed-model-info"
+  custom_llm_provider = "openai"
+  model_api_key       = var.openai_api_key
+  base_model          = "gpt-4o-mini"
+
+  additional_model_info = {
+    owner = "platform"
+  }
+
+  additional_model_info_json = jsonencode({
+    native_false = false
+    large_number = 9007199254740993
+    nested = {
+      nullable = null
+      items    = [1, true, "1"]
+    }
+  })
 }

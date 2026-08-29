@@ -1,9 +1,8 @@
-# litellm_team_member - Minimal
-# All attributes are required
+# litellm_team_member - Minimal email-only identity.
+# LiteLLM resolves/creates the user and the provider persists canonical user_id.
 
 resource "litellm_team_member" "minimal" {
   team_id    = litellm_team.minimal.id
-  user_id    = "test-team-member-user"
   user_email = "teammember@example.com"
   role       = "user"
 }

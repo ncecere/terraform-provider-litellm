@@ -45,7 +45,7 @@ The following attributes are exported:
 * `api_base` - Base URL for the search API.
 * `timeout` - Timeout in seconds for search requests.
 * `max_retries` - Maximum number of retries.
-* `search_tool_info` - JSON string of additional configuration.
+* `search_tool_info` - Canonical JSON object string of additional configuration. Empty `{}` remains distinct from null; malformed or wrong-shaped API values fail the read.
 
 ## Notes
 

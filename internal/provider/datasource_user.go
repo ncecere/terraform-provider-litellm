@@ -3,8 +3,9 @@ package provider
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/url"
 
-	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -121,97 +122,79 @@ func (d *UserDataSource) Configure(ctx context.Context, req datasource.Configure
 }
 
 func (d *UserDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
-	var data UserDataSourceModel
-
-	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
+	var config UserDataSourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
-	userID := data.UserID.ValueString()
-	endpoint := fmt.Sprintf("/user/info?user_id=%s", userID)
+	userID := config.UserID.ValueString()
+	if config.UserID.IsNull() || config.UserID.IsUnknown() || userID == "" {
+		resp.Diagnostics.AddError("Invalid User Lookup", "user_id must be known and nonempty")
+		return
+	}
+	endpoint := endpointWithQuery("/user/info", url.Values{"user_id": []string{userID}})
 
 	var result map[string]interface{}
-	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read user '%s': %s", userID, err))
+	if err := d.client.DoReadWithResponse(ctx, http.MethodGet, endpoint, nil, &result); err != nil {
+		resp.Diagnostics.AddError("Client Error", "Unable to read user. Response and request details were omitted.")
 		return
 	}
 
-	// Set ID
-	data.ID = data.UserID
-
-	// The /user/info endpoint may return user_info nested
-	userInfo := result
-	if ui, ok := result["user_info"].(map[string]interface{}); ok {
-		userInfo = ui
+	data, err := projectUserDataSourceAPIObject(config, result, userID)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned a malformed or identity-mismatched user response. Response and request details were omitted.")
+		return
 	}
-
-	// Update fields from response
-	if alias, ok := userInfo["user_alias"].(string); ok {
-		data.UserAlias = types.StringValue(alias)
-	}
-	if email, ok := userInfo["user_email"].(string); ok {
-		data.UserEmail = types.StringValue(email)
-	}
-	if role, ok := userInfo["user_role"].(string); ok {
-		data.UserRole = types.StringValue(role)
-	}
-	if budgetDuration, ok := userInfo["budget_duration"].(string); ok {
-		data.BudgetDuration = types.StringValue(budgetDuration)
-	}
-
-	// Numeric fields
-	if maxBudget, ok := userInfo["max_budget"].(float64); ok {
-		data.MaxBudget = types.Float64Value(maxBudget)
-	}
-	if spend, ok := userInfo["spend"].(float64); ok {
-		data.Spend = types.Float64Value(spend)
-	}
-	if tpmLimit, ok := userInfo["tpm_limit"].(float64); ok {
-		data.TPMLimit = types.Int64Value(int64(tpmLimit))
-	}
-	if rpmLimit, ok := userInfo["rpm_limit"].(float64); ok {
-		data.RPMLimit = types.Int64Value(int64(rpmLimit))
-	}
-
-	// Handle teams list
-	if teams, ok := userInfo["teams"].([]interface{}); ok {
-		teamsList := make([]attr.Value, len(teams))
-		for i, t := range teams {
-			if str, ok := t.(string); ok {
-				teamsList[i] = types.StringValue(str)
-			}
-		}
-		data.Teams, _ = types.ListValue(types.StringType, teamsList)
-	} else {
-		data.Teams, _ = types.ListValue(types.StringType, []attr.Value{})
-	}
-
-	// Handle models list
-	if models, ok := userInfo["models"].([]interface{}); ok {
-		modelsList := make([]attr.Value, len(models))
-		for i, m := range models {
-			if str, ok := m.(string); ok {
-				modelsList[i] = types.StringValue(str)
-			}
-		}
-		data.Models, _ = types.ListValue(types.StringType, modelsList)
-	} else {
-		data.Models, _ = types.ListValue(types.StringType, []attr.Value{})
-	}
-
-	// Handle metadata map
-	if metadata, ok := userInfo["metadata"].(map[string]interface{}); ok {
-		metaMap := make(map[string]attr.Value)
-		for k, v := range metadata {
-			if str, ok := v.(string); ok {
-				metaMap[k] = types.StringValue(str)
-			}
-		}
-		data.Metadata, _ = types.MapValue(types.StringType, metaMap)
-	} else {
-		data.Metadata, _ = types.MapValue(types.StringType, map[string]attr.Value{})
-	}
-
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+}
+
+func projectUserDataSourceAPIObject(config UserDataSourceModel, result map[string]interface{}, expectedUserID string) (UserDataSourceModel, error) {
+	rootUserID, err := dataSourceRequiredStringAt(result, "user_id")
+	if err != nil || rootUserID.ValueString() != expectedUserID {
+		return UserDataSourceModel{}, fmt.Errorf("invalid user response root identity")
+	}
+	userInfo, err := dataSourceRequiredObjectAt(result, "user_info")
+	if err != nil || len(userInfo) == 0 {
+		return UserDataSourceModel{}, fmt.Errorf("invalid user response envelope")
+	}
+	actualUserID, err := dataSourceRequiredStringAt(userInfo, "user_id")
+	if err != nil || actualUserID.ValueString() != expectedUserID || !actualUserID.Equal(rootUserID) {
+		return UserDataSourceModel{}, fmt.Errorf("invalid user response nested identity")
+	}
+
+	data := UserDataSourceModel{ID: actualUserID, UserID: config.UserID}
+	if data.UserAlias, err = dataSourceRoleRedactedNullableStringAt(userInfo, "user_alias"); err != nil {
+		return UserDataSourceModel{}, err
+	}
+	if data.UserEmail, err = dataSourceRoleRedactedNullableStringAt(userInfo, "user_email"); err != nil {
+		return UserDataSourceModel{}, err
+	}
+	if data.UserRole, err = dataSourceRoleRedactedNullableStringAt(userInfo, "user_role"); err != nil {
+		return UserDataSourceModel{}, err
+	}
+	if data.Teams, err = dataSourceRoleRedactedNullableStringListAt(userInfo, "teams"); err != nil {
+		return UserDataSourceModel{}, err
+	}
+	if data.Models, err = dataSourceRoleRedactedNullableStringListAt(userInfo, "models"); err != nil {
+		return UserDataSourceModel{}, err
+	}
+	if data.MaxBudget, err = dataSourceRoleRedactedNullableFloat64At(userInfo, "max_budget"); err != nil {
+		return UserDataSourceModel{}, err
+	}
+	if data.BudgetDuration, err = dataSourceRoleRedactedNullableStringAt(userInfo, "budget_duration"); err != nil {
+		return UserDataSourceModel{}, err
+	}
+	if data.TPMLimit, err = dataSourceRoleRedactedNullableInt64At(userInfo, "tpm_limit"); err != nil {
+		return UserDataSourceModel{}, err
+	}
+	if data.RPMLimit, err = dataSourceRoleRedactedNullableInt64At(userInfo, "rpm_limit"); err != nil {
+		return UserDataSourceModel{}, err
+	}
+	if data.Metadata, err = dataSourceRoleRedactedNullableStringMapAt(userInfo, "metadata"); err != nil {
+		return UserDataSourceModel{}, err
+	}
+	if data.Spend, err = dataSourceRoleRedactedNullableFloat64At(userInfo, "spend"); err != nil {
+		return UserDataSourceModel{}, err
+	}
+	return data, nil
 }

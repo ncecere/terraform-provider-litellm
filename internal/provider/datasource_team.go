@@ -3,8 +3,8 @@ package provider
 import (
 	"context"
 	"fmt"
+	"net/url"
 
-	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -25,6 +25,7 @@ type TeamDataSourceModel struct {
 	TeamID                types.String  `tfsdk:"team_id"`
 	TeamAlias             types.String  `tfsdk:"team_alias"`
 	OrganizationID        types.String  `tfsdk:"organization_id"`
+	AccessGroupIDs        types.Set     `tfsdk:"access_group_ids"`
 	Models                types.List    `tfsdk:"models"`
 	MaxBudget             types.Float64 `tfsdk:"max_budget"`
 	Spend                 types.Float64 `tfsdk:"spend"`
@@ -59,6 +60,11 @@ func (d *TeamDataSource) Schema(ctx context.Context, req datasource.SchemaReques
 			"organization_id": schema.StringAttribute{
 				Description: "Organization ID for the team.",
 				Computed:    true,
+			},
+			"access_group_ids": schema.SetAttribute{
+				Description: "Access group IDs associated with this team.",
+				Computed:    true,
+				ElementType: types.StringType,
 			},
 			"models": schema.ListAttribute{
 				Description: "List of models the team can access.",
@@ -121,107 +127,197 @@ func (d *TeamDataSource) Configure(ctx context.Context, req datasource.Configure
 }
 
 func (d *TeamDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
-	var data TeamDataSourceModel
-
-	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
+	var config TeamDataSourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	teamID := data.TeamID.ValueString()
-	endpoint := fmt.Sprintf("/team/info?team_id=%s", teamID)
-
+	teamID := config.TeamID.ValueString()
+	if config.TeamID.IsNull() || config.TeamID.IsUnknown() || teamID == "" {
+		resp.Diagnostics.AddError("Invalid Team Lookup", "team_id must be a known nonempty string")
+		return
+	}
 	var result map[string]interface{}
-	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read team '%s': %s", teamID, err))
+	query := url.Values{"team_id": []string{teamID}}
+	if err := d.client.DoRequestWithResponse(ctx, "GET", endpointWithQuery("/team/info", query), nil, &result); err != nil {
+		resp.Diagnostics.AddError("Client Error", "Unable to read team information: "+safeListDiagnostic(err, query))
 		return
 	}
 
-	// The /team/info endpoint may return team data nested inside "team_info"
-	teamInfo := result
-	if nested, ok := result["team_info"].(map[string]interface{}); ok {
-		teamInfo = nested
+	// Projection is deliberately off-state. The permissions request is part of
+	// the same logical observation, so neither GET may publish independently.
+	next, err := projectTeamDataSourceInfo(result, teamID)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Team Response", err.Error())
+		return
 	}
 
-	// Set ID
-	data.ID = data.TeamID
+	permissionEndpoint := endpointWithQuery("/team/permissions_list", query)
+	var permissionResult map[string]interface{}
+	if err := d.client.DoRequestWithResponse(ctx, "GET", permissionEndpoint, nil, &permissionResult); err != nil {
+		resp.Diagnostics.AddError("Client Error", "Unable to read team permissions: "+safeListDiagnostic(err, query))
+		return
+	}
+	permissions, err := projectTeamDataSourcePermissions(permissionResult, teamID)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Team Permissions Response", err.Error())
+		return
+	}
+	next.TeamMemberPermissions = permissions
 
-	// Update fields from response
-	if teamAlias, ok := teamInfo["team_alias"].(string); ok {
-		data.TeamAlias = types.StringValue(teamAlias)
-	}
-	if orgID, ok := teamInfo["organization_id"].(string); ok {
-		data.OrganizationID = types.StringValue(orgID)
-	}
-	if budgetDuration, ok := teamInfo["budget_duration"].(string); ok {
-		data.BudgetDuration = types.StringValue(budgetDuration)
-	}
+	resp.Diagnostics.Append(resp.State.Set(ctx, &next)...)
+}
 
-	// Numeric fields
-	if maxBudget, ok := teamInfo["max_budget"].(float64); ok {
-		data.MaxBudget = types.Float64Value(maxBudget)
+func projectTeamDataSourceInfo(result map[string]interface{}, expectedTeamID string) (TeamDataSourceModel, error) {
+	next := TeamDataSourceModel{
+		ID:                    types.StringValue(expectedTeamID),
+		TeamID:                types.StringValue(expectedTeamID),
+		TeamAlias:             types.StringNull(),
+		OrganizationID:        types.StringNull(),
+		AccessGroupIDs:        types.SetNull(types.StringType),
+		Models:                types.ListNull(types.StringType),
+		MaxBudget:             types.Float64Null(),
+		Spend:                 types.Float64Null(),
+		TPMLimit:              types.Int64Null(),
+		RPMLimit:              types.Int64Null(),
+		BudgetDuration:        types.StringNull(),
+		Metadata:              types.MapNull(types.StringType),
+		TeamMemberPermissions: types.ListNull(types.StringType),
+		Blocked:               types.BoolNull(),
 	}
-	if spend, ok := teamInfo["spend"].(float64); ok {
-		data.Spend = types.Float64Value(spend)
+	if result == nil || len(result) == 0 {
+		return next, fmt.Errorf("invalid /team/info response: expected the authoritative v1.98 object envelope")
 	}
-	if tpmLimit, ok := teamInfo["tpm_limit"].(float64); ok {
-		data.TPMLimit = types.Int64Value(int64(tpmLimit))
-	}
-	if rpmLimit, ok := teamInfo["rpm_limit"].(float64); ok {
-		data.RPMLimit = types.Int64Value(int64(rpmLimit))
-	}
-
-	// Boolean fields
-	if blocked, ok := teamInfo["blocked"].(bool); ok {
-		data.Blocked = types.BoolValue(blocked)
-	} else {
-		data.Blocked = types.BoolValue(false)
-	}
-
-	// Handle models list
-	if models, ok := teamInfo["models"].([]interface{}); ok {
-		modelsList := make([]attr.Value, len(models))
-		for i, m := range models {
-			if str, ok := m.(string); ok {
-				modelsList[i] = types.StringValue(str)
-			}
+	for field := range result {
+		switch field {
+		case "team_id", "team_info", "keys", "team_memberships":
+		default:
+			return next, fmt.Errorf("invalid /team/info response: envelope contains a field outside the authoritative v1.98 relation")
 		}
-		data.Models, _ = types.ListValue(types.StringType, modelsList)
-	} else {
-		data.Models, _ = types.ListValue(types.StringType, []attr.Value{})
 	}
 
-	// Handle metadata map
-	if metadata, ok := teamInfo["metadata"].(map[string]interface{}); ok {
-		metaMap := make(map[string]attr.Value)
-		for k, v := range metadata {
-			if str, ok := v.(string); ok {
-				metaMap[k] = types.StringValue(str)
-			}
+	rootID, err := dataSourceRequiredStringAt(result, "team_id")
+	if err != nil || rootID.ValueString() != expectedTeamID {
+		return next, fmt.Errorf("invalid /team/info response: root identity does not match the requested team")
+	}
+	teamInfo, err := dataSourceRequiredObjectAt(result, "team_info")
+	if err != nil || len(teamInfo) == 0 {
+		return next, fmt.Errorf("invalid /team/info response: team_info must be a nonempty object")
+	}
+	nestedID, err := dataSourceRequiredStringAt(teamInfo, "team_id")
+	if err != nil || nestedID.ValueString() != expectedTeamID {
+		return next, fmt.Errorf("invalid /team/info response: nested identity does not match the requested team")
+	}
+	for _, relation := range []string{"keys", "team_memberships"} {
+		if err := validateTeamDataSourceObjectRelation(result, relation); err != nil {
+			return next, err
 		}
-		data.Metadata, _ = types.MapValue(types.StringType, metaMap)
-	} else {
-		data.Metadata, _ = types.MapValue(types.StringType, map[string]attr.Value{})
 	}
 
-	// Fetch permissions separately
-	permEndpoint := fmt.Sprintf("/team/permissions_list?team_id=%s", teamID)
-	var permResult map[string]interface{}
-	if err := d.client.DoRequestWithResponse(ctx, "GET", permEndpoint, nil, &permResult); err == nil {
-		if perms, ok := permResult["team_member_permissions"].([]interface{}); ok {
-			permsList := make([]attr.Value, len(perms))
-			for i, p := range perms {
-				if str, ok := p.(string); ok {
-					permsList[i] = types.StringValue(str)
-				}
-			}
-			data.TeamMemberPermissions, _ = types.ListValue(types.StringType, permsList)
-		} else {
-			data.TeamMemberPermissions, _ = types.ListValue(types.StringType, []attr.Value{})
+	for _, field := range []struct {
+		name   string
+		target *types.String
+	}{
+		{"team_alias", &next.TeamAlias},
+		{"organization_id", &next.OrganizationID},
+		{"budget_duration", &next.BudgetDuration},
+	} {
+		value, fieldErr := dataSourceNullableStringAt(teamInfo, field.name)
+		if fieldErr != nil {
+			return next, fieldErr
 		}
-	} else {
-		data.TeamMemberPermissions, _ = types.ListValue(types.StringType, []attr.Value{})
+		*field.target = value
+	}
+	for _, field := range []struct {
+		name   string
+		target *types.Float64
+	}{
+		{"max_budget", &next.MaxBudget},
+		{"spend", &next.Spend},
+	} {
+		value, fieldErr := dataSourceNullableFloat64At(teamInfo, field.name)
+		if fieldErr != nil {
+			return next, fieldErr
+		}
+		*field.target = value
+	}
+	for _, field := range []struct {
+		name   string
+		target *types.Int64
+	}{
+		{"tpm_limit", &next.TPMLimit},
+		{"rpm_limit", &next.RPMLimit},
+	} {
+		value, fieldErr := dataSourceNullableInt64At(teamInfo, field.name)
+		if fieldErr != nil {
+			return next, fieldErr
+		}
+		*field.target = value
 	}
 
-	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	next.Blocked, err = dataSourceNullableBoolAt(teamInfo, "blocked")
+	if err != nil {
+		return next, err
+	}
+	next.Models, err = dataSourceNullableStringListAt(teamInfo, "models")
+	if err != nil {
+		return next, err
+	}
+	next.AccessGroupIDs, err = dataSourceNullableStringSetAt(teamInfo, "access_group_ids")
+	if err != nil {
+		return next, err
+	}
+	next.Metadata, err = dataSourceNullableStringMapAt(teamInfo, "metadata")
+	if err != nil {
+		return next, err
+	}
+	return next, nil
+}
+
+func validateTeamDataSourceObjectRelation(result map[string]interface{}, field string) error {
+	raw, err := dataSourceRequiredValueAt(result, "a list of objects", field)
+	if err != nil {
+		return fmt.Errorf("invalid /team/info response: required relation is missing or malformed")
+	}
+	rows, ok := raw.([]interface{})
+	if !ok {
+		return fmt.Errorf("invalid /team/info response: required relation must be a list of objects")
+	}
+	for _, row := range rows {
+		object, ok := row.(map[string]interface{})
+		if !ok || object == nil {
+			return fmt.Errorf("invalid /team/info response: required relation contains a non-object row")
+		}
+	}
+	return nil
+}
+
+func projectTeamDataSourcePermissions(result map[string]interface{}, expectedTeamID string) (types.List, error) {
+	null := types.ListNull(types.StringType)
+	if result == nil || len(result) == 0 {
+		return null, fmt.Errorf("invalid /team/permissions_list response: expected the authoritative v1.98 object envelope")
+	}
+	for field := range result {
+		switch field {
+		case "team_id", "all_available_permissions", "team_member_permissions":
+		default:
+			return null, fmt.Errorf("invalid /team/permissions_list response: envelope contains a field outside the authoritative v1.98 relation")
+		}
+	}
+	teamID, err := dataSourceRequiredStringAt(result, "team_id")
+	if err != nil || teamID.ValueString() != expectedTeamID {
+		return null, fmt.Errorf("invalid /team/permissions_list response: identity does not match the requested team")
+	}
+	if _, err := dataSourceRequiredStringListAt(result, "all_available_permissions"); err != nil {
+		return null, fmt.Errorf("invalid /team/permissions_list response: required permission relation is missing or malformed")
+	}
+	if _, exists := result["team_member_permissions"]; !exists {
+		return null, fmt.Errorf("invalid /team/permissions_list response: required team permission relation is missing")
+	}
+	permissions, err := dataSourceNullableStringListAt(result, "team_member_permissions")
+	if err != nil {
+		return null, fmt.Errorf("invalid /team/permissions_list response: team permission relation is malformed")
+	}
+	return permissions, nil
 }

@@ -5,13 +5,309 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	resourceschema "github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 )
+
+func TestTeamIDSchemaSupportsConfiguredOrGeneratedIdentity(t *testing.T) {
+	t.Parallel()
+
+	var response resource.SchemaResponse
+	(&TeamResource{}).Schema(context.Background(), resource.SchemaRequest{}, &response)
+	if response.Diagnostics.HasError() {
+		t.Fatalf("schema diagnostics: %v", response.Diagnostics)
+	}
+	attribute, ok := response.Schema.Attributes["team_id"].(resourceschema.StringAttribute)
+	if !ok {
+		t.Fatalf("team_id schema type = %T, want schema.StringAttribute", response.Schema.Attributes["team_id"])
+	}
+	if !attribute.Optional || !attribute.Computed || attribute.Required {
+		t.Fatalf("team_id must be Optional+Computed: %#v", attribute)
+	}
+	if len(attribute.Validators) != 1 {
+		t.Fatalf("team_id validators = %d, want 1", len(attribute.Validators))
+	}
+	if len(attribute.PlanModifiers) != 2 {
+		t.Fatalf("team_id plan modifiers = %d, want state preservation and replacement", len(attribute.PlanModifiers))
+	}
+}
+
+func TestTeamImportMirrorsIDAndTeamID(t *testing.T) {
+	t.Parallel()
+
+	teamResource := &TeamResource{}
+	var schemaResponse resource.SchemaResponse
+	teamResource.Schema(context.Background(), resource.SchemaRequest{}, &schemaResponse)
+	state, err := nullStateFor(schemaResponse.Schema)
+	if err != nil {
+		t.Fatalf("build import state: %v", err)
+	}
+	response := &resource.ImportStateResponse{State: state}
+	teamResource.ImportState(
+		context.Background(),
+		resource.ImportStateRequest{ID: "external-team"},
+		response,
+	)
+	if response.Diagnostics.HasError() {
+		t.Fatalf("import diagnostics: %v", response.Diagnostics)
+	}
+	var data TeamResourceModel
+	response.Diagnostics.Append(response.State.Get(context.Background(), &data)...)
+	if response.Diagnostics.HasError() {
+		t.Fatalf("decode imported state: %v", response.Diagnostics)
+	}
+	if data.ID.ValueString() != "external-team" || data.TeamID.ValueString() != "external-team" {
+		t.Fatalf("imported identity: id=%q team_id=%q", data.ID.ValueString(), data.TeamID.ValueString())
+	}
+	if !data.TPMLimitType.IsNull() || !data.RPMLimitType.IsNull() {
+		t.Fatalf("import must leave create-only limit types unconfigured: tpm=%v rpm=%v", data.TPMLimitType, data.RPMLimitType)
+	}
+}
+
+func TestTeamAccessGroupIDsSchemaIsOptionalUnordered(t *testing.T) {
+	t.Parallel()
+
+	var response resource.SchemaResponse
+	(&TeamResource{}).Schema(context.Background(), resource.SchemaRequest{}, &response)
+	if response.Diagnostics.HasError() {
+		t.Fatalf("schema diagnostics: %v", response.Diagnostics)
+	}
+	attribute, ok := response.Schema.Attributes["access_group_ids"].(resourceschema.SetAttribute)
+	if !ok {
+		t.Fatalf("access_group_ids schema type = %T, want schema.SetAttribute", response.Schema.Attributes["access_group_ids"])
+	}
+	if !attribute.Optional || !attribute.Computed || attribute.Required {
+		t.Fatalf("access_group_ids must be Optional+Computed: %#v", attribute)
+	}
+	if len(attribute.Validators) != 1 {
+		t.Fatalf("access_group_ids validators = %d, want 1", len(attribute.Validators))
+	}
+}
+
+func TestBuildTeamRequestIncludesManagedAccessGroupIDs(t *testing.T) {
+	t.Parallel()
+
+	data := &TeamResourceModel{
+		TeamAlias: types.StringValue("access-group-team"),
+		AccessGroupIDs: types.SetValueMust(types.StringType, []attr.Value{
+			types.StringValue("group-b"),
+			types.StringValue("group-a"),
+		}),
+	}
+	request, err := (&TeamResource{}).buildTeamRequest(context.Background(), data, "team-123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := request["access_group_ids"].([]string)
+	if !ok {
+		t.Fatalf("access_group_ids request type = %T, want []string", request["access_group_ids"])
+	}
+	if len(got) != 2 || !slices.Contains(got, "group-a") || !slices.Contains(got, "group-b") {
+		t.Fatalf("access_group_ids request = %v", got)
+	}
+
+	data.AccessGroupIDs = types.SetValueMust(types.StringType, []attr.Value{})
+	request, err = (&TeamResource{}).buildTeamRequest(context.Background(), data, "team-123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok = request["access_group_ids"].([]string)
+	if !ok || len(got) != 0 {
+		t.Fatalf("empty access_group_ids request = %#v, want []string{}", request["access_group_ids"])
+	}
+}
+
+func TestTeamIDForCreatePreservesCustomOrGeneratesUUID(t *testing.T) {
+	t.Parallel()
+
+	if got := teamIDForCreate(types.StringValue("engineering-platform")); got != "engineering-platform" {
+		t.Fatalf("configured team ID = %q, want engineering-platform", got)
+	}
+	for name, value := range map[string]types.String{
+		"null":    types.StringNull(),
+		"unknown": types.StringUnknown(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := teamIDForCreate(value)
+			if _, err := uuid.Parse(got); err != nil {
+				t.Fatalf("generated team ID %q is not a UUID: %v", got, err)
+			}
+		})
+	}
+}
+
+func TestReadTeamCustomIDIsEscapedAndMirrored(t *testing.T) {
+	t.Parallel()
+
+	const teamID = "engineering/group #1&ops"
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if got := request.URL.Query().Get("team_id"); got != teamID {
+			http.Error(writer, "unexpected team ID: "+got, http.StatusBadRequest)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		switch request.URL.Path {
+		case "/team/info":
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+				"team_id":          request.URL.Query().Get("team_id"),
+				"keys":             []interface{}{},
+				"team_memberships": []interface{}{},
+				"team_info": map[string]interface{}{
+					"team_id":          teamID,
+					"team_alias":       "Engineering Platform",
+					"access_group_ids": []interface{}{"group-b", "group-a"},
+				},
+			})
+		case "/team/permissions_list":
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+				"team_id":                 request.URL.Query().Get("team_id"),
+				"team_member_permissions": []interface{}{},
+			})
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	teamResource := &TeamResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
+	data := TeamResourceModel{
+		ID:        types.StringValue(teamID),
+		TeamID:    types.StringNull(),
+		TeamAlias: types.StringValue("Engineering Platform"),
+		AccessGroupIDs: types.SetValueMust(types.StringType, []attr.Value{
+			types.StringValue("group-a"),
+			types.StringValue("group-b"),
+		}),
+		TeamMemberPermissions: types.ListUnknown(types.StringType),
+	}
+	if err := teamResource.readTeam(context.Background(), &data); err != nil {
+		t.Fatalf("readTeam returned error: %v", err)
+	}
+	if data.TeamID.ValueString() != teamID || data.ID.ValueString() != teamID {
+		t.Fatalf("team identity not mirrored: id=%q team_id=%q", data.ID.ValueString(), data.TeamID.ValueString())
+	}
+	expectedGroups := types.SetValueMust(types.StringType, []attr.Value{
+		types.StringValue("group-a"),
+		types.StringValue("group-b"),
+	})
+	if !data.AccessGroupIDs.Equal(expectedGroups) {
+		t.Fatalf("access_group_ids = %v, want %v", data.AccessGroupIDs, expectedGroups)
+	}
+}
+
+func TestHydrateTeamUpdateMetadataRejectsUnrecoverableMaskedUnknown(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+			"team_id": "team-masked",
+			"team_info": map[string]interface{}{
+				"team_id": "team-masked", "team_alias": "team",
+				"metadata": map[string]interface{}{"external": "litellm_enc::masked"},
+			},
+			"keys":             []interface{}{},
+			"team_memberships": []interface{}{},
+		})
+	}))
+	defer server.Close()
+
+	resourceUnderTest := &TeamResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
+	state := TeamResourceModel{ID: types.StringValue("team-masked"), TeamAlias: types.StringValue("team"), Metadata: types.MapNull(types.StringType)}
+	request := map[string]interface{}{"team_id": "team-masked", "team_alias": "updated"}
+	if err := resourceUnderTest.hydrateTeamUpdateMetadata(context.Background(), state, true, request); err == nil {
+		t.Fatal("masked unowned metadata was accepted as a mutation base")
+	}
+}
+
+func TestHydrateTeamUpdateMetadataPreservesCreateOnlyAndServerOwnedFields(t *testing.T) {
+	t.Parallel()
+	var metadata = map[string]interface{}{
+		"configured":     "old",
+		"external":       map[string]interface{}{"owner": "keep"},
+		"tpm_limit_type": "guaranteed_throughput",
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+			"team_id":          "team-metadata",
+			"keys":             []interface{}{},
+			"team_memberships": []interface{}{},
+			"team_info": map[string]interface{}{
+				"team_id": "team-metadata", "team_alias": "team", "metadata": metadata,
+			},
+		})
+	}))
+	defer server.Close()
+
+	resourceUnderTest := &TeamResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
+	state := TeamResourceModel{
+		ID: types.StringValue("team-metadata"), TeamAlias: types.StringValue("team"),
+		Metadata: types.MapValueMust(types.StringType, map[string]attr.Value{"configured": types.StringValue("old")}),
+	}
+	request := map[string]interface{}{"team_id": "team-metadata", "metadata": map[string]interface{}{"configured": "new"}}
+	if err := resourceUnderTest.hydrateTeamUpdateMetadata(context.Background(), state, true, request); err != nil {
+		t.Fatalf("metadata hydration failed: %v", err)
+	}
+	hydrated := request["metadata"].(map[string]interface{})
+	if hydrated["configured"] != "new" || hydrated["tpm_limit_type"] != "guaranteed_throughput" {
+		t.Fatalf("managed/create-only metadata was not preserved: %#v", hydrated)
+	}
+	if external, ok := hydrated["external"].(map[string]interface{}); !ok || external["owner"] != "keep" {
+		t.Fatalf("unowned metadata was not preserved: %#v", hydrated)
+	}
+
+	metadata["team_member_budget_id"] = "server-owned"
+	unrelated := map[string]interface{}{"team_id": "team-metadata", "metadata": map[string]interface{}{"configured": "old"}}
+	if err := resourceUnderTest.hydrateTeamUpdateMetadata(context.Background(), state, false, unrelated); err != nil {
+		t.Fatalf("unrelated update should preserve metadata by omission: %v", err)
+	}
+	if _, sent := unrelated["metadata"]; sent {
+		t.Fatalf("unrelated update sent destructive metadata replacement: %#v", unrelated)
+	}
+	changed := map[string]interface{}{"team_id": "team-metadata", "metadata": map[string]interface{}{"configured": "new"}}
+	if err := resourceUnderTest.hydrateTeamUpdateMetadata(context.Background(), state, true, changed); err == nil {
+		t.Fatal("metadata replacement accepted an unpreservable server-owned relation")
+	}
+	changedWithBudget := map[string]interface{}{
+		"team_id": "team-metadata", "team_member_budget": 25.0,
+		"metadata": map[string]interface{}{"configured": "new"},
+	}
+	if err := resourceUnderTest.hydrateTeamUpdateMetadata(context.Background(), state, true, changedWithBudget); err != nil {
+		t.Fatalf("member-budget update should restore its server-owned relation: %v", err)
+	}
+	if _, injected := changedWithBudget["metadata"].(map[string]interface{})["team_member_budget_id"]; injected {
+		t.Fatal("server-owned member-budget identity was sent as caller metadata")
+	}
+}
+
+func TestReadTeamRejectsMismatchedRemoteIdentity(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+			"team_info": map[string]interface{}{
+				"team_id":    "different-team",
+				"team_alias": "Different",
+			},
+		})
+	}))
+	defer server.Close()
+
+	teamResource := &TeamResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
+	data := TeamResourceModel{ID: types.StringValue("expected-team")}
+	if err := teamResource.readTeam(context.Background(), &data); err == nil || !strings.Contains(err.Error(), "requested identity") {
+		t.Fatalf("readTeam mismatch error = %v, want remote identity diagnostic", err)
+	}
+}
 
 func TestReadTeamResolvesUnknownOptionalComputedCollections(t *testing.T) {
 	t.Parallel()
@@ -22,11 +318,13 @@ func TestReadTeamResolvesUnknownOptionalComputedCollections(t *testing.T) {
 		switch r.URL.Path {
 		case "/team/info":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"team_id":    "team-123",
 				"team_alias": "agent-team",
 				"blocked":    false,
 			})
 		case "/team/permissions_list":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"team_id":                 r.URL.Query().Get("team_id"),
 				"team_member_permissions": []string{},
 			})
 		default:
@@ -90,6 +388,140 @@ func TestReadTeamResolvesUnknownOptionalComputedCollections(t *testing.T) {
 	}
 }
 
+func TestTeamDefaultMemberBudgetDurationSchema(t *testing.T) {
+	t.Parallel()
+
+	var response resource.SchemaResponse
+	(&TeamResource{}).Schema(context.Background(), resource.SchemaRequest{}, &response)
+	if response.Diagnostics.HasError() {
+		t.Fatalf("schema diagnostics: %v", response.Diagnostics)
+	}
+	attribute, ok := response.Schema.Attributes["team_member_budget_duration"].(resourceschema.StringAttribute)
+	if !ok {
+		t.Fatalf("team_member_budget_duration schema type = %T", response.Schema.Attributes["team_member_budget_duration"])
+	}
+	if !attribute.Optional || attribute.Computed || attribute.Required {
+		t.Fatalf("team_member_budget_duration must be Optional-only: %#v", attribute)
+	}
+	if len(attribute.Validators) != 1 {
+		t.Fatalf("team_member_budget_duration validators = %d, want duration format validator", len(attribute.Validators))
+	}
+}
+
+func TestBuildTeamRequestIncludesMemberBudgetDuration(t *testing.T) {
+	t.Parallel()
+
+	request, err := (&TeamResource{}).buildTeamRequest(context.Background(), &TeamResourceModel{
+		TeamAlias:            types.StringValue("budget-team"),
+		TeamMemberBudget:     types.Float64Value(50),
+		MemberBudgetDuration: types.StringValue("30d"),
+	}, "team-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := request["team_member_budget_duration"]; got != "30d" {
+		t.Fatalf("team_member_budget_duration = %#v, want 30d", got)
+	}
+}
+
+func TestTeamBudgetInputsRemainOptionalOnly(t *testing.T) {
+	t.Parallel()
+
+	var resp resource.SchemaResponse
+	(&TeamResource{}).Schema(context.Background(), resource.SchemaRequest{}, &resp)
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("team schema returned diagnostics: %v", resp.Diagnostics)
+	}
+
+	for _, name := range []string{"max_budget", "budget_duration"} {
+		attribute, ok := resp.Schema.Attributes[name]
+		if !ok {
+			t.Fatalf("team schema missing %q", name)
+		}
+		if !attribute.IsOptional() {
+			t.Errorf("%s must remain Optional", name)
+		}
+		if attribute.IsComputed() {
+			t.Errorf("%s must not be Computed; Optional+Computed would prevent removal from clearing the API value", name)
+		}
+	}
+}
+
+func TestReadTeamIgnoresUnconfiguredServerBudgetDefaults(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		switch r.URL.Path {
+		case "/team/info":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"team_id":          r.URL.Query().Get("team_id"),
+				"keys":             []interface{}{},
+				"team_memberships": []interface{}{},
+				"team_info": map[string]interface{}{
+					"team_id":          "team-defaults",
+					"team_alias":       "defaults-team",
+					"max_budget":       500.0,
+					"budget_duration":  "30d",
+					"access_group_ids": []interface{}{"externally-managed"},
+					"team_member_budget_table": map[string]interface{}{
+						"max_budget":      25.0,
+						"budget_duration": "30d",
+						"rpm_limit":       10.0,
+						"tpm_limit":       1000.0,
+					},
+				},
+			})
+		case "/team/permissions_list":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"team_id":                 r.URL.Query().Get("team_id"),
+				"team_member_permissions": []string{},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	r := &TeamResource{
+		client: &Client{
+			APIBase:    server.URL,
+			APIKey:     "test-key",
+			HTTPClient: server.Client(),
+		},
+	}
+
+	data := TeamResourceModel{
+		ID:                   types.StringValue("team-defaults"),
+		TeamAlias:            types.StringValue("defaults-team"),
+		MaxBudget:            types.Float64Null(),
+		BudgetDuration:       types.StringNull(),
+		AccessGroupIDs:       types.SetNull(types.StringType),
+		TeamMemberBudget:     types.Float64Null(),
+		MemberBudgetDuration: types.StringNull(),
+		TeamMemberRPMLimit:   types.Int64Null(),
+		TeamMemberTPMLimit:   types.Int64Null(),
+	}
+
+	if err := r.readTeam(context.Background(), &data); err != nil {
+		t.Fatalf("readTeam returned error: %v", err)
+	}
+	if !data.MaxBudget.IsNull() {
+		t.Errorf("unconfigured max_budget should remain null, got %v", data.MaxBudget)
+	}
+	if !data.BudgetDuration.IsNull() {
+		t.Errorf("unconfigured budget_duration should remain null, got %v", data.BudgetDuration)
+	}
+	if !data.TeamMemberBudget.IsNull() || !data.MemberBudgetDuration.IsNull() || !data.TeamMemberRPMLimit.IsNull() || !data.TeamMemberTPMLimit.IsNull() {
+		t.Errorf("unconfigured team member defaults should remain null: budget=%v duration=%v rpm=%v tpm=%v", data.TeamMemberBudget, data.MemberBudgetDuration, data.TeamMemberRPMLimit, data.TeamMemberTPMLimit)
+	}
+	expectedAccessGroups := types.SetValueMust(types.StringType, []attr.Value{types.StringValue("externally-managed")})
+	if !data.AccessGroupIDs.Equal(expectedAccessGroups) {
+		t.Errorf("access_group_ids = %v, want API value %v", data.AccessGroupIDs, expectedAccessGroups)
+	}
+}
+
 func TestReadTeamWithNestedTeamInfoResponse(t *testing.T) {
 	t.Parallel()
 
@@ -100,30 +532,41 @@ func TestReadTeamWithNestedTeamInfoResponse(t *testing.T) {
 		switch r.URL.Path {
 		case "/team/info":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"team_id":          r.URL.Query().Get("team_id"),
+				"keys":             []interface{}{},
+				"team_memberships": []interface{}{},
 				"team_info": map[string]interface{}{
-					"team_id":            "team-abc-123",
-					"team_alias":         "production-team",
-					"organization_id":    "org-1",
-					"max_budget":         500.0,
-					"tpm_limit":          10000.0,
-					"rpm_limit":          1000.0,
-					"budget_duration":    "monthly",
-					"blocked":            false,
-					"tpm_limit_type":     "team",
-					"rpm_limit_type":     "team",
-					"models":             []interface{}{"gpt-4", "claude-3"},
-					"tags":               []interface{}{"prod", "high-priority"},
-					"guardrails":         []interface{}{"content-filter"},
-					"prompts":            []interface{}{},
-					"metadata":           map[string]interface{}{"env": "production"},
-					"model_aliases":      map[string]interface{}{"fast": "gpt-3.5-turbo"},
-					"model_rpm_limit":    map[string]interface{}{"gpt-4": 100.0},
-					"model_tpm_limit":    map[string]interface{}{"gpt-4": 5000.0},
-					"team_member_budget": 50.0,
+					"team_id":         "team-abc-123",
+					"team_alias":      "production-team",
+					"organization_id": "org-1",
+					"max_budget":      500.0,
+					"tpm_limit":       10000.0,
+					"rpm_limit":       1000.0,
+					"budget_duration": "monthly",
+					"blocked":         false,
+					"models":          []interface{}{"gpt-4", "claude-3"},
+					"metadata": map[string]interface{}{
+						"env":             "production",
+						"tpm_limit_type":  "team",
+						"rpm_limit_type":  "team",
+						"tags":            []interface{}{"prod", "high-priority"},
+						"guardrails":      []interface{}{"content-filter"},
+						"prompts":         []interface{}{},
+						"model_rpm_limit": map[string]interface{}{"gpt-4": 100.0},
+						"model_tpm_limit": map[string]interface{}{"gpt-4": 5000.0},
+					},
+					"litellm_model_table": map[string]interface{}{
+						"model_aliases": map[string]interface{}{"fast": "gpt-3.5-turbo"},
+					},
+					"team_member_budget_table": map[string]interface{}{
+						"max_budget":      50.0,
+						"budget_duration": "30d",
+					},
 				},
 			})
 		case "/team/permissions_list":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"team_id":                 r.URL.Query().Get("team_id"),
 				"team_member_permissions": []interface{}{"team_member_add", "team_member_delete"},
 			})
 		default:
@@ -143,6 +586,10 @@ func TestReadTeamWithNestedTeamInfoResponse(t *testing.T) {
 	data := TeamResourceModel{
 		ID:                    types.StringValue("team-abc-123"),
 		TeamAlias:             types.StringValue("production-team"),
+		MaxBudget:             types.Float64Value(500),
+		BudgetDuration:        types.StringValue("monthly"),
+		TeamMemberBudget:      types.Float64Value(50),
+		MemberBudgetDuration:  types.StringValue("30d"),
 		Models:                types.ListUnknown(types.StringType),
 		Tags:                  types.ListUnknown(types.StringType),
 		Guardrails:            types.ListUnknown(types.StringType),
@@ -154,7 +601,7 @@ func TestReadTeamWithNestedTeamInfoResponse(t *testing.T) {
 		TeamMemberPermissions: types.ListUnknown(types.StringType),
 	}
 
-	if err := r.readTeam(context.Background(), &data); err != nil {
+	if err := r.readTeamWithNumericOwnership(context.Background(), &data, true); err != nil {
 		t.Fatalf("readTeam returned error: %v", err)
 	}
 
@@ -179,6 +626,9 @@ func TestReadTeamWithNestedTeamInfoResponse(t *testing.T) {
 	}
 	if data.TeamMemberBudget.ValueFloat64() != 50.0 {
 		t.Fatalf("expected team_member_budget 50.0, got %f", data.TeamMemberBudget.ValueFloat64())
+	}
+	if data.MemberBudgetDuration.ValueString() != "30d" {
+		t.Fatalf("expected team_member_budget_duration 30d, got %q", data.MemberBudgetDuration.ValueString())
 	}
 
 	// Verify lists were populated from nested response
@@ -244,7 +694,10 @@ func TestBuildTeamRequest_RouterSettingsWithFallbacks(t *testing.T) {
 		RouterSettings: rs,
 	}
 
-	req := r.buildTeamRequest(ctx, data, "team-123")
+	req, err := r.buildTeamRequest(ctx, data, "team-123")
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	rsPayload, ok := req["router_settings"].(map[string]interface{})
 	if !ok {
@@ -282,7 +735,10 @@ func TestBuildTeamRequest_NullRouterSettings_SendsEmptyToAPI(t *testing.T) {
 		RouterSettings: types.ObjectNull(routerSettingsAttrTypes),
 	}
 
-	req := r.buildTeamRequest(ctx, data, "team-123")
+	req, err := r.buildTeamRequest(ctx, data, "team-123")
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	rs, exists := req["router_settings"]
 	if !exists {
@@ -306,6 +762,7 @@ func TestReadTeam_RouterSettingsFromAPI(t *testing.T) {
 		switch r.URL.Path {
 		case "/team/info":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"team_id":    "team-456",
 				"team_alias": "fallback-team",
 				"blocked":    false,
 				"router_settings": map[string]interface{}{
@@ -323,6 +780,7 @@ func TestReadTeam_RouterSettingsFromAPI(t *testing.T) {
 			})
 		case "/team/permissions_list":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"team_id":                 r.URL.Query().Get("team_id"),
 				"team_member_permissions": []string{},
 			})
 		default:
@@ -413,11 +871,13 @@ func TestReadTeam_NullRouterSettingsWhenAPIHasNone(t *testing.T) {
 		switch r.URL.Path {
 		case "/team/info":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"team_id":    "team-789",
 				"team_alias": "no-fallback-team",
 				"blocked":    false,
 			})
 		case "/team/permissions_list":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"team_id":                 r.URL.Query().Get("team_id"),
 				"team_member_permissions": []string{},
 			})
 		default:
@@ -458,6 +918,7 @@ func TestReadTeam_DetectsDriftWhenAPIStillHasFallbacks(t *testing.T) {
 		switch r.URL.Path {
 		case "/team/info":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"team_id":    "team-drift",
 				"team_alias": "stale-fallback-team",
 				"blocked":    false,
 				"router_settings": map[string]interface{}{
@@ -470,6 +931,7 @@ func TestReadTeam_DetectsDriftWhenAPIStillHasFallbacks(t *testing.T) {
 			})
 		case "/team/permissions_list":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"team_id":                 r.URL.Query().Get("team_id"),
 				"team_member_permissions": []string{},
 			})
 		default:
@@ -514,22 +976,24 @@ func TestApplyTeamNullableClears_AllTransitionsEmitNull(t *testing.T) {
 	t.Parallel()
 
 	state := &TeamResourceModel{
-		MaxBudget:          types.Float64Value(100),
-		BudgetDuration:     types.StringValue("30d"),
-		TPMLimit:           types.Int64Value(1000),
-		RPMLimit:           types.Int64Value(60),
-		TeamMemberBudget:   types.Float64Value(50),
-		TeamMemberRPMLimit: types.Int64Value(10),
-		TeamMemberTPMLimit: types.Int64Value(500),
+		MaxBudget:            types.Float64Value(100),
+		BudgetDuration:       types.StringValue("30d"),
+		TPMLimit:             types.Int64Value(1000),
+		RPMLimit:             types.Int64Value(60),
+		TeamMemberBudget:     types.Float64Value(50),
+		MemberBudgetDuration: types.StringValue("30d"),
+		TeamMemberRPMLimit:   types.Int64Value(10),
+		TeamMemberTPMLimit:   types.Int64Value(500),
 	}
 	plan := &TeamResourceModel{
-		MaxBudget:          types.Float64Null(),
-		BudgetDuration:     types.StringNull(),
-		TPMLimit:           types.Int64Null(),
-		RPMLimit:           types.Int64Null(),
-		TeamMemberBudget:   types.Float64Null(),
-		TeamMemberRPMLimit: types.Int64Null(),
-		TeamMemberTPMLimit: types.Int64Null(),
+		MaxBudget:            types.Float64Null(),
+		BudgetDuration:       types.StringNull(),
+		TPMLimit:             types.Int64Null(),
+		RPMLimit:             types.Int64Null(),
+		TeamMemberBudget:     types.Float64Null(),
+		MemberBudgetDuration: types.StringNull(),
+		TeamMemberRPMLimit:   types.Int64Null(),
+		TeamMemberTPMLimit:   types.Int64Null(),
 	}
 
 	teamReq := map[string]interface{}{"team_id": "team-123"}
@@ -537,7 +1001,7 @@ func TestApplyTeamNullableClears_AllTransitionsEmitNull(t *testing.T) {
 
 	expectedNullKeys := []string{
 		"max_budget", "budget_duration", "tpm_limit", "rpm_limit",
-		"team_member_budget", "team_member_rpm_limit", "team_member_tpm_limit",
+		"team_member_budget", "team_member_budget_duration", "team_member_rpm_limit", "team_member_tpm_limit",
 	}
 	for _, k := range expectedNullKeys {
 		v, ok := teamReq[k]
@@ -559,6 +1023,24 @@ func TestApplyTeamNullableClears_AllTransitionsEmitNull(t *testing.T) {
 		needle := `"` + k + `":null`
 		if !strings.Contains(bodyStr, needle) {
 			t.Errorf("request body missing %s; got %s", needle, bodyStr)
+		}
+	}
+
+	clearReq := extractTeamMemberBudgetClears(teamReq, "team-123")
+	if clearReq == nil || clearReq["team_id"] != "team-123" {
+		t.Fatalf("team member budget clear request = %#v", clearReq)
+	}
+	for _, key := range []string{
+		"team_member_budget",
+		"team_member_budget_duration",
+		"team_member_rpm_limit",
+		"team_member_tpm_limit",
+	} {
+		if value, exists := clearReq[key]; !exists || value != nil {
+			t.Errorf("clearReq[%q] = %#v, want explicit nil", key, value)
+		}
+		if _, exists := teamReq[key]; exists {
+			t.Errorf("main team request retained extracted clear %q", key)
 		}
 	}
 }
@@ -599,5 +1081,8 @@ func TestApplyTeamNullableClears_NoTransition_NoOp(t *testing.T) {
 
 	if v := teamReq["max_budget"]; v != float64(200) {
 		t.Errorf("helper overwrote stable max_budget; got %v, want 200", v)
+	}
+	if clearReq := extractTeamMemberBudgetClears(teamReq, "team-123"); clearReq != nil {
+		t.Errorf("unexpected team member budget clear request: %#v", clearReq)
 	}
 }

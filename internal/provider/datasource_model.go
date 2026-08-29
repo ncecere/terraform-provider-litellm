@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
@@ -118,119 +119,153 @@ func (d *ModelDataSource) Configure(ctx context.Context, req datasource.Configur
 }
 
 func (d *ModelDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
-	var data ModelDataSourceModel
-
-	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
+	var config ModelDataSourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
-	modelID := data.ModelID.ValueString()
-	endpoint := fmt.Sprintf("/model/info?litellm_model_id=%s", modelID)
-
+	modelID := config.ModelID.ValueString()
+	if config.ModelID.IsNull() || config.ModelID.IsUnknown() || modelID == "" {
+		resp.Diagnostics.AddError("Invalid Model Lookup", "model_id must be known and nonempty")
+		return
+	}
+	endpoint := endpointWithQuery("/model/info", url.Values{"litellm_model_id": []string{modelID}})
 	var rawResult map[string]interface{}
 	if err := readModelDataSourceWithRetry(ctx, d.client, endpoint, &rawResult, 8); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read model '%s': %s", modelID, err))
 		return
 	}
-
-	result := parseModelInfoResult(rawResult)
-	if len(result) == 0 {
+	result, err := modelDataSourceResult(rawResult)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+	if result == nil {
 		resp.Diagnostics.AddError("Not Found", fmt.Sprintf("Model not found: %s", modelID))
 		return
 	}
-
-	// Set ID
-	data.ID = data.ModelID
-
-	// Update fields from response (prefer team_public_model_name for team-scoped models)
-	data.ModelName = types.StringValue("")
-	if modelInfo, ok := result["model_info"].(map[string]interface{}); ok {
-		if teamID, _ := modelInfo["team_id"].(string); teamID != "" {
-			if publicName, ok := modelInfo["team_public_model_name"].(string); ok && publicName != "" {
-				data.ModelName = types.StringValue(publicName)
-			}
-		}
-	}
-	if data.ModelName.ValueString() == "" {
-		if modelName, ok := result["model_name"].(string); ok {
-			data.ModelName = types.StringValue(modelName)
-		}
+	actualID, err := dataSourceRequiredStringAt(result, "model_info", "id")
+	if err != nil || actualID.ValueString() != modelID {
+		resp.Diagnostics.AddError("Invalid API Response", "Model response identity did not match the requested model.")
+		return
 	}
 
-	// Parse litellm_params
-	if litellmParams, ok := result["litellm_params"].(map[string]interface{}); ok {
-		if provider, ok := litellmParams["custom_llm_provider"].(string); ok {
-			data.CustomLLMProvider = types.StringValue(provider)
-		}
-		if apiBase, ok := litellmParams["api_base"].(string); ok {
-			data.ModelAPIBase = types.StringValue(apiBase)
-		}
-		if apiVersion, ok := litellmParams["api_version"].(string); ok {
-			data.APIVersion = types.StringValue(apiVersion)
-		}
-		if tpm, ok := litellmParams["tpm"].(float64); ok {
-			data.TPM = types.Int64Value(int64(tpm))
-		}
-		if rpm, ok := litellmParams["rpm"].(float64); ok {
-			data.RPM = types.Int64Value(int64(rpm))
-		}
-		if awsRegion, ok := litellmParams["aws_region_name"].(string); ok {
-			data.AWSRegionName = types.StringValue(awsRegion)
-		}
+	data := ModelDataSourceModel{ID: actualID, ModelID: config.ModelID}
+	if data.ModelName, err = dataSourceNullableStringAt(result, "model_name"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
 	}
-
-	// Parse model_info
-	if modelInfo, ok := result["model_info"].(map[string]interface{}); ok {
-		if baseModel, ok := modelInfo["base_model"].(string); ok {
-			data.BaseModel = types.StringValue(baseModel)
-		}
-		if tier, ok := modelInfo["tier"].(string); ok {
-			data.Tier = types.StringValue(tier)
-		}
-		if mode, ok := modelInfo["mode"].(string); ok {
-			data.Mode = types.StringValue(mode)
-		}
-		if teamID, ok := modelInfo["team_id"].(string); ok {
-			data.TeamID = types.StringValue(teamID)
-		}
+	teamPublicName, publicErr := dataSourceNullableStringAt(result, "model_info", "team_public_model_name")
+	if publicErr != nil {
+		resp.Diagnostics.AddError("Invalid API Response", publicErr.Error())
+		return
 	}
-
+	if data.TeamID, err = dataSourceNullableStringAt(result, "model_info", "team_id"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+	if !data.TeamID.IsNull() && data.TeamID.ValueString() != "" && !teamPublicName.IsNull() && teamPublicName.ValueString() != "" {
+		data.ModelName = teamPublicName
+	}
+	if data.CustomLLMProvider, err = dataSourceNullableStringAt(result, "litellm_params", "custom_llm_provider"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+	if data.ModelAPIBase, err = dataSourceNullableStringAt(result, "litellm_params", "api_base"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+	if data.APIVersion, err = dataSourceNullableStringAt(result, "litellm_params", "api_version"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+	if data.TPM, err = dataSourceNullableInt64At(result, "litellm_params", "tpm"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+	if data.RPM, err = dataSourceNullableInt64At(result, "litellm_params", "rpm"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+	if data.AWSRegionName, err = dataSourceNullableStringAt(result, "litellm_params", "aws_region_name"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+	if data.BaseModel, err = dataSourceNullableStringAt(result, "model_info", "base_model"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+	if data.Tier, err = dataSourceNullableStringAt(result, "model_info", "tier"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+	if data.Mode, err = dataSourceNullableStringAt(result, "model_info", "mode"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
-func parseModelInfoResult(rawResult map[string]interface{}) map[string]interface{} {
-	if dataArr, ok := rawResult["data"].([]interface{}); ok && len(dataArr) > 0 {
-		if firstItem, ok := dataArr[0].(map[string]interface{}); ok {
-			return firstItem
-		}
+func modelDataSourceResult(rawResult map[string]interface{}) (map[string]interface{}, error) {
+	raw, presence, err := apiValueAt(rawResult, "data")
+	if err != nil {
+		return nil, err
 	}
-	return rawResult
+	if presence == apiValueAbsent {
+		return rawResult, nil
+	}
+	if presence == apiValueNull {
+		return nil, dataSourceShapeError([]string{"data"}, "a list containing exactly one object")
+	}
+	items, ok := raw.([]interface{})
+	if !ok {
+		return nil, dataSourceShapeError([]string{"data"}, "a list containing exactly one object")
+	}
+	if len(items) == 0 {
+		return nil, nil
+	}
+	if len(items) != 1 {
+		return nil, dataSourceShapeError([]string{"data"}, "a list containing exactly one object")
+	}
+	item, ok := items[0].(map[string]interface{})
+	if !ok {
+		return nil, dataSourceShapeError([]string{"data"}, "a list containing exactly one object")
+	}
+	return item, nil
+}
+
+func parseModelInfoResult(rawResult map[string]interface{}) map[string]interface{} {
+	result, _ := modelDataSourceResult(rawResult)
+	return result
 }
 
 func readModelDataSourceWithRetry(ctx context.Context, client *Client, endpoint string, result *map[string]interface{}, maxRetries int) error {
 	var err error
-	delay := 1 * time.Second
+	delay := time.Second
 	maxDelay := 10 * time.Second
-
 	for i := 0; i < maxRetries; i++ {
 		err = client.DoRequestWithResponse(ctx, "GET", endpoint, nil, result)
 		if err == nil {
 			return nil
 		}
-
 		if !IsNotFoundError(err) {
 			return err
 		}
-
 		if i < maxRetries-1 {
-			time.Sleep(delay)
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				if !timer.Stop() {
+					<-timer.C
+				}
+				return ctx.Err()
+			case <-timer.C:
+			}
 			delay *= 2
 			if delay > maxDelay {
 				delay = maxDelay
 			}
 		}
 	}
-
 	return err
 }

@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
@@ -11,13 +12,9 @@ import (
 
 var _ datasource.DataSource = &AgentsListDataSource{}
 
-func NewAgentsListDataSource() datasource.DataSource {
-	return &AgentsListDataSource{}
-}
+func NewAgentsListDataSource() datasource.DataSource { return &AgentsListDataSource{} }
 
-type AgentsListDataSource struct {
-	client *Client
-}
+type AgentsListDataSource struct{ client *Client }
 
 type AgentsListDataSourceModel struct {
 	ID     types.String         `tfsdk:"id"`
@@ -25,168 +22,103 @@ type AgentsListDataSourceModel struct {
 }
 
 type AgentListItemModel struct {
-	AgentID         types.String  `tfsdk:"agent_id"`
-	AgentName       types.String  `tfsdk:"agent_name"`
-	TPMLimit        types.Int64   `tfsdk:"tpm_limit"`
-	RPMLimit        types.Int64   `tfsdk:"rpm_limit"`
-	SessionTPMLimit types.Int64   `tfsdk:"session_tpm_limit"`
-	SessionRPMLimit types.Int64   `tfsdk:"session_rpm_limit"`
-	Spend           types.Float64 `tfsdk:"spend"`
-	CreatedAt       types.String  `tfsdk:"created_at"`
-	UpdatedAt       types.String  `tfsdk:"updated_at"`
-	CreatedBy       types.String  `tfsdk:"created_by"`
-	UpdatedBy       types.String  `tfsdk:"updated_by"`
+	AgentID              types.String  `tfsdk:"agent_id"`
+	AgentName            types.String  `tfsdk:"agent_name"`
+	AgentCardParams      types.Map     `tfsdk:"agent_card_params"`
+	AgentCardParamsJSON  types.String  `tfsdk:"agent_card_params_json"`
+	LiteLLMParams        types.Map     `tfsdk:"litellm_params"`
+	LiteLLMParamsJSON    types.String  `tfsdk:"litellm_params_json"`
+	ObjectPermissionJSON types.String  `tfsdk:"object_permission_json"`
+	TPMLimit             types.Int64   `tfsdk:"tpm_limit"`
+	RPMLimit             types.Int64   `tfsdk:"rpm_limit"`
+	SessionTPMLimit      types.Int64   `tfsdk:"session_tpm_limit"`
+	SessionRPMLimit      types.Int64   `tfsdk:"session_rpm_limit"`
+	StaticHeaders        types.Map     `tfsdk:"static_headers"`
+	ExtraHeaders         types.List    `tfsdk:"extra_headers"`
+	Spend                types.Float64 `tfsdk:"spend"`
+	CreatedAt            types.String  `tfsdk:"created_at"`
+	UpdatedAt            types.String  `tfsdk:"updated_at"`
+	CreatedBy            types.String  `tfsdk:"created_by"`
+	UpdatedBy            types.String  `tfsdk:"updated_by"`
 }
 
-func (d *AgentsListDataSource) Metadata(ctx context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
+func (d *AgentsListDataSource) Metadata(_ context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
 	resp.TypeName = req.ProviderTypeName + "_agents"
 }
 
-func (d *AgentsListDataSource) Schema(ctx context.Context, req datasource.SchemaRequest, resp *datasource.SchemaResponse) {
+func (d *AgentsListDataSource) Schema(_ context.Context, _ datasource.SchemaRequest, resp *datasource.SchemaResponse) {
+	itemAttributes := agentDataComputedAttributes()
+	itemAttributes["agent_id"] = schema.StringAttribute{Description: "The unique agent ID.", Computed: true}
 	resp.Schema = schema.Schema{
-		Description: "Fetches a list of all LiteLLM Agents (A2A).",
+		Description: "Fetches lossless, strictly validated projections of all visible LiteLLM Agents (A2A). Role-sanitized omitted fields are null for that item.",
 		Attributes: map[string]schema.Attribute{
-			"id": schema.StringAttribute{
-				Description: "Placeholder identifier for this data source.",
-				Computed:    true,
-			},
-			"agents": schema.ListNestedAttribute{
-				Description: "List of agents.",
-				Computed:    true,
-				NestedObject: schema.NestedAttributeObject{
-					Attributes: map[string]schema.Attribute{
-						"agent_id": schema.StringAttribute{
-							Description: "The unique agent ID.",
-							Computed:    true,
-						},
-						"agent_name": schema.StringAttribute{
-							Description: "The name of the agent.",
-							Computed:    true,
-						},
-						"tpm_limit": schema.Int64Attribute{
-							Description: "Tokens per minute limit.",
-							Computed:    true,
-						},
-						"rpm_limit": schema.Int64Attribute{
-							Description: "Requests per minute limit.",
-							Computed:    true,
-						},
-						"session_tpm_limit": schema.Int64Attribute{
-							Description: "Per-session tokens per minute limit.",
-							Computed:    true,
-						},
-						"session_rpm_limit": schema.Int64Attribute{
-							Description: "Per-session requests per minute limit.",
-							Computed:    true,
-						},
-						"spend": schema.Float64Attribute{
-							Description: "Total spend for this agent.",
-							Computed:    true,
-						},
-						"created_at": schema.StringAttribute{
-							Description: "Timestamp when the agent was created.",
-							Computed:    true,
-						},
-						"updated_at": schema.StringAttribute{
-							Description: "Timestamp when the agent was last updated.",
-							Computed:    true,
-						},
-						"created_by": schema.StringAttribute{
-							Description: "User who created the agent.",
-							Computed:    true,
-						},
-						"updated_by": schema.StringAttribute{
-							Description: "User who last updated the agent.",
-							Computed:    true,
-						},
-					},
-				},
-			},
+			"id":     schema.StringAttribute{Description: "Stable data-source identifier.", Computed: true},
+			"agents": schema.ListNestedAttribute{Description: "Agents sorted by agent_id.", Computed: true, NestedObject: schema.NestedAttributeObject{Attributes: itemAttributes}},
 		},
 	}
 }
 
-func (d *AgentsListDataSource) Configure(ctx context.Context, req datasource.ConfigureRequest, resp *datasource.ConfigureResponse) {
+func (d *AgentsListDataSource) Configure(_ context.Context, req datasource.ConfigureRequest, resp *datasource.ConfigureResponse) {
 	if req.ProviderData == nil {
 		return
 	}
 	client, ok := req.ProviderData.(*Client)
 	if !ok {
-		resp.Diagnostics.AddError("Unexpected DataSource Configure Type",
-			fmt.Sprintf("Expected *Client, got: %T.", req.ProviderData))
+		resp.Diagnostics.AddError("Unexpected DataSource Configure Type", fmt.Sprintf("Expected *Client, got: %T.", req.ProviderData))
 		return
 	}
 	d.client = client
 }
 
+func agentListItem(projected AgentDataSourceModel) AgentListItemModel {
+	return AgentListItemModel{
+		AgentID: projected.ID, AgentName: projected.AgentName, AgentCardParams: projected.AgentCardParams, AgentCardParamsJSON: projected.AgentCardParamsJSON,
+		LiteLLMParams: projected.LiteLLMParams, LiteLLMParamsJSON: projected.LiteLLMParamsJSON, ObjectPermissionJSON: projected.ObjectPermissionJSON,
+		TPMLimit: projected.TPMLimit, RPMLimit: projected.RPMLimit, SessionTPMLimit: projected.SessionTPMLimit, SessionRPMLimit: projected.SessionRPMLimit,
+		StaticHeaders: projected.StaticHeaders, ExtraHeaders: projected.ExtraHeaders, Spend: projected.Spend,
+		CreatedAt: projected.CreatedAt, UpdatedAt: projected.UpdatedAt, CreatedBy: projected.CreatedBy, UpdatedBy: projected.UpdatedBy,
+	}
+}
+
 func (d *AgentsListDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
 	var data AgentsListDataSourceModel
-	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
-	if resp.Diagnostics.HasError() {
+	result, err := fetchTopLevelListObjects(ctx, d.client, "/v1/agents", "agent item")
+	if err != nil {
+		resp.Diagnostics.AddError("Client Error", "Unable to list agents authoritatively.")
 		return
 	}
-
-	var result []map[string]interface{}
-	if err := d.client.DoRequestWithResponse(ctx, "GET", "/v1/agents", nil, &result); err != nil {
-		// The API may return a top-level array or an object with a key.
-		// Try unwrapping if needed.
-		var wrapped map[string]interface{}
-		if err2 := d.client.DoRequestWithResponse(ctx, "GET", "/v1/agents", nil, &wrapped); err2 == nil {
-			if agents, ok := wrapped["agents"].([]interface{}); ok {
-				for _, a := range agents {
-					if m, ok := a.(map[string]interface{}); ok {
-						result = append(result, m)
-					}
-				}
-			}
-		}
-		if result == nil {
-			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to list agents: %s", err))
+	agents := make([]AgentListItemModel, 0, len(result))
+	seen := make(map[string]struct{}, len(result))
+	for _, item := range result {
+		identity, identityErr := dataSourceRequiredStringAt(item, "agent_id")
+		if identityErr != nil {
+			resp.Diagnostics.AddError("Invalid API Response", "/v1/agents returned an agent object without a valid agent_id.")
 			return
 		}
+		id := identity.ValueString()
+		for _, field := range []string{"tpm_limit", "rpm_limit", "session_tpm_limit", "session_rpm_limit"} {
+			if _, fieldErr := dataSourceNullableInt64At(item, field); fieldErr != nil {
+				resp.Diagnostics.AddError("Invalid API Response", "/v1/agents returned a malformed agent object.")
+				return
+			}
+		}
+		if _, fieldErr := dataSourceNullableFloat64At(item, "spend"); fieldErr != nil {
+			resp.Diagnostics.AddError("Invalid API Response", "/v1/agents returned a malformed agent object.")
+			return
+		}
+		projected, err := projectAgentData(ctx, item, id)
+		if err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", "/v1/agents returned a malformed agent object.")
+			return
+		}
+		if err := dataSourceListIdentity(seen, id, "/v1/agents", "agent_id"); err != nil {
+			resp.Diagnostics.AddError("Invalid API Response", err.Error())
+			return
+		}
+		agents = append(agents, agentListItem(projected))
 	}
-
-	agents := make([]AgentListItemModel, 0, len(result))
-	for _, item := range result {
-		agent := AgentListItemModel{}
-		if v, ok := item["agent_id"].(string); ok {
-			agent.AgentID = types.StringValue(v)
-		}
-		if v, ok := item["agent_name"].(string); ok {
-			agent.AgentName = types.StringValue(v)
-		}
-		if v, ok := item["tpm_limit"].(float64); ok {
-			agent.TPMLimit = types.Int64Value(int64(v))
-		}
-		if v, ok := item["rpm_limit"].(float64); ok {
-			agent.RPMLimit = types.Int64Value(int64(v))
-		}
-		if v, ok := item["session_tpm_limit"].(float64); ok {
-			agent.SessionTPMLimit = types.Int64Value(int64(v))
-		}
-		if v, ok := item["session_rpm_limit"].(float64); ok {
-			agent.SessionRPMLimit = types.Int64Value(int64(v))
-		}
-		if v, ok := item["spend"].(float64); ok {
-			agent.Spend = types.Float64Value(v)
-		}
-		if v, ok := item["created_at"].(string); ok {
-			agent.CreatedAt = types.StringValue(v)
-		}
-		if v, ok := item["updated_at"].(string); ok {
-			agent.UpdatedAt = types.StringValue(v)
-		}
-		if v, ok := item["created_by"].(string); ok {
-			agent.CreatedBy = types.StringValue(v)
-		}
-		if v, ok := item["updated_by"].(string); ok {
-			agent.UpdatedBy = types.StringValue(v)
-		}
-		agents = append(agents, agent)
-	}
-
+	sort.SliceStable(agents, func(i, j int) bool { return agents[i].AgentID.ValueString() < agents[j].AgentID.ValueString() })
 	data.ID = types.StringValue("agents-list")
 	data.Agents = agents
-
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }

@@ -4,101 +4,388 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
+	"time"
 )
 
-// DoRequest performs an HTTP request with context and standard headers.
-func (c *Client) DoRequest(ctx context.Context, method, path string, body interface{}) (*http.Response, error) {
-	url := c.APIBase + path
+// APIError represents a non-2xx LiteLLM response without retaining the raw
+// response body. Body is retained for source compatibility but contains only
+// the same bounded, sanitized content as Detail.
+type APIError struct {
+	StatusCode int
+	Body       string // Deprecated: use Detail. Raw response bodies are never stored.
+	RequestID  string
+	Detail     string
 
-	var req *http.Request
-	var err error
+	DetailOmitted bool
+	BodyTruncated bool
 
+	fallbackNotReady bool
+}
+
+func (e *APIError) Error() string {
+	message := fmt.Sprintf("API request failed with status %d", e.StatusCode)
+	if e.RequestID != "" {
+		message += fmt.Sprintf(" (request ID %q)", e.RequestID)
+	}
+	if e.Detail != "" {
+		message += ": " + e.Detail
+	} else if e.DetailOmitted || e.BodyTruncated {
+		message += "; response detail omitted"
+	}
+	return message
+}
+
+func (c *Client) prepareRequest(ctx context.Context, method, requestPath string, body interface{}) (*http.Request, requestSafety, error) {
+	// Explicit cancellation is the only context state that precedes local
+	// request validation. A deadline still allows malformed bodies, URLs, and
+	// other terminal local configuration to fail closed before dispatch.
+	if err := ctx.Err(); errors.Is(err, context.Canceled) {
+		return nil, requestSafety{}, safeTransportFailure(context.Canceled)
+	}
+	if requestPath == "" || strings.HasPrefix(requestPath, invalidReviewedEndpoint) {
+		return nil, requestSafety{}, &safeResponseError{
+			kind:     "LiteLLM endpoint identity cannot be represented safely by the reviewed route",
+			terminal: true,
+			stage:    safeResponseFailureLocal,
+		}
+	}
+
+	var jsonBody []byte
 	if body != nil {
-		jsonBody, err := json.Marshal(body)
+		encoded, err := json.Marshal(body)
 		if err != nil {
-			return nil, fmt.Errorf("failed to marshal request body: %w", err)
+			if errors.Is(ctx.Err(), context.Canceled) {
+				return nil, requestSafety{}, safeTransportFailure(context.Canceled)
+			}
+			return nil, requestSafety{}, &safeResponseError{
+				kind:     "failed to encode LiteLLM request",
+				identity: safeErrorIdentity(err),
+				terminal: true,
+				stage:    safeResponseFailureLocal,
+			}
 		}
-		req, err = http.NewRequestWithContext(ctx, method, url, bytes.NewBuffer(jsonBody))
-		if err != nil {
-			return nil, fmt.Errorf("failed to create request: %w", err)
-		}
-	} else {
-		req, err = http.NewRequestWithContext(ctx, method, url, nil)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create request: %w", err)
-		}
+		jsonBody = encoded
+	}
+	// Marshaler implementations are caller code and may cancel the request
+	// context whether they return an encoding error or valid JSON.
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return nil, requestSafety{}, safeTransportFailure(context.Canceled)
 	}
 
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("x-api-key", c.APIKey)
-	req.Header.Set("Authorization", "Bearer "+c.APIKey)
-
+	request, err := http.NewRequestWithContext(ctx, method, c.APIBase+requestPath, bytes.NewReader(jsonBody))
+	if err != nil {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return nil, requestSafety{}, safeTransportFailure(context.Canceled)
+		}
+		// Preserve the established sanitized diagnostic while recording that
+		// request construction is terminal local validation, not transport.
+		return nil, requestSafety{}, &safeTransportError{
+			kind:     safeTransportFailure(err).Error(),
+			terminal: true,
+		}
+	}
+	if (request.URL.Scheme != "http" && request.URL.Scheme != "https") || request.URL.Host == "" {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return nil, requestSafety{}, safeTransportFailure(context.Canceled)
+		}
+		return nil, requestSafety{}, &safeResponseError{
+			kind:     "LiteLLM API URL configuration is invalid",
+			terminal: true,
+			stage:    safeResponseFailureLocal,
+		}
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("x-api-key", c.APIKey)
+	request.Header.Set("Authorization", "Bearer "+c.APIKey)
 	if c.LiteLLMChangedBy != "" {
-		req.Header.Set("litellm-changed-by", c.LiteLLMChangedBy)
+		request.Header.Set("litellm-changed-by", c.LiteLLMChangedBy)
 	}
 
-	return c.HTTPClient.Do(req)
+	safety := classifyRequestSafety(request, requestPath, jsonBody, c.APIKey)
+	if errors.Is(ctx.Err(), context.Canceled) {
+		return nil, requestSafety{}, safeTransportFailure(context.Canceled)
+	}
+	return request, safety, nil
 }
 
-// DoRequestWithResponse performs an HTTP request and decodes the JSON response.
-func (c *Client) DoRequestWithResponse(ctx context.Context, method, path string, body interface{}, result interface{}) error {
-	resp, err := c.DoRequest(ctx, method, path, body)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
+func (c *Client) executeRequest(request *http.Request) (*http.Response, error) {
+	return c.executeRequestWithOptions(request, clientRequestOptions{})
+}
 
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read response body: %w", err)
+type clientRequestOptions struct {
+	freshConnection bool
+	now             func() time.Time
+}
+
+// executeRequestWithOptions keeps fresh-connection behavior deliberately narrow.
+// Bounded worker-cache and write-convergence probes require the provider's cloneable *http.Transport, then
+// set request.Close and use a cloned transport with an empty connection pool.
+// request.Close also makes Go's HTTP/2 transport allocate a single-use connection.
+// An arbitrary custom RoundTripper fails closed because connection freshness cannot
+// be proved. The cloned transport is closed after the response body is consumed.
+func (c *Client) executeRequestWithOptions(request *http.Request, options clientRequestOptions) (*http.Response, error) {
+	configuredClient := c.HTTPClient
+	if configuredClient == nil {
+		configuredClient = http.DefaultClient
+	}
+	// Cancellation always dominates local execution configuration. Deadlines are
+	// checked only after the terminal fresh-transport requirement below.
+	if err := request.Context().Err(); errors.Is(err, context.Canceled) {
+		return nil, safeTransportFailure(context.Canceled)
 	}
 
-	// Handle non-2xx status codes
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(bodyBytes))
+	// Redirect policy is mutable client configuration. Clone the value for every
+	// execution so provider requests never follow redirects and never race with
+	// or modify a caller-supplied client.
+	httpClientValue := *configuredClient
+	httpClientValue.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
 	}
+	httpClient := &httpClientValue
 
-	// If no result expected, return early
-	if result == nil {
-		return nil
-	}
-
-	// Parse response
-	if err := json.Unmarshal(bodyBytes, result); err != nil {
-		// For empty responses, this is acceptable
-		if len(bodyBytes) == 0 || string(bodyBytes) == "null" {
-			return nil
+	cleanup := func() {}
+	if options.freshConnection {
+		transport := httpClient.Transport
+		if transport == nil {
+			transport = http.DefaultTransport
 		}
-		return fmt.Errorf("failed to parse response: %w", err)
+		baseTransport, ok := transport.(*http.Transport)
+		if !ok || baseTransport == nil {
+			// Cancellation is re-checked at the validation return because caller
+			// code may cancel between request preparation and fresh dispatch.
+			if errors.Is(request.Context().Err(), context.Canceled) {
+				return nil, safeTransportFailure(context.Canceled)
+			}
+			// Validate the terminal freshness requirement before consulting an
+			// expired deadline. request.Close is only a hint to an arbitrary
+			// RoundTripper, so independent connections cannot otherwise be proved.
+			return nil, &safeTransportError{
+				kind:     "fresh LiteLLM connection is unavailable for the configured HTTP transport",
+				terminal: true,
+			}
+		}
+		request.Close = true
+		freshTransport := baseTransport.Clone()
+		freshTransport.DisableKeepAlives = true
+		httpClient.Transport = freshTransport
+		cleanup = freshTransport.CloseIdleConnections
 	}
-
-	return nil
+	if err := request.Context().Err(); err != nil {
+		cleanup()
+		return nil, safeTransportFailure(err)
+	}
+	response, err := httpClient.Do(request)
+	if err != nil {
+		cleanup()
+		if response != nil && response.Body != nil {
+			_ = response.Body.Close()
+		}
+		return nil, safeDispatchedTransportFailure(err)
+	}
+	if options.freshConnection {
+		response.Body = &cleanupReadCloser{ReadCloser: response.Body, cleanup: cleanup}
+	}
+	return response, nil
 }
 
-// IsNotFoundError checks if the error message indicates a not found condition.
+type cleanupReadCloser struct {
+	io.ReadCloser
+	cleanup func()
+}
+
+func (c *cleanupReadCloser) Close() error {
+	err := c.ReadCloser.Close()
+	c.cleanup()
+	return err
+}
+
+// DoRequest performs an HTTP request with context and standard headers. Any
+// transport error returned by this method deliberately omits the request URL.
+func (c *Client) DoRequest(ctx context.Context, method, requestPath string, body interface{}) (*http.Response, error) {
+	request, _, err := c.prepareRequest(ctx, method, requestPath, body)
+	if err != nil {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return nil, safeTransportFailure(context.Canceled)
+		}
+		return nil, err
+	}
+	return c.executeRequest(request)
+}
+
+// DoRequestWithResponse performs one HTTP request and decodes the JSON response.
+// It never retries, including for mutations. Response reads are bounded and
+// every returned error is safe to include in a Terraform diagnostic.
+func (c *Client) DoRequestWithResponse(ctx context.Context, method, requestPath string, body interface{}, result interface{}) error {
+	_, err := c.doRequestWithResponse(ctx, method, requestPath, body, result)
+	return err
+}
+
+// doFreshRequestWithResponse is reserved for bounded worker-cache and
+// write-convergence probes. It preserves the normal bounded response and
+// redaction path while preventing HTTP keepalive from pinning consecutive
+// probes to one LiteLLM worker. Every fresh probe remains single-attempt and
+// never invokes the safe-read retry layer.
+func (c *Client) doFreshRequestWithResponse(ctx context.Context, method, requestPath string, body interface{}, result interface{}) error {
+	_, err := c.doRequestWithResponseOptions(ctx, method, requestPath, body, result, clientRequestOptions{freshConnection: true})
+	return err
+}
+
+// doRequestWithResponse is the single bounded, redacted response path used by
+// callers that also need to know whether LiteLLM accepted a mutation before a
+// success body failed validation. accepted is true only for an HTTP 2xx
+// response; it does not imply that the bounded body was readable or valid JSON.
+func (c *Client) doRequestWithResponse(ctx context.Context, method, requestPath string, body interface{}, result interface{}) (accepted bool, err error) {
+	return c.doRequestWithResponseOptions(ctx, method, requestPath, body, result, clientRequestOptions{})
+}
+
+func (c *Client) doRequestWithResponseOptions(ctx context.Context, method, requestPath string, body interface{}, result interface{}, options clientRequestOptions) (accepted bool, err error) {
+	request, safety, err := c.prepareRequest(ctx, method, requestPath, body)
+	if err != nil {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return false, safeTransportFailure(context.Canceled)
+		}
+		return false, err
+	}
+	response, err := c.executeRequestWithOptions(request, options)
+	if err != nil {
+		return false, err
+	}
+	bodyClosed := false
+	defer func() {
+		if !bodyClosed {
+			_ = response.Body.Close()
+		}
+	}()
+	closeBody := func() error {
+		// Mark before invoking caller-controlled Close so the deferred fallback
+		// can never double-close a body that reports an error.
+		bodyClosed = true
+		return response.Body.Close()
+	}
+
+	accepted = response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices
+	requestID := safeRequestID(response.Header, safety)
+	now := time.Now()
+	if options.now != nil {
+		now = options.now()
+	}
+	retryAfter, hasRetryAfter := safeRetryAfterWithDeadline(response.Header, now, maxAcceptedRetryAfter)
+	limit := maxSuccessResponseBody
+	if !accepted {
+		limit = maxErrorResponseBody
+	}
+
+	advertisedOversize := response.ContentLength > limit
+	readLimit := limit
+	if advertisedOversize {
+		// The advertised length already proves the safety contract failed. Still
+		// perform a bounded read before Close so an immediate read failure is
+		// combined with any close failure without consuming the oversized body.
+		readLimit = 0
+	}
+	bodyBytes, truncated, readErr := readBoundedBody(response.Body, readLimit)
+	truncated = truncated || advertisedOversize
+	closeErr := closeBody()
+	bodyErr := errors.Join(readErr, closeErr)
+	if bodyErr != nil {
+		traits := collectRawHTTPFailureTraits(bodyErr)
+		kind := "failed to read or close LiteLLM response"
+		stage := safeResponseFailureAcceptedBodyRead
+		if !accepted {
+			kind = "failed to read or close LiteLLM error response"
+			stage = safeResponseFailureStatusBodyRead
+		}
+		return accepted, withSafeRetrySchedule(&safeResponseError{
+			statusCode:        response.StatusCode,
+			requestID:         requestID,
+			kind:              kind,
+			identity:          safeErrorIdentity(bodyErr),
+			retryable:         safeTemporaryResponseFailure(bodyErr),
+			canceled:          traits.canceled,
+			terminal:          traits.terminal(),
+			deadline:          traits.deadline,
+			safeReadTransient: safeReadTransientFailure(bodyErr),
+			stage:             stage,
+			dispatched:        true,
+			accepted:          accepted,
+		}, retryAfter, hasRetryAfter)
+	}
+	if advertisedOversize {
+		if !accepted {
+			return false, withSafeRetrySchedule(&APIError{
+				StatusCode:    response.StatusCode,
+				RequestID:     requestID,
+				DetailOmitted: true,
+				BodyTruncated: true,
+			}, retryAfter, hasRetryAfter)
+		}
+		return true, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "LiteLLM response exceeded the provider safety limit", stage: safeResponseFailureContract, dispatched: true, accepted: true}
+	}
+
+	if !accepted {
+		fallbackNotReady := classifyFallbackNotReadyBody(bodyBytes)
+		detail, detailOmitted := "", true
+		if !truncated && (response.StatusCode < http.StatusMultipleChoices || response.StatusCode >= http.StatusBadRequest) {
+			detail, detailOmitted = safeResponseDetail(bodyBytes, response.Header.Get("Content-Type"), safety)
+		}
+		return false, withSafeRetrySchedule(&APIError{
+			StatusCode:       response.StatusCode,
+			Body:             detail,
+			RequestID:        requestID,
+			Detail:           detail,
+			DetailOmitted:    detailOmitted,
+			BodyTruncated:    truncated,
+			fallbackNotReady: fallbackNotReady,
+		}, retryAfter, hasRetryAfter)
+	}
+
+	if truncated {
+		return true, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "LiteLLM response exceeded the provider safety limit", stage: safeResponseFailureContract, dispatched: true, accepted: true}
+	}
+	if result == nil {
+		return true, nil
+	}
+	trimmedBody := bytes.TrimSpace(bodyBytes)
+	if len(trimmedBody) == 0 || bytes.Equal(trimmedBody, []byte("null")) {
+		return true, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "LiteLLM returned an empty JSON response where an object or array was required", retryable: true, stage: safeResponseFailureContract, dispatched: true, accepted: true}
+	}
+	if err := decodeJSONUseNumber(trimmedBody, result); err != nil {
+		return true, &safeResponseError{statusCode: response.StatusCode, requestID: requestID, kind: "failed to decode LiteLLM response as JSON", identity: safeErrorIdentity(err), retryable: true, stage: safeResponseFailureContract, dispatched: true, accepted: true}
+	}
+	return true, nil
+}
+
+// IsAPIErrorStatus reports whether an error came from an HTTP API response
+// with the exact status code. Callers that must distinguish absence from an
+// unexpected error should use this instead of response-body heuristics.
+func IsAPIErrorStatus(err error, statusCode int) bool {
+	classification := ClassifyHTTPFailure(err)
+	return (classification.Kind == HTTPFailureTransientResponse || classification.Kind == HTTPFailureTerminalResponse) &&
+		classification.StatusCode == statusCode && hasAuthoritativeAPIStatus(err, statusCode)
+}
+
+// IsNotFoundError reports exact typed HTTP 404 responses only.
+// Deprecated: use IsAPIErrorStatus(err, http.StatusNotFound) when the endpoint's
+// absence contract is explicit.
 func IsNotFoundError(err error) bool {
-	if err == nil {
-		return false
-	}
-	errStr := err.Error()
-	return contains(errStr, "not found") ||
-		contains(errStr, "404") ||
-		contains(errStr, "does not exist")
+	return IsAPIErrorStatus(err, http.StatusNotFound)
 }
 
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsImpl(s, substr))
-}
-
-func containsImpl(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
+func isFallbackNotReadyError(err error) bool {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		if apiErr.fallbackNotReady {
 			return true
 		}
+		text := strings.ToLower(apiErr.Detail + " " + apiErr.Body)
+		return strings.Contains(text, "invalid fallback models") || strings.Contains(text, "not found in router")
 	}
-	return false
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "invalid fallback models") || strings.Contains(text, "not found in router")
 }

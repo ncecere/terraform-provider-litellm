@@ -68,6 +68,26 @@ func TestConvertMetadataToNative_JSONObject(t *testing.T) {
 	}
 }
 
+func TestConvertMetadataToNative_PreservesExactNestedNumbers(t *testing.T) {
+	t.Parallel()
+
+	result := convertMetadataToNative(map[string]string{
+		"numeric": `{"large":9007199254740993,"close":1.0000000000000001}`,
+	})
+	object, ok := result["numeric"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("numeric metadata = %T", result["numeric"])
+	}
+	large, largeOK := object["large"].(json.Number)
+	closeValue, closeOK := object["close"].(json.Number)
+	if !largeOK || large.String() != "9007199254740993" || !closeOK || closeValue.String() != "1.0000000000000001" {
+		t.Fatalf("numeric metadata rounded: %#v", object)
+	}
+	if got := metadataValueToString(object); got != `{"close":1.0000000000000001,"large":9007199254740993}` {
+		t.Fatalf("numeric metadata read-back = %s", got)
+	}
+}
+
 func TestConvertMetadataToNative_MixedValues(t *testing.T) {
 	t.Parallel()
 
@@ -179,6 +199,71 @@ func TestMetadataValueToString_Bool(t *testing.T) {
 
 // TestMetadataRoundTrip verifies the full cycle:
 // Terraform map(string) → convertMetadataToNative → API → metadataValueToString → map(string)
+func TestMetadataValueToStringPreservingMasked(t *testing.T) {
+	t.Parallel()
+
+	configured := `[{"callback_name":"langfuse_otel","callback_vars":{"host":"https://configured.example","public_key":"pk-original","secret_key":"sk-original"}}]`
+	apiValue := []interface{}{
+		map[string]interface{}{
+			"callback_name": "langfuse_otel",
+			"callback_vars": map[string]interface{}{
+				"host":       "https://changed.example",
+				"public_key": "litellm_enc::public",
+				"secret_key": "litellm_enc::secret",
+			},
+		},
+	}
+
+	got := metadataValueToStringPreservingMasked(apiValue, configured)
+	want := `[{"callback_name":"langfuse_otel","callback_vars":{"host":"https://changed.example","public_key":"pk-original","secret_key":"sk-original"}}]`
+	if got != want {
+		t.Fatalf("preserved metadata = %s, want %s", got, want)
+	}
+}
+
+func TestMetadataValueToStringPreservingMaskedScalar(t *testing.T) {
+	t.Parallel()
+
+	if got := metadataValueToStringPreservingMasked("litellm_enc::opaque", "configured-secret"); got != "configured-secret" {
+		t.Fatalf("masked scalar = %q, want configured value", got)
+	}
+	if got := metadataValueToStringPreservingMasked("***REDACTED***", "configured-secret"); got != "configured-secret" {
+		t.Fatalf("redacted scalar = %q, want configured value", got)
+	}
+	for _, apiValue := range []string{"changed", "not-redacted", "status****"} {
+		if got := metadataValueToStringPreservingMasked(apiValue, "configured"); got != apiValue {
+			t.Fatalf("unmasked scalar = %q, want API value %q", got, apiValue)
+		}
+	}
+}
+
+func TestMetadataValueToStringPreservingMaskedKeepsExactSemanticFormatting(t *testing.T) {
+	t.Parallel()
+
+	configured := `{ "large": 9007199254740993, "fraction": 9.007199254740993e15 }`
+	apiValue := map[string]interface{}{
+		"fraction": json.Number("9007199254740993.0"),
+		"large":    json.Number("9007199254740993"),
+	}
+	if got := metadataValueToStringPreservingMasked(apiValue, configured); got != configured {
+		t.Fatalf("semantically equal exact metadata formatting changed: %s", got)
+	}
+	apiValue["large"] = json.Number("9007199254740992")
+	if got := metadataValueToStringPreservingMasked(apiValue, configured); got == configured {
+		t.Fatal("distinct metadata integer above 2^53 was hidden as semantically equal")
+	}
+}
+
+func TestMetadataValueToStringPreservingMaskedDoesNotHideStructuralDrift(t *testing.T) {
+	t.Parallel()
+
+	for _, configured := range []string{`{"secret":"configured"}`, `["configured"]`} {
+		if got := metadataValueToStringPreservingMasked("litellm_enc::opaque", configured); got != "litellm_enc::opaque" {
+			t.Fatalf("masked scalar replacing %s = %q, want structural drift", configured, got)
+		}
+	}
+}
+
 func TestMetadataRoundTrip(t *testing.T) {
 	t.Parallel()
 

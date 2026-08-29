@@ -1,0 +1,40 @@
+name: Reproduce LiteLLM API contract
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reproduce:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out provider
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          path: provider
+      - name: Check out exact LiteLLM source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          repository: BerriAI/litellm
+          ref: d8f71d7bdbd7c9873d98293f83d64c6db72847e6
+          path: litellm
+          fetch-depth: 0
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12.14'
+      - name: Install and verify pinned uv
+        run: |
+          python -m pip install uv==0.12.6
+          test "$(uv --version | awk '{print $1 " " $2}')" = "uv 0.12.6"
+      - name: Regenerate twice with distinct hash seeds and compare checked artifacts
+        working-directory: provider
+        env:
+          LITELLM_SOURCE: ../litellm
+          UV: uv
+        run: make contract-diff
+      - name: Run offline verifier
+        working-directory: provider
+        run: make contract-check

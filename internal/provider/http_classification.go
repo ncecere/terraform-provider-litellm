@@ -1,0 +1,476 @@
+package provider
+
+import (
+	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/url"
+	"reflect"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+)
+
+// HTTPFailureKind is the content-free category of a failed HTTP operation.
+// It deliberately carries no URL, response text, header value, or transport
+// cause.
+type HTTPFailureKind uint8
+
+const (
+	HTTPFailureNone HTTPFailureKind = iota
+	HTTPFailureCanceled
+	HTTPFailureDeadline
+	HTTPFailureTransientTransport
+	HTTPFailureTransientAcceptedResponse
+	HTTPFailureTransientResponse
+	HTTPFailureTerminalResponse
+	HTTPFailureContractOrLocal
+)
+
+// HTTPFailureClassification contains only values that are safe to use for
+// retry and mutation-uncertainty decisions. ResponseAccepted means that a 2xx
+// response was received; it does not mean that its body satisfied the caller's
+// response contract.
+type HTTPFailureClassification struct {
+	Kind HTTPFailureKind
+
+	StatusCode        int
+	RetryAfter        time.Duration
+	HasRetryAfter     bool
+	RequestDispatched bool
+	ResponseAccepted  bool
+}
+
+type httpStatusCandidate struct {
+	code      int
+	set       bool
+	ambiguous bool
+}
+
+func (c *httpStatusCandidate) add(statusCode int) {
+	// Every response participates. An invalid status therefore makes the
+	// aggregate ambiguous instead of disappearing beside a valid sibling.
+	if statusCode < 100 || statusCode > 599 {
+		c.ambiguous = true
+		return
+	}
+	if !c.set {
+		c.code = statusCode
+		c.set = true
+		return
+	}
+	if c.code != statusCode {
+		c.ambiguous = true
+	}
+}
+
+func (c httpStatusCandidate) value() int {
+	if !c.set || c.ambiguous || c.code < 100 || c.code > 599 {
+		return 0
+	}
+	return c.code
+}
+
+type httpFailureTraits struct {
+	canceled           bool
+	terminal           bool
+	deadline           bool
+	transientTransport bool
+	transientAccepted  bool
+	transientStatus    bool
+	terminalStatus     bool
+	dispatched         bool
+	accepted           bool
+	responseNodes      int
+	status             httpStatusCandidate
+}
+
+// ClassifyHTTPFailure walks the complete error tree and aggregates only
+// content-free traits. Provider sanitizer nodes are classification boundaries:
+// their raw cause has already been discarded and their synthetic identity must
+// not be mistaken for a stronger trait (for example, a net timeout identity is
+// not an explicit context deadline).
+func ClassifyHTTPFailure(err error) HTTPFailureClassification {
+	if err == nil {
+		return HTTPFailureClassification{Kind: HTTPFailureNone}
+	}
+
+	var traits httpFailureTraits
+	visitedNodes := 0
+	walkErrorTreeControlled(err, func(node error) bool {
+		visitedNodes++
+		switch typed := node.(type) {
+		case *safeTransportError:
+			traits.canceled = traits.canceled || typed.canceled
+			traits.terminal = traits.terminal || typed.terminal
+			traits.deadline = traits.deadline || typed.deadline
+			traits.transientTransport = traits.transientTransport || typed.safeReadTransient || typed.Retryable()
+			traits.dispatched = traits.dispatched || typed.dispatched
+			traits.accepted = traits.accepted || typed.accepted
+			if typed.accepted {
+				// Retry-boundary errors can conservatively retain that an operation
+				// accepted a response without retaining an authoritative status.
+				traits.responseNodes++
+				traits.status.add(0)
+			}
+			return false
+		case *safeResponseError:
+			traits.canceled = traits.canceled || typed.canceled
+			traits.terminal = traits.terminal || typed.terminal
+			traits.deadline = traits.deadline || typed.deadline
+			traits.dispatched = traits.dispatched || typed.dispatched
+			traits.accepted = traits.accepted || typed.accepted
+			responseBearing := typed.dispatched || typed.accepted || typed.statusCode != 0 ||
+				typed.stage == safeResponseFailureStatusBodyRead || typed.stage == safeResponseFailureAcceptedBodyRead
+			if responseBearing {
+				traits.responseNodes++
+				traits.status.add(typed.statusCode)
+			}
+
+			if typed.stage == safeResponseFailureStatusBodyRead {
+				// Reading or closing the response failed, so its status is retained
+				// only as diagnostic metadata. It cannot establish an exact status,
+				// a terminal response, or absence.
+				if typed.safeReadTransient {
+					traits.transientTransport = true
+				}
+			} else if typed.accepted {
+				if typed.stage == safeResponseFailureAcceptedBodyRead && typed.safeReadTransient {
+					traits.transientAccepted = true
+				}
+			} else if typed.dispatched && typed.statusCode >= http.StatusMultipleChoices && typed.statusCode <= 599 {
+				if isTransientHTTPStatus(typed.statusCode) {
+					traits.transientStatus = true
+				} else {
+					traits.terminalStatus = true
+				}
+			}
+			return false
+		case *APIError:
+			traits.dispatched = true
+			traits.responseNodes++
+			traits.status.add(typed.StatusCode)
+			if isTransientHTTPStatus(typed.StatusCode) {
+				traits.transientStatus = true
+			} else if typed.StatusCode >= http.StatusMultipleChoices && typed.StatusCode <= 599 {
+				traits.terminalStatus = true
+			}
+			return false
+		case *safeRetryScheduledError:
+			return true
+		}
+
+		switch node {
+		case context.Canceled:
+			traits.canceled = true
+		case context.DeadlineExceeded:
+			traits.deadline = true
+		case http.ErrSchemeMismatch, http.ErrNotSupported, errors.ErrUnsupported:
+			traits.terminal = true
+		case io.EOF, io.ErrUnexpectedEOF,
+			syscall.ECONNRESET, syscall.ECONNABORTED, syscall.ECONNREFUSED,
+			syscall.EPIPE, syscall.ENETDOWN, syscall.ENETUNREACH, syscall.EHOSTUNREACH:
+			traits.transientTransport = true
+		}
+		switch node.(type) {
+		case x509.UnknownAuthorityError, *x509.UnknownAuthorityError,
+			x509.HostnameError, *x509.HostnameError,
+			x509.CertificateInvalidError, *x509.CertificateInvalidError,
+			x509.SystemRootsError, *x509.SystemRootsError,
+			x509.ConstraintViolationError, *x509.ConstraintViolationError,
+			x509.InsecureAlgorithmError, *x509.InsecureAlgorithmError,
+			x509.UnhandledCriticalExtension, *x509.UnhandledCriticalExtension,
+			*tls.CertificateVerificationError,
+			tls.RecordHeaderError, *tls.RecordHeaderError,
+			tls.AlertError, *tls.AlertError,
+			*http.ProtocolError,
+			net.InvalidAddrError, *net.InvalidAddrError,
+			net.UnknownNetworkError, *net.UnknownNetworkError,
+			*net.ParseError,
+			url.InvalidHostError, *url.InvalidHostError:
+			traits.terminal = true
+		}
+		if netErr, ok := node.(net.Error); ok && (netErr.Timeout() || netErr.Temporary()) {
+			traits.transientTransport = true
+		}
+		return true
+	})
+
+	if visitedNodes == 0 {
+		return HTTPFailureClassification{Kind: HTTPFailureNone}
+	}
+
+	classification := HTTPFailureClassification{
+		Kind:              HTTPFailureContractOrLocal,
+		RequestDispatched: traits.dispatched || traits.accepted,
+		ResponseAccepted:  traits.accepted,
+	}
+
+	// Exact global precedence. The order of transient sub-kinds is fixed as
+	// transport, accepted body, then status so a typed terminal status can never
+	// turn a stronger joined failure into absence.
+	switch {
+	case traits.canceled:
+		classification.Kind = HTTPFailureCanceled
+	case traits.terminal:
+		classification.Kind = HTTPFailureContractOrLocal
+	case traits.deadline:
+		classification.Kind = HTTPFailureDeadline
+	case traits.transientTransport:
+		classification.Kind = HTTPFailureTransientTransport
+	case traits.transientAccepted:
+		classification.Kind = HTTPFailureTransientAcceptedResponse
+	case traits.transientStatus:
+		classification.Kind = HTTPFailureTransientResponse
+	case traits.terminalStatus:
+		classification.Kind = HTTPFailureTerminalResponse
+	}
+
+	// A status is global metadata, not metadata for the winning failure kind.
+	// Retain it only when every response-bearing node reports the same valid
+	// status, and suppress it when a higher cancellation, terminal, or deadline
+	// trait controls the result.
+	if !traits.canceled && !traits.terminal && !traits.deadline {
+		classification.StatusCode = traits.status.value()
+	}
+
+	// Retry-After is actionable only when every response node has the same valid
+	// status and an identical sanitized schedule. A zero/invalid status or an
+	// unscheduled sibling makes the schedule ambiguous.
+	if classification.StatusCode != 0 && retryableSafeReadClassification(classification) {
+		retryAfter, schedules, ok := safeRetryScheduleForStatus(err, classification.StatusCode)
+		if ok && schedules == traits.responseNodes {
+			classification.RetryAfter = retryAfter.delay
+			classification.HasRetryAfter = true
+		}
+	}
+	return classification
+}
+
+func walkErrorTree(err error, visit func(error)) {
+	walkErrorTreeControlled(err, func(node error) bool {
+		visit(node)
+		return true
+	})
+}
+
+func walkErrorTreeControlled(err error, visit func(error) bool) {
+	stack := []error{err}
+	visited := make(map[error]struct{})
+	for len(stack) > 0 {
+		last := len(stack) - 1
+		node := stack[last]
+		stack = stack[:last]
+		if node == nil || isTypedNilError(node) {
+			continue
+		}
+		if reflect.ValueOf(node).Comparable() {
+			if _, ok := visited[node]; ok {
+				continue
+			}
+			visited[node] = struct{}{}
+		}
+		if !visit(node) {
+			continue
+		}
+		switch wrapped := node.(type) {
+		case interface{ Unwrap() []error }:
+			children := wrapped.Unwrap()
+			for i := len(children) - 1; i >= 0; i-- {
+				stack = append(stack, children[i])
+			}
+		case interface{ Unwrap() error }:
+			stack = append(stack, wrapped.Unwrap())
+		}
+	}
+}
+
+func isTypedNilError(err error) bool {
+	value := reflect.ValueOf(err)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Ptr, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
+}
+
+func hasAuthoritativeAPIStatus(err error, statusCode int) bool {
+	responses := 0
+	authoritative := true
+	walkErrorTreeControlled(err, func(node error) bool {
+		switch typed := node.(type) {
+		case *safeTransportError:
+			return false
+		case *safeResponseError:
+			responseBearing := typed.dispatched || typed.accepted || typed.statusCode != 0 ||
+				typed.stage == safeResponseFailureStatusBodyRead || typed.stage == safeResponseFailureAcceptedBodyRead
+			if responseBearing {
+				responses++
+				if typed.stage == safeResponseFailureStatusBodyRead || typed.statusCode != statusCode ||
+					typed.statusCode < 100 || typed.statusCode > 599 {
+					authoritative = false
+				}
+			}
+			return false
+		case *APIError:
+			responses++
+			if typed.StatusCode != statusCode || typed.StatusCode < 100 || typed.StatusCode > 599 {
+				authoritative = false
+			}
+			return false
+		case *safeRetryScheduledError:
+			return true
+		}
+		return true
+	})
+	return responses > 0 && authoritative
+}
+
+func isTransientHTTPStatus(statusCode int) bool {
+	return statusCode == http.StatusRequestTimeout ||
+		statusCode == http.StatusTooManyRequests ||
+		statusCode >= http.StatusInternalServerError && statusCode <= 599
+}
+
+const maxAcceptedRetryAfter = 5 * time.Minute
+
+type safeRetryAfterSpec struct {
+	delay    time.Duration
+	deadline time.Time
+}
+
+// safeRetryScheduledError keeps an absolute HTTP-date out of the exported
+// classification value and exported APIError. Its formatter deliberately
+// renders only the wrapped provider error's already-sanitized message.
+type safeRetryScheduledError struct {
+	err        error
+	schedule   safeRetryAfterSpec
+	statusCode int
+}
+
+func (e *safeRetryScheduledError) Error() string { return e.err.Error() }
+func (e *safeRetryScheduledError) Unwrap() error { return e.err }
+func (e *safeRetryScheduledError) Format(state fmt.State, verb rune) {
+	message := e.Error()
+	switch verb {
+	case 'q':
+		_, _ = fmt.Fprintf(state, "%q", message)
+	case 'x':
+		_, _ = fmt.Fprintf(state, "%x", message)
+	case 'X':
+		_, _ = fmt.Fprintf(state, "%X", message)
+	default:
+		_, _ = io.WriteString(state, message)
+	}
+}
+
+func withSafeRetrySchedule(err error, schedule safeRetryAfterSpec, ok bool) error {
+	if err == nil || !ok {
+		return err
+	}
+	statusCode := 0
+	switch responseErr := err.(type) {
+	case *APIError:
+		statusCode = responseErr.StatusCode
+	case *safeResponseError:
+		statusCode = responseErr.statusCode
+	}
+	return &safeRetryScheduledError{err: err, schedule: schedule, statusCode: statusCode}
+}
+
+func safeRetryScheduleForStatus(err error, statusCode int) (safeRetryAfterSpec, int, bool) {
+	var selected safeRetryAfterSpec
+	found := false
+	count := 0
+	ambiguous := false
+	walkErrorTree(err, func(node error) {
+		scheduled, ok := node.(*safeRetryScheduledError)
+		if !ok {
+			return
+		}
+		count++
+		if scheduled.statusCode != statusCode {
+			ambiguous = true
+			return
+		}
+		if found && scheduled.schedule != selected {
+			ambiguous = true
+			return
+		}
+		selected = scheduled.schedule
+		found = true
+	})
+	return selected, count, found && !ambiguous
+}
+
+func safeRetryScheduleFromError(err error) (safeRetryAfterSpec, bool) {
+	var selected safeRetryAfterSpec
+	found := false
+	ambiguous := false
+	walkErrorTree(err, func(node error) {
+		scheduled, ok := node.(*safeRetryScheduledError)
+		if !ok {
+			return
+		}
+		if found {
+			// More than one response schedule has no uniquely selected response,
+			// even if the sanitized durations happen to match.
+			ambiguous = true
+			return
+		}
+		selected = scheduled.schedule
+		found = true
+	})
+	return selected, found && !ambiguous
+}
+
+func safeRetryAfter(headers http.Header, now time.Time, maximum time.Duration) (time.Duration, bool) {
+	spec, ok := safeRetryAfterWithDeadline(headers, now, maximum)
+	return spec.delay, ok
+}
+
+func safeRetryAfterWithDeadline(headers http.Header, now time.Time, maximum time.Duration) (safeRetryAfterSpec, bool) {
+	values := headers.Values("Retry-After")
+	if len(values) != 1 {
+		return safeRetryAfterSpec{}, false
+	}
+	return parseRetryAfterSpec(values[0], now, maximum)
+}
+
+// parseRetryAfter converts either delta-seconds or an HTTP-date to a bounded
+// duration. It returns false for negative, malformed, overflowed, excessive,
+// or ambiguous values and never returns or stores the original header text.
+func parseRetryAfter(value string, now time.Time, maximum time.Duration) (time.Duration, bool) {
+	spec, ok := parseRetryAfterSpec(value, now, maximum)
+	return spec.delay, ok
+}
+
+func parseRetryAfterSpec(value string, now time.Time, maximum time.Duration) (safeRetryAfterSpec, bool) {
+	if value == "" || value != strings.TrimSpace(value) || maximum < 0 {
+		return safeRetryAfterSpec{}, false
+	}
+	if strings.IndexFunc(value, func(r rune) bool { return r < '0' || r > '9' }) == -1 {
+		seconds, err := strconv.ParseUint(value, 10, 64)
+		if err != nil || seconds > uint64(maximum/time.Second) {
+			return safeRetryAfterSpec{}, false
+		}
+		return safeRetryAfterSpec{delay: time.Duration(seconds) * time.Second}, true
+	}
+
+	when, err := http.ParseTime(value)
+	if err != nil || when.Before(now) {
+		return safeRetryAfterSpec{}, false
+	}
+	delay := when.Sub(now)
+	if delay < 0 || delay > maximum {
+		return safeRetryAfterSpec{}, false
+	}
+	return safeRetryAfterSpec{delay: delay, deadline: when}, true
+}

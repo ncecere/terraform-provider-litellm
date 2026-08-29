@@ -6,7 +6,9 @@ Retrieves information about a specific LiteLLM prompt configuration.
 
 ```hcl
 data "litellm_prompt" "existing" {
-  prompt_id = "my-prompt"
+  prompt_id  = "my-prompt"
+  environment = "production"
+  # version = 2 # Optional; omission selects the latest version.
 }
 
 output "prompt_info" {
@@ -20,7 +22,9 @@ output "prompt_info" {
 
 ## Argument Reference
 
-* `prompt_id` - (Required) The prompt ID to look up.
+* `prompt_id` - (Required) The base prompt ID to look up.
+* `environment` - (Optional) Prompt environment. Defaults to `development`.
+* `version` - (Optional) Positive version to retrieve. Omit it to select the latest version deterministically within the environment.
 
 ## Attribute Reference
 
@@ -33,3 +37,9 @@ output "prompt_info" {
 * `ignore_prompt_manager_optional_params` - If true, ignore optional params from the prompt manager.
 * `dotprompt_content` - Content for dotprompt integration.
 * `prompt_type` - Type of prompt: "config" or "db".
+* `environment` - Environment returned for the selected prompt.
+* `version` - Selected positive version.
+* `created_at` - Creation timestamp of the selected version.
+* `updated_at` - Last-update timestamp of the selected version.
+
+The data source always sends an explicit environment query. Version-specific lookup uses LiteLLM's versioned prompt ID syntax while preserving `prompt_id` as the base ID in Terraform state.

@@ -1,6 +1,7 @@
 # data.litellm_prompts - Lists all prompts
 
 data "litellm_prompts" "all" {
+  environment = "development"
 }
 
 output "ds_prompts_list" {

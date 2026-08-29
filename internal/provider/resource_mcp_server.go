@@ -4,10 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
+	"strings"
+	"time"
 
-	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/google/uuid"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/mapvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -22,9 +28,180 @@ import (
 var _ resource.Resource = &MCPServerResource{}
 var _ resource.ResourceWithImportState = &MCPServerResource{}
 var _ resource.ResourceWithUpgradeState = &MCPServerResource{}
+var _ resource.ResourceWithValidateConfig = &MCPServerResource{}
+var _ resource.ResourceWithModifyPlan = &MCPServerResource{}
+
+// Wire-contract values verified against LiteLLM commit
+// d8f71d7bdbd7c9873d98293f83d64c6db72847e6: litellm/types/mcp.py,
+// litellm/constants.py, and NewMCPServerRequest/UpdateMCPServerRequest in
+// litellm/proxy/_types.py.
+var mcpAuthTypesV198 = []string{
+	"none",
+	"api_key",
+	"bearer_token",
+	"basic",
+	"authorization",
+	"oauth2",
+	"aws_sigv4",
+	"token",
+	"oauth2_token_exchange",
+	"oauth2_id_jag",
+	"true_passthrough",
+	"oauth_delegate",
+}
+
+var mcpTransportsV198 = []string{"http", "sse", "stdio"}
+
+var mcpOAuth2FlowsV198 = []string{"client_credentials", "authorization_code"}
+
+var mcpStdioAllowedCommandsV198 = map[string]struct{}{
+	"deno":    {},
+	"docker":  {},
+	"node":    {},
+	"npx":     {},
+	"python":  {},
+	"python3": {},
+	"uvx":     {},
+}
+
+type mcpSafeEnumValidator struct {
+	allowed     map[string]struct{}
+	description string
+}
+
+var _ validator.String = mcpSafeEnumValidator{}
+
+func newMCPSafeEnumValidator(values []string, description string) mcpSafeEnumValidator {
+	allowed := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		allowed[value] = struct{}{}
+	}
+	return mcpSafeEnumValidator{allowed: allowed, description: description}
+}
+
+func (v mcpSafeEnumValidator) Description(context.Context) string {
+	return v.description
+}
+
+func (v mcpSafeEnumValidator) MarkdownDescription(ctx context.Context) string {
+	return v.Description(ctx)
+}
+
+func (v mcpSafeEnumValidator) ValidateString(_ context.Context, req validator.StringRequest, resp *validator.StringResponse) {
+	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		return
+	}
+	if _, ok := v.allowed[req.ConfigValue.ValueString()]; !ok {
+		resp.Diagnostics.AddAttributeError(req.Path, "Invalid MCP Configuration", v.description)
+	}
+}
+
+type mcpPositiveFloat64Validator struct{}
+
+var _ validator.Float64 = mcpPositiveFloat64Validator{}
+
+func (mcpPositiveFloat64Validator) Description(context.Context) string {
+	return "The value must be a finite number greater than zero."
+}
+func (v mcpPositiveFloat64Validator) MarkdownDescription(ctx context.Context) string {
+	return v.Description(ctx)
+}
+func (v mcpPositiveFloat64Validator) ValidateFloat64(_ context.Context, req validator.Float64Request, resp *validator.Float64Response) {
+	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		return
+	}
+	value := req.ConfigValue.ValueFloat64()
+	if math.IsNaN(value) || math.IsInf(value, 0) || value <= 0 {
+		resp.Diagnostics.AddAttributeError(req.Path, "Invalid MCP Positive Number", "The configured number must be finite and greater than zero.")
+	}
+}
+
+type mcpPositiveInt64Validator struct{}
+
+var _ validator.Int64 = mcpPositiveInt64Validator{}
+
+func (mcpPositiveInt64Validator) Description(context.Context) string {
+	return "The value must be a positive integer representable by LiteLLM's durable database column."
+}
+func (v mcpPositiveInt64Validator) MarkdownDescription(ctx context.Context) string {
+	return v.Description(ctx)
+}
+func (mcpPositiveInt64Validator) ValidateInt64(_ context.Context, req validator.Int64Request, resp *validator.Int64Response) {
+	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		return
+	}
+	if req.ConfigValue.ValueInt64() <= 0 || req.ConfigValue.ValueInt64() > math.MaxInt32 {
+		resp.Diagnostics.AddAttributeError(req.Path, "Invalid MCP Positive Integer", "The configured integer must be positive and within LiteLLM's durable database range.")
+	}
+}
 
 func NewMCPServerResource() resource.Resource {
 	return &MCPServerResource{}
+}
+
+func mcpServerIDValidV198(value string) bool {
+	return value != "" && value != "." && value != ".." && !strings.Contains(value, "/") &&
+		value != "all-team-mcpservers" && value != "all-proxy-mcpservers"
+}
+
+func mcpToolPrefixValidV198(value string) bool {
+	if value == "" || len(value) > 128 {
+		return false
+	}
+	for index := 0; index < len(value); index++ {
+		character := value[index]
+		if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') || character == '_' || character == '.' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func mcpNormalizeAliasV198(value string) string {
+	return strings.ReplaceAll(value, " ", "_")
+}
+
+type mcpToolNameMapValidator struct {
+	validateDisplayNames bool
+}
+
+var _ validator.Map = mcpToolNameMapValidator{}
+
+func (v mcpToolNameMapValidator) Description(context.Context) string {
+	if v.validateDisplayNames {
+		return "Every non-empty display name must contain only ASCII letters, digits, underscores, or hyphens."
+	}
+	return "Every map member must be a known string."
+}
+
+func (v mcpToolNameMapValidator) MarkdownDescription(ctx context.Context) string {
+	return v.Description(ctx)
+}
+
+func (v mcpToolNameMapValidator) ValidateMap(_ context.Context, req validator.MapRequest, resp *validator.MapResponse) {
+	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		return
+	}
+	for _, raw := range req.ConfigValue.Elements() {
+		value, ok := raw.(types.String)
+		if !ok || value.IsNull() {
+			resp.Diagnostics.AddAttributeError(req.Path, "Invalid MCP Tool Override Map", "Every map member must be a known string; map keys and values are omitted from this diagnostic.")
+			return
+		}
+		if value.IsUnknown() || !v.validateDisplayNames || value.ValueString() == "" {
+			continue
+		}
+		for _, character := range value.ValueString() {
+			if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+				(character >= '0' && character <= '9') || character == '_' || character == '-' {
+				continue
+			}
+			resp.Diagnostics.AddAttributeError(req.Path, "Invalid MCP Tool Override Map", "Every non-empty display name must contain only ASCII letters, digits, underscores, or hyphens; map keys and values are omitted from this diagnostic.")
+			return
+		}
+	}
 }
 
 type MCPServerResource struct {
@@ -44,33 +221,62 @@ type MCPInfoModel struct {
 }
 
 type MCPServerResourceModel struct {
-	ID              types.String  `tfsdk:"id"`
-	ServerID        types.String  `tfsdk:"server_id"`
-	ServerName      types.String  `tfsdk:"server_name"`
-	Alias           types.String  `tfsdk:"alias"`
-	Description     types.String  `tfsdk:"description"`
-	URL             types.String  `tfsdk:"url"`
-	Transport       types.String  `tfsdk:"transport"`
-	SpecVersion     types.String  `tfsdk:"spec_version"`
-	AuthType        types.String  `tfsdk:"auth_type"`
-	MCPAccessGroups types.List    `tfsdk:"mcp_access_groups"`
-	Command         types.String  `tfsdk:"command"`
-	Args            types.List    `tfsdk:"args"`
-	Env             types.Map     `tfsdk:"env"`
-	MCPInfo         *MCPInfoModel `tfsdk:"mcp_info"`
+	ID                         types.String  `tfsdk:"id"`
+	ServerID                   types.String  `tfsdk:"server_id"`
+	ServerName                 types.String  `tfsdk:"server_name"`
+	Alias                      types.String  `tfsdk:"alias"`
+	Description                types.String  `tfsdk:"description"`
+	URL                        types.String  `tfsdk:"url"`
+	SpecPath                   types.String  `tfsdk:"spec_path"`
+	Transport                  types.String  `tfsdk:"transport"`
+	SpecVersion                types.String  `tfsdk:"spec_version"`
+	AuthType                   types.String  `tfsdk:"auth_type"`
+	MCPAccessGroups            types.List    `tfsdk:"mcp_access_groups"`
+	Command                    types.String  `tfsdk:"command"`
+	Args                       types.List    `tfsdk:"args"`
+	Env                        types.Map     `tfsdk:"env"`
+	EnvVars                    types.List    `tfsdk:"env_vars"`
+	MCPInfo                    *MCPInfoModel `tfsdk:"mcp_info"`
+	MCPInfoJSON                types.String  `tfsdk:"mcp_info_json"`
+	MCPInfoOverridesJSON       types.String  `tfsdk:"mcp_info_overrides_json"`
+	MCPInfoClearPaths          types.List    `tfsdk:"mcp_info_clear_paths"`
+	MCPInfoOwnershipGeneration types.Int64   `tfsdk:"mcp_info_ownership_generation"`
+	FieldOwnershipGeneration   types.Int64   `tfsdk:"field_ownership_generation"`
 	// New fields for expanded API support
-	Credentials       types.Map    `tfsdk:"credentials"`
-	AllowedTools      types.List   `tfsdk:"allowed_tools"`
-	ExtraHeaders      types.List   `tfsdk:"extra_headers"`
-	StaticHeaders     types.Map    `tfsdk:"static_headers"`
-	AuthorizationURL  types.String `tfsdk:"authorization_url"`
-	TokenURL          types.String `tfsdk:"token_url"`
-	RegistrationURL   types.String `tfsdk:"registration_url"`
-	AllowAllKeys      types.Bool   `tfsdk:"allow_all_keys"`
-	SkipURLValidation types.Bool   `tfsdk:"skip_url_validation"`
+	Credentials               types.Map     `tfsdk:"credentials"`
+	AllowedTools              types.List    `tfsdk:"allowed_tools"`
+	ExtraHeaders              types.List    `tfsdk:"extra_headers"`
+	StaticHeaders             types.Map     `tfsdk:"static_headers"`
+	Issuer                    types.String  `tfsdk:"issuer"`
+	AuthorizationURL          types.String  `tfsdk:"authorization_url"`
+	TokenURL                  types.String  `tfsdk:"token_url"`
+	RegistrationURL           types.String  `tfsdk:"registration_url"`
+	TokenExchangeEndpoint     types.String  `tfsdk:"token_exchange_endpoint"`
+	Audience                  types.String  `tfsdk:"audience"`
+	SubjectTokenType          types.String  `tfsdk:"subject_token_type"`
+	TokenExchangeProfile      types.String  `tfsdk:"token_exchange_profile"`
+	AllowAllKeys              types.Bool    `tfsdk:"allow_all_keys"`
+	SkipURLValidation         types.Bool    `tfsdk:"skip_url_validation"`
+	OAuthScopes               types.List    `tfsdk:"oauth_scopes"`
+	AvailableOnPublicInternet types.Bool    `tfsdk:"available_on_public_internet"`
+	OAuth2Flow                types.String  `tfsdk:"oauth2_flow"`
+	Instructions              types.String  `tfsdk:"instructions"`
+	ToolNameToDisplayName     types.Map     `tfsdk:"tool_name_to_display_name"`
+	ToolNameToDescription     types.Map     `tfsdk:"tool_name_to_description"`
+	DelegateAuthToUpstream    types.Bool    `tfsdk:"delegate_auth_to_upstream"`
+	OAuthPassthrough          types.Bool    `tfsdk:"oauth_passthrough"`
+	DCRBridge                 types.Bool    `tfsdk:"dcr_bridge"`
+	IsBYOK                    types.Bool    `tfsdk:"is_byok"`
+	BYOKDescription           types.List    `tfsdk:"byok_description"`
+	BYOKAPIKeyHelpURL         types.String  `tfsdk:"byok_api_key_help_url"`
+	SourceURL                 types.String  `tfsdk:"source_url"`
+	Timeout                   types.Float64 `tfsdk:"timeout"`
+	MaxConcurrentRequests     types.Int64   `tfsdk:"max_concurrent_requests"`
 	// Computed fields
 	CreatedAt types.String `tfsdk:"created_at"`
 	CreatedBy types.String `tfsdk:"created_by"`
+	UpdatedAt types.String `tfsdk:"updated_at"`
+	UpdatedBy types.String `tfsdk:"updated_by"`
 }
 
 func (r *MCPServerResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -80,8 +286,33 @@ func (r *MCPServerResource) Metadata(ctx context.Context, req resource.MetadataR
 func (r *MCPServerResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		Description: "Manages a LiteLLM MCP (Model Context Protocol) server.",
-		Version:     1,
+		Version:     8,
 		Attributes: map[string]schema.Attribute{
+			"mcp_info_json": schema.StringAttribute{
+				Description: "Sensitive complete MCP info JSON object. The root must be a non-null object; {} explicitly owns and clears the whole document. Authoritative reads expose the complete object without dropping unknown members or exact JSON numbers.",
+				Optional:    true,
+				Computed:    true,
+				Sensitive:   true,
+			},
+			"mcp_info_overrides_json": schema.StringAttribute{
+				Description: "Sensitive recursive selective MCP info JSON object. Nested null is data and a nested empty object atomically replaces that member.",
+				Optional:    true,
+				Sensitive:   true,
+			},
+			"mcp_info_clear_paths": schema.ListAttribute{
+				Description: "Sensitive list of canonical RFC 6901 object-member pointers to clear. Root and array traversal are not supported.",
+				Optional:    true,
+				Sensitive:   true,
+				ElementType: types.StringType,
+			},
+			"mcp_info_ownership_generation": schema.Int64Attribute{
+				Description: "Internal non-sensitive generation of MCP info ownership intent.",
+				Computed:    true,
+			},
+			"field_ownership_generation": schema.Int64Attribute{
+				Description: "Internal non-sensitive generation of presence-aware MCP field ownership intent.",
+				Computed:    true,
+			},
 			"id": schema.StringAttribute{
 				Description: "The unique identifier for this MCP server (same as server_id).",
 				Computed:    true,
@@ -90,48 +321,58 @@ func (r *MCPServerResource) Schema(ctx context.Context, req resource.SchemaReque
 				},
 			},
 			"server_id": schema.StringAttribute{
-				Description: "Unique identifier for the MCP server.",
+				Description: "Create-only unique identifier for the MCP server. When omitted, the provider selects a stable generated identifier.",
+				Optional:    true,
 				Computed:    true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
+					stringplanmodifier.RequiresReplace(),
 				},
 			},
 			"server_name": schema.StringAttribute{
-				Description: "Name of the MCP server.",
-				Required:    true,
+				Description: "Optional name of the MCP server. When name and alias are omitted, LiteLLM uses server_id as the tool-prefix fallback.",
+				Optional:    true,
 			},
 			"alias": schema.StringAttribute{
-				Description: "Alias for the MCP server.",
+				Description: "Alias for the MCP server. LiteLLM normalizes ASCII spaces to underscores and defaults an omitted alias from server_name.",
 				Optional:    true,
+				Computed:    true,
 			},
 			"description": schema.StringAttribute{
 				Description: "Description of the MCP server.",
 				Optional:    true,
 			},
 			"url": schema.StringAttribute{
-				Description: "URL of the MCP server.",
-				Required:    true,
+				Description: "URL of the MCP server. HTTP and SSE transports require url or spec_path; stdio does not require a URL.",
+				Optional:    true,
+				Sensitive:   true,
+			},
+			"spec_path": schema.StringAttribute{
+				Description: "Path or URL of an OpenAPI specification. For HTTP and SSE transports this can be used instead of url.",
+				Optional:    true,
+				Sensitive:   true,
 			},
 			"transport": schema.StringAttribute{
 				Description: "Transport type for the MCP server (http, sse, stdio).",
 				Required:    true,
 				Validators: []validator.String{
-					stringvalidator.OneOf("http", "sse", "stdio"),
+					newMCPSafeEnumValidator(mcpTransportsV198, "Transport must be one of the values accepted by LiteLLM v1.98."),
 				},
 			},
 			"spec_version": schema.StringAttribute{
-				Description: "MCP specification version.",
-				Optional:    true,
-				Computed:    true,
-				Default:     stringdefault.StaticString("2024-11-05"),
+				Description:        "Deprecated compatibility attribute. LiteLLM v1.98 does not accept or return this field.",
+				DeprecationMessage: "spec_version is retained only for state and HCL compatibility and is not sent to LiteLLM. Remove it from configuration.",
+				Optional:           true,
+				Computed:           true,
+				Default:            stringdefault.StaticString("2024-11-05"),
 			},
 			"auth_type": schema.StringAttribute{
-				Description: "Authentication type (none, bearer_token, bearer, basic, api_key, authorization, oauth2).",
+				Description: "Authentication type accepted by the LiteLLM v1.98 MCP server request contract.",
 				Optional:    true,
 				Computed:    true,
 				Default:     stringdefault.StaticString("none"),
 				Validators: []validator.String{
-					stringvalidator.OneOf("none", "bearer_token", "bearer", "basic", "api_key", "authorization", "oauth2"),
+					newMCPSafeEnumValidator(mcpAuthTypesV198, "Authentication type must be one of the values accepted by LiteLLM v1.98."),
 				},
 			},
 			"mcp_access_groups": schema.ListAttribute{
@@ -143,18 +384,54 @@ func (r *MCPServerResource) Schema(ctx context.Context, req resource.SchemaReque
 			"command": schema.StringAttribute{
 				Description: "Command to run for stdio transport.",
 				Optional:    true,
+				Sensitive:   true,
 			},
 			"args": schema.ListAttribute{
 				Description: "Arguments for the command (stdio transport).",
 				Optional:    true,
 				Computed:    true,
+				Sensitive:   true,
 				ElementType: types.StringType,
 			},
 			"env": schema.MapAttribute{
 				Description: "Environment variables for the command (stdio transport).",
 				Optional:    true,
 				Computed:    true,
+				Sensitive:   true,
 				ElementType: types.StringType,
+			},
+			"env_vars": schema.ListNestedAttribute{
+				Description: "Ordered LiteLLM MCP environment-variable definitions.",
+				Optional:    true,
+				Computed:    true,
+				Sensitive:   true,
+				Validators:  []validator.List{mcpEnvVarsValidator{}},
+				NestedObject: schema.NestedAttributeObject{Attributes: map[string]schema.Attribute{
+					"name": schema.StringAttribute{
+						Description: "Environment-variable name.",
+						Required:    true,
+						Validators:  []validator.String{mcpEnvVarNameValidator{}},
+					},
+					"value": schema.StringAttribute{
+						Description: "Admin-provided value or user-scope placeholder.",
+						Optional:    true,
+						Computed:    true,
+						Default:     stringdefault.StaticString(""),
+					},
+					"scope": schema.StringAttribute{
+						Description: "Value scope: global or user.",
+						Optional:    true,
+						Computed:    true,
+						Default:     stringdefault.StaticString("global"),
+						Validators: []validator.String{
+							newMCPSafeEnumValidator([]string{"global", "user"}, "Scope must be global or user."),
+						},
+					},
+					"description": schema.StringAttribute{
+						Description: "Optional nullable environment-variable description.",
+						Optional:    true,
+					},
+				}},
 			},
 			"credentials": schema.MapAttribute{
 				Description: "Credentials map for the MCP server authentication.",
@@ -179,27 +456,152 @@ func (r *MCPServerResource) Schema(ctx context.Context, req resource.SchemaReque
 				Description: "Static headers to always include with requests.",
 				Optional:    true,
 				Computed:    true,
+				Sensitive:   true,
 				ElementType: types.StringType,
+			},
+			"issuer": schema.StringAttribute{
+				Description: "OAuth issuer anchor. LiteLLM may mask this value by role; null or omission on read does not prove a clear.",
+				Optional:    true,
+				Computed:    true,
+				Sensitive:   true,
 			},
 			"authorization_url": schema.StringAttribute{
 				Description: "OAuth authorization URL for the MCP server.",
 				Optional:    true,
+				Sensitive:   true,
 			},
 			"token_url": schema.StringAttribute{
 				Description: "OAuth token URL for the MCP server.",
 				Optional:    true,
+				Sensitive:   true,
 			},
 			"registration_url": schema.StringAttribute{
 				Description: "OAuth registration URL for the MCP server.",
 				Optional:    true,
+				Sensitive:   true,
+			},
+			"token_exchange_endpoint": schema.StringAttribute{
+				Description: "Canonical OAuth token-exchange endpoint. The legacy credentials key remains accepted as an alternative source, but the two sources cannot be configured together.",
+				Optional:    true,
+				Computed:    true,
+				Sensitive:   true,
+			},
+			"audience": schema.StringAttribute{
+				Description: "Canonical OAuth audience used by RFC 8693 token exchange, ID-JAG, or OAuth2 client credentials.",
+				Optional:    true,
+				Computed:    true,
+			},
+			"subject_token_type": schema.StringAttribute{
+				Description: "Canonical RFC 8693 subject token type.",
+				Optional:    true,
+				Computed:    true,
+			},
+			"token_exchange_profile": schema.StringAttribute{
+				Description: "Canonical token-exchange wire profile.",
+				Optional:    true,
+				Computed:    true,
+				Validators: []validator.String{
+					newMCPSafeEnumValidator([]string{"rfc8693", "entra_obo"}, "Token exchange profile must be rfc8693 or entra_obo."),
+				},
 			},
 			"allow_all_keys": schema.BoolAttribute{
 				Description: "Whether to allow all API keys to access this MCP server.",
 				Optional:    true,
 			},
 			"skip_url_validation": schema.BoolAttribute{
-				Description: "Skip MCP server URL reachability validation during creation/update. Useful when the MCP server is reachable by LiteLLM but not by the Terraform runner or validation path.",
+				Description:        "Deprecated compatibility attribute. LiteLLM v1.98 does not accept this field; new or changed true values are unsafe, while unchanged historical state remains plannable.",
+				DeprecationMessage: "skip_url_validation is retained only for state and HCL compatibility and is not sent to LiteLLM. Remove it from configuration.",
+				Optional:           true,
+			},
+			"oauth_scopes": schema.ListAttribute{
+				Description: "Sensitive write-only OAuth scopes stored natively at credentials.scopes. LiteLLM v1.98 management reads never expose this value.",
 				Optional:    true,
+				Sensitive:   true,
+				ElementType: types.StringType,
+				Validators: []validator.List{
+					listvalidator.NoNullValues(),
+				},
+			},
+			"available_on_public_internet": schema.BoolAttribute{
+				Description: "Whether the MCP server is available from the public internet. Removing configured ownership restores LiteLLM's durable true default.",
+				Optional:    true,
+				Computed:    true,
+			},
+			"oauth2_flow": schema.StringAttribute{
+				Description: "OAuth2 flow stamped and returned by LiteLLM.",
+				Optional:    true,
+				Computed:    true,
+				Validators: []validator.String{
+					newMCPSafeEnumValidator(mcpOAuth2FlowsV198, "OAuth2 flow must be client_credentials or authorization_code."),
+				},
+			},
+			"instructions": schema.StringAttribute{
+				Description: "Instructions associated with the MCP server. An empty string is a valid owned value.",
+				Optional:    true,
+				Computed:    true,
+			},
+			"tool_name_to_display_name": schema.MapAttribute{
+				Description: "Tool-name display overrides. Empty values and an empty map are valid.",
+				Optional:    true,
+				Computed:    true,
+				ElementType: types.StringType,
+				Validators:  []validator.Map{mcpToolNameMapValidator{validateDisplayNames: true}},
+			},
+			"tool_name_to_description": schema.MapAttribute{
+				Description: "Tool-name description overrides. Values are arbitrary strings and an empty map clears all overrides.",
+				Optional:    true,
+				Computed:    true,
+				ElementType: types.StringType,
+				Validators:  []validator.Map{mcpToolNameMapValidator{}},
+			},
+			"delegate_auth_to_upstream": schema.BoolAttribute{
+				Description: "Whether LiteLLM delegates authentication to the upstream MCP server.",
+				Optional:    true,
+				Computed:    true,
+			},
+			"oauth_passthrough": schema.BoolAttribute{
+				Description: "Whether OAuth Authorization headers are passed through to the upstream MCP server.",
+				Optional:    true,
+				Computed:    true,
+			},
+			"dcr_bridge": schema.BoolAttribute{
+				Description: "Whether the dynamic client registration bridge is enabled.",
+				Optional:    true,
+				Computed:    true,
+			},
+			"is_byok": schema.BoolAttribute{
+				Description: "Whether this MCP server uses bring-your-own-key configuration.",
+				Optional:    true,
+				Computed:    true,
+			},
+			"byok_description": schema.ListAttribute{
+				Description: "Bring-your-own-key setup description lines.",
+				Optional:    true,
+				Computed:    true,
+				ElementType: types.StringType,
+				Validators:  []validator.List{listvalidator.NoNullValues()},
+			},
+			"byok_api_key_help_url": schema.StringAttribute{
+				Description: "Bring-your-own-key API key help URL.",
+				Optional:    true,
+				Computed:    true,
+			},
+			"source_url": schema.StringAttribute{
+				Description: "Source URL associated with the MCP server.",
+				Optional:    true,
+				Computed:    true,
+			},
+			"timeout": schema.Float64Attribute{
+				Description: "Positive finite request timeout.",
+				Optional:    true,
+				Computed:    true,
+				Validators:  []validator.Float64{mcpPositiveFloat64Validator{}},
+			},
+			"max_concurrent_requests": schema.Int64Attribute{
+				Description: "Positive maximum number of concurrent requests.",
+				Optional:    true,
+				Computed:    true,
+				Validators:  []validator.Int64{mcpPositiveInt64Validator{}},
 			},
 			"created_at": schema.StringAttribute{
 				Description: "Timestamp when the server was created.",
@@ -214,6 +616,14 @@ func (r *MCPServerResource) Schema(ctx context.Context, req resource.SchemaReque
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
 				},
+			},
+			"updated_at": schema.StringAttribute{
+				Description: "Timestamp when the server was last updated.",
+				Computed:    true,
+			},
+			"updated_by": schema.StringAttribute{
+				Description: "User who last updated the server.",
+				Computed:    true,
 			},
 		},
 		Blocks: map[string]schema.Block{
@@ -246,6 +656,7 @@ func (r *MCPServerResource) Schema(ctx context.Context, req resource.SchemaReque
 								Optional:    true,
 								Computed:    true,
 								ElementType: types.Float64Type,
+								Validators:  []validator.Map{mapvalidator.NoNullValues()},
 							},
 						},
 					},
@@ -253,6 +664,700 @@ func (r *MCPServerResource) Schema(ctx context.Context, req resource.SchemaReque
 			},
 		},
 	}
+}
+
+func (r *MCPServerResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var data MCPServerResourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if !data.ServerID.IsNull() && !data.ServerID.IsUnknown() && !mcpServerIDValidV198(data.ServerID.ValueString()) {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("server_id"),
+			"Invalid MCP Server Identity",
+			"Configured server_id must be a non-empty manageable path-segment identity and must not use a LiteLLM reserved server identifier.",
+		)
+	}
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	for name, value := range map[string]types.String{
+		"url": data.URL, "spec_path": data.SpecPath,
+		"issuer": data.Issuer, "token_exchange_endpoint": data.TokenExchangeEndpoint,
+		"audience": data.Audience, "subject_token_type": data.SubjectTokenType,
+		"token_exchange_profile": data.TokenExchangeProfile,
+	} {
+		if !value.IsNull() && !value.IsUnknown() && value.ValueString() == "" {
+			resp.Diagnostics.AddAttributeError(
+				path.Root(name),
+				"Invalid MCP Endpoint Configuration",
+				"Configured MCP endpoint fields must be non-empty. Omit the field to clear or release it.",
+			)
+		}
+	}
+	validateMCPInfoJSONConfig(data, &resp.Diagnostics)
+	validateMCP208CrossConfiguration(data, &resp.Diagnostics)
+	validateMCPTokenExchangeConfigurationForConfig(data, &resp.Diagnostics)
+	if resp.Diagnostics.HasError() || data.Transport.IsNull() || data.Transport.IsUnknown() {
+		return
+	}
+	switch data.Transport.ValueString() {
+	case "http", "sse":
+		if data.URL.IsUnknown() || data.SpecPath.IsUnknown() {
+			return
+		}
+		if !mcpKnownNonEmptyString(data.URL) && !mcpKnownNonEmptyString(data.SpecPath) {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("url"),
+				"Invalid MCP Transport Configuration",
+				"HTTP and SSE configurations require at least one non-empty endpoint field: url or spec_path.",
+			)
+		}
+	case "stdio":
+		if !data.Command.IsUnknown() && !mcpKnownNonEmptyString(data.Command) {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("command"),
+				"Invalid MCP Stdio Configuration",
+				"A non-empty command is required for stdio transport.",
+			)
+		}
+		if !data.Args.IsUnknown() && (data.Args.IsNull() || len(data.Args.Elements()) == 0) {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("args"),
+				"Invalid MCP Stdio Configuration",
+				"At least one command argument is required for stdio transport.",
+			)
+		}
+		if mcpKnownNonEmptyString(data.Command) {
+			if _, ok := mcpStdioAllowedCommandsV198[mcpStdioCommandBaseV198(data.Command.ValueString())]; !ok {
+				resp.Diagnostics.AddAttributeError(
+					path.Root("command"),
+					"Invalid MCP Stdio Configuration",
+					"The command executable is not in LiteLLM v1.98's built-in stdio allowlist: deno, docker, node, npx, python, python3, uvx.",
+				)
+			}
+		}
+	}
+}
+
+func validateMCPTokenExchangeConfiguration(data MCPServerResourceModel, diagnostics *diag.Diagnostics) {
+	validateMCPTokenExchangeConfigurationPhase(data, diagnostics, false)
+}
+
+func validateMCPTokenExchangeConfigurationForConfig(data MCPServerResourceModel, diagnostics *diag.Diagnostics) {
+	validateMCPTokenExchangeConfigurationPhase(data, diagnostics, true)
+}
+
+func validateMCPTokenExchangeConfigurationPhase(data MCPServerResourceModel, diagnostics *diag.Diagnostics, deferUnknownDependencies bool) {
+	canonical := map[string]types.String{
+		"token_exchange_endpoint": data.TokenExchangeEndpoint,
+		"audience":                data.Audience,
+		"subject_token_type":      data.SubjectTokenType,
+		"token_exchange_profile":  data.TokenExchangeProfile,
+	}
+	legacyPresent := map[string]bool{}
+	legacyKnown := map[string]string{}
+	if !data.Credentials.IsNull() && !data.Credentials.IsUnknown() {
+		for name, raw := range data.Credentials.Elements() {
+			if !mcpCredentialLiftedAliasNames[name] {
+				continue
+			}
+			legacyPresent[name] = true
+			value, ok := raw.(types.String)
+			if !ok || value.IsNull() || value.IsUnknown() {
+				continue
+			}
+			legacyKnown[name] = value.ValueString()
+		}
+	}
+
+	canonicalConfigured := false
+	for name, value := range canonical {
+		if value.IsNull() || value.IsUnknown() {
+			// Unknown expressions are validated from their resolved proposed value
+			// in ModifyPlan. They are not wire intent while still unknown.
+			continue
+		}
+		canonicalConfigured = true
+		if data.Credentials.IsUnknown() {
+			if !deferUnknownDependencies {
+				diagnostics.AddAttributeError(path.Root(name), "Ambiguous MCP Token Exchange Source", "A canonical token-exchange field cannot be configured while credentials is unknown because absence of its legacy alias cannot be proven.")
+			}
+			continue
+		}
+		if legacyPresent[name] {
+			diagnostics.AddAttributeError(path.Root(name), "Conflicting MCP Token Exchange Sources", "A canonical token-exchange field and its legacy credentials alias cannot both be configured, even when their values are equal.")
+		}
+	}
+
+	authKnown := !data.AuthType.IsNull() && !data.AuthType.IsUnknown()
+	authType := ""
+	if authKnown {
+		authType = data.AuthType.ValueString()
+	}
+	fieldConfigured := func(name string) bool {
+		return (!canonical[name].IsNull() && !canonical[name].IsUnknown()) || legacyPresent[name]
+	}
+	if authKnown {
+		for _, name := range []string{"token_exchange_endpoint", "subject_token_type"} {
+			if fieldConfigured(name) && authType != "oauth2_token_exchange" && authType != "oauth2_id_jag" {
+				diagnostics.AddAttributeError(path.Root(name), "Invalid MCP Token Exchange Authentication", "This token-exchange field requires oauth2_token_exchange or oauth2_id_jag authentication.")
+			}
+		}
+		if fieldConfigured("token_exchange_profile") && authType != "oauth2_token_exchange" {
+			diagnostics.AddAttributeError(path.Root("token_exchange_profile"), "Invalid MCP Token Exchange Authentication", "The token-exchange profile requires oauth2_token_exchange authentication.")
+		}
+		if fieldConfigured("audience") {
+			allowed := authType == "oauth2_token_exchange" || authType == "oauth2_id_jag"
+			if authType == "oauth2" && !data.OAuth2Flow.IsUnknown() {
+				allowed = !data.OAuth2Flow.IsNull() && data.OAuth2Flow.ValueString() == "client_credentials"
+			}
+			if !allowed && !(authType == "oauth2" && data.OAuth2Flow.IsUnknown()) {
+				diagnostics.AddAttributeError(path.Root("audience"), "Invalid MCP Token Exchange Authentication", "Audience requires token exchange, ID-JAG, or the explicit OAuth2 client_credentials flow.")
+			}
+		}
+		if !data.Issuer.IsNull() && authType != "oauth2" && authType != "true_passthrough" && authType != "oauth_delegate" && authType != "oauth2_token_exchange" {
+			diagnostics.AddAttributeError(path.Root("issuer"), "Invalid MCP Issuer Authentication", "Issuer requires oauth2, true_passthrough, oauth_delegate, or oauth2_token_exchange authentication.")
+		}
+	}
+
+	profile := ""
+	profileConfigured := false
+	if !data.TokenExchangeProfile.IsNull() && !data.TokenExchangeProfile.IsUnknown() {
+		profileConfigured = true
+		profile = data.TokenExchangeProfile.ValueString()
+	} else if legacyPresent["token_exchange_profile"] {
+		profileConfigured = true
+		profile = legacyKnown["token_exchange_profile"]
+	}
+
+	requireExplicitClient := authKnown && authType == "oauth2_token_exchange" && (canonicalConfigured || mcpKnownNonEmptyString(data.Issuer))
+	if profileConfigured && profile == "entra_obo" {
+		requireExplicitClient = true
+		for _, name := range []string{"audience", "subject_token_type"} {
+			if !canonical[name].IsNull() && !canonical[name].IsUnknown() {
+				diagnostics.AddAttributeError(path.Root(name), "Invalid Entra OBO Configuration", "Entra OBO does not use audience or subject_token_type; remove the newly configured canonical field.")
+			} else if legacyPresent[name] {
+				diagnostics.AddAttributeWarning(path.Root("credentials"), "Legacy Entra OBO Configuration", "A legacy token-exchange credential alias is retained for compatibility but is unused by the Entra OBO profile. Collection keys and values were omitted from this diagnostic.")
+			}
+		}
+		endpointKnown := mcpKnownNonEmptyString(data.TokenURL) || mcpKnownNonEmptyString(data.TokenExchangeEndpoint)
+		if !endpointKnown {
+			endpointKnown = legacyKnown["token_exchange_endpoint"] != ""
+		}
+		endpointUnknown := data.TokenURL.IsUnknown() || data.TokenExchangeEndpoint.IsUnknown() || data.Credentials.IsUnknown()
+		if !endpointKnown && !(deferUnknownDependencies && endpointUnknown) {
+			diagnostics.AddAttributeError(path.Root("token_exchange_endpoint"), "Incomplete Entra OBO Configuration", "Entra OBO requires an explicitly configured known non-empty token_exchange_endpoint or token_url; masked or imported state is not proof.")
+		}
+		if data.OAuthScopes.IsNull() {
+			diagnostics.AddAttributeError(path.Root("oauth_scopes"), "Incomplete Entra OBO Configuration", "Entra OBO requires explicitly configured known non-empty OAuth scopes.")
+		} else if data.OAuthScopes.IsUnknown() {
+			if !deferUnknownDependencies {
+				diagnostics.AddAttributeError(path.Root("oauth_scopes"), "Incomplete Entra OBO Configuration", "Entra OBO requires explicitly configured known non-empty OAuth scopes.")
+			}
+		} else if len(data.OAuthScopes.Elements()) == 0 {
+			diagnostics.AddAttributeError(path.Root("oauth_scopes"), "Incomplete Entra OBO Configuration", "Entra OBO requires explicitly configured known non-empty OAuth scopes.")
+		} else {
+			for _, raw := range data.OAuthScopes.Elements() {
+				value, ok := raw.(types.String)
+				if ok && value.IsUnknown() && deferUnknownDependencies {
+					continue
+				}
+				if !ok || value.IsNull() || value.IsUnknown() || value.ValueString() == "" {
+					diagnostics.AddAttributeError(path.Root("oauth_scopes"), "Incomplete Entra OBO Configuration", "Entra OBO requires explicitly configured known non-empty OAuth scopes.")
+					break
+				}
+			}
+		}
+	}
+	if requireExplicitClient {
+		complete := !data.Credentials.IsNull() && !data.Credentials.IsUnknown()
+		unknown := data.Credentials.IsUnknown()
+		if complete {
+			for _, name := range []string{"client_id", "client_secret"} {
+				raw, present := data.Credentials.Elements()[name]
+				value, ok := raw.(types.String)
+				if present && ok && value.IsUnknown() {
+					unknown = true
+				}
+				if !present || !ok || value.IsNull() || value.IsUnknown() || value.ValueString() == "" {
+					complete = false
+				}
+			}
+		}
+		if !complete && !(deferUnknownDependencies && unknown) {
+			diagnostics.AddAttributeError(path.Root("credentials"), "Incomplete MCP Token Exchange Credentials", "Canonical token exchange requires explicitly configured known non-empty client_id and client_secret credentials; masked or imported state is not proof.")
+		}
+	}
+}
+
+func resolveMCPTokenExchangeValidationConfig(config, plan MCPServerResourceModel) MCPServerResourceModel {
+	resolved := config
+	resolveString := func(configured types.String, planned types.String) types.String {
+		if configured.IsUnknown() {
+			return planned
+		}
+		return configured
+	}
+	resolved.AuthType = resolveString(config.AuthType, plan.AuthType)
+	resolved.OAuth2Flow = resolveString(config.OAuth2Flow, plan.OAuth2Flow)
+	resolved.Issuer = resolveString(config.Issuer, plan.Issuer)
+	resolved.TokenURL = resolveString(config.TokenURL, plan.TokenURL)
+	resolved.TokenExchangeEndpoint = resolveString(config.TokenExchangeEndpoint, plan.TokenExchangeEndpoint)
+	resolved.Audience = resolveString(config.Audience, plan.Audience)
+	resolved.SubjectTokenType = resolveString(config.SubjectTokenType, plan.SubjectTokenType)
+	resolved.TokenExchangeProfile = resolveString(config.TokenExchangeProfile, plan.TokenExchangeProfile)
+	if config.Credentials.IsUnknown() {
+		resolved.Credentials = plan.Credentials
+	} else if !config.Credentials.IsNull() {
+		for _, raw := range config.Credentials.Elements() {
+			value, ok := raw.(types.String)
+			if ok && value.IsUnknown() {
+				// A map with statically known keys can still contain values sourced
+				// from variables. Validate those values from the proposed plan rather
+				// than treating configuration-time unknowns as missing credentials.
+				resolved.Credentials = plan.Credentials
+				break
+			}
+		}
+	}
+	if config.OAuthScopes.IsUnknown() {
+		resolved.OAuthScopes = plan.OAuthScopes
+	}
+	return resolved
+}
+
+func validateMCP208CrossConfiguration(data MCPServerResourceModel, diagnostics *diag.Diagnostics) {
+	knownTrue := func(value types.Bool) bool {
+		return !value.IsNull() && !value.IsUnknown() && value.ValueBool()
+	}
+	if knownTrue(data.DCRBridge) && !data.AuthType.IsUnknown() {
+		if data.AuthType.IsNull() || (data.AuthType.ValueString() != "true_passthrough" && data.AuthType.ValueString() != "oauth_delegate") {
+			diagnostics.AddAttributeError(path.Root("dcr_bridge"), "Invalid MCP Authentication Configuration", "Enabling the DCR bridge requires a compatible known authentication type.")
+		}
+	}
+	if knownTrue(data.DelegateAuthToUpstream) && !data.AuthType.IsUnknown() {
+		if data.AuthType.IsNull() || data.AuthType.ValueString() != "oauth2" {
+			diagnostics.AddAttributeError(path.Root("delegate_auth_to_upstream"), "Invalid MCP Authentication Configuration", "Delegating authentication upstream requires the known OAuth2 authentication type.")
+		} else if !data.OAuth2Flow.IsUnknown() && (data.OAuth2Flow.IsNull() || data.OAuth2Flow.ValueString() != "authorization_code") {
+			// v1.98 stamps an omitted M2M-shaped create as client_credentials
+			// and deliberately denies upstream delegation for that effective flow.
+			// Requiring explicit authorization_code avoids treating redacted legacy
+			// credentials or an omitted flow as proof of an interactive boundary.
+			diagnostics.AddAttributeError(path.Root("delegate_auth_to_upstream"), "Invalid MCP Authentication Configuration", "Delegating authentication upstream requires an explicit interactive OAuth2 flow.")
+		}
+	}
+	if !knownTrue(data.OAuthPassthrough) || data.AuthType.IsUnknown() || data.ExtraHeaders.IsUnknown() {
+		return
+	}
+	if data.AuthType.IsNull() || data.AuthType.ValueString() != "none" {
+		diagnostics.AddAttributeError(path.Root("oauth_passthrough"), "Invalid MCP Authentication Configuration", "OAuth passthrough requires the known unauthenticated authentication type and an Authorization header member.")
+		return
+	}
+	if data.ExtraHeaders.IsNull() {
+		diagnostics.AddAttributeError(path.Root("oauth_passthrough"), "Invalid MCP Authentication Configuration", "OAuth passthrough requires the known unauthenticated authentication type and an Authorization header member.")
+		return
+	}
+	unknownMember := false
+	for _, member := range data.ExtraHeaders.Elements() {
+		value, ok := member.(types.String)
+		if !ok || value.IsNull() {
+			continue
+		}
+		if value.IsUnknown() {
+			unknownMember = true
+			continue
+		}
+		if strings.EqualFold(value.ValueString(), "Authorization") {
+			return
+		}
+	}
+	if !unknownMember {
+		diagnostics.AddAttributeError(path.Root("oauth_passthrough"), "Invalid MCP Authentication Configuration", "OAuth passthrough requires the known unauthenticated authentication type and an Authorization header member.")
+	}
+}
+
+func (r *MCPServerResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	prior, privateDiags := readMCPInfoProvenance(ctx, req.Private)
+	resp.Diagnostics.Append(privateDiags...)
+	priorFields, fieldPrivateDiags := readMCPFieldOwnership(ctx, req.Private)
+	resp.Diagnostics.Append(fieldPrivateDiags...)
+	if resp.Diagnostics.HasError() {
+		// Private corruption must not turn a planned update or destroy into an
+		// ownership-losing state transition.
+		resp.Private = req.Private
+		if !req.State.Raw.IsNull() {
+			resp.Plan.Raw = req.State.Raw
+		}
+		return
+	}
+
+	var state MCPServerResourceModel
+	hasState := !req.State.Raw.IsNull()
+	if hasState {
+		resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+		if bindingErr := validateMCPFieldOwnershipGeneration(state.FieldOwnershipGeneration, priorFields); bindingErr != nil {
+			mcpFieldPrivateError(&resp.Diagnostics)
+		}
+		if resp.Diagnostics.HasError() {
+			resp.Private = req.Private
+			resp.Plan.Raw = req.State.Raw
+			return
+		}
+	}
+
+	// Destroy remains possible for historical phantom values only when their
+	// private ownership grammar and public generation agree.
+	if req.Plan.Raw.IsNull() {
+		return
+	}
+
+	var plan, config MCPServerResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if hasState && !config.ServerID.IsNull() && !config.ServerID.IsUnknown() && !config.ServerID.Equal(state.ServerID) {
+		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("id"), types.StringUnknown())...)
+	}
+	if !config.ServerName.IsNull() && !config.ServerName.IsUnknown() && !mcpToolPrefixValidV198(config.ServerName.ValueString()) {
+		unchangedHistorical := hasState && !state.ServerName.IsNull() && !state.ServerName.IsUnknown() && config.ServerName.Equal(state.ServerName)
+		if !unchangedHistorical {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("server_name"),
+				"Invalid MCP Server Name",
+				"Configured server_name must contain 1 to 128 ASCII letters, digits, underscores, or periods and must not contain LiteLLM v1.98's tool-prefix separator.",
+			)
+		}
+	}
+	if !config.Alias.IsNull() && !config.Alias.IsUnknown() && config.Alias.ValueString() != "" && !mcpToolPrefixValidV198(mcpNormalizeAliasV198(config.Alias.ValueString())) {
+		unchangedHistorical := hasState && !state.Alias.IsNull() && !state.Alias.IsUnknown() && config.Alias.Equal(state.Alias)
+		if !unchangedHistorical {
+			resp.Diagnostics.AddAttributeError(
+				path.Root("alias"),
+				"Invalid MCP Server Alias",
+				"Configured alias must normalize to 1 to 128 ASCII letters, digits, underscores, or periods and must not contain LiteLLM v1.98's tool-prefix separator.",
+			)
+		}
+	}
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	// Re-run ownership validation from Config at resource plan time. This is
+	// intentionally not based on ProposedNewState, where Optional+Computed
+	// values can contain prior state.
+	validateMCPInfoJSONConfig(config, &resp.Diagnostics)
+	validateMCP208CrossConfiguration(config, &resp.Diagnostics)
+	validateMCPTokenExchangeConfiguration(resolveMCPTokenExchangeValidationConfig(config, plan), &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	unsupportedSpecVersion := !plan.SpecVersion.IsNull() && !plan.SpecVersion.IsUnknown() && plan.SpecVersion.ValueString() != "2024-11-05"
+	unchangedSpecVersion := hasState && !state.SpecVersion.IsUnknown() && state.SpecVersion.Equal(plan.SpecVersion)
+	if unsupportedSpecVersion && !unchangedSpecVersion {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("spec_version"),
+			"Unsupported Deprecated MCP Configuration",
+			"LiteLLM v1.98 does not accept this compatibility field. A historical non-default value may remain unchanged, but new or changed non-default values are unsafe.",
+		)
+	}
+
+	unsupportedSkipValidation := !plan.SkipURLValidation.IsNull() && !plan.SkipURLValidation.IsUnknown() && plan.SkipURLValidation.ValueBool()
+	unchangedSkipValidation := hasState && !state.SkipURLValidation.IsUnknown() && state.SkipURLValidation.Equal(plan.SkipURLValidation)
+	if unsupportedSkipValidation && !unchangedSkipValidation {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("skip_url_validation"),
+			"Unsupported Deprecated MCP Configuration",
+			"LiteLLM v1.98 does not accept this compatibility field. A historical true value may remain unchanged, but a new or changed true value is unsafe.",
+		)
+	}
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	candidate, ownershipDiags := deriveMCPInfoJSONPlanProvenance(ctx, prior, config, state)
+	resp.Diagnostics.Append(ownershipDiags...)
+	candidateFields := deriveMCPFieldPlanOwnership(priorFields, config)
+	_, acceptedCreateDiags := readMCPAcceptedCreateRecovery(ctx, req.Private, candidateFields)
+	resp.Diagnostics.Append(acceptedCreateDiags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	effectiveJSON, setEffectiveJSON, effectiveDiags := planEffectiveMCPInfoJSON(ctx, hasState, state, config)
+	resp.Diagnostics.Append(effectiveDiags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if setEffectiveJSON {
+		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("mcp_info_json"), effectiveJSON)...)
+	}
+	plannedGeneration := types.Int64Value(candidate.Generation)
+	if hasState && state.MCPInfoOwnershipGeneration.IsNull() && mcpInfoOwnershipEqual(prior, candidate) {
+		// Direct protocol callers may bypass state upgrading. Preserve their
+		// historical typed null on a true ownership no-op.
+		plannedGeneration = types.Int64Null()
+	}
+	resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("mcp_info_ownership_generation"), plannedGeneration)...)
+	plannedFieldGeneration := mcpFieldGenerationValue(candidateFields)
+	if hasState && state.FieldOwnershipGeneration.IsNull() && mcpFieldSetsEqual(priorFields.Owned, candidateFields.Owned) && len(candidateFields.Removals) == 0 {
+		plannedFieldGeneration = types.Int64Null()
+	}
+	resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("field_ownership_generation"), plannedFieldGeneration)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// Optional+Computed fields distinguish omission from an explicit empty value
+	// through Config plus private provenance. Omitted unowned values retain an
+	// import/API projection; removing a committed-owned value plans its exact
+	// durable removal projection.
+	emptyBYOKDescription, emptyBYOKDiags := checkedStringListValue(ctx, []attr.Value{}, path.Root("byok_description"))
+	resp.Diagnostics.Append(emptyBYOKDiags...)
+	emptyEnvVars, emptyEnvVarDiags := mcpEnvVarsTerraformValue(ctx, []mcpEnvVar{}, path.Root("env_vars"))
+	resp.Diagnostics.Append(emptyEnvVarDiags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	for _, item := range []struct {
+		name       string
+		fieldPath  string
+		configured attr.Value
+		priorValue attr.Value
+		nullValue  attr.Value
+	}{
+		{name: "alias", fieldPath: mcpFieldAliasPath, configured: config.Alias, priorValue: state.Alias, nullValue: types.StringNull()},
+		{name: "mcp_access_groups", fieldPath: mcpFieldAccessGroupsPath, configured: config.MCPAccessGroups, priorValue: state.MCPAccessGroups, nullValue: types.ListNull(types.StringType)},
+		{name: "args", fieldPath: mcpFieldArgsPath, configured: config.Args, priorValue: state.Args, nullValue: types.ListNull(types.StringType)},
+		{name: "env", fieldPath: mcpFieldEnvPath, configured: config.Env, priorValue: state.Env, nullValue: types.MapNull(types.StringType)},
+		{name: "env_vars", fieldPath: mcpFieldEnvVarsPath, configured: config.EnvVars, priorValue: state.EnvVars, nullValue: emptyEnvVars},
+		{name: "credentials", fieldPath: mcpFieldCredentialsPath, configured: config.Credentials, priorValue: state.Credentials, nullValue: types.MapNull(types.StringType)},
+		{name: "allowed_tools", fieldPath: mcpFieldAllowedToolsPath, configured: config.AllowedTools, priorValue: state.AllowedTools, nullValue: types.ListNull(types.StringType)},
+		{name: "extra_headers", fieldPath: mcpFieldExtraHeadersPath, configured: config.ExtraHeaders, priorValue: state.ExtraHeaders, nullValue: types.ListNull(types.StringType)},
+		{name: "static_headers", fieldPath: mcpFieldStaticHeadersPath, configured: config.StaticHeaders, priorValue: state.StaticHeaders, nullValue: types.MapNull(types.StringType)},
+		{name: "issuer", fieldPath: mcpFieldIssuerPath, configured: config.Issuer, priorValue: state.Issuer, nullValue: types.StringNull()},
+		{name: "token_exchange_endpoint", fieldPath: mcpFieldTokenExchangeEndpointPath, configured: config.TokenExchangeEndpoint, priorValue: state.TokenExchangeEndpoint, nullValue: types.StringNull()},
+		{name: "audience", fieldPath: mcpFieldAudiencePath, configured: config.Audience, priorValue: state.Audience, nullValue: types.StringNull()},
+		{name: "subject_token_type", fieldPath: mcpFieldSubjectTokenTypePath, configured: config.SubjectTokenType, priorValue: state.SubjectTokenType, nullValue: types.StringNull()},
+		{name: "token_exchange_profile", fieldPath: mcpFieldTokenExchangeProfilePath, configured: config.TokenExchangeProfile, priorValue: state.TokenExchangeProfile, nullValue: types.StringNull()},
+		{name: "available_on_public_internet", fieldPath: mcpFieldAvailablePublicInternetPath, configured: config.AvailableOnPublicInternet, priorValue: state.AvailableOnPublicInternet, nullValue: types.BoolNull()},
+		{name: "oauth2_flow", fieldPath: mcpFieldOAuth2FlowPath, configured: config.OAuth2Flow, priorValue: state.OAuth2Flow, nullValue: types.StringNull()},
+		{name: "instructions", fieldPath: mcpFieldInstructionsPath, configured: config.Instructions, priorValue: state.Instructions, nullValue: types.StringNull()},
+		{name: "tool_name_to_display_name", fieldPath: mcpFieldToolNameToDisplayNamePath, configured: config.ToolNameToDisplayName, priorValue: state.ToolNameToDisplayName, nullValue: types.MapNull(types.StringType)},
+		{name: "tool_name_to_description", fieldPath: mcpFieldToolNameToDescriptionPath, configured: config.ToolNameToDescription, priorValue: state.ToolNameToDescription, nullValue: types.MapNull(types.StringType)},
+		{name: "delegate_auth_to_upstream", fieldPath: mcpFieldDelegateAuthToUpstreamPath, configured: config.DelegateAuthToUpstream, priorValue: state.DelegateAuthToUpstream, nullValue: types.BoolValue(false)},
+		{name: "oauth_passthrough", fieldPath: mcpFieldOAuthPassthroughPath, configured: config.OAuthPassthrough, priorValue: state.OAuthPassthrough, nullValue: types.BoolValue(false)},
+		{name: "dcr_bridge", fieldPath: mcpFieldDCRBridgePath, configured: config.DCRBridge, priorValue: state.DCRBridge, nullValue: types.BoolNull()},
+		{name: "is_byok", fieldPath: mcpFieldIsBYOKPath, configured: config.IsBYOK, priorValue: state.IsBYOK, nullValue: types.BoolValue(false)},
+		{name: "byok_description", fieldPath: mcpFieldBYOKDescriptionPath, configured: config.BYOKDescription, priorValue: state.BYOKDescription, nullValue: emptyBYOKDescription},
+		{name: "byok_api_key_help_url", fieldPath: mcpFieldBYOKAPIKeyHelpURLPath, configured: config.BYOKAPIKeyHelpURL, priorValue: state.BYOKAPIKeyHelpURL, nullValue: types.StringNull()},
+		{name: "source_url", fieldPath: mcpFieldSourceURLPath, configured: config.SourceURL, priorValue: state.SourceURL, nullValue: types.StringNull()},
+		{name: "timeout", fieldPath: mcpFieldTimeoutPath, configured: config.Timeout, priorValue: state.Timeout, nullValue: types.Float64Null()},
+		{name: "max_concurrent_requests", fieldPath: mcpFieldMaxConcurrentRequestsPath, configured: config.MaxConcurrentRequests, priorValue: state.MaxConcurrentRequests, nullValue: types.Int64Null()},
+	} {
+		if !hasState || !item.configured.IsNull() {
+			continue
+		}
+		if candidateFields.Removals[item.fieldPath] {
+			resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root(item.name), item.nullValue)...)
+		} else if !priorFields.Owned[item.fieldPath] && !item.priorValue.IsUnknown() {
+			resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root(item.name), item.priorValue)...)
+		}
+	}
+	// Preserve each imported API-owned cost leaf while that exact HCL leaf is
+	// omitted. A configured parent, string sibling, or other cost sibling must
+	// neither erase the projection nor receive ownership implicitly.
+	planInfoChanged := false
+	configuredLeaves := mcpInfoConfiguredLeafStates(config)
+	preserveDefault := hasState && candidate.API[mcpInfoDefaultCostLeaf] && configuredLeaves[mcpInfoDefaultCostLeaf] == 0
+	preserveTools := hasState && candidate.API[mcpInfoToolCostsLeaf] && configuredLeaves[mcpInfoToolCostsLeaf] == 0
+	if (preserveDefault || preserveTools) && state.MCPInfo != nil && state.MCPInfo.MCPServerCostInfo != nil {
+		if plan.MCPInfo == nil {
+			plan.MCPInfo = &MCPInfoModel{
+				ServerName:  types.StringNull(),
+				Description: types.StringNull(),
+				LogoURL:     types.StringNull(),
+			}
+			planInfoChanged = true
+		}
+		if plan.MCPInfo.MCPServerCostInfo == nil {
+			plan.MCPInfo.MCPServerCostInfo = &MCPServerCostInfoModel{
+				DefaultCostPerQuery:    types.Float64Null(),
+				ToolNameToCostPerQuery: types.MapNull(types.Float64Type),
+			}
+			planInfoChanged = true
+		}
+		if preserveDefault && !plan.MCPInfo.MCPServerCostInfo.DefaultCostPerQuery.Equal(state.MCPInfo.MCPServerCostInfo.DefaultCostPerQuery) {
+			plan.MCPInfo.MCPServerCostInfo.DefaultCostPerQuery = state.MCPInfo.MCPServerCostInfo.DefaultCostPerQuery
+			planInfoChanged = true
+		}
+		if preserveTools && !plan.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery.Equal(state.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery) {
+			plan.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery = state.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery
+			planInfoChanged = true
+		}
+	}
+	if planInfoChanged {
+		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("mcp_info"), plan.MCPInfo)...)
+		// Setting one nested attribute materializes the framework's internally
+		// unknown Optional+Computed siblings. Restore only omitted siblings from
+		// prior state so the cost-shell preservation remains a true no-op.
+		for _, item := range []struct {
+			name       string
+			configured attr.Value
+			planned    attr.Value
+			prior      attr.Value
+		}{
+			{name: "mcp_access_groups", configured: config.MCPAccessGroups, planned: plan.MCPAccessGroups, prior: state.MCPAccessGroups},
+			{name: "args", configured: config.Args, planned: plan.Args, prior: state.Args},
+			{name: "env", configured: config.Env, planned: plan.Env, prior: state.Env},
+			{name: "env_vars", configured: config.EnvVars, planned: plan.EnvVars, prior: state.EnvVars},
+			{name: "credentials", configured: config.Credentials, planned: plan.Credentials, prior: state.Credentials},
+			{name: "allowed_tools", configured: config.AllowedTools, planned: plan.AllowedTools, prior: state.AllowedTools},
+			{name: "extra_headers", configured: config.ExtraHeaders, planned: plan.ExtraHeaders, prior: state.ExtraHeaders},
+			{name: "static_headers", configured: config.StaticHeaders, planned: plan.StaticHeaders, prior: state.StaticHeaders},
+			{name: "issuer", configured: config.Issuer, planned: plan.Issuer, prior: state.Issuer},
+			{name: "token_exchange_endpoint", configured: config.TokenExchangeEndpoint, planned: plan.TokenExchangeEndpoint, prior: state.TokenExchangeEndpoint},
+			{name: "audience", configured: config.Audience, planned: plan.Audience, prior: state.Audience},
+			{name: "subject_token_type", configured: config.SubjectTokenType, planned: plan.SubjectTokenType, prior: state.SubjectTokenType},
+			{name: "token_exchange_profile", configured: config.TokenExchangeProfile, planned: plan.TokenExchangeProfile, prior: state.TokenExchangeProfile},
+			{name: "available_on_public_internet", configured: config.AvailableOnPublicInternet, planned: plan.AvailableOnPublicInternet, prior: state.AvailableOnPublicInternet},
+			{name: "oauth2_flow", configured: config.OAuth2Flow, planned: plan.OAuth2Flow, prior: state.OAuth2Flow},
+			{name: "instructions", configured: config.Instructions, planned: plan.Instructions, prior: state.Instructions},
+			{name: "tool_name_to_display_name", configured: config.ToolNameToDisplayName, planned: plan.ToolNameToDisplayName, prior: state.ToolNameToDisplayName},
+			{name: "tool_name_to_description", configured: config.ToolNameToDescription, planned: plan.ToolNameToDescription, prior: state.ToolNameToDescription},
+			{name: "delegate_auth_to_upstream", configured: config.DelegateAuthToUpstream, planned: plan.DelegateAuthToUpstream, prior: state.DelegateAuthToUpstream},
+			{name: "oauth_passthrough", configured: config.OAuthPassthrough, planned: plan.OAuthPassthrough, prior: state.OAuthPassthrough},
+			{name: "dcr_bridge", configured: config.DCRBridge, planned: plan.DCRBridge, prior: state.DCRBridge},
+			{name: "is_byok", configured: config.IsBYOK, planned: plan.IsBYOK, prior: state.IsBYOK},
+			{name: "byok_description", configured: config.BYOKDescription, planned: plan.BYOKDescription, prior: state.BYOKDescription},
+			{name: "byok_api_key_help_url", configured: config.BYOKAPIKeyHelpURL, planned: plan.BYOKAPIKeyHelpURL, prior: state.BYOKAPIKeyHelpURL},
+			{name: "source_url", configured: config.SourceURL, planned: plan.SourceURL, prior: state.SourceURL},
+			{name: "timeout", configured: config.Timeout, planned: plan.Timeout, prior: state.Timeout},
+			{name: "max_concurrent_requests", configured: config.MaxConcurrentRequests, planned: plan.MaxConcurrentRequests, prior: state.MaxConcurrentRequests},
+		} {
+			if item.configured.IsNull() && item.planned.IsUnknown() && !item.prior.IsUnknown() {
+				resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root(item.name), item.prior)...)
+			}
+		}
+	}
+	if !hasState && config.Alias.IsNull() {
+		if !config.ServerName.IsNull() && !config.ServerName.IsUnknown() {
+			resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("alias"), types.StringValue(mcpNormalizeAliasV198(config.ServerName.ValueString())))...)
+		} else {
+			resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("alias"), types.StringNull())...)
+		}
+	}
+	// LiteLLM advances these observable audit leaves after every accepted
+	// mutation. Keep them unknown whenever the final planned resource differs
+	// from prior state so readback can publish the new values without violating
+	// Terraform's planned-value contract. A true no-op retains known state.
+	if hasState {
+		comparisonPlan := resp.Plan
+		resp.Diagnostics.Append(comparisonPlan.SetAttribute(ctx, path.Root("updated_at"), state.UpdatedAt)...)
+		resp.Diagnostics.Append(comparisonPlan.SetAttribute(ctx, path.Root("updated_by"), state.UpdatedBy)...)
+		if !resp.Diagnostics.HasError() {
+			if comparisonPlan.Raw.Equal(req.State.Raw) {
+				resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("updated_at"), state.UpdatedAt)...)
+				resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("updated_by"), state.UpdatedBy)...)
+			} else {
+				resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("updated_at"), types.StringUnknown())...)
+				resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("updated_by"), types.StringUnknown())...)
+			}
+		}
+	}
+	if resp.Private != nil && !resp.Diagnostics.HasError() {
+		resp.Diagnostics.Append(writePendingMCPInfoProvenance(ctx, resp.Private, candidate)...)
+		resp.Diagnostics.Append(writePendingMCPFieldOwnership(ctx, resp.Private, candidateFields)...)
+	}
+
+	// The public generation, rather than identity churn, forces Apply for
+	// ownership-only changes such as equal-value takeover.
+}
+
+func validateMCPServerOptionalResponseFields(result map[string]interface{}, stringFields, boolFields, stringListFields, stringMapFields, floatFields, intFields []string) error {
+	for _, field := range stringFields {
+		if value, present := result[field]; present && value != nil {
+			if _, ok := value.(string); !ok {
+				return fmt.Errorf("MCP server response contains a malformed optional string field")
+			}
+		}
+	}
+	for _, field := range boolFields {
+		if value, present := result[field]; present && value != nil {
+			if _, ok := value.(bool); !ok {
+				return fmt.Errorf("MCP server response contains a malformed optional boolean field")
+			}
+		}
+	}
+	for _, field := range stringListFields {
+		value, present := result[field]
+		if !present || value == nil {
+			continue
+		}
+		items, ok := value.([]interface{})
+		if !ok {
+			return fmt.Errorf("MCP server response contains a malformed optional string-list field")
+		}
+		for _, item := range items {
+			if _, ok := item.(string); !ok {
+				return fmt.Errorf("MCP server response contains a malformed optional string-list field")
+			}
+		}
+	}
+	for _, field := range stringMapFields {
+		value, present := result[field]
+		if !present || value == nil {
+			continue
+		}
+		items, ok := value.(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("MCP server response contains a malformed optional string-map field")
+		}
+		for _, item := range items {
+			if _, ok := item.(string); !ok {
+				return fmt.Errorf("MCP server response contains a malformed optional string-map field")
+			}
+		}
+	}
+	for _, field := range floatFields {
+		value, present := result[field]
+		if !present || value == nil {
+			continue
+		}
+		number, err := float64FromAPI(value)
+		if !dataSourceAPIJSONNumber(value) || err != nil || number <= 0 {
+			return fmt.Errorf("MCP server response contains a malformed optional positive-number field")
+		}
+	}
+	for _, field := range intFields {
+		value, present := result[field]
+		if !present || value == nil {
+			continue
+		}
+		_, err := exactInt64FromAPI(value)
+		if !dataSourceAPIJSONNumber(value) || err != nil {
+			return fmt.Errorf("MCP server response contains a malformed optional integer field")
+		}
+	}
+	return nil
+}
+
+func mcpKnownNonEmptyString(value types.String) bool {
+	return !value.IsNull() && !value.IsUnknown() && value.ValueString() != ""
+}
+
+// Python's os.path.basename on the LiteLLM runtime is deliberately not the
+// same as path.Base: it does not clean the path, and a trailing slash yields an
+// empty basename. Matching that behavior keeps plan validation wire-exact.
+func mcpStdioCommandBaseV198(command string) string {
+	if slash := strings.LastIndex(command, "/"); slash >= 0 {
+		return command[slash+1:]
+	}
+	return command
 }
 
 func (r *MCPServerResource) Configure(ctx context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
@@ -273,94 +1378,358 @@ func (r *MCPServerResource) Configure(ctx context.Context, req resource.Configur
 }
 
 func (r *MCPServerResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
-	var data MCPServerResourceModel
-
+	var data, config MCPServerResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+	priorFields := emptyMCPFieldOwnership()
+	plannedOwnership, ownershipDiags := deriveMCPInfoJSONPlanProvenance(ctx, emptyMCPInfoProvenance(), config, MCPServerResourceModel{})
+	resp.Diagnostics.Append(ownershipDiags...)
+	plannedFields := deriveMCPFieldPlanOwnership(priorFields, config)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
-	mcpReq := r.buildMCPServerRequest(ctx, &data)
-
-	var result map[string]interface{}
-	if err := r.client.DoRequestWithResponse(ctx, "POST", "/v1/mcp/server", mcpReq, &result); err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to create MCP server: %s", err))
+	resolved, err := resolveMCPInfoCreateDocument(ctx, config)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid MCP Info Configuration", "The complete MCP info document could not be resolved safely; no create was attempted.")
+		return
+	}
+	mcpReq, err := r.buildMCPServerCreateRequest(ctx, &data, &config, resolved.Document, resolved.Present)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid MCP Request", err.Error())
 		return
 	}
 
-	// Extract server_id from response
-	if serverID, ok := result["server_id"].(string); ok {
-		data.ServerID = types.StringValue(serverID)
-		data.ID = types.StringValue(serverID)
+	// Preselect identity so an accepted response-body failure can be reconciled
+	// through the direct endpoint without list discovery or an orphaned row.
+	serverID := uuid.NewString()
+	if config.ServerID.IsUnknown() {
+		resp.Diagnostics.AddError("Unknown MCP Server Identity", "Configured server_id must be known before create. No request was attempted.")
+		return
 	}
-
-	// Read back for full state
-	if err := r.readMCPServer(ctx, &data); err != nil {
-		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("MCP server created but failed to read back: %s", err))
+	if !config.ServerID.IsNull() {
+		serverID = config.ServerID.ValueString()
+		if !mcpServerIDValidV198(serverID) {
+			resp.Diagnostics.AddError("Invalid MCP Server Identity", "Configured server_id cannot be represented safely by LiteLLM's management endpoints. No request was attempted.")
+			return
+		}
 	}
-
+	mcpReq["server_id"] = serverID
+	var result map[string]interface{}
+	accepted, createErr := r.client.doRequestWithResponse(ctx, "POST", "/v1/mcp/server", mcpReq, &result)
+	if createErr != nil && !accepted {
+		resp.Diagnostics.AddError("Client Error", "Unable to create MCP server because LiteLLM did not accept the request.")
+		return
+	}
+	data.ServerID = types.StringValue(serverID)
+	data.ID = types.StringValue(serverID)
+	// CreateRequest does not carry PlannedPrivate. Re-establish the pending v2
+	// bundle as soon as the POST confirms identity, then replace it with the
+	// committed bundle only after successful direct readback.
+	if resp.Private != nil {
+		resp.Diagnostics.Append(writePendingMCPInfoProvenance(ctx, resp.Private, plannedOwnership)...)
+		resp.Diagnostics.Append(writePendingMCPFieldOwnership(ctx, resp.Private, plannedFields)...)
+		resp.Diagnostics.Append(writeMCPAcceptedCreateRecovery(ctx, resp.Private)...)
+		if resp.Diagnostics.HasError() {
+			partial := partialMCPServerState(serverID)
+			resp.Diagnostics.Append(resp.State.Set(ctx, &partial)...)
+			return
+		}
+	}
+	planned := data
+	_, _, readback, err := r.readMCPServerWithAllProvenanceDirect(ctx, &data, plannedOwnership, committedMCPFieldOwnership(plannedFields), false)
+	if err != nil {
+		partial := partialMCPServerState(serverID)
+		resp.Diagnostics.Append(resp.State.Set(ctx, &partial)...)
+		resp.Diagnostics.AddError("MCP Server Readback Not Confirmed", "LiteLLM accepted the create, but direct authoritative readback failed. Only the confirmed identity was retained for recovery.")
+		return
+	}
+	observed, presence, err := mcpInfoDocumentFromResponse(readback)
+	if err != nil || (resolved.Present && presence != apiValuePresent) {
+		partial := partialMCPServerState(serverID)
+		resp.Diagnostics.Append(resp.State.Set(ctx, &partial)...)
+		resp.Diagnostics.AddError("MCP Server Readback Not Confirmed", "LiteLLM accepted the create, but direct readback did not return a valid MCP info object. Only the confirmed identity was retained for recovery.")
+		return
+	}
+	readbackIntent := config
+	readbackIntent.EnvVars = planned.EnvVars
+	if mcpOwnedEndpointReadbackMismatch(&planned, &data, nil) || verifyMCPCreateEndpointReadback(planned, readback) != nil || verifyMCPFieldCreateReadback(ctx, readbackIntent, readback, plannedFields) != nil {
+		partial := partialMCPServerState(serverID)
+		resp.Diagnostics.Append(resp.State.Set(ctx, &partial)...)
+		resp.Diagnostics.AddError("Inconsistent MCP Endpoint Readback", "LiteLLM accepted the create but did not persist the requested endpoint or transport. Only the confirmed identity was retained for recovery.")
+		return
+	}
+	if resolved.Present {
+		if err := verifyMCPInfoReadback(map[string]interface{}{}, resolved.Document, observed, plannedOwnership); err != nil {
+			partial := partialMCPServerState(serverID)
+			resp.Diagnostics.Append(resp.State.Set(ctx, &partial)...)
+			resp.Diagnostics.AddError("Inconsistent MCP Info Readback", "LiteLLM accepted the create but did not confirm the requested MCP info document. Only the confirmed identity was retained for recovery.")
+			return
+		}
+	}
+	resolveUnknownMCPServerState(&data, nil)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	if !resp.Diagnostics.HasError() && resp.Private != nil {
+		resp.Diagnostics.Append(writeMCPInfoProvenance(ctx, resp.Private, plannedOwnership)...)
+		resp.Diagnostics.Append(writeMCPInfoPrivateDocumentAuthoritative(ctx, resp.Private, presence == apiValuePresent)...)
+		resp.Diagnostics.Append(writeMCPFieldOwnership(ctx, resp.Private, committedMCPFieldOwnership(plannedFields))...)
+	}
 }
 
 func (r *MCPServerResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
 	var data MCPServerResourceModel
-
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
+	importedMarker, privateDiags := req.Private.GetKey(ctx, numericImportedPrivateKey)
+	resp.Diagnostics.Append(privateDiags...)
+	fieldImportedMarker, fieldImportDiags := req.Private.GetKey(ctx, mcpFieldImportedPrivateKey)
+	resp.Diagnostics.Append(fieldImportDiags...)
+	if fieldImportedMarker != nil && string(fieldImportedMarker) != "true" {
+		mcpFieldPrivateError(&resp.Diagnostics)
+	}
+	ownership, ownershipDiags := readMCPInfoProvenance(ctx, req.Private)
+	resp.Diagnostics.Append(ownershipDiags...)
+	fieldOwnership, fieldOwnershipDiags := readMCPFieldOwnership(ctx, req.Private)
+	resp.Diagnostics.Append(fieldOwnershipDiags...)
+	if bindingErr := validateMCPFieldOwnershipGeneration(data.FieldOwnershipGeneration, fieldOwnership); bindingErr != nil {
+		mcpFieldPrivateError(&resp.Diagnostics)
+	}
+	hasPendingOwnership, pendingOwnershipDiags := mcpInfoPrivateHasPending(ctx, req.Private)
+	resp.Diagnostics.Append(pendingOwnershipDiags...)
 	if resp.Diagnostics.HasError() {
+		resp.State = req.State
+		resp.Private = req.Private
 		return
 	}
-
-	if err := r.readMCPServer(ctx, &data); err != nil {
-		if IsNotFoundError(err) {
+	imported := string(importedMarker) == "true"
+	fieldImported := string(fieldImportedMarker) == "true"
+	_, adoptedAPI, result, err := r.readMCPServerWithAllProvenanceDirect(ctx, &data, ownership, fieldOwnership, imported || fieldImported)
+	fieldSingular := err == nil
+	fieldReadFailure := ClassifyHTTPFailure(err)
+	if err != nil && !IsAPIErrorStatus(err, 404) && !(fieldReadFailure.Kind == HTTPFailureContractOrLocal && !fieldReadFailure.RequestDispatched) {
+		// Preserve the historical #116/#213 collection fallback for identity and
+		// MCP-info compatibility, but never use it as authority for #212 fields.
+		priorFields := data
+		_, adoptedAPI, result, err = r.readMCPServerWithAllProvenanceResult(ctx, &data, ownership, emptyMCPFieldOwnership(), imported)
+		data.Alias, data.Description, data.Command = priorFields.Alias, priorFields.Description, priorFields.Command
+		data.AuthorizationURL, data.TokenURL, data.RegistrationURL = priorFields.AuthorizationURL, priorFields.TokenURL, priorFields.RegistrationURL
+		data.MCPAccessGroups, data.Args, data.Env = priorFields.MCPAccessGroups, priorFields.Args, priorFields.Env
+		data.EnvVars = priorFields.EnvVars
+		data.AllowedTools, data.ExtraHeaders, data.StaticHeaders = priorFields.AllowedTools, priorFields.ExtraHeaders, priorFields.StaticHeaders
+		data.Issuer, data.TokenExchangeEndpoint = priorFields.Issuer, priorFields.TokenExchangeEndpoint
+		data.Audience, data.SubjectTokenType, data.TokenExchangeProfile = priorFields.Audience, priorFields.SubjectTokenType, priorFields.TokenExchangeProfile
+		data.Credentials, data.AllowAllKeys = priorFields.Credentials, priorFields.AllowAllKeys
+		data.OAuthScopes = priorFields.OAuthScopes
+		data.AvailableOnPublicInternet, data.OAuth2Flow, data.Instructions = priorFields.AvailableOnPublicInternet, priorFields.OAuth2Flow, priorFields.Instructions
+		data.ToolNameToDisplayName, data.ToolNameToDescription = priorFields.ToolNameToDisplayName, priorFields.ToolNameToDescription
+		data.DelegateAuthToUpstream, data.OAuthPassthrough, data.DCRBridge, data.IsBYOK = priorFields.DelegateAuthToUpstream, priorFields.OAuthPassthrough, priorFields.DCRBridge, priorFields.IsBYOK
+		data.BYOKDescription, data.BYOKAPIKeyHelpURL, data.SourceURL = priorFields.BYOKDescription, priorFields.BYOKAPIKeyHelpURL, priorFields.SourceURL
+		data.Timeout, data.MaxConcurrentRequests = priorFields.Timeout, priorFields.MaxConcurrentRequests
+		resolveUnknownMCPServerState(&data, nil)
+	}
+	if err != nil {
+		if IsAPIErrorStatus(err, 404) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read MCP server: %s", err))
+		resp.State = req.State
+		resp.Private = req.Private
+		resp.Diagnostics.AddError("Client Error", "Unable to read MCP server because LiteLLM did not return an authoritative response. Prior public and private state was retained.")
 		return
 	}
-
+	_, presence, err := mcpInfoDocumentFromResponse(result)
+	if err != nil {
+		resp.State = req.State
+		resp.Private = req.Private
+		resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned a malformed MCP info root. Prior public and private state was retained.")
+		return
+	}
+	if (imported || fieldImported) && (data.SpecVersion.IsNull() || data.SpecVersion.IsUnknown()) {
+		// spec_version is provider-only compatibility state. LiteLLM v1.98 does
+		// not return it, so imports must adopt the unchanged schema default.
+		data.SpecVersion = types.StringValue("2024-11-05")
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	if resp.Diagnostics.HasError() || resp.Private == nil {
+		return
+	}
+	if presence == apiValuePresent {
+		// This marker records document hydration only. It neither commits nor
+		// discards pending ownership from ModifyPlan.
+		resp.Diagnostics.Append(writeMCPInfoPrivateDocumentAuthoritative(ctx, resp.Private, true)...)
+	}
+	if imported && !hasPendingOwnership && presence == apiValuePresent {
+		ownership.API = adoptedAPI
+		ownership.Versioned = true
+		resp.Diagnostics.Append(writeMCPInfoProvenance(ctx, resp.Private, ownership)...)
+		resp.Diagnostics.Append(writeMCPInfoPrivateDocumentAuthoritative(ctx, resp.Private, true)...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, nil)...)
+	}
+	// Field ownership starts empty on import. Its marker is independent from
+	// #213 and clears only after this identity-valid singular read.
+	if fieldImported && fieldSingular && !resp.Diagnostics.HasError() {
+		resp.Diagnostics.Append(writeMCPFieldOwnership(ctx, resp.Private, fieldOwnership)...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, mcpFieldImportedPrivateKey, nil)...)
+	}
 }
 
-func (r *MCPServerResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var data MCPServerResourceModel
+func (r *MCPServerResource) putMCPServer(ctx context.Context, request map[string]interface{}, result *map[string]interface{}) (bool, error) {
+	return r.client.doRequestWithResponse(ctx, "PUT", "/v1/mcp/server", request, result)
+}
 
+func (r *MCPServerResource) updateLegacyIssue213(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	var data, config, state MCPServerResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	var state MCPServerResourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	committed, privateDiags := readMCPInfoProvenance(ctx, req.Private)
+	resp.Diagnostics.Append(privateDiags...)
 	if resp.Diagnostics.HasError() {
+		resp.State = req.State
+		resp.Private = req.Private
 		return
 	}
-
-	// Preserve the server ID
+	plannedOwnership, pendingDiags := readPendingMCPInfoProvenance(ctx, req.Private, deriveMCPInfoPlanProvenance(committed, config, state))
+	resp.Diagnostics.Append(pendingDiags...)
+	if resp.Diagnostics.HasError() {
+		resp.State = req.State
+		resp.Private = req.Private
+		return
+	}
 	data.ID = state.ID
 	data.ServerID = state.ServerID
 
-	mcpReq := r.buildMCPServerRequest(ctx, &data)
-	mcpReq["server_id"] = data.ServerID.ValueString()
-
-	if err := r.client.DoRequestWithResponse(ctx, "PUT", "/v1/mcp/server", mcpReq, nil); err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to update MCP server: %s", err))
+	// Mutation authority is only the direct singular endpoint. Hydration and
+	// exact identity validation happen before request construction or PUT.
+	hydrated := state
+	_, _, hydrationResult, err := r.readMCPServerWithProvenanceDirect(ctx, &hydrated, plannedOwnership, false)
+	if err != nil {
+		resp.State = req.State
+		resp.Private = req.Private
+		resp.Diagnostics.AddError("MCP Info Hydration Failed", "The direct MCP server endpoint did not return an authoritative, identity-matching response. No update was attempted and prior state was retained.")
 		return
 	}
-
-	// Read back for full state
-	if err := r.readMCPServer(ctx, &data); err != nil {
-		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("MCP server updated but failed to read back: %s", err))
+	base, presence, err := mcpInfoDocumentFromResponse(hydrationResult)
+	if err != nil {
+		resp.State = req.State
+		resp.Private = req.Private
+		resp.Diagnostics.AddError("MCP Info Hydration Failed", "The direct MCP server endpoint returned a malformed MCP info root. No update was attempted and prior state was retained.")
+		return
 	}
+	if presence != apiValuePresent {
+		authoritative, markerDiags := mcpInfoPrivateDocumentAuthoritative(ctx, req.Private)
+		resp.Diagnostics.Append(markerDiags...)
+		if resp.Diagnostics.HasError() || !authoritative || state.MCPInfoJSON.IsNull() || state.MCPInfoJSON.IsUnknown() {
+			resp.State = req.State
+			resp.Private = req.Private
+			resp.Diagnostics.AddError("Authoritative MCP Info Required", "LiteLLM masked mcp_info and no previously authoritative complete document is available. No update was attempted and prior state was retained.")
+			return
+		}
+		base, err = parseMCPInfoJSONObject(state.MCPInfoJSON.ValueString())
+		if err != nil {
+			resp.State = req.State
+			resp.Private = req.Private
+			resp.Diagnostics.AddError("Authoritative MCP Info Required", "The previously hydrated complete MCP info document is malformed. No update was attempted and prior state was retained.")
+			return
+		}
+	}
+	resolved, err := resolveMCPInfoUpdateDocument(ctx, base, config)
+	if err != nil {
+		resp.State = req.State
+		resp.Private = req.Private
+		resp.Diagnostics.AddError("Invalid MCP Info Configuration", "The complete MCP info update could not be resolved safely. No update was attempted and prior state was retained.")
+		return
+	}
+	mcpReq, err := r.buildMCPServerRequest(ctx, &data, resolved.Document, true)
+	if err != nil {
+		resp.State = req.State
+		resp.Private = req.Private
+		resp.Diagnostics.AddError("Invalid MCP Request", err.Error())
+		return
+	}
+	mcpReq["server_id"] = data.ServerID.ValueString()
+	if !state.URL.IsNull() && !state.URL.IsUnknown() && data.URL.IsNull() {
+		mcpReq["url"] = nil
+	}
+	if !state.SpecPath.IsNull() && !state.SpecPath.IsUnknown() && data.SpecPath.IsNull() {
+		mcpReq["spec_path"] = nil
+	}
+	priorReq, err := r.buildMCPServerRequest(ctx, &state, nil, false)
+	if err != nil {
+		resp.State = req.State
+		resp.Private = req.Private
+		resp.Diagnostics.AddError("Invalid Prior MCP State", "The prior MCP server request projection is malformed. No update was attempted.")
+		return
+	}
+	otherMutation := !mcpInfoJSONValuesEqual(mcpInfoRequestWithoutDocument(priorReq), mcpInfoRequestWithoutDocument(mcpReq))
+	mcpMutation := !mcpInfoJSONValuesEqual(base, resolved.Document)
 
+	planned := data
+	var readback map[string]interface{}
+	if otherMutation || mcpMutation {
+		var updateResult map[string]interface{}
+		accepted, putErr := r.putMCPServer(ctx, mcpReq, &updateResult)
+		if putErr != nil && !accepted {
+			resp.State = req.State
+			resp.Private = req.Private
+			resp.Diagnostics.AddError("Client Error", "LiteLLM did not confirm the MCP server update. Prior public and private state was retained.")
+			return
+		}
+		// Accepted response-body failures and malformed success bodies are
+		// reconciled by the mandatory direct read below. The response body is
+		// never mutation authority.
+		if mcpEndpointWasCleared(state.URL, planned.URL) {
+			data.URL = types.StringUnknown()
+		}
+		if mcpEndpointWasCleared(state.SpecPath, planned.SpecPath) {
+			data.SpecPath = types.StringUnknown()
+		}
+		_, _, readback, err = r.readMCPServerWithProvenanceDirect(ctx, &data, plannedOwnership, false)
+	} else {
+		// Equal-value takeover still requires the authoritative GET above, but it
+		// commits provenance without a needless PUT.
+		readback = hydrationResult
+		err = r.readMCPServerResultProjection(ctx, &data, readback, plannedOwnership, emptyMCPFieldOwnership(), false, mcpInfoLeafSet{}, cloneMCPInfoLeafSet(plannedOwnership.API))
+	}
+	if err != nil {
+		resp.State = req.State
+		resp.Private = req.Private
+		resp.Diagnostics.AddError("Read Error", "Authoritative direct readback failed. Prior public and private state was retained.")
+		return
+	}
+	observed, observedPresence, err := mcpInfoDocumentFromResponse(readback)
+	if err != nil || observedPresence != apiValuePresent {
+		resp.State = req.State
+		resp.Private = req.Private
+		resp.Diagnostics.AddError("Inconsistent MCP Info Readback", "The direct endpoint did not return a complete authoritative MCP info object. Prior public and private state was retained.")
+		return
+	}
+	if mcpOwnedEndpointReadbackMismatch(&planned, &data, &state) || verifyMCPInfoReadback(base, resolved.Document, observed, plannedOwnership) != nil {
+		resp.State = req.State
+		resp.Private = req.Private
+		resp.Diagnostics.AddError("Inconsistent MCP Info Readback", "LiteLLM did not confirm every owned, cleared, and preserved MCP info value. Prior public and private state was retained.")
+		return
+	}
+	resolveUnknownMCPServerState(&data, &state)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	if !resp.Diagnostics.HasError() && resp.Private != nil {
+		resp.Diagnostics.Append(writeMCPInfoProvenance(ctx, resp.Private, plannedOwnership)...)
+		resp.Diagnostics.Append(writeMCPInfoPrivateDocumentAuthoritative(ctx, resp.Private, true)...)
+	}
 }
 
 func (r *MCPServerResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	var data MCPServerResourceModel
 
+	_, privateDiags := readMCPInfoProvenance(ctx, req.Private)
+	resp.Diagnostics.Append(privateDiags...)
+	fieldOwnership, fieldPrivateDiags := readMCPFieldOwnership(ctx, req.Private)
+	resp.Diagnostics.Append(fieldPrivateDiags...)
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
+	if bindingErr := validateMCPFieldOwnershipGeneration(data.FieldOwnershipGeneration, fieldOwnership); bindingErr != nil {
+		mcpFieldPrivateError(&resp.Diagnostics)
+	}
 	if resp.Diagnostics.HasError() {
+		resp.State = req.State
+		resp.Private = req.Private
 		return
 	}
 
@@ -369,91 +1738,139 @@ func (r *MCPServerResource) Delete(ctx context.Context, req resource.DeleteReque
 		serverID = data.ServerID.ValueString()
 	}
 
-	endpoint := fmt.Sprintf("/v1/mcp/server/%s", serverID)
+	endpoint := mcpServerEndpoint(serverID)
 	if err := r.client.DoRequestWithResponse(ctx, "DELETE", endpoint, nil, nil); err != nil {
-		if !IsNotFoundError(err) {
-			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to delete MCP server: %s", err))
+		if !IsAPIErrorStatus(err, 404) {
+			resp.Diagnostics.AddError("Client Error", "Unable to delete MCP server because LiteLLM did not confirm the deletion.")
 			return
 		}
 	}
 }
 
 func (r *MCPServerResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	if !mcpServerIDValidV198(req.ID) {
+		resp.Diagnostics.AddError("Invalid MCP Server Import Identity", "Import identity must be a non-empty manageable MCP server path segment and must not use a LiteLLM reserved server identifier.")
+		return
+	}
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("server_id"), req.ID)...)
+	if resp.Private != nil {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, []byte("true"))...)
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, mcpFieldImportedPrivateKey, []byte("true"))...)
+		resp.Diagnostics.Append(writeMCPInfoProvenance(ctx, resp.Private, emptyMCPInfoProvenance())...)
+		resp.Diagnostics.Append(writeMCPFieldOwnership(ctx, resp.Private, emptyMCPFieldOwnership())...)
+	}
 }
 
-// UpgradeState handles state migrations from older schema versions.
-// Version 0 → 1: extra_headers changed from map(string) to list(string)
-// to match the LiteLLM API/OpenAPI schema. Existing map keys become the
-// list of header names.
+// UpgradeState handles every historical schema directly so Terraform 1.1 never
+// needs to understand an intermediate schema. Existing values, flags, types,
+// blocks, private data, and field-ownership generations remain compatible;
+// only controls absent from the source schema are initialized.
 func (r *MCPServerResource) UpgradeState(ctx context.Context) map[int64]resource.StateUpgrader {
-	return map[int64]resource.StateUpgrader{
-		0: {
-			PriorSchema: nil,
-			StateUpgrader: func(ctx context.Context, req resource.UpgradeStateRequest, resp *resource.UpgradeStateResponse) {
-				if req.RawState == nil {
-					resp.Diagnostics.AddError(
-						"Unable to Upgrade State",
-						"RawState is nil. This is a bug in the provider.",
-					)
-					return
-				}
-
-				var priorState map[string]json.RawMessage
-				if err := json.Unmarshal(req.RawState.JSON, &priorState); err != nil {
-					resp.Diagnostics.AddError(
-						"Unable to Upgrade State",
-						fmt.Sprintf("Failed to unmarshal prior state JSON: %s", err),
-					)
-					return
-				}
-
+	upgrade := func(convertExtraHeaders, addMCPInfoControls, addFieldOwnershipControl bool) resource.StateUpgrader {
+		return resource.StateUpgrader{PriorSchema: nil, StateUpgrader: func(ctx context.Context, req resource.UpgradeStateRequest, resp *resource.UpgradeStateResponse) {
+			if req.RawState == nil {
+				resp.Diagnostics.AddError("Unable to Upgrade State", "RawState is nil. This is a bug in the provider.")
+				return
+			}
+			var priorState map[string]json.RawMessage
+			if err := json.Unmarshal(req.RawState.JSON, &priorState); err != nil {
+				resp.Diagnostics.AddError("Unable to Upgrade State", fmt.Sprintf("Failed to unmarshal prior state JSON: %s", err))
+				return
+			}
+			if convertExtraHeaders {
 				if raw, ok := priorState["extra_headers"]; ok && string(raw) != "null" {
 					var oldMap map[string]string
-					if err := json.Unmarshal(raw, &oldMap); err == nil {
-						headers := make([]string, 0, len(oldMap))
-						for header := range oldMap {
-							headers = append(headers, header)
-						}
-						sort.Strings(headers)
-						converted, err := json.Marshal(headers)
-						if err != nil {
-							resp.Diagnostics.AddError(
-								"Unable to Upgrade State",
-								fmt.Sprintf("Failed to marshal upgraded extra_headers: %s", err),
-							)
-							return
-						}
-						priorState["extra_headers"] = converted
+					if err := json.Unmarshal(raw, &oldMap); err != nil {
+						resp.Diagnostics.AddError("Unable to Upgrade State", "Failed to decode legacy extra_headers.")
+						return
 					}
+					headers := make([]string, 0, len(oldMap))
+					for header := range oldMap {
+						headers = append(headers, header)
+					}
+					sort.Strings(headers)
+					converted, err := json.Marshal(headers)
+					if err != nil {
+						resp.Diagnostics.AddError("Unable to Upgrade State", "Failed to encode upgraded extra_headers.")
+						return
+					}
+					priorState["extra_headers"] = converted
 				}
-
-				upgradedJSON, err := json.Marshal(priorState)
-				if err != nil {
-					resp.Diagnostics.AddError(
-						"Unable to Upgrade State",
-						fmt.Sprintf("Failed to marshal upgraded state: %s", err),
-					)
-					return
+			}
+			initialize := func(name, value string) {
+				if _, present := priorState[name]; !present {
+					priorState[name] = json.RawMessage(value)
 				}
-
-				resp.DynamicValue = &tfprotov6.DynamicValue{JSON: upgradedJSON}
-			},
-		},
+			}
+			if addMCPInfoControls {
+				initialize("mcp_info_json", "null")
+				initialize("mcp_info_overrides_json", "null")
+				initialize("mcp_info_clear_paths", "null")
+				initialize("mcp_info_ownership_generation", "0")
+			}
+			if addFieldOwnershipControl {
+				initialize("field_ownership_generation", "0")
+			}
+			initialize("env_vars", "null")
+			initialize("issuer", "null")
+			initialize("token_exchange_endpoint", "null")
+			initialize("audience", "null")
+			initialize("subject_token_type", "null")
+			initialize("token_exchange_profile", "null")
+			initialize("oauth_scopes", "null")
+			initialize("available_on_public_internet", "null")
+			initialize("oauth2_flow", "null")
+			initialize("instructions", "null")
+			initialize("tool_name_to_display_name", "null")
+			initialize("tool_name_to_description", "null")
+			initialize("delegate_auth_to_upstream", "null")
+			initialize("oauth_passthrough", "null")
+			initialize("dcr_bridge", "null")
+			initialize("is_byok", "null")
+			initialize("byok_description", "null")
+			initialize("byok_api_key_help_url", "null")
+			initialize("source_url", "null")
+			initialize("timeout", "null")
+			initialize("max_concurrent_requests", "null")
+			initialize("updated_at", "null")
+			initialize("updated_by", "null")
+			upgradedJSON, err := json.Marshal(priorState)
+			if err != nil {
+				resp.Diagnostics.AddError("Unable to Upgrade State", "Failed to marshal upgraded state.")
+				return
+			}
+			resp.DynamicValue = &tfprotov6.DynamicValue{JSON: upgradedJSON}
+		}}
+	}
+	return map[int64]resource.StateUpgrader{
+		0: upgrade(true, true, true),
+		1: upgrade(false, true, true),
+		2: upgrade(false, false, true),
+		3: upgrade(false, false, false),
+		4: upgrade(false, false, false),
+		5: upgrade(false, false, false),
+		6: upgrade(false, false, false),
+		7: upgrade(false, false, false),
 	}
 }
 
-func (r *MCPServerResource) buildMCPServerRequest(ctx context.Context, data *MCPServerResourceModel) map[string]interface{} {
+func (r *MCPServerResource) buildMCPServerRequest(ctx context.Context, data *MCPServerResourceModel, resolvedMCPInfo map[string]interface{}, mcpInfoPresent bool) (map[string]interface{}, error) {
 	mcpReq := map[string]interface{}{
-		"server_name":  data.ServerName.ValueString(),
-		"url":          data.URL.ValueString(),
-		"transport":    data.Transport.ValueString(),
-		"spec_version": data.SpecVersion.ValueString(),
-		"auth_type":    data.AuthType.ValueString(),
+		"transport": data.Transport.ValueString(),
+		"auth_type": data.AuthType.ValueString(),
+	}
+	if !data.ServerName.IsNull() && !data.ServerName.IsUnknown() {
+		mcpReq["server_name"] = data.ServerName.ValueString()
 	}
 
-	// String fields - check IsNull, IsUnknown, and empty string
+	// String fields - check IsNull, IsUnknown, and empty string.
+	if mcpKnownNonEmptyString(data.URL) {
+		mcpReq["url"] = data.URL.ValueString()
+	}
+	if mcpKnownNonEmptyString(data.SpecPath) {
+		mcpReq["spec_path"] = data.SpecPath.ValueString()
+	}
 	if !data.Alias.IsNull() && !data.Alias.IsUnknown() && data.Alias.ValueString() != "" {
 		mcpReq["alias"] = data.Alias.ValueString()
 	}
@@ -462,6 +1879,9 @@ func (r *MCPServerResource) buildMCPServerRequest(ctx context.Context, data *MCP
 	}
 	if !data.Command.IsNull() && !data.Command.IsUnknown() && data.Command.ValueString() != "" {
 		mcpReq["command"] = data.Command.ValueString()
+	}
+	if mcpKnownNonEmptyString(data.Issuer) {
+		mcpReq["issuer"] = data.Issuer.ValueString()
 	}
 	if !data.AuthorizationURL.IsNull() && !data.AuthorizationURL.IsUnknown() && data.AuthorizationURL.ValueString() != "" {
 		mcpReq["authorization_url"] = data.AuthorizationURL.ValueString()
@@ -472,125 +1892,611 @@ func (r *MCPServerResource) buildMCPServerRequest(ctx context.Context, data *MCP
 	if !data.RegistrationURL.IsNull() && !data.RegistrationURL.IsUnknown() && data.RegistrationURL.ValueString() != "" {
 		mcpReq["registration_url"] = data.RegistrationURL.ValueString()
 	}
+	for name, value := range map[string]types.String{
+		"token_exchange_endpoint": data.TokenExchangeEndpoint,
+		"audience":                data.Audience,
+		"subject_token_type":      data.SubjectTokenType,
+		"token_exchange_profile":  data.TokenExchangeProfile,
+	} {
+		if mcpKnownNonEmptyString(value) {
+			mcpReq[name] = value.ValueString()
+		}
+	}
 
 	// Boolean fields - check IsNull and IsUnknown
 	if !data.AllowAllKeys.IsNull() && !data.AllowAllKeys.IsUnknown() {
 		mcpReq["allow_all_keys"] = data.AllowAllKeys.ValueBool()
 	}
-	if !data.SkipURLValidation.IsNull() && !data.SkipURLValidation.IsUnknown() {
-		mcpReq["skip_url_validation"] = data.SkipURLValidation.ValueBool()
+
+	convertList := func(value types.List, name string) ([]string, error) {
+		converted, _, diagnostics := strictTerraformStringList(ctx, value, path.Root(name))
+		if diagnostics.HasError() {
+			return nil, fmt.Errorf("invalid MCP string-list collection")
+		}
+		return converted, nil
+	}
+	convertMap := func(value types.Map, name string, sensitive bool) (map[string]string, error) {
+		converted, _, diagnostics := strictTerraformStringMap(ctx, value, path.Root(name), sensitive)
+		if diagnostics.HasError() {
+			return nil, fmt.Errorf("invalid MCP string-map collection")
+		}
+		return converted, nil
 	}
 
-	// List fields - check IsNull, IsUnknown, and len > 0
+	if !data.AvailableOnPublicInternet.IsNull() && !data.AvailableOnPublicInternet.IsUnknown() {
+		mcpReq["available_on_public_internet"] = data.AvailableOnPublicInternet.ValueBool()
+	}
+	if !data.OAuth2Flow.IsNull() && !data.OAuth2Flow.IsUnknown() {
+		mcpReq["oauth2_flow"] = data.OAuth2Flow.ValueString()
+	}
+	if !data.Instructions.IsNull() && !data.Instructions.IsUnknown() {
+		mcpReq["instructions"] = data.Instructions.ValueString()
+	}
+	if !data.ToolNameToDisplayName.IsNull() && !data.ToolNameToDisplayName.IsUnknown() {
+		values, err := convertMap(data.ToolNameToDisplayName, "tool_name_to_display_name", true)
+		if err != nil {
+			return nil, err
+		}
+		mcpReq["tool_name_to_display_name"] = values
+	}
+	if !data.ToolNameToDescription.IsNull() && !data.ToolNameToDescription.IsUnknown() {
+		values, err := convertMap(data.ToolNameToDescription, "tool_name_to_description", true)
+		if err != nil {
+			return nil, err
+		}
+		mcpReq["tool_name_to_description"] = values
+	}
+
+	// List fields - check IsNull, IsUnknown, and len > 0.
 	if !data.MCPAccessGroups.IsNull() && !data.MCPAccessGroups.IsUnknown() {
-		var groups []string
-		data.MCPAccessGroups.ElementsAs(ctx, &groups, false)
+		groups, err := convertList(data.MCPAccessGroups, "mcp_access_groups")
+		if err != nil {
+			return nil, err
+		}
 		if len(groups) > 0 {
 			mcpReq["mcp_access_groups"] = groups
 		}
 	}
-
 	if !data.Args.IsNull() && !data.Args.IsUnknown() {
-		var args []string
-		data.Args.ElementsAs(ctx, &args, false)
+		args, err := convertList(data.Args, "args")
+		if err != nil {
+			return nil, err
+		}
 		if len(args) > 0 {
 			mcpReq["args"] = args
 		}
 	}
-
 	if !data.AllowedTools.IsNull() && !data.AllowedTools.IsUnknown() {
-		var allowedTools []string
-		data.AllowedTools.ElementsAs(ctx, &allowedTools, false)
+		allowedTools, err := convertList(data.AllowedTools, "allowed_tools")
+		if err != nil {
+			return nil, err
+		}
 		if len(allowedTools) > 0 {
 			mcpReq["allowed_tools"] = allowedTools
 		}
 	}
 
-	// Map fields - check IsNull, IsUnknown, and len > 0
+	// Map fields - check IsNull, IsUnknown, and len > 0. Sensitive maps never
+	// include a key in conversion diagnostics.
 	if !data.Env.IsNull() && !data.Env.IsUnknown() {
-		var env map[string]string
-		data.Env.ElementsAs(ctx, &env, false)
+		env, err := convertMap(data.Env, "env", true)
+		if err != nil {
+			return nil, err
+		}
 		if len(env) > 0 {
 			mcpReq["env"] = env
 		}
 	}
-
+	if !data.EnvVars.IsNull() && !data.EnvVars.IsUnknown() {
+		values, _, diagnostics := strictTerraformMCPEnvVars(ctx, data.EnvVars, path.Root("env_vars"))
+		if diagnostics.HasError() {
+			return nil, fmt.Errorf("invalid MCP environment-variable collection")
+		}
+		mcpReq["env_vars"] = mcpEnvVarsWire(values)
+	}
 	if !data.Credentials.IsNull() && !data.Credentials.IsUnknown() {
-		var credentials map[string]string
-		data.Credentials.ElementsAs(ctx, &credentials, false)
+		credentials, err := convertMap(data.Credentials, "credentials", true)
+		if err != nil {
+			return nil, err
+		}
+		if err := validateMCPCredentialStringMapV198(credentials); err != nil {
+			return nil, fmt.Errorf("invalid MCP credentials")
+		}
 		if len(credentials) > 0 {
 			mcpReq["credentials"] = credentials
 		}
 	}
-
 	if !data.ExtraHeaders.IsNull() && !data.ExtraHeaders.IsUnknown() {
-		var extraHeaders []string
-		data.ExtraHeaders.ElementsAs(ctx, &extraHeaders, false)
+		extraHeaders, err := convertList(data.ExtraHeaders, "extra_headers")
+		if err != nil {
+			return nil, err
+		}
 		if len(extraHeaders) > 0 {
 			mcpReq["extra_headers"] = extraHeaders
 		}
 	}
-
 	if !data.StaticHeaders.IsNull() && !data.StaticHeaders.IsUnknown() {
-		var staticHeaders map[string]string
-		data.StaticHeaders.ElementsAs(ctx, &staticHeaders, false)
+		staticHeaders, err := convertMap(data.StaticHeaders, "static_headers", true)
+		if err != nil {
+			return nil, err
+		}
 		if len(staticHeaders) > 0 {
 			mcpReq["static_headers"] = staticHeaders
 		}
 	}
 
-	// Handle mcp_info block
-	if data.MCPInfo != nil {
-		mcpInfo := map[string]interface{}{}
-
-		if !data.MCPInfo.ServerName.IsNull() && !data.MCPInfo.ServerName.IsUnknown() && data.MCPInfo.ServerName.ValueString() != "" {
-			mcpInfo["server_name"] = data.MCPInfo.ServerName.ValueString()
+	if mcpInfoPresent {
+		if resolvedMCPInfo == nil {
+			return nil, fmt.Errorf("resolved mcp_info must be a complete object")
 		}
-		if !data.MCPInfo.Description.IsNull() && !data.MCPInfo.Description.IsUnknown() && data.MCPInfo.Description.ValueString() != "" {
-			mcpInfo["description"] = data.MCPInfo.Description.ValueString()
+		if err := validateMCPInfoJSONValue(resolvedMCPInfo); err != nil {
+			return nil, fmt.Errorf("resolved mcp_info is invalid")
 		}
-		if !data.MCPInfo.LogoURL.IsNull() && !data.MCPInfo.LogoURL.IsUnknown() && data.MCPInfo.LogoURL.ValueString() != "" {
-			mcpInfo["logo_url"] = data.MCPInfo.LogoURL.ValueString()
-		}
+		mcpReq["mcp_info"] = cloneMCPInfoJSONObject(resolvedMCPInfo)
+	}
 
-		if data.MCPInfo.MCPServerCostInfo != nil {
-			costInfo := map[string]interface{}{}
+	return mcpReq, nil
+}
 
-			if !data.MCPInfo.MCPServerCostInfo.DefaultCostPerQuery.IsNull() && !data.MCPInfo.MCPServerCostInfo.DefaultCostPerQuery.IsUnknown() {
-				costInfo["default_cost_per_query"] = data.MCPInfo.MCPServerCostInfo.DefaultCostPerQuery.ValueFloat64()
+func mcpEndpointWasCleared(previous, planned types.String) bool {
+	return !previous.IsNull() && !previous.IsUnknown() && planned.IsNull()
+}
+
+func mcpOwnedEndpointReadbackMismatch(planned, observed, previous *MCPServerResourceModel) bool {
+	plannedFields := []types.String{planned.URL, planned.SpecPath, planned.Transport}
+	observedFields := []types.String{observed.URL, observed.SpecPath, observed.Transport}
+	previousFields := []types.String{types.StringNull(), types.StringNull(), types.StringNull()}
+	if previous != nil {
+		previousFields = []types.String{previous.URL, previous.SpecPath, previous.Transport}
+	}
+	for index := range plannedFields {
+		if !plannedFields[index].IsNull() && !plannedFields[index].IsUnknown() {
+			if !plannedFields[index].Equal(observedFields[index]) {
+				return true
 			}
-			if !data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery.IsNull() && !data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery.IsUnknown() {
-				var toolCosts map[string]float64
-				data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery.ElementsAs(ctx, &toolCosts, false)
-				if len(toolCosts) > 0 {
-					costInfo["tool_name_to_cost_per_query"] = toolCosts
-				}
-			}
+			continue
+		}
+		if mcpEndpointWasCleared(previousFields[index], plannedFields[index]) && !observedFields[index].IsNull() {
+			return true
+		}
+	}
+	return false
+}
 
-			if len(costInfo) > 0 {
-				mcpInfo["mcp_server_cost_info"] = costInfo
+func mcpInfoReadbackMismatch(planned, observed MCPServerResourceModel, ownership mcpInfoProvenance, confirmed mcpInfoLeafSet) bool {
+	for leaf := range ownership.Terraform {
+		if !confirmed[leaf] {
+			return true
+		}
+		switch leaf {
+		case mcpInfoServerNameLeaf:
+			if planned.MCPInfo == nil || observed.MCPInfo == nil || !planned.MCPInfo.ServerName.Equal(observed.MCPInfo.ServerName) {
+				return true
+			}
+		case mcpInfoDescriptionLeaf:
+			if planned.MCPInfo == nil || observed.MCPInfo == nil || !planned.MCPInfo.Description.Equal(observed.MCPInfo.Description) {
+				return true
+			}
+		case mcpInfoLogoURLLeaf:
+			if planned.MCPInfo == nil || observed.MCPInfo == nil || !planned.MCPInfo.LogoURL.Equal(observed.MCPInfo.LogoURL) {
+				return true
+			}
+		case mcpInfoDefaultCostLeaf:
+			if planned.MCPInfo == nil || observed.MCPInfo == nil || planned.MCPInfo.MCPServerCostInfo == nil || observed.MCPInfo.MCPServerCostInfo == nil || !planned.MCPInfo.MCPServerCostInfo.DefaultCostPerQuery.Equal(observed.MCPInfo.MCPServerCostInfo.DefaultCostPerQuery) {
+				return true
+			}
+		case mcpInfoToolCostsLeaf:
+			if planned.MCPInfo == nil || observed.MCPInfo == nil || planned.MCPInfo.MCPServerCostInfo == nil || observed.MCPInfo.MCPServerCostInfo == nil || !planned.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery.Equal(observed.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery) {
+				return true
 			}
 		}
+	}
+	return false
+}
 
-		if len(mcpInfo) > 0 {
-			mcpReq["mcp_info"] = mcpInfo
+func partialMCPServerState(serverID string) MCPServerResourceModel {
+	return MCPServerResourceModel{
+		ID:                         types.StringValue(serverID),
+		ServerID:                   types.StringValue(serverID),
+		MCPAccessGroups:            types.ListNull(types.StringType),
+		Args:                       types.ListNull(types.StringType),
+		Env:                        types.MapNull(types.StringType),
+		EnvVars:                    types.ListNull(mcpEnvVarObjectType),
+		Credentials:                types.MapNull(types.StringType),
+		AllowedTools:               types.ListNull(types.StringType),
+		ExtraHeaders:               types.ListNull(types.StringType),
+		StaticHeaders:              types.MapNull(types.StringType),
+		Issuer:                     types.StringNull(),
+		TokenExchangeEndpoint:      types.StringNull(),
+		Audience:                   types.StringNull(),
+		SubjectTokenType:           types.StringNull(),
+		TokenExchangeProfile:       types.StringNull(),
+		OAuthScopes:                types.ListNull(types.StringType),
+		AvailableOnPublicInternet:  types.BoolNull(),
+		OAuth2Flow:                 types.StringNull(),
+		Instructions:               types.StringNull(),
+		ToolNameToDisplayName:      types.MapNull(types.StringType),
+		ToolNameToDescription:      types.MapNull(types.StringType),
+		DelegateAuthToUpstream:     types.BoolNull(),
+		OAuthPassthrough:           types.BoolNull(),
+		DCRBridge:                  types.BoolNull(),
+		IsBYOK:                     types.BoolNull(),
+		BYOKDescription:            types.ListNull(types.StringType),
+		BYOKAPIKeyHelpURL:          types.StringNull(),
+		SourceURL:                  types.StringNull(),
+		Timeout:                    types.Float64Null(),
+		MaxConcurrentRequests:      types.Int64Null(),
+		MCPInfoJSON:                types.StringNull(),
+		MCPInfoOverridesJSON:       types.StringNull(),
+		MCPInfoClearPaths:          types.ListNull(types.StringType),
+		MCPInfoOwnershipGeneration: types.Int64Value(0),
+		FieldOwnershipGeneration:   types.Int64Value(0),
+		CreatedAt:                  types.StringNull(),
+		CreatedBy:                  types.StringNull(),
+		UpdatedAt:                  types.StringNull(),
+		UpdatedBy:                  types.StringNull(),
+	}
+}
+
+func resolveUnknownMCPServerState(data *MCPServerResourceModel, previous *MCPServerResourceModel) {
+	var prior MCPServerResourceModel
+	if previous != nil {
+		prior = *previous
+	}
+
+	resolveString := func(current, fallback types.String) types.String {
+		if !current.IsUnknown() {
+			return current
+		}
+		if previous != nil && !fallback.IsUnknown() {
+			return fallback
+		}
+		return types.StringNull()
+	}
+	resolveBool := func(current, fallback types.Bool) types.Bool {
+		if !current.IsUnknown() {
+			return current
+		}
+		if previous != nil && !fallback.IsUnknown() {
+			return fallback
+		}
+		return types.BoolNull()
+	}
+	resolveList := func(current, fallback types.List) types.List {
+		if !current.IsUnknown() {
+			return current
+		}
+		if previous != nil && !fallback.IsUnknown() {
+			return fallback
+		}
+		return types.ListNull(types.StringType)
+	}
+	resolveStringMap := func(current, fallback types.Map) types.Map {
+		if !current.IsUnknown() {
+			return current
+		}
+		if previous != nil && !fallback.IsUnknown() {
+			return fallback
+		}
+		return types.MapNull(types.StringType)
+	}
+	resolveFloat64 := func(current, fallback types.Float64) types.Float64 {
+		if !current.IsUnknown() {
+			return current
+		}
+		if previous != nil && !fallback.IsUnknown() {
+			return fallback
+		}
+		return types.Float64Null()
+	}
+	resolveInt64 := func(current, fallback types.Int64) types.Int64 {
+		if !current.IsUnknown() {
+			return current
+		}
+		if previous != nil && !fallback.IsUnknown() {
+			return fallback
+		}
+		return types.Int64Null()
+	}
+
+	data.ID = resolveString(data.ID, prior.ID)
+	data.ServerID = resolveString(data.ServerID, prior.ServerID)
+	data.ServerName = resolveString(data.ServerName, prior.ServerName)
+	data.Alias = resolveString(data.Alias, prior.Alias)
+	data.Description = resolveString(data.Description, prior.Description)
+	data.URL = resolveString(data.URL, prior.URL)
+	data.SpecPath = resolveString(data.SpecPath, prior.SpecPath)
+	data.Transport = resolveString(data.Transport, prior.Transport)
+	data.SpecVersion = resolveString(data.SpecVersion, prior.SpecVersion)
+	data.AuthType = resolveString(data.AuthType, prior.AuthType)
+	data.Command = resolveString(data.Command, prior.Command)
+	data.AuthorizationURL = resolveString(data.AuthorizationURL, prior.AuthorizationURL)
+	data.TokenURL = resolveString(data.TokenURL, prior.TokenURL)
+	data.RegistrationURL = resolveString(data.RegistrationURL, prior.RegistrationURL)
+	data.Issuer = resolveString(data.Issuer, prior.Issuer)
+	data.TokenExchangeEndpoint = resolveString(data.TokenExchangeEndpoint, prior.TokenExchangeEndpoint)
+	data.Audience = resolveString(data.Audience, prior.Audience)
+	data.SubjectTokenType = resolveString(data.SubjectTokenType, prior.SubjectTokenType)
+	data.TokenExchangeProfile = resolveString(data.TokenExchangeProfile, prior.TokenExchangeProfile)
+	data.OAuth2Flow = resolveString(data.OAuth2Flow, prior.OAuth2Flow)
+	data.Instructions = resolveString(data.Instructions, prior.Instructions)
+	data.CreatedAt = resolveString(data.CreatedAt, prior.CreatedAt)
+	data.CreatedBy = resolveString(data.CreatedBy, prior.CreatedBy)
+	data.UpdatedAt = resolveString(data.UpdatedAt, prior.UpdatedAt)
+	data.UpdatedBy = resolveString(data.UpdatedBy, prior.UpdatedBy)
+	data.BYOKAPIKeyHelpURL = resolveString(data.BYOKAPIKeyHelpURL, prior.BYOKAPIKeyHelpURL)
+	data.SourceURL = resolveString(data.SourceURL, prior.SourceURL)
+	data.AllowAllKeys = resolveBool(data.AllowAllKeys, prior.AllowAllKeys)
+	data.AvailableOnPublicInternet = resolveBool(data.AvailableOnPublicInternet, prior.AvailableOnPublicInternet)
+	data.DelegateAuthToUpstream = resolveBool(data.DelegateAuthToUpstream, prior.DelegateAuthToUpstream)
+	data.OAuthPassthrough = resolveBool(data.OAuthPassthrough, prior.OAuthPassthrough)
+	data.DCRBridge = resolveBool(data.DCRBridge, prior.DCRBridge)
+	data.IsBYOK = resolveBool(data.IsBYOK, prior.IsBYOK)
+	data.SkipURLValidation = resolveBool(data.SkipURLValidation, prior.SkipURLValidation)
+	data.MCPAccessGroups = resolveList(data.MCPAccessGroups, prior.MCPAccessGroups)
+	data.Args = resolveList(data.Args, prior.Args)
+	data.AllowedTools = resolveList(data.AllowedTools, prior.AllowedTools)
+	data.ExtraHeaders = resolveList(data.ExtraHeaders, prior.ExtraHeaders)
+	data.OAuthScopes = resolveList(data.OAuthScopes, prior.OAuthScopes)
+	data.BYOKDescription = resolveList(data.BYOKDescription, prior.BYOKDescription)
+	data.Env = resolveStringMap(data.Env, prior.Env)
+	if data.EnvVars.IsUnknown() {
+		if previous != nil && !prior.EnvVars.IsUnknown() {
+			data.EnvVars = prior.EnvVars
+		} else {
+			data.EnvVars = types.ListNull(mcpEnvVarObjectType)
+		}
+	}
+	data.Credentials = resolveStringMap(data.Credentials, prior.Credentials)
+	data.StaticHeaders = resolveStringMap(data.StaticHeaders, prior.StaticHeaders)
+	data.ToolNameToDisplayName = resolveStringMap(data.ToolNameToDisplayName, prior.ToolNameToDisplayName)
+	data.ToolNameToDescription = resolveStringMap(data.ToolNameToDescription, prior.ToolNameToDescription)
+	data.MCPInfoJSON = resolveString(data.MCPInfoJSON, prior.MCPInfoJSON)
+	data.MCPInfoOverridesJSON = resolveString(data.MCPInfoOverridesJSON, prior.MCPInfoOverridesJSON)
+	data.MCPInfoClearPaths = resolveList(data.MCPInfoClearPaths, prior.MCPInfoClearPaths)
+	data.Timeout = resolveFloat64(data.Timeout, prior.Timeout)
+	data.MaxConcurrentRequests = resolveInt64(data.MaxConcurrentRequests, prior.MaxConcurrentRequests)
+	if data.MCPInfoOwnershipGeneration.IsUnknown() {
+		if previous != nil && !prior.MCPInfoOwnershipGeneration.IsUnknown() {
+			data.MCPInfoOwnershipGeneration = prior.MCPInfoOwnershipGeneration
+		} else {
+			data.MCPInfoOwnershipGeneration = types.Int64Value(0)
+		}
+	}
+	if data.FieldOwnershipGeneration.IsUnknown() {
+		if previous != nil && !prior.FieldOwnershipGeneration.IsUnknown() {
+			data.FieldOwnershipGeneration = prior.FieldOwnershipGeneration
+		} else {
+			data.FieldOwnershipGeneration = types.Int64Value(0)
 		}
 	}
 
-	return mcpReq
+	if data.MCPInfo != nil {
+		var priorInfo MCPInfoModel
+		if prior.MCPInfo != nil {
+			priorInfo = *prior.MCPInfo
+		}
+		data.MCPInfo.ServerName = resolveString(data.MCPInfo.ServerName, priorInfo.ServerName)
+		data.MCPInfo.Description = resolveString(data.MCPInfo.Description, priorInfo.Description)
+		data.MCPInfo.LogoURL = resolveString(data.MCPInfo.LogoURL, priorInfo.LogoURL)
+		if data.MCPInfo.MCPServerCostInfo != nil {
+			var priorCost MCPServerCostInfoModel
+			hasPriorCost := priorInfo.MCPServerCostInfo != nil
+			if hasPriorCost {
+				priorCost = *priorInfo.MCPServerCostInfo
+			}
+			if data.MCPInfo.MCPServerCostInfo.DefaultCostPerQuery.IsUnknown() {
+				if hasPriorCost && !priorCost.DefaultCostPerQuery.IsUnknown() {
+					data.MCPInfo.MCPServerCostInfo.DefaultCostPerQuery = priorCost.DefaultCostPerQuery
+				} else {
+					data.MCPInfo.MCPServerCostInfo.DefaultCostPerQuery = types.Float64Null()
+				}
+			}
+			if data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery.IsUnknown() {
+				if hasPriorCost && !priorCost.ToolNameToCostPerQuery.IsUnknown() {
+					data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery = priorCost.ToolNameToCostPerQuery
+				} else {
+					data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery = types.MapNull(types.Float64Type)
+				}
+			}
+		}
+	}
+}
+
+func mcpServerEndpoint(serverID string) string {
+	return endpointWithPathSegment("/v1/mcp/server/", serverID, "")
+}
+
+func (r *MCPServerResource) getMCPServerDirect(ctx context.Context, serverID string) (map[string]interface{}, error) {
+	endpoint := mcpServerEndpoint(serverID)
+	var result map[string]interface{}
+	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (r *MCPServerResource) getMCPServer(ctx context.Context, serverID string) (map[string]interface{}, error) {
+	endpoint := mcpServerEndpoint(serverID)
+	var result map[string]interface{}
+	individualErr := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result)
+	if failure := ClassifyHTTPFailure(individualErr); individualErr == nil || IsAPIErrorStatus(individualErr, 404) || (failure.Kind == HTTPFailureContractOrLocal && !failure.RequestDispatched) {
+		return result, individualErr
+	}
+
+	// Older LiteLLM versions can return 500 for the individual endpoint while
+	// the collection endpoint still returns the successfully created server.
+	delay := 250 * time.Millisecond
+	for attempt := 0; attempt < 5; attempt++ {
+		var servers []map[string]interface{}
+		if err := r.client.DoRequestWithResponse(ctx, "GET", "/v1/mcp/server", nil, &servers); err == nil {
+			for _, server := range servers {
+				if id, ok := server["server_id"].(string); ok && id == serverID {
+					return server, nil
+				}
+			}
+		}
+		if attempt == 4 {
+			break
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+		delay *= 2
+	}
+	return nil, individualErr
+}
+
+func validateMCPServerResponse(result map[string]interface{}, expectedServerID string) error {
+	serverID, ok := result["server_id"].(string)
+	if !ok || serverID == "" {
+		return fmt.Errorf("MCP server response is missing its required identity")
+	}
+	if expectedServerID == "" || serverID != expectedServerID {
+		return fmt.Errorf("MCP server response identity does not match the requested identity")
+	}
+
+	transport, ok := result["transport"].(string)
+	if !ok {
+		return fmt.Errorf("MCP server response is missing its required transport")
+	}
+	validTransport := false
+	for _, allowed := range mcpTransportsV198 {
+		if transport == allowed {
+			validTransport = true
+			break
+		}
+	}
+	if !validTransport {
+		return fmt.Errorf("MCP server response contains an invalid transport")
+	}
+	if err := validateMCPEnvVarsAPI(result); err != nil {
+		return fmt.Errorf("MCP server response contains a malformed environment-variable collection")
+	}
+	return validateMCPServerOptionalResponseFields(
+		result,
+		[]string{"server_name", "url", "spec_path", "alias", "description", "command", "issuer", "authorization_url", "token_url", "registration_url", "token_exchange_endpoint", "audience", "subject_token_type", "token_exchange_profile", "auth_type", "oauth2_flow", "instructions", "byok_api_key_help_url", "source_url", "created_at", "created_by", "updated_at", "updated_by"},
+		[]string{"allow_all_keys", "available_on_public_internet", "delegate_auth_to_upstream", "oauth_passthrough", "dcr_bridge", "is_byok"},
+		[]string{"mcp_access_groups", "args", "allowed_tools", "extra_headers", "byok_description"},
+		[]string{"env", "static_headers", "credentials", "tool_name_to_display_name", "tool_name_to_description"},
+		[]string{"timeout"},
+		[]string{"max_concurrent_requests"},
+	)
 }
 
 func (r *MCPServerResource) readMCPServer(ctx context.Context, data *MCPServerResourceModel) error {
+	_, _, err := r.readMCPServerWithProvenance(ctx, data, mcpInfoProvenance{Terraform: mcpInfoLeafSet{}, API: mcpInfoLeafSet{}}, false)
+	return err
+}
+
+// readMCPServerWithNumericOwnership remains as a narrow compatibility helper
+// for tests of first-import numeric decoding. Production lifecycle paths always
+// pass versioned private provenance to readMCPServerWithProvenance.
+func (r *MCPServerResource) readMCPServerWithNumericOwnership(ctx context.Context, data *MCPServerResourceModel, imported bool) error {
+	_, _, err := r.readMCPServerWithProvenance(ctx, data, mcpInfoProvenance{Terraform: mcpInfoLeafSet{}, API: mcpInfoLeafSet{}}, imported)
+	return err
+}
+
+func (r *MCPServerResource) readMCPServerWithProvenance(ctx context.Context, data *MCPServerResourceModel, ownership mcpInfoProvenance, imported bool) (mcpInfoLeafSet, mcpInfoLeafSet, error) {
+	return r.readMCPServerWithAllProvenance(ctx, data, ownership, emptyMCPFieldOwnership(), imported)
+}
+
+func (r *MCPServerResource) readMCPServerWithAllProvenance(ctx context.Context, data *MCPServerResourceModel, ownership mcpInfoProvenance, fieldOwnership mcpFieldOwnership, imported bool) (mcpInfoLeafSet, mcpInfoLeafSet, error) {
+	confirmed := mcpInfoLeafSet{}
+	adoptedAPI := cloneMCPInfoLeafSet(ownership.API)
+	err := r.readMCPServerProjection(ctx, data, ownership, fieldOwnership, imported, confirmed, adoptedAPI)
+	return confirmed, adoptedAPI, err
+}
+
+func (r *MCPServerResource) readMCPServerWithProvenanceResult(ctx context.Context, data *MCPServerResourceModel, ownership mcpInfoProvenance, imported bool) (mcpInfoLeafSet, mcpInfoLeafSet, map[string]interface{}, error) {
+	return r.readMCPServerWithAllProvenanceResult(ctx, data, ownership, emptyMCPFieldOwnership(), imported)
+}
+
+func (r *MCPServerResource) readMCPServerWithAllProvenanceResult(ctx context.Context, data *MCPServerResourceModel, ownership mcpInfoProvenance, fieldOwnership mcpFieldOwnership, imported bool) (mcpInfoLeafSet, mcpInfoLeafSet, map[string]interface{}, error) {
+	confirmed := mcpInfoLeafSet{}
+	adoptedAPI := cloneMCPInfoLeafSet(ownership.API)
 	serverID := data.ID.ValueString()
 	if serverID == "" {
 		serverID = data.ServerID.ValueString()
 	}
+	result, err := r.getMCPServer(ctx, serverID)
+	if err == nil {
+		err = r.readMCPServerResultProjection(ctx, data, result, ownership, fieldOwnership, imported, confirmed, adoptedAPI)
+	}
+	return confirmed, adoptedAPI, result, err
+}
 
-	endpoint := fmt.Sprintf("/v1/mcp/server/%s", serverID)
+func (r *MCPServerResource) readMCPServerWithProvenanceDirect(ctx context.Context, data *MCPServerResourceModel, ownership mcpInfoProvenance, imported bool) (mcpInfoLeafSet, mcpInfoLeafSet, map[string]interface{}, error) {
+	return r.readMCPServerWithAllProvenanceDirect(ctx, data, ownership, emptyMCPFieldOwnership(), imported)
+}
 
-	var result map[string]interface{}
-	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
+func (r *MCPServerResource) readMCPServerWithAllProvenanceDirect(ctx context.Context, data *MCPServerResourceModel, ownership mcpInfoProvenance, fieldOwnership mcpFieldOwnership, imported bool) (mcpInfoLeafSet, mcpInfoLeafSet, map[string]interface{}, error) {
+	confirmed := mcpInfoLeafSet{}
+	adoptedAPI := cloneMCPInfoLeafSet(ownership.API)
+	serverID := data.ID.ValueString()
+	if serverID == "" {
+		serverID = data.ServerID.ValueString()
+	}
+	result, err := r.getMCPServerDirect(ctx, serverID)
+	if err == nil {
+		err = r.readMCPServerResultProjection(ctx, data, result, ownership, fieldOwnership, imported, confirmed, adoptedAPI)
+	}
+	return confirmed, adoptedAPI, result, err
+}
+
+func (r *MCPServerResource) readMCPServerProjection(ctx context.Context, data *MCPServerResourceModel, ownership mcpInfoProvenance, fieldOwnership mcpFieldOwnership, imported bool, confirmed, adoptedAPI mcpInfoLeafSet) error {
+	serverID := data.ID.ValueString()
+	if serverID == "" {
+		serverID = data.ServerID.ValueString()
+	}
+	result, err := r.getMCPServer(ctx, serverID)
+	if err != nil {
 		return err
+	}
+	return r.readMCPServerResultProjection(ctx, data, result, ownership, fieldOwnership, imported, confirmed, adoptedAPI)
+}
+
+func (r *MCPServerResource) readMCPServerResultProjection(ctx context.Context, data *MCPServerResourceModel, result map[string]interface{}, ownership mcpInfoProvenance, fieldOwnership mcpFieldOwnership, imported bool, confirmed, adoptedAPI mcpInfoLeafSet) error {
+	serverID := data.ID.ValueString()
+	if serverID == "" {
+		serverID = data.ServerID.ValueString()
+	}
+	if err := validateMCPServerResponse(result, serverID); err != nil {
+		return err
+	}
+
+	// Stage the complete model and mutable provenance sets. A late malformed
+	// collection must not leak a partial projection to callers that retain
+	// public or private state on readback failure.
+	target := data
+	next := *data
+	data = &next
+	targetConfirmed := confirmed
+	targetAdoptedAPI := adoptedAPI
+	confirmed = cloneMCPInfoLeafSet(confirmed)
+	adoptedAPI = cloneMCPInfoLeafSet(adoptedAPI)
+	commit := func() {
+		*target = *data
+		if targetConfirmed != nil {
+			for key := range targetConfirmed {
+				delete(targetConfirmed, key)
+			}
+			for key, value := range confirmed {
+				targetConfirmed[key] = value
+			}
+		}
+		if targetAdoptedAPI != nil {
+			for key := range targetAdoptedAPI {
+				delete(targetAdoptedAPI, key)
+			}
+			for key, value := range adoptedAPI {
+				targetAdoptedAPI[key] = value
+			}
+		}
 	}
 
 	// Update fields from response
@@ -598,181 +2504,468 @@ func (r *MCPServerResource) readMCPServer(ctx context.Context, data *MCPServerRe
 		data.ServerID = types.StringValue(serverID)
 		data.ID = types.StringValue(serverID)
 	}
-	if serverName, ok := result["server_name"].(string); ok {
-		data.ServerName = types.StringValue(serverName)
+	projectString := func(fieldPath, name string, current *types.String) {
+		projected := imported || fieldOwnership.Owned[fieldPath] || (!current.IsNull() && !current.IsUnknown())
+		if !projected {
+			return
+		}
+		raw, present := result[name]
+		if !present {
+			return
+		}
+		if raw == nil {
+			*current = types.StringNull()
+			return
+		}
+		*current = types.StringValue(raw.(string))
 	}
-	if alias, ok := result["alias"].(string); ok && !data.Alias.IsNull() {
-		data.Alias = types.StringValue(alias)
+	if raw, present := result["server_name"]; present {
+		if raw == nil {
+			data.ServerName = types.StringNull()
+		} else {
+			data.ServerName = types.StringValue(raw.(string))
+		}
 	}
-	if desc, ok := result["description"].(string); ok && !data.Description.IsNull() {
-		data.Description = types.StringValue(desc)
+	projectAlias := func() {
+		raw, present := result["alias"]
+		if !present {
+			return
+		}
+		if fieldOwnership.Owned[mcpFieldAliasPath] && !data.Alias.IsNull() && !data.Alias.IsUnknown() && raw != nil {
+			if observed, ok := raw.(string); ok && observed == mcpNormalizeAliasV198(data.Alias.ValueString()) {
+				// Preserve configured spelling while the normalized wire value is
+				// semantically equal. Terraform cannot rewrite a known config value.
+				return
+			}
+		}
+		if raw == nil {
+			data.Alias = types.StringNull()
+			return
+		}
+		data.Alias = types.StringValue(raw.(string))
 	}
-	if url, ok := result["url"].(string); ok {
-		data.URL = types.StringValue(url)
+	projectAlias()
+	projectString(mcpFieldDescriptionPath, "description", &data.Description)
+	projectNullableSensitiveString := func(name string, current *types.String) {
+		raw, present := result[name]
+		if !present || raw == nil {
+			// LiteLLM v1.98 role sanitization masks these values as null or by
+			// omission. Preserve a known prior value; a configured clear and an
+			// import without prior state are already null.
+			if current.IsUnknown() {
+				*current = types.StringNull()
+			}
+			return
+		}
+		*current = types.StringValue(raw.(string))
+	}
+	urlOwned := imported || !data.URL.IsNull()
+	if urlOwned {
+		projectNullableSensitiveString("url", &data.URL)
+	}
+	specPathOwned := imported || !data.SpecPath.IsNull()
+	if specPathOwned {
+		projectNullableSensitiveString("spec_path", &data.SpecPath)
 	}
 	if transport, ok := result["transport"].(string); ok {
 		data.Transport = types.StringValue(transport)
 	}
-	if specVersion, ok := result["spec_version"].(string); ok {
-		data.SpecVersion = types.StringValue(specVersion)
-	}
 	if authType, ok := result["auth_type"].(string); ok {
 		data.AuthType = types.StringValue(authType)
 	}
-	if command, ok := result["command"].(string); ok && !data.Command.IsNull() {
-		data.Command = types.StringValue(command)
-	}
-	if createdAt, ok := result["created_at"].(string); ok {
-		data.CreatedAt = types.StringValue(createdAt)
-	}
-	if createdBy, ok := result["created_by"].(string); ok {
-		data.CreatedBy = types.StringValue(createdBy)
-	}
-	// Handle access groups - preserve null when API returns empty and config didn't specify
-	if accessGroups, ok := result["mcp_access_groups"].([]interface{}); ok && len(accessGroups) > 0 {
-		groups := make([]attr.Value, len(accessGroups))
-		for i, g := range accessGroups {
-			if str, ok := g.(string); ok {
-				groups[i] = types.StringValue(str)
-			}
-		}
-		data.MCPAccessGroups, _ = types.ListValue(types.StringType, groups)
-	} else if data.MCPAccessGroups.IsUnknown() {
-		data.MCPAccessGroups, _ = types.ListValue(types.StringType, []attr.Value{})
-	}
-
-	// Handle args - preserve null when API returns empty and config didn't specify
-	if args, ok := result["args"].([]interface{}); ok && len(args) > 0 {
-		argsList := make([]attr.Value, len(args))
-		for i, a := range args {
-			if str, ok := a.(string); ok {
-				argsList[i] = types.StringValue(str)
-			}
-		}
-		data.Args, _ = types.ListValue(types.StringType, argsList)
-	} else if data.Args.IsUnknown() {
-		data.Args, _ = types.ListValue(types.StringType, []attr.Value{})
-	}
-
-	// Handle env - preserve null when API returns empty and config didn't specify
-	if env, ok := result["env"].(map[string]interface{}); ok && len(env) > 0 {
-		envMap := make(map[string]attr.Value)
-		for k, v := range env {
-			if str, ok := v.(string); ok {
-				envMap[k] = types.StringValue(str)
-			}
-		}
-		data.Env, _ = types.MapValue(types.StringType, envMap)
-	} else if data.Env.IsUnknown() {
-		data.Env, _ = types.MapValue(types.StringType, map[string]attr.Value{})
-	}
-
-	// Handle credentials - preserve null when API returns empty and config didn't specify
-	if credentials, ok := result["credentials"].(map[string]interface{}); ok && len(credentials) > 0 {
-		credMap := make(map[string]attr.Value)
-		for k, v := range credentials {
-			if str, ok := v.(string); ok {
-				credMap[k] = types.StringValue(str)
-			}
-		}
-		data.Credentials, _ = types.MapValue(types.StringType, credMap)
-	} else if data.Credentials.IsUnknown() {
-		data.Credentials, _ = types.MapValue(types.StringType, map[string]attr.Value{})
-	}
-
-	// Handle allowed_tools - preserve null when API returns empty and config didn't specify
-	if allowedTools, ok := result["allowed_tools"].([]interface{}); ok && len(allowedTools) > 0 {
-		tools := make([]attr.Value, len(allowedTools))
-		for i, t := range allowedTools {
-			if str, ok := t.(string); ok {
-				tools[i] = types.StringValue(str)
-			}
-		}
-		data.AllowedTools, _ = types.ListValue(types.StringType, tools)
-	} else if data.AllowedTools.IsUnknown() {
-		data.AllowedTools, _ = types.ListValue(types.StringType, []attr.Value{})
-	}
-
-	// Handle extra_headers - preserve null when API returns empty and config didn't specify
-	if extraHeaders, ok := result["extra_headers"].([]interface{}); ok && len(extraHeaders) > 0 {
-		headers := make([]attr.Value, 0, len(extraHeaders))
-		for _, v := range extraHeaders {
-			if str, ok := v.(string); ok {
-				headers = append(headers, types.StringValue(str))
-			}
-		}
-		data.ExtraHeaders, _ = types.ListValue(types.StringType, headers)
-	} else if data.ExtraHeaders.IsUnknown() {
-		data.ExtraHeaders, _ = types.ListValue(types.StringType, []attr.Value{})
-	}
-
-	// Handle static_headers - preserve null when API returns empty and config didn't specify
-	if staticHeaders, ok := result["static_headers"].(map[string]interface{}); ok && len(staticHeaders) > 0 {
-		headersMap := make(map[string]attr.Value)
-		for k, v := range staticHeaders {
-			if str, ok := v.(string); ok {
-				headersMap[k] = types.StringValue(str)
-			}
-		}
-		data.StaticHeaders, _ = types.MapValue(types.StringType, headersMap)
-	} else if data.StaticHeaders.IsUnknown() {
-		data.StaticHeaders, _ = types.MapValue(types.StringType, map[string]attr.Value{})
-	}
-
-	if authURL, ok := result["authorization_url"].(string); ok && !data.AuthorizationURL.IsNull() {
-		data.AuthorizationURL = types.StringValue(authURL)
-	}
-
-	if tokenURL, ok := result["token_url"].(string); ok && !data.TokenURL.IsNull() {
-		data.TokenURL = types.StringValue(tokenURL)
-	}
-
-	if regURL, ok := result["registration_url"].(string); ok && !data.RegistrationURL.IsNull() {
-		data.RegistrationURL = types.StringValue(regURL)
-	}
-
-	if allowAllKeys, ok := result["allow_all_keys"].(bool); ok && !data.AllowAllKeys.IsNull() {
-		data.AllowAllKeys = types.BoolValue(allowAllKeys)
-	}
-
-	// Handle mcp_info block, including Optional+Computed nested tool_name_to_cost_per_query.
-	// Only populate mcp_info if user originally configured it (don't create from nil)
-	if mcpInfoRaw, ok := result["mcp_info"].(map[string]interface{}); ok && data.MCPInfo != nil {
-		if serverName, ok := mcpInfoRaw["server_name"].(string); ok {
-			data.MCPInfo.ServerName = types.StringValue(serverName)
-		}
-		if description, ok := mcpInfoRaw["description"].(string); ok {
-			data.MCPInfo.Description = types.StringValue(description)
-		}
-		if logoURL, ok := mcpInfoRaw["logo_url"].(string); ok {
-			data.MCPInfo.LogoURL = types.StringValue(logoURL)
-		}
-
-		if costInfoRaw, ok := mcpInfoRaw["mcp_server_cost_info"].(map[string]interface{}); ok {
-			if data.MCPInfo.MCPServerCostInfo == nil {
-				data.MCPInfo.MCPServerCostInfo = &MCPServerCostInfoModel{}
-			}
-			if defaultCost, ok := costInfoRaw["default_cost_per_query"].(float64); ok {
-				data.MCPInfo.MCPServerCostInfo.DefaultCostPerQuery = types.Float64Value(defaultCost)
-			}
-
-			if toolCostsRaw, ok := costInfoRaw["tool_name_to_cost_per_query"].(map[string]interface{}); ok && len(toolCostsRaw) > 0 {
-				toolCosts := make(map[string]attr.Value)
-				for k, v := range toolCostsRaw {
-					if num, ok := v.(float64); ok {
-						toolCosts[k] = types.Float64Value(num)
-					}
+	for _, item := range []struct {
+		fieldPath string
+		name      string
+		current   *types.String
+	}{
+		{fieldPath: mcpFieldIssuerPath, name: "issuer", current: &data.Issuer},
+		{fieldPath: mcpFieldTokenExchangeEndpointPath, name: "token_exchange_endpoint", current: &data.TokenExchangeEndpoint},
+		{fieldPath: mcpFieldAudiencePath, name: "audience", current: &data.Audience},
+		{fieldPath: mcpFieldSubjectTokenTypePath, name: "subject_token_type", current: &data.SubjectTokenType},
+		{fieldPath: mcpFieldTokenExchangeProfilePath, name: "token_exchange_profile", current: &data.TokenExchangeProfile},
+	} {
+		projected := imported || fieldOwnership.Owned[item.fieldPath] || (!item.current.IsNull() && !item.current.IsUnknown())
+		if item.fieldPath == mcpFieldTokenExchangeProfilePath {
+			if observed, present := result[item.name].(string); present && observed != "rfc8693" && observed != "entra_obo" {
+				if fieldOwnership.Owned[item.fieldPath] || (!item.current.IsNull() && !item.current.IsUnknown()) {
+					return fmt.Errorf("invalid MCP server response: owned token exchange profile is invalid")
 				}
-				data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery, _ = types.MapValue(types.Float64Type, toolCosts)
-			} else if data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery.IsUnknown() {
-				data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery, _ = types.MapValue(types.Float64Type, map[string]attr.Value{})
+				if item.current.IsUnknown() {
+					*item.current = types.StringNull()
+				}
+				continue
 			}
-		} else if data.MCPInfo.MCPServerCostInfo != nil && data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery.IsUnknown() {
-			data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery, _ = types.MapValue(types.Float64Type, map[string]attr.Value{})
 		}
-	} else if data.MCPInfo != nil && data.MCPInfo.MCPServerCostInfo != nil && data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery.IsUnknown() {
-		data.MCPInfo.MCPServerCostInfo.ToolNameToCostPerQuery, _ = types.MapValue(types.Float64Type, map[string]attr.Value{})
+		if projected && !fieldOwnership.Removals[item.fieldPath] {
+			projectNullableSensitiveString(item.name, item.current)
+		}
+	}
+	if raw, present := result["oauth2_flow"]; present {
+		flowValue := types.StringNull()
+		if raw != nil {
+			flow := raw.(string)
+			valid := false
+			for _, allowed := range mcpOAuth2FlowsV198 {
+				valid = valid || flow == allowed
+			}
+			if !valid {
+				return fmt.Errorf("invalid MCP server response: oauth2 flow is invalid")
+			}
+			flowValue = types.StringValue(flow)
+		}
+		if !fieldOwnership.Removals[mcpFieldOAuth2FlowPath] {
+			// The server stamps omitted creates and may backfill historical rows.
+			// Adopt that durable value without inferring from local field shape.
+			data.OAuth2Flow = flowValue
+		}
+	}
+	if raw, present := result["available_on_public_internet"]; present && raw != nil && !fieldOwnership.Removals[mcpFieldAvailablePublicInternetPath] {
+		data.AvailableOnPublicInternet = types.BoolValue(raw.(bool))
+	}
+	if raw, present := result["instructions"]; present && !fieldOwnership.Removals[mcpFieldInstructionsPath] {
+		if raw == nil {
+			data.Instructions = types.StringNull()
+		} else {
+			data.Instructions = types.StringValue(raw.(string))
+		}
+	}
+	if imported && data.Command.IsNull() {
+		if command, ok := result["command"].(string); ok {
+			data.Command = types.StringValue(command)
+		}
+	} else if fieldOwnership.Owned[mcpFieldCommandPath] || (!data.Command.IsNull() && !data.Command.IsUnknown()) {
+		projectNullableSensitiveString("command", &data.Command)
+	}
+	projectComputedAuditString := func(name string, current *types.String) {
+		if raw, present := result[name]; present && raw != nil {
+			*current = types.StringValue(raw.(string))
+			return
+		}
+		// Null/omission is role redaction, not a clear. Preserve known prior
+		// state, but resolve first-create/import computed unknowns to typed null.
+		if current.IsUnknown() {
+			*current = types.StringNull()
+		}
+	}
+	projectComputedAuditString("created_at", &data.CreatedAt)
+	projectComputedAuditString("created_by", &data.CreatedBy)
+	projectComputedAuditString("updated_at", &data.UpdatedAt)
+	projectComputedAuditString("updated_by", &data.UpdatedBy)
+	projectList := func(fieldPath, name string, current *types.List) error {
+		observed, presence, diagnostics := strictAPIStringList(ctx, result, name, path.Root(name))
+		if diagnostics.HasError() {
+			return collectionProjectionError(ctx, diagnostics)
+		}
+		projected := fieldOwnership.Owned[fieldPath] || imported || !current.IsNull()
+		if presence != apiValuePresent || len(observed.Elements()) == 0 || !projected {
+			if current.IsUnknown() {
+				empty, emptyDiagnostics := checkedStringListValue(ctx, []attr.Value{}, path.Root(name))
+				if emptyDiagnostics.HasError() {
+					return collectionProjectionError(ctx, emptyDiagnostics)
+				}
+				*current = empty
+			}
+			return nil
+		}
+		*current = observed
+		return nil
+	}
+	projectMap := func(fieldPath, name string, current *types.Map) error {
+		observed, presence, diagnostics := strictAPIStringMap(ctx, result, name, path.Root(name), true)
+		if diagnostics.HasError() {
+			return collectionProjectionError(ctx, diagnostics)
+		}
+		projected := fieldOwnership.Owned[fieldPath] || imported || !current.IsNull()
+		if presence != apiValuePresent || len(observed.Elements()) == 0 || !projected {
+			if current.IsUnknown() {
+				empty, emptyDiagnostics := checkedStringMapValue(ctx, map[string]attr.Value{}, path.Root(name), true)
+				if emptyDiagnostics.HasError() {
+					return collectionProjectionError(ctx, emptyDiagnostics)
+				}
+				*current = empty
+			}
+			return nil
+		}
+		*current = observed
+		return nil
+	}
+	projectExactMap := func(fieldPath, name string, current *types.Map) error {
+		observed, presence, diagnostics := strictAPIStringMap(ctx, result, name, path.Root(name), true)
+		if diagnostics.HasError() {
+			return collectionProjectionError(ctx, diagnostics)
+		}
+		projected := !fieldOwnership.Removals[fieldPath]
+		if presence == apiValuePresent && projected {
+			*current = observed
+		} else if current.IsUnknown() {
+			*current = types.MapNull(types.StringType)
+		}
+		return nil
+	}
+	for _, projection := range []func() error{
+		func() error { return projectList(mcpFieldAccessGroupsPath, "mcp_access_groups", &data.MCPAccessGroups) },
+		func() error { return projectList(mcpFieldArgsPath, "args", &data.Args) },
+		func() error { return projectMap(mcpFieldEnvPath, "env", &data.Env) },
+		func() error { return projectList(mcpFieldAllowedToolsPath, "allowed_tools", &data.AllowedTools) },
+		func() error { return projectList(mcpFieldExtraHeadersPath, "extra_headers", &data.ExtraHeaders) },
+		func() error { return projectMap(mcpFieldStaticHeadersPath, "static_headers", &data.StaticHeaders) },
+		func() error {
+			return projectExactMap(mcpFieldToolNameToDisplayNamePath, "tool_name_to_display_name", &data.ToolNameToDisplayName)
+		},
+		func() error {
+			return projectExactMap(mcpFieldToolNameToDescriptionPath, "tool_name_to_description", &data.ToolNameToDescription)
+		},
+	} {
+		if err := projection(); err != nil {
+			return err
+		}
+	}
+	envVars, envVarsPresence, _, envVarsDiagnostics := strictAPIMCPEnvVars(ctx, result, "env_vars", path.Root("env_vars"))
+	if envVarsDiagnostics.HasError() {
+		return collectionProjectionError(ctx, envVarsDiagnostics)
+	}
+	if envVarsPresence == apiValuePresent {
+		// Every full-admin list, including an explicit empty list, is
+		// authoritative. Projection does not infer Terraform ownership.
+		data.EnvVars = envVars
+	} else if envVarsPresence != apiValuePresent && data.EnvVars.IsUnknown() {
+		// Null and omission are role masking. They do not establish ownership or
+		// erase a known configured value; first reads remain typed null.
+		data.EnvVars = types.ListNull(mcpEnvVarObjectType)
 	}
 
+	// Credential values and credentials.scopes are never authoritative in the
+	// management response. Keep configured sensitive values through redaction
+	// and keep imports/unconfigured first reads null.
+	if data.OAuthScopes.IsUnknown() {
+		data.OAuthScopes = types.ListNull(types.StringType)
+	}
+	if data.Credentials.IsUnknown() {
+		data.Credentials = types.MapNull(types.StringType)
+	}
+	if fieldOwnership.Owned[mcpFieldCredentialsPath] && !data.Credentials.IsNull() && !data.Credentials.IsUnknown() {
+		priorCredentials, err := mcpFieldStringMap(ctx, data.Credentials)
+		if err != nil {
+			return fmt.Errorf("invalid owned credential state")
+		}
+		changed := false
+		for _, name := range mcpCredentialLiftedColumnNames {
+			if _, configured := priorCredentials[name]; !configured {
+				continue
+			}
+			if remote, visible := result[name].(string); visible {
+				priorCredentials[name], changed = remote, true
+			}
+		}
+		if _, configured := priorCredentials["upstream_resource"]; configured {
+			if remote, visible := mcpObservedCredentialString(result, "upstream_resource"); visible {
+				priorCredentials["upstream_resource"], changed = remote, true
+			}
+		}
+		if changed {
+			values := make(map[string]attr.Value, len(priorCredentials))
+			for name, value := range priorCredentials {
+				values[name] = types.StringValue(value)
+			}
+			credentials, diagnostics := checkedStringMapValue(ctx, values, path.Root("credentials"), true)
+			if diagnostics.HasError() {
+				return collectionProjectionError(ctx, diagnostics)
+			}
+			data.Credentials = credentials
+		}
+	}
+
+	for _, item := range []struct {
+		fieldPath string
+		name      string
+		current   *types.String
+	}{
+		{fieldPath: mcpFieldAuthorizationURLPath, name: "authorization_url", current: &data.AuthorizationURL},
+		{fieldPath: mcpFieldTokenURLPath, name: "token_url", current: &data.TokenURL},
+		{fieldPath: mcpFieldRegistrationURLPath, name: "registration_url", current: &data.RegistrationURL},
+	} {
+		if fieldOwnership.Owned[item.fieldPath] || (!item.current.IsNull() && !item.current.IsUnknown()) {
+			projectNullableSensitiveString(item.name, item.current)
+		}
+	}
+	if fieldOwnership.Owned[mcpFieldAllowAllKeysPath] || (!data.AllowAllKeys.IsNull() && !data.AllowAllKeys.IsUnknown()) {
+		if allowAllKeys, present := result["allow_all_keys"].(bool); present {
+			data.AllowAllKeys = types.BoolValue(allowAllKeys)
+		}
+	}
+
+	projectDefaultFalse := func(name string, current *types.Bool) {
+		if raw, present := result[name]; present && raw != nil {
+			*current = types.BoolValue(raw.(bool))
+		} else if imported || current.IsUnknown() {
+			// Imports and first creates adopt LiteLLM's durable false default.
+			// A direct v0-v5 upgrade retains its typed null until the API actually
+			// exposes the field or configuration takes ownership.
+			*current = types.BoolValue(false)
+		}
+	}
+	projectDefaultFalse("delegate_auth_to_upstream", &data.DelegateAuthToUpstream)
+	projectDefaultFalse("oauth_passthrough", &data.OAuthPassthrough)
+	projectDefaultFalse("is_byok", &data.IsBYOK)
+	if raw, present := result["dcr_bridge"]; present && raw != nil {
+		data.DCRBridge = types.BoolValue(raw.(bool))
+	} else {
+		data.DCRBridge = types.BoolNull()
+	}
+	if raw, present := result["byok_api_key_help_url"]; present && raw != nil {
+		data.BYOKAPIKeyHelpURL = types.StringValue(raw.(string))
+	} else {
+		data.BYOKAPIKeyHelpURL = types.StringNull()
+	}
+	if raw, present := result["source_url"]; present && raw != nil {
+		data.SourceURL = types.StringValue(raw.(string))
+	} else {
+		data.SourceURL = types.StringNull()
+	}
+	byokDescription, byokPresence, byokDiagnostics := strictAPIStringList(ctx, result, "byok_description", path.Root("byok_description"))
+	if byokDiagnostics.HasError() {
+		return collectionProjectionError(ctx, byokDiagnostics)
+	}
+	if byokPresence == apiValuePresent {
+		data.BYOKDescription = byokDescription
+	} else if imported || data.BYOKDescription.IsUnknown() {
+		emptyDescription, emptyDiagnostics := checkedStringListValue(ctx, []attr.Value{}, path.Root("byok_description"))
+		if emptyDiagnostics.HasError() {
+			return collectionProjectionError(ctx, emptyDiagnostics)
+		}
+		data.BYOKDescription = emptyDescription
+	}
+	if timeout, err := dataSourceNullableFloat64At(result, "timeout"); err != nil {
+		return fmt.Errorf("invalid MCP server response: timeout is malformed")
+	} else if !timeout.IsNull() && timeout.ValueFloat64() <= 0 {
+		return fmt.Errorf("invalid MCP server response: timeout is malformed")
+	} else {
+		data.Timeout = timeout
+	}
+	if maximum, err := dataSourceNullableInt64At(result, "max_concurrent_requests"); err != nil {
+		return fmt.Errorf("invalid MCP server response: maximum concurrency is malformed")
+	} else {
+		// v1.98 treats every non-positive exact integer as an observable unlimited
+		// sentinel. Configuration uses null as the sole writable unlimited form,
+		// but imports and reads must not reject valid upstream representations.
+		data.MaxConcurrentRequests = maximum
+	}
+
+	// A present object is the sole authoritative complete MCP-info snapshot.
+	// Absence or null is role masking and leaves every public projection intact.
+	mcpInfoRaw, mcpInfoPresence, err := mcpInfoDocumentFromResponse(result)
+	if err != nil {
+		return fmt.Errorf("invalid MCP server response: mcp_info must be a JSON object or null")
+	}
+	if mcpInfoPresence != apiValuePresent {
+		commit()
+		return nil
+	}
+	if err := setCompleteMCPInfoJSONState(data, mcpInfoRaw); err != nil {
+		return fmt.Errorf("invalid MCP server response: mcp_info could not be represented")
+	}
+
+	costRaw, _ := mcpInfoRaw["mcp_server_cost_info"].(map[string]interface{})
+	if imported && costRaw != nil {
+		if raw, present := costRaw["default_cost_per_query"]; present {
+			if _, compatible := mcpInfoCompatibleFloat(raw); compatible {
+				adoptedAPI[mcpInfoDefaultCostLeaf] = true
+			}
+		}
+		if raw, present := costRaw["tool_name_to_cost_per_query"]; present {
+			if _, compatible := mcpInfoCompatibleFloatMap(raw); compatible {
+				adoptedAPI[mcpInfoToolCostsLeaf] = true
+			}
+		}
+	}
+	leafOwned := func(leaf string) bool {
+		return ownership.Terraform[leaf] || ownership.API[leaf] || adoptedAPI[leaf]
+	}
+	anyOwned := false
+	for _, leaf := range mcpInfoAllLeaves {
+		anyOwned = anyOwned || leafOwned(leaf)
+	}
+	if !anyOwned {
+		data.MCPInfo = nil
+		commit()
+		return nil
+	}
+	priorInfo := data.MCPInfo
+	info := &MCPInfoModel{ServerName: types.StringNull(), Description: types.StringNull(), LogoURL: types.StringNull()}
+	if priorInfo != nil {
+		info.ServerName = priorInfo.ServerName
+		info.Description = priorInfo.Description
+		info.LogoURL = priorInfo.LogoURL
+	}
+	for _, field := range []struct {
+		name string
+		leaf string
+		set  func(types.String)
+	}{
+		{name: "server_name", leaf: mcpInfoServerNameLeaf, set: func(value types.String) { info.ServerName = value }},
+		{name: "description", leaf: mcpInfoDescriptionLeaf, set: func(value types.String) { info.Description = value }},
+		{name: "logo_url", leaf: mcpInfoLogoURLLeaf, set: func(value types.String) { info.LogoURL = value }},
+	} {
+		if !leafOwned(field.leaf) {
+			continue
+		}
+		confirmed[field.leaf] = true
+		raw, present := mcpInfoRaw[field.name]
+		if !present {
+			continue
+		}
+		if raw == nil {
+			field.set(types.StringNull())
+			continue
+		}
+		value, ok := raw.(string)
+		if !ok {
+			return fmt.Errorf("invalid MCP server response: an owned fixed MCP info string has an incompatible type")
+		}
+		field.set(types.StringValue(value))
+	}
+
+	if leafOwned(mcpInfoDefaultCostLeaf) || leafOwned(mcpInfoToolCostsLeaf) {
+		costs := &MCPServerCostInfoModel{DefaultCostPerQuery: types.Float64Null(), ToolNameToCostPerQuery: types.MapNull(types.Float64Type)}
+		if priorInfo != nil && priorInfo.MCPServerCostInfo != nil {
+			costs.DefaultCostPerQuery = priorInfo.MCPServerCostInfo.DefaultCostPerQuery
+			costs.ToolNameToCostPerQuery = priorInfo.MCPServerCostInfo.ToolNameToCostPerQuery
+		}
+		if leafOwned(mcpInfoDefaultCostLeaf) {
+			confirmed[mcpInfoDefaultCostLeaf] = true
+			if raw, present := costRaw["default_cost_per_query"]; present && raw == nil {
+				costs.DefaultCostPerQuery = types.Float64Null()
+			} else if present {
+				value, ok := mcpInfoCompatibleFloat(raw)
+				if !ok {
+					return fmt.Errorf("invalid MCP server response: an owned fixed MCP info cost has an incompatible type")
+				}
+				costs.DefaultCostPerQuery = types.Float64Value(value)
+			}
+		}
+		if leafOwned(mcpInfoToolCostsLeaf) {
+			confirmed[mcpInfoToolCostsLeaf] = true
+			if raw, present := costRaw["tool_name_to_cost_per_query"]; present && raw == nil {
+				costs.ToolNameToCostPerQuery = types.MapNull(types.Float64Type)
+			} else if present {
+				values, ok := mcpInfoCompatibleFloatMap(raw)
+				if !ok {
+					return fmt.Errorf("invalid MCP server response: an owned fixed MCP info cost map has an incompatible type")
+				}
+				elements := make(map[string]attr.Value, len(values))
+				for name, value := range values {
+					elements[name] = types.Float64Value(value)
+				}
+				projectedCosts, diagnostics := types.MapValue(types.Float64Type, elements)
+				if diagnostics.HasError() {
+					return fmt.Errorf("invalid MCP server response: an owned fixed MCP info cost map could not be represented")
+				}
+				costs.ToolNameToCostPerQuery = projectedCosts
+			}
+		}
+		info.MCPServerCostInfo = costs
+	}
+	data.MCPInfo = info
+	commit()
 	return nil
 }

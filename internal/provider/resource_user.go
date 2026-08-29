@@ -3,9 +3,16 @@ package provider
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/url"
+	"sort"
+	"strconv"
+	"time"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -28,20 +35,21 @@ type UserResource struct {
 }
 
 type UserResourceModel struct {
-	ID             types.String  `tfsdk:"id"`
-	UserID         types.String  `tfsdk:"user_id"`
-	UserAlias      types.String  `tfsdk:"user_alias"`
-	UserEmail      types.String  `tfsdk:"user_email"`
-	UserRole       types.String  `tfsdk:"user_role"`
-	Teams          types.List    `tfsdk:"teams"`
-	Models         types.List    `tfsdk:"models"`
-	MaxBudget      types.Float64 `tfsdk:"max_budget"`
-	BudgetDuration types.String  `tfsdk:"budget_duration"`
-	TPMLimit       types.Int64   `tfsdk:"tpm_limit"`
-	RPMLimit       types.Int64   `tfsdk:"rpm_limit"`
-	AutoCreateKey  types.Bool    `tfsdk:"auto_create_key"`
-	Metadata       types.Map     `tfsdk:"metadata"`
-	Key            types.String  `tfsdk:"key"`
+	ID              types.String  `tfsdk:"id"`
+	UserID          types.String  `tfsdk:"user_id"`
+	UserAlias       types.String  `tfsdk:"user_alias"`
+	UserEmail       types.String  `tfsdk:"user_email"`
+	UserRole        types.String  `tfsdk:"user_role"`
+	Teams           types.List    `tfsdk:"teams"`
+	Models          types.List    `tfsdk:"models"`
+	MaxBudget       types.Float64 `tfsdk:"max_budget"`
+	BudgetDuration  types.String  `tfsdk:"budget_duration"`
+	TPMLimit        types.Int64   `tfsdk:"tpm_limit"`
+	RPMLimit        types.Int64   `tfsdk:"rpm_limit"`
+	AutoCreateKey   types.Bool    `tfsdk:"auto_create_key"`
+	SendInviteEmail types.Bool    `tfsdk:"send_invite_email"`
+	Metadata        types.Map     `tfsdk:"metadata"`
+	Key             types.String  `tfsdk:"key"`
 }
 
 func (r *UserResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -77,7 +85,7 @@ func (r *UserResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 				Optional:    true,
 			},
 			"user_role": schema.StringAttribute{
-				Description: "The user's role: proxy_admin, proxy_admin_viewer, internal_user, internal_user_viewer, team, customer.",
+				Description: "The user's role. LiteLLM v1.98 user create/update accepts proxy_admin, proxy_admin_viewer, internal_user, or internal_user_viewer.",
 				Optional:    true,
 				Validators: []validator.String{
 					stringvalidator.OneOf(
@@ -85,16 +93,17 @@ func (r *UserResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 						"proxy_admin_viewer",
 						"internal_user",
 						"internal_user_viewer",
-						"team",
-						"customer",
 					),
 				},
 			},
 			"teams": schema.ListAttribute{
-				Description: "List of team IDs the user belongs to.",
+				Description: "List of team IDs the user belongs to. Membership order is not significant.",
 				Optional:    true,
 				Computed:    true,
 				ElementType: types.StringType,
+				Validators: []validator.List{
+					listvalidator.UniqueValues(),
+				},
 			},
 			"models": schema.ListAttribute{
 				Description: "Model names the user is allowed to call. Set to ['no-default-models'] to block all model access.",
@@ -123,6 +132,11 @@ func (r *UserResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 				Optional:    true,
 				Computed:    true,
 				Default:     booldefault.StaticBool(true),
+			},
+			"send_invite_email": schema.BoolAttribute{
+				Description: "Create-only action flag that asks LiteLLM to asynchronously email this user. Requires user_email. It is write-only, is never sent during Update, and does not confirm delivery.",
+				Optional:    true,
+				WriteOnly:   true,
 			},
 			"metadata": schema.MapAttribute{
 				Description: "Metadata for the user.",
@@ -167,10 +181,47 @@ func (r *UserResource) Create(ctx context.Context, req resource.CreateRequest, r
 		return
 	}
 
-	userReq := r.buildUserRequest(ctx, &data)
+	var sendInviteEmail types.Bool
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("send_invite_email"), &sendInviteEmail)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if err := validateUserSendInviteEmail(&data, sendInviteEmail); err != nil {
+		resp.Diagnostics.AddError("Invalid User Invitation", err.Error())
+		return
+	}
+
+	userReq, conversionDiagnostics := r.buildUserRequest(ctx, &data)
+	resp.Diagnostics.Append(conversionDiagnostics...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if err := addSendInviteEmailToCreateRequest(userReq, sendInviteEmail); err != nil {
+		resp.Diagnostics.AddError("Invalid User Invitation", err.Error())
+		return
+	}
 
 	var result map[string]interface{}
 	if err := r.client.DoRequestWithResponse(ctx, "POST", "/user/new", userReq, &result); err != nil {
+		if IsAPIErrorStatus(err, 409) {
+			if sendInviteEmailRequested(sendInviteEmail) {
+				resp.Diagnostics.AddError(
+					"Existing User Was Not Invited",
+					"LiteLLM reported that the user already exists, so no create-time invitation was sent and Terraform did not adopt the account. Import the exact existing user with send_invite_email omitted, or invite the user outside this resource.",
+				)
+				return
+			}
+			mutated, adoptErr := r.adoptExistingUser(ctx, &data)
+			if adoptErr != nil {
+				if mutated {
+					resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+				}
+				resp.Diagnostics.AddError("User Adoption Error", fmt.Sprintf("LiteLLM reported that the user already exists, but the provider could not safely adopt an exact matching account: %s", adoptErr))
+				return
+			}
+			resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+			return
+		}
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to create user: %s", err))
 		return
 	}
@@ -198,20 +249,26 @@ func (r *UserResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 	var data UserResourceModel
 
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
+	importedMarker, privateDiags := req.Private.GetKey(ctx, numericImportedPrivateKey)
+	resp.Diagnostics.Append(privateDiags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	imported := string(importedMarker) == "true"
 
-	if err := r.readUser(ctx, &data); err != nil {
-		if IsNotFoundError(err) {
+	if err := r.refreshUserWithNumericOwnership(ctx, &data, imported); err != nil {
+		if IsAPIErrorStatus(err, http.StatusNotFound) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read user: %s", err))
+		resp.Diagnostics.AddError("Client Error", "Unable to read user. Response and request details were omitted.")
 		return
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	if !resp.Diagnostics.HasError() && imported {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, nil)...)
+	}
 }
 
 func (r *UserResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
@@ -233,16 +290,32 @@ func (r *UserResource) Update(ctx context.Context, req resource.UpdateRequest, r
 	data.UserID = state.UserID
 	data.Key = state.Key
 
-	userReq := r.buildUserRequest(ctx, &data)
+	userReq, conversionDiagnostics := r.buildUserRequest(ctx, &data)
+	resp.Diagnostics.Append(conversionDiagnostics...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	userReq["user_id"] = data.UserID.ValueString()
+	// LiteLLM v1.98 accepts teams on /user/update but does not reconcile team
+	// membership there. Manage membership through the dedicated team endpoints.
+	delete(userReq, "teams")
 
 	if err := r.client.DoRequestWithResponse(ctx, "POST", "/user/update", userReq, nil); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to update user: %s", err))
 		return
 	}
 
-	// Read back for full state
-	if err := r.readUser(ctx, &data); err != nil {
+	teamsChanged := userTeamMembershipsDiffer(state.Teams, data.Teams)
+	if teamsChanged {
+		if err := r.reconcileUserTeams(ctx, data.UserID.ValueString(), state.Teams, data.Teams); err != nil {
+			resp.Diagnostics.AddError("Team Membership Error", fmt.Sprintf("Unable to update user team membership: %s", err))
+			return
+		}
+		if err := r.readUserTeamsAfterUpdate(ctx, &data, 8); err != nil {
+			resp.Diagnostics.AddError("User Team Update Not Yet Consistent", fmt.Sprintf("LiteLLM accepted the team membership update but did not return the planned membership before the consistency timeout: %s", err))
+			return
+		}
+	} else if err := r.readUser(ctx, &data); err != nil {
 		resp.Diagnostics.AddWarning("Read Error", fmt.Sprintf("User updated but failed to read back: %s", err))
 	}
 
@@ -272,9 +345,159 @@ func (r *UserResource) Delete(ctx context.Context, req resource.DeleteRequest, r
 func (r *UserResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("user_id"), req.ID)...)
+	if resp.Private != nil {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, []byte("true"))...)
+	}
 }
 
-func (r *UserResource) buildUserRequest(ctx context.Context, data *UserResourceModel) map[string]interface{} {
+type userListResponse struct {
+	Users      []map[string]interface{} `json:"users"`
+	TotalPages int                      `json:"total_pages"`
+}
+
+func (r *UserResource) findExistingUserByExactEmail(ctx context.Context, email string) (string, error) {
+	if email == "" {
+		return "", fmt.Errorf("user_email must be configured to adopt an existing user")
+	}
+
+	matches := make(map[string]struct{})
+	totalPages := 1
+	for page := 1; page <= totalPages; page++ {
+		if page > 100 {
+			return "", fmt.Errorf("user lookup exceeded 100 pages")
+		}
+		query := url.Values{
+			"page":       []string{strconv.Itoa(page)},
+			"page_size":  []string{"100"},
+			"user_email": []string{email},
+		}
+		endpoint := endpointWithQuery("/user/list", query)
+		var response userListResponse
+		if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &response); err != nil {
+			return "", fmt.Errorf("unable to list users by email: %w", err)
+		}
+		if response.TotalPages > totalPages {
+			totalPages = response.TotalPages
+		}
+		if totalPages > 100 {
+			return "", fmt.Errorf("user lookup returned %d pages, exceeding the safe lookup limit", totalPages)
+		}
+		for _, user := range response.Users {
+			candidateEmail, emailOK := user["user_email"].(string)
+			candidateID, idOK := user["user_id"].(string)
+			if emailOK && candidateEmail == email && idOK && candidateID != "" {
+				matches[candidateID] = struct{}{}
+			}
+		}
+	}
+
+	if len(matches) == 0 {
+		return "", fmt.Errorf("no user with the exact email %q was returned by /user/list", email)
+	}
+	if len(matches) > 1 {
+		return "", fmt.Errorf("multiple user IDs matched the exact email %q", email)
+	}
+	for userID := range matches {
+		return userID, nil
+	}
+	return "", fmt.Errorf("exact user lookup returned no usable user ID")
+}
+
+func (r *UserResource) adoptExistingUser(ctx context.Context, data *UserResourceModel) (bool, error) {
+	if data.UserEmail.IsNull() || data.UserEmail.IsUnknown() || data.UserEmail.ValueString() == "" {
+		return false, fmt.Errorf("user_email must be known and non-empty")
+	}
+	planned := *data
+	email := planned.UserEmail.ValueString()
+	userID, err := r.findExistingUserByExactEmail(ctx, email)
+	if err != nil {
+		return false, err
+	}
+	if !planned.UserID.IsNull() && !planned.UserID.IsUnknown() && planned.UserID.ValueString() != "" && planned.UserID.ValueString() != userID {
+		return false, fmt.Errorf("the exact email match has user_id %q, not the configured user_id %q", userID, planned.UserID.ValueString())
+	}
+
+	// Clear the pre-seeded identity fields so verification only succeeds when
+	// /user/info explicitly returns both values.
+	current := planned
+	current.ID = types.StringValue(userID)
+	current.UserID = types.StringNull()
+	current.UserEmail = types.StringNull()
+	current.Key = types.StringNull()
+	if err := r.readUser(ctx, &current); err != nil {
+		return false, fmt.Errorf("unable to verify the existing user: %w", err)
+	}
+	if current.UserID.IsNull() || current.UserID.IsUnknown() || current.UserEmail.IsNull() || current.UserEmail.IsUnknown() || current.UserID.ValueString() != userID || current.UserEmail.ValueString() != email {
+		return false, fmt.Errorf("the user identity was missing or changed during verification")
+	}
+	if !planned.UserAlias.IsNull() && !planned.UserAlias.IsUnknown() && planned.UserAlias.ValueString() == "" && !current.UserAlias.IsNull() && current.UserAlias.ValueString() != "" {
+		return false, fmt.Errorf("LiteLLM cannot clear the existing user_alias during adoption")
+	}
+	if !planned.Models.IsNull() && !planned.Models.IsUnknown() && len(planned.Models.Elements()) == 0 && !current.Models.IsNull() && !current.Models.IsUnknown() && len(current.Models.Elements()) > 0 {
+		return false, fmt.Errorf("LiteLLM cannot clear the existing models list during adoption")
+	}
+	if !planned.Metadata.IsNull() && !planned.Metadata.IsUnknown() && len(planned.Metadata.Elements()) == 0 && !current.Metadata.IsNull() && !current.Metadata.IsUnknown() && len(current.Metadata.Elements()) > 0 {
+		return false, fmt.Errorf("LiteLLM cannot clear the existing metadata map during adoption")
+	}
+
+	prepareRecoverableState := func(refresh bool) {
+		*data = planned
+		data.ID = types.StringValue(userID)
+		data.UserID = types.StringValue(userID)
+		data.Key = types.StringNull()
+		if refresh {
+			if err := r.readUser(ctx, data); err == nil {
+				return
+			}
+		}
+		if data.Teams.IsUnknown() {
+			data.Teams = current.Teams
+		}
+		if data.Models.IsUnknown() {
+			data.Models = current.Models
+		}
+		if data.Metadata.IsUnknown() {
+			data.Metadata = current.Metadata
+		}
+	}
+	prepareRecoverableState(false)
+
+	updateRequest, conversionDiagnostics := r.buildUserRequest(ctx, &planned)
+	if conversionDiagnostics.HasError() {
+		return false, fmt.Errorf("configured user collections could not be converted safely")
+	}
+	updateRequest["user_id"] = userID
+	delete(updateRequest, "teams")
+	// auto_create_key is a Create action. Do not generate an inaccessible new
+	// key while adopting an account whose existing raw keys cannot be read back.
+	delete(updateRequest, "auto_create_key")
+	if err := r.client.DoRequestWithResponse(ctx, "POST", "/user/update", updateRequest, nil); err != nil {
+		prepareRecoverableState(true)
+		return true, fmt.Errorf("unable to converge the existing user: %w", err)
+	}
+
+	teamsChanged := userTeamMembershipsDiffer(current.Teams, planned.Teams)
+	if teamsChanged {
+		if err := r.reconcileUserTeams(ctx, userID, current.Teams, planned.Teams); err != nil {
+			prepareRecoverableState(true)
+			return true, fmt.Errorf("unable to converge existing user team membership: %w", err)
+		}
+	}
+
+	prepareRecoverableState(false)
+	if teamsChanged {
+		if err := r.readUserTeamsAfterUpdate(ctx, data, 8); err != nil {
+			prepareRecoverableState(true)
+			return true, fmt.Errorf("existing user team membership did not converge: %w", err)
+		}
+	} else if err := r.readUser(ctx, data); err != nil {
+		prepareRecoverableState(false)
+		return true, fmt.Errorf("unable to read the adopted user: %w", err)
+	}
+	return true, nil
+}
+
+func (r *UserResource) buildUserRequest(ctx context.Context, data *UserResourceModel) (map[string]interface{}, diag.Diagnostics) {
 	userReq := map[string]interface{}{}
 
 	// String fields - check IsNull, IsUnknown, and empty string
@@ -310,125 +533,387 @@ func (r *UserResource) buildUserRequest(ctx context.Context, data *UserResourceM
 		userReq["auto_create_key"] = data.AutoCreateKey.ValueBool()
 	}
 
-	// List fields - check IsNull, IsUnknown, and len > 0
+	// Collection fields retain their historical whole-value and empty behavior.
 	if !data.Teams.IsNull() && !data.Teams.IsUnknown() {
-		var teams []string
-		data.Teams.ElementsAs(ctx, &teams, false)
+		teams, _, diagnostics := strictTerraformStringList(ctx, data.Teams, path.Root("teams"))
+		if diagnostics.HasError() {
+			return nil, diagnostics
+		}
 		if len(teams) > 0 {
 			userReq["teams"] = teams
 		}
 	}
 
 	if !data.Models.IsNull() && !data.Models.IsUnknown() {
-		var models []string
-		data.Models.ElementsAs(ctx, &models, false)
-		if len(models) > 0 {
-			userReq["models"] = models
+		models, _, diagnostics := strictTerraformStringList(ctx, data.Models, path.Root("models"))
+		if diagnostics.HasError() {
+			return nil, diagnostics
 		}
+		userReq["models"] = models
 	}
 
-	// Map fields - check IsNull, IsUnknown, and len > 0
+	// Send explicitly configured empty metadata so existing values can be
+	// cleared during Update or adoption.
 	if !data.Metadata.IsNull() && !data.Metadata.IsUnknown() {
-		var metadata map[string]string
-		data.Metadata.ElementsAs(ctx, &metadata, false)
-		if len(metadata) > 0 {
-			userReq["metadata"] = metadata
+		metadata, _, diagnostics := strictTerraformStringMap(ctx, data.Metadata, path.Root("metadata"), false)
+		if diagnostics.HasError() {
+			return nil, diagnostics
 		}
+		userReq["metadata"] = metadata
 	}
 
-	return userReq
+	return userReq, nil
 }
 
+// readUser is reserved for operation-coupled Create/Update/adoption
+// confirmation. It deliberately performs one request.
 func (r *UserResource) readUser(ctx context.Context, data *UserResourceModel) error {
+	return r.readUserWithNumericOwnership(ctx, data, false)
+}
+
+func (r *UserResource) readUserWithNumericOwnership(ctx context.Context, data *UserResourceModel, imported bool) error {
+	return r.readUserWithTransport(ctx, data, imported, false)
+}
+
+// refreshUserWithNumericOwnership is the ordinary Terraform refresh path.
+// Only this singular database-authoritative GET uses bounded safe-read retries.
+func (r *UserResource) refreshUserWithNumericOwnership(ctx context.Context, data *UserResourceModel, imported bool) error {
+	return r.readUserWithTransport(ctx, data, imported, true)
+}
+
+func (r *UserResource) readUserWithTransport(ctx context.Context, data *UserResourceModel, imported, safeRead bool) error {
 	userID := data.UserID.ValueString()
 	if userID == "" {
 		userID = data.ID.ValueString()
 	}
-
-	endpoint := fmt.Sprintf("/user/info?user_id=%s", userID)
+	endpoint := endpointWithQuery("/user/info", url.Values{"user_id": []string{userID}})
 
 	var result map[string]interface{}
-	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
+	var err error
+	if safeRead {
+		err = r.client.DoReadWithResponse(ctx, http.MethodGet, endpoint, nil, &result)
+	} else {
+		err = r.client.DoRequestWithResponse(ctx, http.MethodGet, endpoint, nil, &result)
+	}
+	if err != nil {
 		return err
 	}
+	return projectUserResourceAPIObject(ctx, data, result, userID, imported, safeRead)
+}
 
-	// The /user/info endpoint returns user_info nested
+// projectUserResourceAPIObject validates and projects atomically so a
+// malformed successful response cannot partially mutate prior state.
+func projectUserResourceAPIObject(ctx context.Context, data *UserResourceModel, result map[string]interface{}, expectedUserID string, imported, requireCompleteEnvelope bool) error {
 	userInfo := result
 	if ui, ok := result["user_info"].(map[string]interface{}); ok {
 		userInfo = ui
 	}
+	if imported || requireCompleteEnvelope {
+		rootUserID, ok := result["user_id"].(string)
+		if !ok || rootUserID == "" || rootUserID != expectedUserID {
+			return fmt.Errorf("invalid user response root identity")
+		}
+		validated, err := requireImportedObjectField(true, "user", result, "user_info")
+		if err != nil {
+			return fmt.Errorf("invalid user response envelope")
+		}
+		userInfo = validated
+		nestedUserID, ok := userInfo["user_id"].(string)
+		if !ok || nestedUserID == "" || nestedUserID != expectedUserID || nestedUserID != rootUserID {
+			return fmt.Errorf("invalid user response nested identity")
+		}
+	} else if err := validateImportedObjectIdentity(false, "user", userInfo, "user_id", expectedUserID); err != nil {
+		return err
+	}
 
-	// Update fields from response
+	original := data
+	next := *data
+	data = &next
+
+	// Update fields from response. Any present non-null scalar must have the
+	// exact wire type even when its optional Terraform attribute is unowned.
 	if userID, ok := userInfo["user_id"].(string); ok {
 		data.UserID = types.StringValue(userID)
 		data.ID = types.StringValue(userID)
 	}
-	if alias, ok := userInfo["user_alias"].(string); ok {
-		data.UserAlias = types.StringValue(alias)
+	if err := projectUserStringFromAPI(&data.UserAlias, userInfo, "user_alias", !data.UserAlias.IsNull()); err != nil {
+		return err
 	}
-	if email, ok := userInfo["user_email"].(string); ok {
-		data.UserEmail = types.StringValue(email)
+	if err := projectUserStringFromAPI(&data.UserEmail, userInfo, "user_email", true); err != nil {
+		return err
 	}
-	if role, ok := userInfo["user_role"].(string); ok && !data.UserRole.IsNull() {
-		data.UserRole = types.StringValue(role)
+	if err := projectUserStringFromAPI(&data.UserRole, userInfo, "user_role", !data.UserRole.IsNull()); err != nil {
+		return err
 	}
-	if budgetDuration, ok := userInfo["budget_duration"].(string); ok && !data.BudgetDuration.IsNull() {
-		data.BudgetDuration = types.StringValue(budgetDuration)
-	}
-
-	// Numeric fields. These are Optional-only, so avoid writing API-injected
-	// defaults into state when the user did not configure them.
-	if maxBudget, ok := userInfo["max_budget"].(float64); ok && !data.MaxBudget.IsNull() {
-		data.MaxBudget = types.Float64Value(maxBudget)
-	}
-	if tpmLimit, ok := userInfo["tpm_limit"].(float64); ok && !data.TPMLimit.IsNull() {
-		data.TPMLimit = types.Int64Value(int64(tpmLimit))
-	}
-	if rpmLimit, ok := userInfo["rpm_limit"].(float64); ok && !data.RPMLimit.IsNull() {
-		data.RPMLimit = types.Int64Value(int64(rpmLimit))
+	if err := projectUserStringFromAPI(&data.BudgetDuration, userInfo, "budget_duration", !data.BudgetDuration.IsNull()); err != nil {
+		return err
 	}
 
-	// Handle teams list - preserve null when API returns empty and config didn't specify teams
-	if teams, ok := userInfo["teams"].([]interface{}); ok && len(teams) > 0 {
-		teamsList := make([]attr.Value, len(teams))
-		for i, t := range teams {
-			if str, ok := t.(string); ok {
-				teamsList[i] = types.StringValue(str)
-			}
+	// Numeric fields are Optional-only: validate every present API value, but
+	// do not adopt server defaults for unconfigured attributes. Null/omission
+	// clears configured state so out-of-band removals remain visible.
+	maxBudgetOwned := imported || (!data.MaxBudget.IsNull() && !data.MaxBudget.IsUnknown())
+	if err := updateFloat64FromAPI(&data.MaxBudget, userInfo, maxBudgetOwned, maxBudgetOwned, "max_budget"); err != nil {
+		return err
+	}
+	tpmOwned := imported || (!data.TPMLimit.IsNull() && !data.TPMLimit.IsUnknown())
+	if err := updateInt64FromAPI(&data.TPMLimit, userInfo, tpmOwned, tpmOwned, "tpm_limit"); err != nil {
+		return err
+	}
+	rpmOwned := imported || (!data.RPMLimit.IsNull() && !data.RPMLimit.IsUnknown())
+	if err := updateInt64FromAPI(&data.RPMLimit, userInfo, rpmOwned, rpmOwned, "rpm_limit"); err != nil {
+		return err
+	}
+
+	// Team membership is unordered in LiteLLM. Preserve Terraform's current
+	// ordering when the API returns the same members in a different order; when
+	// membership truly changes, use a stable canonical order so drift remains
+	// visible without positional churn.
+	teams, teamsPresence, diagnostics := strictAPIStringList(ctx, userInfo, "teams", path.Root("teams"))
+	if err := collectionProjectionError(ctx, diagnostics); err != nil {
+		return err
+	}
+	if teamsPresence == apiValuePresent {
+		remoteTeams, _, diagnostics := strictTerraformStringList(ctx, teams, path.Root("teams"))
+		if err := collectionProjectionError(ctx, diagnostics); err != nil {
+			return err
 		}
-		data.Teams, _ = types.ListValue(types.StringType, teamsList)
-	} else if !data.Teams.IsNull() {
-		// User specified teams in config but API returned empty — set to empty list
-		data.Teams, _ = types.ListValue(types.StringType, []attr.Value{})
+		reconciled, err := reconcileUnorderedUserTeamStrings(ctx, data.Teams, remoteTeams)
+		if err != nil {
+			return err
+		}
+		data.Teams = reconciled
 	}
 
-	// Handle models list - preserve null when API returns empty and config didn't specify models
-	if models, ok := userInfo["models"].([]interface{}); ok && len(models) > 0 {
-		modelsList := make([]attr.Value, len(models))
-		for i, m := range models {
-			if str, ok := m.(string); ok {
-				modelsList[i] = types.StringValue(str)
-			}
-		}
-		data.Models, _ = types.ListValue(types.StringType, modelsList)
+	// Handle models list - preserve null when API returns empty and config didn't specify models.
+	models, modelsPresence, diagnostics := strictAPIStringList(ctx, userInfo, "models", path.Root("models"))
+	if err := collectionProjectionError(ctx, diagnostics); err != nil {
+		return err
+	}
+	if modelsPresence == apiValuePresent && len(models.Elements()) > 0 {
+		data.Models = models
 	} else if !data.Models.IsNull() {
-		// User specified models in config but API returned empty — set to empty list
-		data.Models, _ = types.ListValue(types.StringType, []attr.Value{})
-	}
-
-	// Handle metadata map - preserve null when API returns empty and config didn't specify metadata
-	if metadata, ok := userInfo["metadata"].(map[string]interface{}); ok && len(metadata) > 0 {
-		metaMap := make(map[string]attr.Value)
-		for k, v := range metadata {
-			if str, ok := v.(string); ok {
-				metaMap[k] = types.StringValue(str)
-			}
+		empty, diagnostics := checkedStringListValue(ctx, nil, path.Root("models"))
+		if err := collectionProjectionError(ctx, diagnostics); err != nil {
+			return err
 		}
-		data.Metadata, _ = types.MapValue(types.StringType, metaMap)
-	} else if !data.Metadata.IsNull() {
-		// User specified metadata in config but API returned empty — set to empty map
-		data.Metadata, _ = types.MapValue(types.StringType, map[string]attr.Value{})
+		data.Models = empty
 	}
 
+	// Handle metadata map - preserve null when API returns empty and config didn't specify metadata.
+	metadata, metadataPresence, diagnostics := strictAPIStringMap(ctx, userInfo, "metadata", path.Root("metadata"), false)
+	if err := collectionProjectionError(ctx, diagnostics); err != nil {
+		return err
+	}
+	if metadataPresence == apiValuePresent && len(metadata.Elements()) > 0 {
+		data.Metadata = metadata
+	} else if !data.Metadata.IsNull() {
+		empty, diagnostics := checkedStringMapValue(ctx, nil, path.Root("metadata"), false)
+		if err := collectionProjectionError(ctx, diagnostics); err != nil {
+			return err
+		}
+		data.Metadata = empty
+	}
+
+	*original = *data
 	return nil
+}
+
+func projectUserStringFromAPI(target *types.String, object map[string]interface{}, key string, project bool) error {
+	value, presence, err := apiValueAt(object, key)
+	if err != nil {
+		return fmt.Errorf("invalid user scalar response")
+	}
+	if presence != apiValuePresent || value == nil {
+		return nil
+	}
+	text, ok := value.(string)
+	if !ok {
+		return fmt.Errorf("invalid user scalar response")
+	}
+	if project {
+		*target = types.StringValue(text)
+	}
+	return nil
+}
+
+func reconcileUnorderedUserTeams(current types.List, rawTeams []interface{}) types.List {
+	remoteTeams := make([]string, 0, len(rawTeams))
+	for _, rawTeam := range rawTeams {
+		team, ok := rawTeam.(string)
+		if !ok {
+			return current
+		}
+		remoteTeams = append(remoteTeams, team)
+	}
+	result, err := reconcileUnorderedUserTeamStrings(context.Background(), current, remoteTeams)
+	if err != nil {
+		return current
+	}
+	return result
+}
+
+func reconcileUnorderedUserTeamStrings(ctx context.Context, current types.List, remoteTeams []string) (types.List, error) {
+	if len(remoteTeams) == 0 {
+		if current.IsNull() {
+			return current, nil
+		}
+		empty, diagnostics := checkedStringListValue(ctx, nil, path.Root("teams"))
+		return empty, collectionProjectionError(ctx, diagnostics)
+	}
+	if userTeamMembershipEqual(current, remoteTeams) {
+		return current, nil
+	}
+
+	sort.Strings(remoteTeams)
+	values := make([]attr.Value, len(remoteTeams))
+	for i, team := range remoteTeams {
+		values[i] = types.StringValue(team)
+	}
+	result, diagnostics := checkedStringListValue(ctx, values, path.Root("teams"))
+	return result, collectionProjectionError(ctx, diagnostics)
+}
+
+func userTeamMembershipEqual(current types.List, remoteTeams []string) bool {
+	if current.IsNull() || current.IsUnknown() || len(current.Elements()) != len(remoteTeams) {
+		return false
+	}
+
+	counts := make(map[string]int, len(remoteTeams))
+	for _, team := range remoteTeams {
+		counts[team]++
+	}
+	for _, element := range current.Elements() {
+		team, ok := element.(types.String)
+		if !ok || team.IsNull() || team.IsUnknown() || counts[team.ValueString()] == 0 {
+			return false
+		}
+		counts[team.ValueString()]--
+	}
+	return true
+}
+
+func userTeamIDs(value types.List) ([]string, bool) {
+	if value.IsNull() || value.IsUnknown() {
+		return nil, false
+	}
+	ids := make([]string, 0, len(value.Elements()))
+	for _, element := range value.Elements() {
+		team, ok := element.(types.String)
+		if !ok || team.IsNull() || team.IsUnknown() {
+			return nil, false
+		}
+		ids = append(ids, team.ValueString())
+	}
+	return ids, true
+}
+
+func userTeamMembershipsDiffer(current, planned types.List) bool {
+	plannedIDs, managed := userTeamIDs(planned)
+	if !managed {
+		return false
+	}
+	return !userTeamMembershipEqual(current, plannedIDs)
+}
+
+func (r *UserResource) reconcileUserTeams(ctx context.Context, userID string, current, planned types.List) error {
+	desiredIDs, managed := userTeamIDs(planned)
+	if !managed {
+		return nil
+	}
+	currentIDs, _ := userTeamIDs(current)
+
+	desired := make(map[string]struct{}, len(desiredIDs))
+	for _, teamID := range desiredIDs {
+		desired[teamID] = struct{}{}
+	}
+	existing := make(map[string]struct{}, len(currentIDs))
+	for _, teamID := range currentIDs {
+		existing[teamID] = struct{}{}
+	}
+
+	removals := make([]string, 0)
+	for teamID := range existing {
+		if _, keep := desired[teamID]; !keep {
+			removals = append(removals, teamID)
+		}
+	}
+	additions := make([]string, 0)
+	for teamID := range desired {
+		if _, present := existing[teamID]; !present {
+			additions = append(additions, teamID)
+		}
+	}
+	sort.Strings(removals)
+	sort.Strings(additions)
+
+	// Add destinations before removing old memberships. A failed destination
+	// must not revoke existing access or delete LiteLLM team-scoped keys. If a
+	// later removal fails, refresh exposes the temporary extra membership and a
+	// subsequent apply can safely retry the removal.
+	for _, teamID := range additions {
+		request := map[string]interface{}{
+			"team_id": teamID,
+			"member": map[string]interface{}{
+				"role":    "user",
+				"user_id": userID,
+			},
+		}
+		if err := r.client.DoRequestWithResponse(ctx, "POST", "/team/member_add", request, nil); err != nil {
+			return fmt.Errorf("add user to team %s: %w", teamID, err)
+		}
+	}
+	for _, teamID := range removals {
+		request := map[string]interface{}{"team_id": teamID, "user_id": userID}
+		if err := r.client.DoRequestWithResponse(ctx, "POST", "/team/member_delete", request, nil); err != nil {
+			return fmt.Errorf("remove user from team %s: %w", teamID, err)
+		}
+	}
+	return nil
+}
+
+func (r *UserResource) readUserTeamsAfterUpdate(ctx context.Context, data *UserResourceModel, maxRetries int) error {
+	if maxRetries < 1 {
+		return fmt.Errorf("maxRetries must be at least 1")
+	}
+
+	expected := data.Teams
+	delay := 250 * time.Millisecond
+	maxDelay := 2 * time.Second
+	consecutiveMatches := 0
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		candidate := *data
+		err := r.readUser(ctx, &candidate)
+		if err == nil {
+			if !userTeamMembershipsDiffer(candidate.Teams, expected) {
+				consecutiveMatches++
+				if consecutiveMatches >= 2 {
+					*data = candidate
+					return nil
+				}
+			} else {
+				consecutiveMatches = 0
+			}
+		} else if !IsNotFoundError(err) {
+			return err
+		} else {
+			consecutiveMatches = 0
+		}
+
+		if attempt == maxRetries-1 {
+			break
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+		delay *= 2
+		if delay > maxDelay {
+			delay = maxDelay
+		}
+	}
+	return fmt.Errorf("team membership did not remain at its planned value after %d reads", maxRetries)
 }

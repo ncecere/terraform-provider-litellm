@@ -5,11 +5,261 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
+	frameworkdatasource "github.com/hashicorp/terraform-plugin-framework/datasource"
+	frameworkresource "github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
+
+func TestAgentCredentialBearingMapsAreSensitive(t *testing.T) {
+	t.Parallel()
+
+	var resourceResponse frameworkresource.SchemaResponse
+	(&AgentResource{}).Schema(context.Background(), frameworkresource.SchemaRequest{}, &resourceResponse)
+	if resourceResponse.Diagnostics.HasError() {
+		t.Fatalf("resource schema diagnostics: %v", resourceResponse.Diagnostics)
+	}
+	var dataSourceResponse frameworkdatasource.SchemaResponse
+	(&AgentDataSource{}).Schema(context.Background(), frameworkdatasource.SchemaRequest{}, &dataSourceResponse)
+	if dataSourceResponse.Diagnostics.HasError() {
+		t.Fatalf("data source schema diagnostics: %v", dataSourceResponse.Diagnostics)
+	}
+	for _, name := range []string{"litellm_params", "static_headers"} {
+		if !resourceResponse.Schema.Attributes[name].IsSensitive() {
+			t.Errorf("resource %s must be sensitive", name)
+		}
+		if !dataSourceResponse.Schema.Attributes[name].IsSensitive() {
+			t.Errorf("data source %s must be sensitive", name)
+		}
+	}
+}
+
+func TestBuildAgentRequest_BedrockAgentCore(t *testing.T) {
+	t.Parallel()
+
+	arn := "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/example"
+	data := &AgentResourceModel{
+		AgentName: types.StringValue("agentcore-agent"),
+		AgentCard: &AgentCardModel{
+			Name:            types.StringValue("AgentCore Agent"),
+			URL:             types.StringValue(""),
+			ProtocolVersion: types.StringValue("1.0"),
+			Capabilities: &AgentCapabilitiesModel{
+				Streaming: types.BoolValue(true),
+			},
+		},
+		LiteLLMParams: stringMapValue(map[string]string{
+			"custom_llm_provider": "bedrock",
+			"model":               "bedrock/agentcore/" + arn,
+			"qualifier":           "PROD",
+		}),
+	}
+
+	request, err := (&AgentResource{}).buildAgentRequest(context.Background(), data)
+	if err != nil {
+		t.Fatalf("build AgentCore request: %v", err)
+	}
+	card := request["agent_card_params"].(map[string]interface{})
+	if card["url"] != "" || card["protocolVersion"] != "1.0" {
+		t.Fatalf("AgentCore card = %#v, want empty URL and protocolVersion 1.0", card)
+	}
+	capabilities := card["capabilities"].(map[string]interface{})
+	if capabilities["streaming"] != true {
+		t.Fatalf("AgentCore capabilities = %#v", capabilities)
+	}
+	params := request["litellm_params"].(map[string]interface{})
+	if params["custom_llm_provider"] != "bedrock" || params["model"] != "bedrock/agentcore/"+arn || params["qualifier"] != "PROD" {
+		t.Fatalf("AgentCore litellm_params = %#v", params)
+	}
+	if _, present := request["agent_type"]; present {
+		t.Fatalf("AgentCore must not send dashboard-only agent_type: %#v", request)
+	}
+}
+
+func TestReconcileAgentStringMapOwnershipAndSecrets(t *testing.T) {
+	t.Parallel()
+
+	configured := stringMapValue(map[string]string{
+		"model":   "bedrock/agentcore/runtime",
+		"api_key": "secret-value",
+	})
+	observed := map[string]interface{}{
+		"model":     "bedrock/agentcore/runtime",
+		"api_key":   "litellm_enc::masked",
+		"is_public": false,
+	}
+	reconciled, err := reconcileAgentStringMap(configured, observed, true)
+	if err != nil {
+		t.Fatalf("configured reconciliation: %v", err)
+	}
+	if !reconciled.Equal(configured) {
+		t.Fatalf("configured keys or masked secret changed: %#v", reconciled.Elements())
+	}
+	if _, adopted := reconciled.Elements()["is_public"]; adopted {
+		t.Fatalf("API-injected is_public was adopted into configured state: %#v", reconciled.Elements())
+	}
+
+	if _, err := reconcileAgentStringMap(types.MapUnknown(types.StringType), observed, true); err == nil {
+		t.Fatal("unmanaged/imported masked API value must fail instead of entering state")
+	}
+
+	imported, err := reconcileAgentStringMap(types.MapUnknown(types.StringType), map[string]interface{}{
+		"model":     "bedrock/agentcore/runtime",
+		"is_public": false,
+	}, true)
+	if err != nil {
+		t.Fatalf("unmasked import reconciliation: %v", err)
+	}
+	if _, adopted := imported.Elements()["is_public"]; adopted {
+		t.Fatalf("imported map adopted synthetic is_public: %#v", imported.Elements())
+	}
+	if got := imported.Elements()["model"].(types.String).ValueString(); got != "bedrock/agentcore/runtime" {
+		t.Fatalf("imported model = %q", got)
+	}
+
+	headers, err := reconcileAgentStringMap(types.MapUnknown(types.StringType), map[string]interface{}{
+		"is_public": "legitimate-header-value",
+	}, false)
+	if err != nil {
+		t.Fatalf("static header reconciliation: %v", err)
+	}
+	if got := headers.Elements()["is_public"].(types.String).ValueString(); got != "legitimate-header-value" {
+		t.Fatalf("static header is_public = %q", got)
+	}
+}
+
+func TestHydrateUnmanagedAgentUpdateFieldsPreservesRemoteSecrets(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+			"agent_id": "agent-update",
+			"litellm_params": map[string]interface{}{
+				"model":     "bedrock/agentcore/runtime",
+				"is_public": false,
+			},
+			"static_headers": map[string]interface{}{
+				"Authorization": "Bearer preserved",
+				"is_public":     "legitimate-header-value",
+			},
+			"extra_headers": []interface{}{"X-Request-ID"},
+		})
+	}))
+	defer server.Close()
+
+	resource := &AgentResource{client: &Client{APIBase: server.URL, APIKey: "test", HTTPClient: server.Client()}}
+	data := AgentResourceModel{
+		ID:            types.StringValue("agent-update"),
+		AgentName:     types.StringValue("agent"),
+		LiteLLMParams: types.MapNull(types.StringType),
+		StaticHeaders: types.MapNull(types.StringType),
+		ExtraHeaders:  types.ListNull(types.StringType),
+	}
+	if err := resource.hydrateUnmanagedAgentUpdateFields(context.Background(), &data); err != nil {
+		t.Fatalf("hydrate unmanaged fields: %v", err)
+	}
+	if _, present := data.LiteLLMParams.Elements()["is_public"]; present {
+		t.Fatalf("synthetic litellm_params.is_public was retained: %#v", data.LiteLLMParams.Elements())
+	}
+	if got := data.StaticHeaders.Elements()["is_public"].(types.String).ValueString(); got != "legitimate-header-value" {
+		t.Fatalf("legitimate static header is_public = %q", got)
+	}
+	request, err := resource.buildAgentRequest(context.Background(), &data)
+	if err != nil {
+		t.Fatalf("build hydrated request: %v", err)
+	}
+	params := request["litellm_params"].(map[string]interface{})
+	if _, present := params["is_public"]; present {
+		t.Fatalf("update request included synthetic is_public: %#v", params)
+	}
+	headers := request["static_headers"].(map[string]interface{})
+	if headers["Authorization"] != "Bearer preserved" || headers["is_public"] != "legitimate-header-value" {
+		t.Fatalf("update request lost static headers: %#v", headers)
+	}
+}
+
+func TestHydrateMaskedPlannedAgentValuesPreservesRealChanges(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+			"agent_id": "agent-masked-plan",
+			"litellm_params": map[string]interface{}{
+				"model":   "remote-old-model",
+				"api_key": "real-api-key-value",
+			},
+			"static_headers": map[string]interface{}{},
+			"extra_headers":  []interface{}{},
+		})
+	}))
+	defer server.Close()
+
+	resource := &AgentResource{client: &Client{APIBase: server.URL, APIKey: "test", HTTPClient: server.Client()}}
+	data := AgentResourceModel{
+		ID:        types.StringValue("agent-masked-plan"),
+		AgentName: types.StringValue("agent"),
+		LiteLLMParams: stringMapValue(map[string]string{
+			"model":   "planned-new-model",
+			"api_key": "ab****yz",
+		}),
+		StaticHeaders: types.MapNull(types.StringType),
+		ExtraHeaders:  types.ListNull(types.StringType),
+	}
+	if err := resource.hydrateUnmanagedAgentUpdateFields(context.Background(), &data); err != nil {
+		t.Fatalf("hydrate masked planned value: %v", err)
+	}
+	params := data.LiteLLMParams.Elements()
+	if got := params["api_key"].(types.String).ValueString(); got != "real-api-key-value" {
+		t.Fatalf("hydrated api_key = %q", got)
+	}
+	if got := params["model"].(types.String).ValueString(); got != "planned-new-model" {
+		t.Fatalf("genuine planned model update was overwritten: %q", got)
+	}
+	request, err := resource.buildAgentRequest(context.Background(), &data)
+	if err != nil {
+		t.Fatalf("build masked request: %v", err)
+	}
+	requestParams := request["litellm_params"].(map[string]interface{})
+	if requestParams["api_key"] != "real-api-key-value" || requestParams["model"] != "planned-new-model" {
+		t.Fatalf("update request params = %#v", requestParams)
+	}
+}
+
+func TestReadAgentRejectsMaskedImportState(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(writer).Encode(map[string]interface{}{
+			"agent_id":   "agent-masked-import",
+			"agent_name": "masked",
+			"litellm_params": map[string]interface{}{
+				"model":   "bedrock/agentcore/runtime",
+				"api_key": "ab****yz",
+			},
+		})
+	}))
+	defer server.Close()
+
+	resource := &AgentResource{client: &Client{APIBase: server.URL, APIKey: "test", HTTPClient: server.Client()}}
+	data := AgentResourceModel{
+		ID:            types.StringValue("agent-masked-import"),
+		LiteLLMParams: types.MapUnknown(types.StringType),
+	}
+	err := resource.readAgent(context.Background(), &data)
+	if err == nil || !strings.Contains(err.Error(), "PROXY_ADMIN") {
+		t.Fatalf("masked import read error = %v, want PROXY_ADMIN guidance", err)
+	}
+	if !data.LiteLLMParams.IsUnknown() {
+		t.Fatalf("masked import value entered state: %#v", data.LiteLLMParams)
+	}
+}
 
 func TestBuildAgentRequest_Minimal(t *testing.T) {
 	t.Parallel()
@@ -23,7 +273,10 @@ func TestBuildAgentRequest_Minimal(t *testing.T) {
 		},
 	}
 
-	req := r.buildAgentRequest(data)
+	req, err := r.buildAgentRequest(context.Background(), data)
+	if err != nil {
+		t.Fatalf("build minimal request: %v", err)
+	}
 
 	if req["agent_name"] != "test-agent" {
 		t.Errorf("expected agent_name 'test-agent', got %v", req["agent_name"])
@@ -69,16 +322,17 @@ func TestBuildAgentRequest_Full(t *testing.T) {
 	data := &AgentResourceModel{
 		AgentName: types.StringValue("full-agent"),
 		AgentCard: &AgentCardModel{
-			Name:            types.StringValue("Full Agent"),
-			Description:     types.StringValue("A fully configured agent"),
-			URL:             types.StringValue("https://agent.example.com/a2a"),
-			Version:         types.StringValue("1.0.0"),
-			ProtocolVersion: types.StringValue("0.2.6"),
-			DefaultInputModes:  stringListValue("application/json"),
-			DefaultOutputModes: stringListValue("application/json", "text/plain"),
-			PreferredTransport: types.StringValue("httpsse"),
-			IconURL:            types.StringValue("https://example.com/icon.png"),
-			DocumentationURL:   types.StringValue("https://docs.example.com"),
+			Name:                              types.StringValue("Full Agent"),
+			Description:                       types.StringValue("A fully configured agent"),
+			URL:                               types.StringValue("https://agent.example.com/a2a"),
+			Version:                           types.StringValue("1.0.0"),
+			ProtocolVersion:                   types.StringValue("0.3"),
+			DefaultInputModes:                 stringListValue("application/json"),
+			DefaultOutputModes:                stringListValue("application/json", "text/plain"),
+			PreferredTransport:                types.StringValue("httpsse"),
+			IconURL:                           types.StringValue("https://example.com/icon.png"),
+			DocumentationURL:                  types.StringValue("https://docs.example.com"),
+			SupportsAuthenticatedExtendedCard: types.BoolValue(true),
 			Capabilities: &AgentCapabilitiesModel{
 				Streaming:              types.BoolValue(true),
 				PushNotifications:      types.BoolValue(false),
@@ -110,7 +364,10 @@ func TestBuildAgentRequest_Full(t *testing.T) {
 		ExtraHeaders: stringListValue("Authorization"),
 	}
 
-	req := r.buildAgentRequest(data)
+	req, err := r.buildAgentRequest(context.Background(), data)
+	if err != nil {
+		t.Fatalf("build full request: %v", err)
+	}
 
 	if req["agent_name"] != "full-agent" {
 		t.Errorf("expected agent_name 'full-agent', got %v", req["agent_name"])
@@ -126,11 +383,14 @@ func TestBuildAgentRequest_Full(t *testing.T) {
 	if !ok {
 		t.Fatal("expected agent_card_params map")
 	}
-	if card["protocolVersion"] != "0.2.6" {
-		t.Errorf("expected protocolVersion '0.2.6', got %v", card["protocolVersion"])
+	if card["protocolVersion"] != "0.3" {
+		t.Errorf("expected protocolVersion '0.3', got %v", card["protocolVersion"])
 	}
 	if card["preferredTransport"] != "httpsse" {
 		t.Errorf("expected preferredTransport 'httpsse', got %v", card["preferredTransport"])
+	}
+	if card["supportsAuthenticatedExtendedCard"] != true {
+		t.Errorf("expected supportsAuthenticatedExtendedCard true, got %v", card["supportsAuthenticatedExtendedCard"])
 	}
 
 	caps, ok := card["capabilities"].(map[string]interface{})
@@ -187,11 +447,12 @@ func TestReadAgent_PopulatesState(t *testing.T) {
 			"agent_id":   "agent-abc-123",
 			"agent_name": "my-agent",
 			"agent_card_params": map[string]interface{}{
-				"name":            "My Agent",
-				"description":     "A helpful agent",
-				"url":             "https://agent.example.com",
-				"version":         "1.0.0",
-				"protocolVersion": "0.2.6",
+				"name":                              "My Agent",
+				"description":                       "A helpful agent",
+				"url":                               "https://agent.example.com",
+				"version":                           "1.0.0",
+				"protocolVersion":                   "1.0",
+				"supportsAuthenticatedExtendedCard": true,
 				"capabilities": map[string]interface{}{
 					"streaming":         true,
 					"pushNotifications": false,
@@ -248,7 +509,7 @@ func TestReadAgent_PopulatesState(t *testing.T) {
 		ExtraHeaders:  types.ListUnknown(types.StringType),
 	}
 
-	if err := r.readAgent(context.Background(), &data); err != nil {
+	if err := r.readAgentWithNumericOwnership(context.Background(), &data, true); err != nil {
 		t.Fatalf("readAgent returned error: %v", err)
 	}
 
@@ -292,8 +553,11 @@ func TestReadAgent_PopulatesState(t *testing.T) {
 	if data.AgentCard.Description.ValueString() != "A helpful agent" {
 		t.Errorf("expected card description 'A helpful agent', got %q", data.AgentCard.Description.ValueString())
 	}
-	if data.AgentCard.ProtocolVersion.ValueString() != "0.2.6" {
-		t.Errorf("expected protocolVersion '0.2.6', got %q", data.AgentCard.ProtocolVersion.ValueString())
+	if data.AgentCard.ProtocolVersion.ValueString() != "1.0" {
+		t.Errorf("expected protocolVersion '1.0', got %q", data.AgentCard.ProtocolVersion.ValueString())
+	}
+	if !data.AgentCard.SupportsAuthenticatedExtendedCard.ValueBool() {
+		t.Error("expected supportsAuthenticatedExtendedCard true")
 	}
 
 	// Capabilities
@@ -348,6 +612,186 @@ func TestReadAgent_PopulatesState(t *testing.T) {
 	// Extra headers
 	if data.ExtraHeaders.IsNull() || data.ExtraHeaders.IsUnknown() {
 		t.Fatal("expected extra_headers to be populated")
+	}
+}
+
+func TestReadAgentCardMissingManagedCapabilitiesBecomeFalse(t *testing.T) {
+	t.Parallel()
+
+	resource := &AgentResource{}
+	data := AgentResourceModel{AgentCard: &AgentCardModel{
+		SupportsAuthenticatedExtendedCard: types.BoolValue(true),
+		Capabilities: &AgentCapabilitiesModel{
+			Streaming:              types.BoolValue(true),
+			PushNotifications:      types.BoolValue(true),
+			StateTransitionHistory: types.BoolValue(true),
+		},
+	}}
+
+	resource.readAgentCard(map[string]interface{}{
+		"capabilities": map[string]interface{}{"streaming": true},
+	}, &data)
+
+	if !data.AgentCard.Capabilities.Streaming.ValueBool() {
+		t.Error("expected returned streaming capability to remain true")
+	}
+	if data.AgentCard.Capabilities.PushNotifications.ValueBool() {
+		t.Error("expected omitted pushNotifications capability to become false")
+	}
+	if data.AgentCard.Capabilities.StateTransitionHistory.ValueBool() {
+		t.Error("expected omitted stateTransitionHistory capability to become false")
+	}
+	if data.AgentCard.SupportsAuthenticatedExtendedCard.ValueBool() {
+		t.Error("expected omitted supportsAuthenticatedExtendedCard to become false")
+	}
+}
+
+func TestReadAgentCardMissingCapabilitiesMapClearsManagedValues(t *testing.T) {
+	t.Parallel()
+
+	resource := &AgentResource{}
+	data := AgentResourceModel{AgentCard: &AgentCardModel{Capabilities: &AgentCapabilitiesModel{
+		Streaming:         types.BoolValue(true),
+		PushNotifications: types.BoolValue(true),
+	}}}
+	resource.readAgentCard(map[string]interface{}{}, &data)
+
+	if data.AgentCard.Capabilities.Streaming.ValueBool() || data.AgentCard.Capabilities.PushNotifications.ValueBool() {
+		t.Fatalf("omitted capabilities map retained managed values: %#v", data.AgentCard.Capabilities)
+	}
+}
+
+func TestReadAgentCardLeavesUnmanagedCapabilityNull(t *testing.T) {
+	t.Parallel()
+
+	resource := &AgentResource{}
+	data := AgentResourceModel{AgentCard: &AgentCardModel{Capabilities: &AgentCapabilitiesModel{
+		Streaming:         types.BoolValue(true),
+		PushNotifications: types.BoolNull(),
+	}}}
+	resource.readAgentCard(map[string]interface{}{
+		"capabilities": map[string]interface{}{
+			"streaming":         true,
+			"pushNotifications": true,
+		},
+	}, &data)
+
+	if !data.AgentCard.Capabilities.PushNotifications.IsNull() {
+		t.Fatalf("unmanaged push_notifications became %v, want null", data.AgentCard.Capabilities.PushNotifications)
+	}
+}
+
+func TestReadAgentCardImportAdoptsOnlyVisibleCapabilities(t *testing.T) {
+	t.Parallel()
+
+	resource := &AgentResource{}
+	data := AgentResourceModel{}
+	resource.readAgentCard(map[string]interface{}{
+		"capabilities": map[string]interface{}{"streaming": true},
+	}, &data)
+
+	if data.AgentCard == nil || data.AgentCard.Capabilities == nil {
+		t.Fatal("import did not populate capabilities")
+	}
+	if !data.AgentCard.Capabilities.Streaming.ValueBool() || !data.AgentCard.Capabilities.PushNotifications.IsNull() || !data.AgentCard.Capabilities.StateTransitionHistory.IsNull() {
+		t.Fatalf("unexpected imported capabilities: %#v", data.AgentCard.Capabilities)
+	}
+}
+
+func TestChangedAgentCapabilityFieldsNotConverged(t *testing.T) {
+	t.Parallel()
+
+	prior := AgentResourceModel{AgentCard: &AgentCardModel{
+		SupportsAuthenticatedExtendedCard: types.BoolValue(false),
+		Capabilities: &AgentCapabilitiesModel{
+			PushNotifications: types.BoolValue(false),
+		},
+	}}
+	planned := cloneAgentResourceModel(prior)
+	planned.AgentCard.SupportsAuthenticatedExtendedCard = types.BoolValue(true)
+	planned.AgentCard.Capabilities.PushNotifications = types.BoolValue(true)
+	observed := cloneAgentResourceModel(planned)
+	observed.AgentCard.Capabilities.PushNotifications = types.BoolValue(false)
+
+	got := changedAgentCapabilityFieldsNotConverged(planned, prior, observed)
+	want := []string{"agent_card.capabilities.push_notifications"}
+	if len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("stale fields = %v, want %v", got, want)
+	}
+}
+
+func TestReadAgentCapabilitiesAfterUpdateRequiresStableValues(t *testing.T) {
+	t.Parallel()
+
+	var reads atomic.Int32
+	sequence := []bool{true, false, true, true}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		index := int(reads.Add(1)) - 1
+		if index >= len(sequence) {
+			index = len(sequence) - 1
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"agent_id": "agent-1", "agent_name": "agent",
+			"agent_card_params": map[string]interface{}{
+				"name": "Agent", "url": "https://agent.invalid",
+				"supportsAuthenticatedExtendedCard": sequence[index],
+			},
+		})
+	}))
+	defer server.Close()
+
+	resource := &AgentResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
+	prior := AgentResourceModel{
+		ID: types.StringValue("agent-1"),
+		AgentCard: &AgentCardModel{
+			SupportsAuthenticatedExtendedCard: types.BoolValue(false),
+		},
+	}
+	planned := cloneAgentResourceModel(prior)
+	planned.AgentCard.SupportsAuthenticatedExtendedCard = types.BoolValue(true)
+	data := cloneAgentResourceModel(planned)
+
+	if err := resource.readAgentCapabilitiesAfterUpdate(context.Background(), &data, planned, prior, 5); err != nil {
+		t.Fatalf("readAgentCapabilitiesAfterUpdate returned error: %v", err)
+	}
+	if got := reads.Load(); got != 4 {
+		t.Fatalf("read count = %d, want 4", got)
+	}
+	if !data.AgentCard.SupportsAuthenticatedExtendedCard.ValueBool() || !planned.AgentCard.SupportsAuthenticatedExtendedCard.ValueBool() {
+		t.Fatal("stable read did not preserve planned true value")
+	}
+}
+
+func TestReadAgentCapabilitiesAfterUpdateRejectsPersistentOmission(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"agent_id": "agent-1", "agent_name": "agent",
+			"agent_card_params": map[string]interface{}{
+				"name": "Agent", "url": "https://agent.invalid",
+				"capabilities": map[string]interface{}{"streaming": true},
+			},
+		})
+	}))
+	defer server.Close()
+
+	resource := &AgentResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
+	prior := AgentResourceModel{
+		ID: types.StringValue("agent-1"),
+		AgentCard: &AgentCardModel{Capabilities: &AgentCapabilitiesModel{
+			PushNotifications: types.BoolValue(false),
+		}},
+	}
+	planned := cloneAgentResourceModel(prior)
+	planned.AgentCard.Capabilities.PushNotifications = types.BoolValue(true)
+	data := cloneAgentResourceModel(planned)
+
+	err := resource.readAgentCapabilitiesAfterUpdate(context.Background(), &data, planned, prior, 3)
+	if err == nil || !strings.Contains(err.Error(), "push_notifications") {
+		t.Fatalf("error = %v, want persistent push_notifications omission", err)
 	}
 }
 
