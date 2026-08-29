@@ -368,6 +368,24 @@ REVIEWED_ISSUE202_PROMPT_PATHS = (
 REVIEWED_ISSUE202_PROMPT_RUNTIME_DIFF_SHA256 = (
     "9aea51dac8c907033bff9288d357c6f3b211a6708f60ec67904ba73b73a1a264"
 )
+REVIEWED_ISSUE178_BASE = "18ab40c133385a50bc1b892835646dc05ef1c59f"
+REVIEWED_ISSUE178_PATHS = (
+    "internal/provider/datasource_mcp_server.go",
+    "internal/provider/datasource_mcp_servers_list.go",
+    "internal/provider/mcp_audit_blockers_protocol_test.go",
+    "internal/provider/mcp_field_lifecycle.go",
+    "internal/provider/mcp_field_ownership.go",
+    "internal/provider/mcp_field_ownership_test.go",
+    "internal/provider/mcp_info_stage2_test.go",
+    "internal/provider/mcp_issue178_fields_test.go",
+    "internal/provider/mcp_issue215_parity_test.go",
+    "internal/provider/mcp_update_completion_protocol_test.go",
+    "internal/provider/resource_mcp_server.go",
+    "internal/provider/resource_mcp_server_test.go",
+)
+REVIEWED_ISSUE178_RUNTIME_DIFF_SHA256 = (
+    "764b1c378826095cb1acaca7e6e58997c54df72f3be7fa3dcca3414651d906f0"
+)
 
 
 def git(*args: str) -> str:
@@ -547,6 +565,12 @@ def main() -> int:
             and digest == REVIEWED_ISSUE202_PROMPT_RUNTIME_DIFF_SHA256
         ):
             reviewed = "issue202-prompt"
+        elif (
+            comparison == REVIEWED_ISSUE178_BASE
+            and changed_paths == REVIEWED_ISSUE178_PATHS
+            and digest == REVIEWED_ISSUE178_RUNTIME_DIFF_SHA256
+        ):
+            reviewed = "issue178"
         if reviewed is not None:
             print(
                 f"Provider runtime parity verified: reviewed={reviewed} "
