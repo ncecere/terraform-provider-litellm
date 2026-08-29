@@ -41,6 +41,16 @@ resource "litellm_mcp_server" "full" {
     "tool2" = "Second test tool"
   }
 
+  delegate_auth_to_upstream = true
+  oauth_passthrough         = false
+  dcr_bridge                = false
+  is_byok                   = true
+  byok_description          = ["Create a personal token in the upstream service."]
+  byok_api_key_help_url     = "https://example.com/help/api-key"
+  source_url                = "https://github.com/example/mcp-server"
+  timeout                   = 15.5
+  max_concurrent_requests   = 3
+
   extra_headers = ["X-Custom-Header"]
 
   static_headers = {

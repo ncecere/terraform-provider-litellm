@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -69,7 +70,7 @@ func TestMCPManagerListProjectionSortingAndSingleRequestProtocol(t *testing.T) {
 		writer.Header().Set("Content-Type", "application/json")
 		_, _ = writer.Write([]byte(`[
 			{"server_id":"z-server","transport":"http"},
-			{"server_id":"a-server","server_name":"manager","transport":"stdio","auth_type":"none","mcp_access_groups":["group"],"allowed_tools":["search"],"command":"python3","args":["server.py"],"env":{"MODE":"safe"},"extra_headers":["X-Trace"],"static_headers":{},"authorization_url":"https://auth.invalid/authorize","token_url":"https://auth.invalid/token","registration_url":"https://auth.invalid/register","allow_all_keys":false,"mcp_info":{},"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-02T00:00:00Z"}
+			{"server_id":"a-server","server_name":"manager","transport":"stdio","auth_type":"none","mcp_access_groups":["group"],"allowed_tools":["search"],"command":"python3","args":["server.py"],"env":{"MODE":"safe"},"extra_headers":["X-Trace"],"static_headers":{},"authorization_url":"https://auth.invalid/authorize","token_url":"https://auth.invalid/token","registration_url":"https://auth.invalid/register","allow_all_keys":false,"delegate_auth_to_upstream":false,"oauth_passthrough":false,"dcr_bridge":null,"is_byok":true,"byok_description":["first"],"byok_api_key_help_url":"https://help.invalid","source_url":"https://source.invalid","timeout":1.25,"max_concurrent_requests":7,"mcp_info":{},"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-02T00:00:00Z"}
 		]`))
 	}))
 	defer server.Close()
@@ -118,6 +119,33 @@ func TestMCPManagerListProjectionSortingAndSingleRequestProtocol(t *testing.T) {
 		}
 	}
 	assertMCPProtocolFalse(t, first["allow_all_keys"])
+	assertMCPProtocolFalse(t, first["delegate_auth_to_upstream"])
+	assertMCPProtocolFalse(t, first["oauth_passthrough"])
+	if !first["dcr_bridge"].IsNull() {
+		t.Fatal("manager list DCR bridge null was not preserved")
+	}
+	var byok bool
+	if err := first["is_byok"].As(&byok); err != nil || !byok {
+		t.Fatalf("manager list BYOK flag=%t err=%v", byok, err)
+	}
+	var description []tftypes.Value
+	if err := first["byok_description"].As(&description); err != nil || len(description) != 1 {
+		t.Fatalf("manager list BYOK description length=%d err=%v", len(description), err)
+	}
+	assertMCPProtocolString(t, description[0], "first")
+	assertMCPProtocolString(t, first["byok_api_key_help_url"], "https://help.invalid")
+	assertMCPProtocolString(t, first["source_url"], "https://source.invalid")
+	var timeoutNumber big.Float
+	if err := first["timeout"].As(&timeoutNumber); err != nil {
+		t.Fatalf("decode manager list timeout: %v", err)
+	}
+	timeout, _ := timeoutNumber.Float64()
+	if timeout != 1.25 {
+		t.Fatalf("manager list timeout=%v", timeout)
+	}
+	if maximum := protocolInt64(t, first["max_concurrent_requests"]); maximum != 7 {
+		t.Fatalf("manager list maximum concurrency=%d", maximum)
+	}
 }
 
 func TestMCPResourceUpdatedAuditLifecycleProtocol(t *testing.T) {

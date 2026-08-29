@@ -23,7 +23,7 @@ func TestMCP178SchemaContracts(t *testing.T) {
 	ctx := context.Background()
 	var resourceResponse frameworkresource.SchemaResponse
 	(&MCPServerResource{}).Schema(ctx, frameworkresource.SchemaRequest{}, &resourceResponse)
-	if resourceResponse.Schema.Version != 5 {
+	if resourceResponse.Schema.Version != 6 {
 		t.Fatalf("resource schema version = %d", resourceResponse.Schema.Version)
 	}
 	scopes, ok := resourceResponse.Schema.Attributes["oauth_scopes"].(resourceschema.ListAttribute)

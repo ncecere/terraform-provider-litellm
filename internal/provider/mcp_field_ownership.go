@@ -43,6 +43,15 @@ const (
 	mcpFieldInstructionsPath            = "/instructions"
 	mcpFieldToolNameToDisplayNamePath   = "/tool_name_to_display_name"
 	mcpFieldToolNameToDescriptionPath   = "/tool_name_to_description"
+	mcpFieldDelegateAuthToUpstreamPath  = "/delegate_auth_to_upstream"
+	mcpFieldOAuthPassthroughPath        = "/oauth_passthrough"
+	mcpFieldDCRBridgePath               = "/dcr_bridge"
+	mcpFieldIsBYOKPath                  = "/is_byok"
+	mcpFieldBYOKDescriptionPath         = "/byok_description"
+	mcpFieldBYOKAPIKeyHelpURLPath       = "/byok_api_key_help_url"
+	mcpFieldSourceURLPath               = "/source_url"
+	mcpFieldTimeoutPath                 = "/timeout"
+	mcpFieldMaxConcurrentRequestsPath   = "/max_concurrent_requests"
 )
 
 var mcpFieldPaths = []string{
@@ -66,6 +75,15 @@ var mcpFieldPaths = []string{
 	mcpFieldInstructionsPath,
 	mcpFieldToolNameToDisplayNamePath,
 	mcpFieldToolNameToDescriptionPath,
+	mcpFieldDelegateAuthToUpstreamPath,
+	mcpFieldOAuthPassthroughPath,
+	mcpFieldDCRBridgePath,
+	mcpFieldIsBYOKPath,
+	mcpFieldBYOKDescriptionPath,
+	mcpFieldBYOKAPIKeyHelpURLPath,
+	mcpFieldSourceURLPath,
+	mcpFieldTimeoutPath,
+	mcpFieldMaxConcurrentRequestsPath,
 }
 
 var mcpFieldAllowedPaths = func() map[string]bool {
@@ -404,6 +422,15 @@ func mcpFieldConfigPresence(config MCPServerResourceModel) map[string]int {
 	set(mcpFieldInstructionsPath, config.Instructions)
 	set(mcpFieldToolNameToDisplayNamePath, config.ToolNameToDisplayName)
 	set(mcpFieldToolNameToDescriptionPath, config.ToolNameToDescription)
+	set(mcpFieldDelegateAuthToUpstreamPath, config.DelegateAuthToUpstream)
+	set(mcpFieldOAuthPassthroughPath, config.OAuthPassthrough)
+	set(mcpFieldDCRBridgePath, config.DCRBridge)
+	set(mcpFieldIsBYOKPath, config.IsBYOK)
+	set(mcpFieldBYOKDescriptionPath, config.BYOKDescription)
+	set(mcpFieldBYOKAPIKeyHelpURLPath, config.BYOKAPIKeyHelpURL)
+	set(mcpFieldSourceURLPath, config.SourceURL)
+	set(mcpFieldTimeoutPath, config.Timeout)
+	set(mcpFieldMaxConcurrentRequestsPath, config.MaxConcurrentRequests)
 	return result
 }
 

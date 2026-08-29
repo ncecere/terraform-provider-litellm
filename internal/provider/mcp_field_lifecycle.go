@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -48,6 +49,18 @@ func mcpFieldDesiredValue(ctx context.Context, data MCPServerResourceModel, fiel
 		}
 		return value.ValueBool(), nil
 	}
+	floatValue := func(value types.Float64) (interface{}, error) {
+		if value.IsNull() || value.IsUnknown() || math.IsNaN(value.ValueFloat64()) || math.IsInf(value.ValueFloat64(), 0) || value.ValueFloat64() <= 0 {
+			return nil, fmt.Errorf("unknown, null, or invalid MCP positive-number field")
+		}
+		return value.ValueFloat64(), nil
+	}
+	intValue := func(value types.Int64) (interface{}, error) {
+		if value.IsNull() || value.IsUnknown() || value.ValueInt64() <= 0 || value.ValueInt64() > math.MaxInt32 {
+			return nil, fmt.Errorf("unknown, null, or invalid MCP positive-integer field")
+		}
+		return value.ValueInt64(), nil
+	}
 	switch fieldPath {
 	case mcpFieldAliasPath:
 		value, err := stringValue(data.Alias)
@@ -73,6 +86,30 @@ func mcpFieldDesiredValue(ctx context.Context, data MCPServerResourceModel, fiel
 		return stringValue(data.OAuth2Flow)
 	case mcpFieldInstructionsPath:
 		return stringValue(data.Instructions)
+	case mcpFieldDelegateAuthToUpstreamPath:
+		value, err := boolValue(data.DelegateAuthToUpstream)
+		if err != nil {
+			return nil, err
+		}
+		if value.(bool) && (data.AuthType.IsNull() || data.AuthType.IsUnknown() || data.AuthType.ValueString() != "oauth2" ||
+			data.OAuth2Flow.IsNull() || data.OAuth2Flow.IsUnknown() || data.OAuth2Flow.ValueString() != "authorization_code") {
+			return nil, fmt.Errorf("upstream delegation requires complete interactive OAuth intent")
+		}
+		return value, nil
+	case mcpFieldOAuthPassthroughPath:
+		return boolValue(data.OAuthPassthrough)
+	case mcpFieldDCRBridgePath:
+		return boolValue(data.DCRBridge)
+	case mcpFieldIsBYOKPath:
+		return boolValue(data.IsBYOK)
+	case mcpFieldBYOKAPIKeyHelpURLPath:
+		return stringValue(data.BYOKAPIKeyHelpURL)
+	case mcpFieldSourceURLPath:
+		return stringValue(data.SourceURL)
+	case mcpFieldTimeoutPath:
+		return floatValue(data.Timeout)
+	case mcpFieldMaxConcurrentRequestsPath:
+		return intValue(data.MaxConcurrentRequests)
 	case mcpFieldOAuthScopesPath:
 		return mcpFieldStringList(ctx, data.OAuthScopes)
 	case mcpFieldAccessGroupsPath:
@@ -83,6 +120,8 @@ func mcpFieldDesiredValue(ctx context.Context, data MCPServerResourceModel, fiel
 		return mcpFieldStringList(ctx, data.AllowedTools)
 	case mcpFieldExtraHeadersPath:
 		return mcpFieldStringList(ctx, data.ExtraHeaders)
+	case mcpFieldBYOKDescriptionPath:
+		return mcpFieldStringList(ctx, data.BYOKDescription)
 	case mcpFieldEnvPath:
 		return mcpFieldStringMap(ctx, data.Env)
 	case mcpFieldStaticHeadersPath:
@@ -118,15 +157,17 @@ func mcpFieldRemovalSentinel(fieldPath string) interface{} {
 	switch fieldPath {
 	case mcpFieldAliasPath, mcpFieldDescriptionPath, mcpFieldCommandPath,
 		mcpFieldAuthorizationURLPath, mcpFieldTokenURLPath, mcpFieldRegistrationURLPath,
-		mcpFieldCredentialsPath, mcpFieldOAuth2FlowPath, mcpFieldInstructionsPath:
+		mcpFieldCredentialsPath, mcpFieldOAuth2FlowPath, mcpFieldInstructionsPath,
+		mcpFieldDCRBridgePath, mcpFieldBYOKAPIKeyHelpURLPath, mcpFieldSourceURLPath,
+		mcpFieldTimeoutPath, mcpFieldMaxConcurrentRequestsPath:
 		return nil
 	case mcpFieldAccessGroupsPath, mcpFieldArgsPath, mcpFieldAllowedToolsPath, mcpFieldExtraHeadersPath,
-		mcpFieldOAuthScopesPath:
+		mcpFieldOAuthScopesPath, mcpFieldBYOKDescriptionPath:
 		return []string{}
 	case mcpFieldEnvPath, mcpFieldStaticHeadersPath, mcpFieldToolNameToDisplayNamePath,
 		mcpFieldToolNameToDescriptionPath:
 		return map[string]string{}
-	case mcpFieldAllowAllKeysPath:
+	case mcpFieldAllowAllKeysPath, mcpFieldDelegateAuthToUpstreamPath, mcpFieldOAuthPassthroughPath, mcpFieldIsBYOKPath:
 		return false
 	case mcpFieldAvailablePublicInternetPath:
 		// The column is non-nullable with @default(true), and the partial PUT
@@ -336,8 +377,20 @@ func validateMCPImplicitClearSafety(config, state MCPServerResourceModel, planne
 			return fmt.Errorf("an unowned or unchanged OAuth endpoint would be cleared implicitly")
 		}
 	}
+	dcrRaw, dcrPresent := hydration["dcr_bridge"]
+	if (!dcrPresent || dcrRaw == nil) && !state.DCRBridge.IsNull() && !state.DCRBridge.IsUnknown() {
+		dcrRaw, dcrPresent = state.DCRBridge.ValueBool(), true
+	}
+	if dcrPresent && dcrRaw != nil {
+		desired, supplied := delta["dcr_bridge"]
+		explicitRemoval := planned.Removals[mcpFieldDCRBridgePath] && supplied && desired == nil
+		explicitChange := planned.Owned[mcpFieldDCRBridgePath] && presence[mcpFieldDCRBridgePath] == 1 && supplied && !mcpWireValuesEqual(desired, dcrRaw)
+		if !explicitRemoval && !explicitChange {
+			return fmt.Errorf("a DCR bridge value lacks explicit changed intent")
+		}
+	}
 	for _, name := range []string{
-		"issuer", "dcr_bridge", "token_exchange_endpoint",
+		"issuer", "token_exchange_endpoint",
 		"audience", "subject_token_type", "token_exchange_profile",
 	} {
 		if raw, present := hydration[name]; present && raw != nil {

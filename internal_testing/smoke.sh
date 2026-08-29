@@ -311,13 +311,15 @@ import json,sys
 value=json.load(open(sys.argv[1],encoding="utf-8"))
 # Credentials and credentials.scopes are intentionally excluded: v1.98
 # management reads redact them, so unit/protocol tests verify their exact wire intent.
-for field in ("alias","description","command","authorization_url","token_url","registration_url","oauth2_flow","instructions"):
+for field in ("alias","description","command","authorization_url","token_url","registration_url","oauth2_flow","instructions","byok_api_key_help_url","source_url","timeout","max_concurrent_requests"):
     assert value.get(field) is None,(field,value.get(field))
-for field in ("mcp_access_groups","args","allowed_tools","extra_headers"):
+for field in ("mcp_access_groups","args","allowed_tools","extra_headers","byok_description"):
     assert value.get(field)==[],(field,value.get(field))
 for field in ("env","static_headers","tool_name_to_display_name","tool_name_to_description"):
     assert value.get(field)=={},(field,value.get(field))
-assert value.get("allow_all_keys") is False,value.get("allow_all_keys")
+for field in ("allow_all_keys","delegate_auth_to_upstream","oauth_passthrough","is_byok"):
+    assert value.get(field) is False,(field,value.get(field))
+assert value.get("dcr_bridge") is None,value.get("dcr_bridge")
 assert value.get("available_on_public_internet") is True,value.get("available_on_public_internet")
 PY
   for refresh_number in 1 2; do

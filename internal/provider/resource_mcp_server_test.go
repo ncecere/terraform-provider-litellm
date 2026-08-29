@@ -252,6 +252,7 @@ func TestMCPServerTransportConfigValidation(t *testing.T) {
 			Instructions:               types.StringNull(),
 			ToolNameToDisplayName:      types.MapNull(types.StringType),
 			ToolNameToDescription:      types.MapNull(types.StringType),
+			BYOKDescription:            types.ListNull(types.StringType),
 			MCPInfoJSON:                types.StringNull(),
 			MCPInfoOverridesJSON:       types.StringNull(),
 			MCPInfoClearPaths:          types.ListNull(types.StringType),

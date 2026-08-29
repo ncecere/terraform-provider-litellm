@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -20,41 +21,50 @@ type MCPServerDataSource struct {
 }
 
 type MCPServerDataSourceModel struct {
-	ID                        types.String `tfsdk:"id"`
-	ServerID                  types.String `tfsdk:"server_id"`
-	ServerName                types.String `tfsdk:"server_name"`
-	Alias                     types.String `tfsdk:"alias"`
-	Description               types.String `tfsdk:"description"`
-	URL                       types.String `tfsdk:"url"`
-	SpecPath                  types.String `tfsdk:"spec_path"`
-	Transport                 types.String `tfsdk:"transport"`
-	SpecVersion               types.String `tfsdk:"spec_version"`
-	AuthType                  types.String `tfsdk:"auth_type"`
-	MCPAccessGroups           types.List   `tfsdk:"mcp_access_groups"`
-	MCPInfoJSON               types.String `tfsdk:"mcp_info_json"`
-	Command                   types.String `tfsdk:"command"`
-	Args                      types.List   `tfsdk:"args"`
-	Env                       types.Map    `tfsdk:"env"`
-	AllowedTools              types.List   `tfsdk:"allowed_tools"`
-	ExtraHeaders              types.List   `tfsdk:"extra_headers"`
-	StaticHeaders             types.Map    `tfsdk:"static_headers"`
-	AuthorizationURL          types.String `tfsdk:"authorization_url"`
-	TokenURL                  types.String `tfsdk:"token_url"`
-	RegistrationURL           types.String `tfsdk:"registration_url"`
-	AllowAllKeys              types.Bool   `tfsdk:"allow_all_keys"`
-	AvailableOnPublicInternet types.Bool   `tfsdk:"available_on_public_internet"`
-	OAuth2Flow                types.String `tfsdk:"oauth2_flow"`
-	Instructions              types.String `tfsdk:"instructions"`
-	ToolNameToDisplayName     types.Map    `tfsdk:"tool_name_to_display_name"`
-	ToolNameToDescription     types.Map    `tfsdk:"tool_name_to_description"`
-	CreatedAt                 types.String `tfsdk:"created_at"`
-	CreatedBy                 types.String `tfsdk:"created_by"`
-	UpdatedAt                 types.String `tfsdk:"updated_at"`
-	UpdatedBy                 types.String `tfsdk:"updated_by"`
-	Status                    types.String `tfsdk:"status"`
-	LastHealthCheck           types.String `tfsdk:"last_health_check"`
-	HealthCheckError          types.String `tfsdk:"health_check_error"`
-	UpstreamResource          types.String `tfsdk:"upstream_resource"`
+	ID                        types.String  `tfsdk:"id"`
+	ServerID                  types.String  `tfsdk:"server_id"`
+	ServerName                types.String  `tfsdk:"server_name"`
+	Alias                     types.String  `tfsdk:"alias"`
+	Description               types.String  `tfsdk:"description"`
+	URL                       types.String  `tfsdk:"url"`
+	SpecPath                  types.String  `tfsdk:"spec_path"`
+	Transport                 types.String  `tfsdk:"transport"`
+	SpecVersion               types.String  `tfsdk:"spec_version"`
+	AuthType                  types.String  `tfsdk:"auth_type"`
+	MCPAccessGroups           types.List    `tfsdk:"mcp_access_groups"`
+	MCPInfoJSON               types.String  `tfsdk:"mcp_info_json"`
+	Command                   types.String  `tfsdk:"command"`
+	Args                      types.List    `tfsdk:"args"`
+	Env                       types.Map     `tfsdk:"env"`
+	AllowedTools              types.List    `tfsdk:"allowed_tools"`
+	ExtraHeaders              types.List    `tfsdk:"extra_headers"`
+	StaticHeaders             types.Map     `tfsdk:"static_headers"`
+	AuthorizationURL          types.String  `tfsdk:"authorization_url"`
+	TokenURL                  types.String  `tfsdk:"token_url"`
+	RegistrationURL           types.String  `tfsdk:"registration_url"`
+	AllowAllKeys              types.Bool    `tfsdk:"allow_all_keys"`
+	AvailableOnPublicInternet types.Bool    `tfsdk:"available_on_public_internet"`
+	OAuth2Flow                types.String  `tfsdk:"oauth2_flow"`
+	Instructions              types.String  `tfsdk:"instructions"`
+	ToolNameToDisplayName     types.Map     `tfsdk:"tool_name_to_display_name"`
+	ToolNameToDescription     types.Map     `tfsdk:"tool_name_to_description"`
+	DelegateAuthToUpstream    types.Bool    `tfsdk:"delegate_auth_to_upstream"`
+	OAuthPassthrough          types.Bool    `tfsdk:"oauth_passthrough"`
+	DCRBridge                 types.Bool    `tfsdk:"dcr_bridge"`
+	IsBYOK                    types.Bool    `tfsdk:"is_byok"`
+	BYOKDescription           types.List    `tfsdk:"byok_description"`
+	BYOKAPIKeyHelpURL         types.String  `tfsdk:"byok_api_key_help_url"`
+	SourceURL                 types.String  `tfsdk:"source_url"`
+	Timeout                   types.Float64 `tfsdk:"timeout"`
+	MaxConcurrentRequests     types.Int64   `tfsdk:"max_concurrent_requests"`
+	CreatedAt                 types.String  `tfsdk:"created_at"`
+	CreatedBy                 types.String  `tfsdk:"created_by"`
+	UpdatedAt                 types.String  `tfsdk:"updated_at"`
+	UpdatedBy                 types.String  `tfsdk:"updated_by"`
+	Status                    types.String  `tfsdk:"status"`
+	LastHealthCheck           types.String  `tfsdk:"last_health_check"`
+	HealthCheckError          types.String  `tfsdk:"health_check_error"`
+	UpstreamResource          types.String  `tfsdk:"upstream_resource"`
 }
 
 func (d *MCPServerDataSource) Metadata(ctx context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
@@ -191,6 +201,43 @@ func (d *MCPServerDataSource) Schema(ctx context.Context, req datasource.SchemaR
 				Description: "Tool-name description overrides.",
 				Computed:    true,
 				ElementType: types.StringType,
+			},
+			"delegate_auth_to_upstream": schema.BoolAttribute{
+				Description: "Whether authentication is delegated to the upstream MCP server.",
+				Computed:    true,
+			},
+			"oauth_passthrough": schema.BoolAttribute{
+				Description: "Whether OAuth Authorization headers are passed through.",
+				Computed:    true,
+			},
+			"dcr_bridge": schema.BoolAttribute{
+				Description: "Whether the dynamic client registration bridge is enabled.",
+				Computed:    true,
+			},
+			"is_byok": schema.BoolAttribute{
+				Description: "Whether bring-your-own-key configuration is enabled.",
+				Computed:    true,
+			},
+			"byok_description": schema.ListAttribute{
+				Description: "Bring-your-own-key setup description lines.",
+				Computed:    true,
+				ElementType: types.StringType,
+			},
+			"byok_api_key_help_url": schema.StringAttribute{
+				Description: "Bring-your-own-key API key help URL.",
+				Computed:    true,
+			},
+			"source_url": schema.StringAttribute{
+				Description: "Source URL associated with the MCP server.",
+				Computed:    true,
+			},
+			"timeout": schema.Float64Attribute{
+				Description: "Positive finite request timeout.",
+				Computed:    true,
+			},
+			"max_concurrent_requests": schema.Int64Attribute{
+				Description: "Positive maximum number of concurrent requests.",
+				Computed:    true,
 			},
 			"created_at": schema.StringAttribute{
 				Description: "Timestamp when the server was created.",
@@ -381,6 +428,33 @@ func projectMCPServerDataSourceForRole(result map[string]interface{}, expectedSe
 	if data.ToolNameToDescription, err = dataSourceNullableStringMapAt(result, "tool_name_to_description"); err != nil {
 		return MCPServerDataSourceModel{}, err
 	}
+	if data.DelegateAuthToUpstream, err = mcpDefaultFalseDataSourceBoolAt(result, "delegate_auth_to_upstream"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.OAuthPassthrough, err = mcpDefaultFalseDataSourceBoolAt(result, "oauth_passthrough"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.DCRBridge, err = dataSourceNullableBoolAt(result, "dcr_bridge"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.IsBYOK, err = mcpDefaultFalseDataSourceBoolAt(result, "is_byok"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.BYOKDescription, err = mcpNonNullDataSourceStringListAt(result, "byok_description"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.BYOKAPIKeyHelpURL, err = dataSourceNullableStringAt(result, "byok_api_key_help_url"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.SourceURL, err = dataSourceNullableStringAt(result, "source_url"); err != nil {
+		return MCPServerDataSourceModel{}, err
+	}
+	if data.Timeout, err = dataSourceNullableFloat64At(result, "timeout"); err != nil || (!data.Timeout.IsNull() && data.Timeout.ValueFloat64() <= 0) {
+		return MCPServerDataSourceModel{}, fmt.Errorf("MCP server response timeout is malformed")
+	}
+	if data.MaxConcurrentRequests, err = dataSourceNullableInt64At(result, "max_concurrent_requests"); err != nil {
+		return MCPServerDataSourceModel{}, fmt.Errorf("MCP server response maximum concurrency is malformed")
+	}
 	if data.CreatedAt, err = dataSourceNullableStringAt(result, "created_at"); err != nil {
 		return MCPServerDataSourceModel{}, err
 	}
@@ -419,6 +493,32 @@ func projectMCPServerDataSourceForRole(result map[string]interface{}, expectedSe
 		return MCPServerDataSourceModel{}, err
 	}
 	return data, nil
+}
+
+func mcpDefaultFalseDataSourceBoolAt(result map[string]interface{}, name string) (types.Bool, error) {
+	value, err := dataSourceNullableBoolAt(result, name)
+	if err != nil {
+		return types.BoolNull(), err
+	}
+	if value.IsNull() {
+		return types.BoolValue(false), nil
+	}
+	return value, nil
+}
+
+func mcpNonNullDataSourceStringListAt(result map[string]interface{}, name string) (types.List, error) {
+	value, err := dataSourceNullableStringListAt(result, name)
+	if err != nil {
+		return types.ListNull(types.StringType), err
+	}
+	if value.IsNull() {
+		empty, diagnostics := types.ListValue(types.StringType, []attr.Value{})
+		if diagnostics.HasError() {
+			return types.ListNull(types.StringType), fmt.Errorf("MCP server string-list projection is malformed")
+		}
+		return empty, nil
+	}
+	return value, nil
 }
 
 func mcpAmbiguousDataSourceStringListAt(result map[string]interface{}, name string) (types.List, error) {

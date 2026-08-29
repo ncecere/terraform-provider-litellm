@@ -133,6 +133,13 @@ resource "litellm_mcp_server" "oauth_protected" {
 
   available_on_public_internet = false
   instructions                 = "Prefer read-only tools unless a write is explicitly requested."
+  delegate_auth_to_upstream    = true
+  is_byok                      = true
+  byok_description             = ["Create a personal API key in the enterprise portal."]
+  byok_api_key_help_url        = "https://enterprise.com/help/api-key"
+  source_url                   = "https://github.com/example/enterprise-mcp"
+  timeout                      = 15.5
+  max_concurrent_requests      = 4
 
   tool_name_to_display_name = {
     list_records   = "List_Records"

@@ -37,3 +37,39 @@ output "ds_mcp_server_oauth2_flow" {
 output "ds_mcp_server_instructions" {
   value = data.litellm_mcp_server.lookup.instructions
 }
+
+output "ds_mcp_server_delegate_auth_to_upstream" {
+  value = data.litellm_mcp_server.lookup.delegate_auth_to_upstream
+}
+
+output "ds_mcp_server_oauth_passthrough" {
+  value = data.litellm_mcp_server.lookup.oauth_passthrough
+}
+
+output "ds_mcp_server_dcr_bridge" {
+  value = data.litellm_mcp_server.lookup.dcr_bridge
+}
+
+output "ds_mcp_server_is_byok" {
+  value = data.litellm_mcp_server.lookup.is_byok
+}
+
+output "ds_mcp_server_byok_description" {
+  value = data.litellm_mcp_server.lookup.byok_description
+}
+
+output "ds_mcp_server_byok_api_key_help_url" {
+  value = data.litellm_mcp_server.lookup.byok_api_key_help_url
+}
+
+output "ds_mcp_server_source_url" {
+  value = data.litellm_mcp_server.lookup.source_url
+}
+
+output "ds_mcp_server_timeout" {
+  value = data.litellm_mcp_server.lookup.timeout
+}
+
+output "ds_mcp_server_max_concurrent_requests" {
+  value = data.litellm_mcp_server.lookup.max_concurrent_requests
+}
