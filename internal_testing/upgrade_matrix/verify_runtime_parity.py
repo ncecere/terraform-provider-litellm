@@ -423,6 +423,26 @@ REVIEWED_ISSUE208_ENV_VARS_PATHS = (
 REVIEWED_ISSUE208_ENV_VARS_RUNTIME_DIFF_SHA256 = (
     "778c12a202498e35a5919d11674497d8dcd447ca02c4b2c609c07b527ca16d31"
 )
+REVIEWED_ISSUE208_TOKEN_EXCHANGE_BASE = "0cd60df590b5aad6cf93629db292bf21a242b5b9"
+REVIEWED_ISSUE208_TOKEN_EXCHANGE_PATHS = (
+    "internal/provider/mcp_audit_blockers_protocol_test.go",
+    "internal/provider/mcp_field_lifecycle.go",
+    "internal/provider/mcp_field_ownership.go",
+    "internal/provider/mcp_field_ownership_test.go",
+    "internal/provider/mcp_info_stage2_test.go",
+    "internal/provider/mcp_issue178_fields_test.go",
+    "internal/provider/mcp_issue208_env_vars_test.go",
+    "internal/provider/mcp_issue208_safe_fields_test.go",
+    "internal/provider/mcp_issue208_token_exchange_protocol_test.go",
+    "internal/provider/mcp_issue208_token_exchange_test.go",
+    "internal/provider/mcp_issue215_parity_test.go",
+    "internal/provider/mcp_server_lifecycle_protocol_test.go",
+    "internal/provider/mcp_update_completion_protocol_test.go",
+    "internal/provider/resource_mcp_server.go",
+)
+REVIEWED_ISSUE208_TOKEN_EXCHANGE_RUNTIME_DIFF_SHA256 = (
+    "fd2c857338a4fd27b498ef9daf3b77fe0e267e176f86f8996f8381be683d110e"
+)
 
 
 def git(*args: str) -> str:
@@ -620,6 +640,12 @@ def main() -> int:
             and digest == REVIEWED_ISSUE208_ENV_VARS_RUNTIME_DIFF_SHA256
         ):
             reviewed = "issue208-env-vars"
+        elif (
+            comparison == REVIEWED_ISSUE208_TOKEN_EXCHANGE_BASE
+            and changed_paths == REVIEWED_ISSUE208_TOKEN_EXCHANGE_PATHS
+            and digest == REVIEWED_ISSUE208_TOKEN_EXCHANGE_RUNTIME_DIFF_SHA256
+        ):
+            reviewed = "issue208-token-exchange"
         if reviewed is not None:
             print(
                 f"Provider runtime parity verified: reviewed={reviewed} "
