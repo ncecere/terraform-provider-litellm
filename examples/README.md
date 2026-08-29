@@ -7,7 +7,7 @@ This directory contains example configurations for the LiteLLM Terraform provide
 | Directory | Description |
 |-----------|-------------|
 | [minimal](./minimal/) | Simplest possible setup with basic model, team, and key |
-| [complete](./complete/) | Full enterprise setup with all resource types |
+| [complete](./complete/) | Broad enterprise-oriented setup across common resource types |
 | [multi-provider](./multi-provider/) | Configuring multiple LLM providers (OpenAI, Anthropic, Azure, Bedrock) |
 | [data-sources](./data-sources/) | Using data sources to reference existing resources |
 | [mcp-servers](./mcp-servers/) | MCP server configurations (HTTP, SSE, OAuth, stdio) |
@@ -45,8 +45,13 @@ terraform apply
 
 ```bash
 cd complete
-# Set each required TF_VAR_* value declared near the end of main.tf.
+# Inputs are declared in variables.tf. These values are needed for the full example.
+export TF_VAR_litellm_api_base="https://your-litellm-instance.com"
+export TF_VAR_litellm_api_key="your-litellm-admin-key"
 export TF_VAR_openai_api_key="your-openai-api-key"
+export TF_VAR_anthropic_api_key="your-anthropic-api-key"
+export TF_VAR_github_token="your-github-token"
+export TF_VAR_tavily_api_key="your-tavily-api-key"
 terraform init -upgrade
 terraform plan
 terraform apply
@@ -65,7 +70,7 @@ Perfect for testing and development.
 
 ### Complete (`complete/`)
 
-A full enterprise setup demonstrating:
+A broad enterprise-oriented setup demonstrating selected resource types, including:
 - Credential management
 - Multiple model configurations
 - Organization and team hierarchy
@@ -124,7 +129,7 @@ Search tool configurations for different providers:
 
 ## Input Variables
 
-Example inputs are declared in each example's `.tf` files. Supply required values with `TF_VAR_*` environment variables or create your own untracked `terraform.tfvars` file. Provider authentication uses `LITELLM_API_BASE` and `LITELLM_API_KEY` rather than Terraform input variables.
+Example inputs are declared in each example's `.tf` files. Supply required values with `TF_VAR_*` environment variables or create your own untracked `terraform.tfvars` file. Examples with an empty `provider "litellm" {}` block use `LITELLM_API_BASE` and `LITELLM_API_KEY`; examples that set `api_base` and `api_key` from variables require the corresponding `TF_VAR_litellm_api_base` and `TF_VAR_litellm_api_key` values instead.
 
 ```bash
 export LITELLM_API_BASE="https://litellm.example.com"

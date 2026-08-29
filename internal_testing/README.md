@@ -235,7 +235,7 @@ make upgrade-matrix-assembly
 ```
 
 See [`upgrade_matrix/README.md`](upgrade_matrix/README.md) for the pinned tool
-matrix, 23-resource/33-data-source coverage table, import state-rm guarantee,
+matrix, 24-resource/35-data-source coverage table, import state-rm guarantee,
 Enterprise/API limitation accounting, remote-development safeguards, and
 machine-readable report format.
 

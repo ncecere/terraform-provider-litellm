@@ -1,5 +1,5 @@
 # Complete LiteLLM Provider Configuration
-# This example demonstrates a full enterprise setup with all resource types
+# This broad enterprise-oriented example demonstrates selected resource types.
 
 terraform {
   required_version = ">= 1.1.0"
