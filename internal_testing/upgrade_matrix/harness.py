@@ -74,7 +74,7 @@ EVIDENCE_CODES = {
 }
 DIAGNOSTIC_TITLE_CODES = {
     "model_failed_create_retry": ("Client Error", "model-create-error"),
-    "team_failed_create_retry": ("Client Error", "team-create-error"),
+    "team_failed_create_retry": ("Team Creation Outcome Uncertain", "team-create-outcome-uncertain"),
     "agent_role_redacted_import": ("Unsupported Agent Clear", "agent-role-redacted-read"),
     "agent_import_public_projection": ("Provider produced invalid plan", "agent-import-public-projection-unavailable"),
     "fallback_delete_not_authoritative": ("Fallback Delete Unconfirmed", "fallback-delete-not-authoritative"),

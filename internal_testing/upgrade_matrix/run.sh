@@ -349,7 +349,7 @@ record() {
   diagnostic=
   case "$name" in
     failure_recovery:model_failed_create_retry) diagnostic=model-create-error ;;
-    failure_recovery:team_failed_create_retry) diagnostic=team-create-error ;;
+    failure_recovery:team_failed_create_retry) diagnostic=team-create-outcome-uncertain ;;
     import:litellm_agent) [ "$status" != skipped ] || diagnostic=agent-role-redacted-read ;;
     import:litellm_fallback) [ "$status" != skipped ] || diagnostic=fallback-delete-not-authoritative ;;
     optional_feature:key_wo) [ "$status" != skipped ] || diagnostic=key-write-only-endpoint-unavailable ;;
@@ -1024,7 +1024,7 @@ PYPORT
 import json,sys
 allowed={
  "model_failed_create_retry":("Client Error","model-create-error"),
- "team_failed_create_retry":("Client Error","team-create-error"),
+ "team_failed_create_retry":("Team Creation Outcome Uncertain","team-create-outcome-uncertain"),
 }
 name,expected,code=sys.argv[2:]
 if allowed.get(name)!=(expected,code): raise SystemExit(1)
@@ -1043,12 +1043,45 @@ value=json.load(open(sys.argv[1],encoding="utf-8"))
 if value.get("attempted") != 1 or value.get("faulted_before_forward") != 1 or value.get("target_forwarded") != 0: raise SystemExit(1)
 if not isinstance(value.get("other_forwarded"),int) or value["other_forwarded"] < 0: raise SystemExit(1)
 PYSTATS
-  if (cd "$WORKSPACE" && run_cli state list 2>>"$LOG" | grep -Fx "$target" >/dev/null); then
-    fail 'failed pre-commit target leaked identity/private state'
-  fi
   kill "$PROXY_PID" 2>/dev/null || true
   wait "$PROXY_PID" 2>/dev/null || true
   PROXY_PID=
+  if [ "$name" = team_failed_create_retry ]; then
+    # Team create generates its identity before dispatch and correctly retains
+    # it when any dispatched request has an uncertain outcome. The controlled
+    # proxy proves this request was never forwarded, but that test-only fact is
+    # unavailable to the provider. Require the retained address, validate its
+    # exact generated identity privately, independently prove authoritative
+    # API absence, and only then detach it so the retry cannot duplicate a row.
+    (cd "$WORKSPACE" && run_cli state list) >"$SCRATCH/team-recovery-state.list" 2>>"$LOG" || fail 'team recovery state inspection failed'
+    [ "$(grep -Fxc "$target" "$SCRATCH/team-recovery-state.list" || true)" -eq 1 ] || fail 'uncertain team create did not retain its exact recovery address'
+    (cd "$WORKSPACE" && run_cli show -json) >"$SCRATCH/team-recovery-state.json" 2>>"$LOG" || fail 'team recovery state capture failed'
+    python3 - "$SCRATCH/team-recovery-state.json" "$target" >"$SCRATCH/team-recovery-id" <<'PYTEAMID' || fail 'uncertain team create retained an invalid generated identity'
+import json,sys,uuid
+value=json.load(open(sys.argv[1],encoding="utf-8")); wanted=sys.argv[2]
+resources=value.get("values",{}).get("root_module",{}).get("resources",[])
+matches=[r for r in resources if r.get("address")==wanted]
+if len(matches)!=1: raise SystemExit(1)
+state=matches[0].get("values",{}); identity=state.get("id")
+if not isinstance(identity,str) or state.get("team_id")!=identity: raise SystemExit(1)
+if str(uuid.UUID(identity))!=identity: raise SystemExit(1)
+sys.stdout.write(identity)
+PYTEAMID
+    python3 - "$SCRATCH/team-recovery-id" "$SCRATCH/team-recovery-absence.json" <<'PYTEAMABSENCE' || fail 'unforwarded team identity was not authoritatively absent'
+import sys,urllib.error,urllib.parse,urllib.request
+identity=open(sys.argv[1],encoding="utf-8").read()
+request=urllib.request.Request("http://127.0.0.1:4000/team/info?team_id="+urllib.parse.quote(identity,safe=""),headers={"Authorization":"Bearer sk-testing-key"})
+try:
+  response=urllib.request.urlopen(request,timeout=15); status=response.status; body=response.read(1024*1024+1)
+except urllib.error.HTTPError as error:
+  status=error.code; body=error.read(1024*1024+1)
+if status!=404 or len(body)>1024*1024: raise SystemExit(1)
+open(sys.argv[2],"xb").write(body)
+PYTEAMABSENCE
+    (cd "$WORKSPACE" && run_cli state rm "$target") >>"$LOG" 2>&1 || fail 'authoritatively absent team recovery state detach failed'
+  elif (cd "$WORKSPACE" && run_cli state list 2>>"$LOG" | grep -Fx "$target" >/dev/null); then
+    fail 'definitive failed pre-commit target leaked identity/private state'
+  fi
   (cd "$WORKSPACE" && run_cli apply -auto-approve -var=recover_create=true) >>"$LOG" 2>&1 || fail 'controlled-fault recovery apply failed'
   (cd "$WORKSPACE" && run_cli output -raw matrix_recovery_id) >"$SCRATCH/recovery-id" 2>>"$LOG" || fail 'recovery identity capture failed'
   set +e

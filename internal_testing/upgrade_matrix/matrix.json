@@ -99,7 +99,7 @@
   ],
   "failure_recovery_scenarios": [
     {"name":"model_failed_create_retry","fixture":"fixtures/failure_recovery/model_failed_create.tf","fault_endpoint":"/model/new","dependency_address":"","target_address":"litellm_model.failed_create","expected_diagnostic_title":"Client Error","expected_diagnostic_code":"model-create-error","cleanup_required":true},
-    {"name":"team_failed_create_retry","fixture":"fixtures/failure_recovery/team_failed_create.tf","fault_endpoint":"/team/new","dependency_address":"","target_address":"litellm_team.failed_create","expected_diagnostic_title":"Client Error","expected_diagnostic_code":"team-create-error","cleanup_required":true}
+    {"name":"team_failed_create_retry","fixture":"fixtures/failure_recovery/team_failed_create.tf","fault_endpoint":"/team/new","dependency_address":"","target_address":"litellm_team.failed_create","expected_diagnostic_title":"Team Creation Outcome Uncertain","expected_diagnostic_code":"team-create-outcome-uncertain","cleanup_required":true}
   ],
   "optional_features": ["key_wo", "send_invite_email", "jwt_key_mapping_key_wo"],
   "documentation_scenarios": ["registry-examples-format-validate","resource-import-doc-contract","release-artifact-manifest-contract"],
