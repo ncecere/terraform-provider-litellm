@@ -85,8 +85,11 @@ func TestMCPFieldRemovalSentinelsV198(t *testing.T) {
 		mcpFieldAllowAllKeysPath: false, mcpFieldOAuthScopesPath: []string{}, mcpFieldAvailablePublicInternetPath: true,
 		mcpFieldOAuth2FlowPath: nil, mcpFieldInstructionsPath: nil,
 		mcpFieldToolNameToDisplayNamePath: map[string]string{}, mcpFieldToolNameToDescriptionPath: map[string]string{},
+		mcpFieldDelegateAuthToUpstreamPath: false, mcpFieldOAuthPassthroughPath: false, mcpFieldDCRBridgePath: nil,
+		mcpFieldIsBYOKPath: false, mcpFieldBYOKDescriptionPath: []string{}, mcpFieldBYOKAPIKeyHelpURLPath: nil,
+		mcpFieldSourceURLPath: nil, mcpFieldTimeoutPath: nil, mcpFieldMaxConcurrentRequestsPath: nil,
 	}
-	if len(want) != 20 || len(mcpFieldPaths) != 20 {
+	if len(want) != 29 || len(mcpFieldPaths) != 29 {
 		t.Fatalf("sentinel inventory changed: want=%d paths=%d", len(want), len(mcpFieldPaths))
 	}
 	for _, fieldPath := range mcpFieldPaths {
@@ -151,6 +154,8 @@ func TestMCPServerCreateSendsConfiguredEmptyAndFalseFields(t *testing.T) {
 		AuthorizationURL: types.StringValue(""), TokenURL: types.StringValue(""), RegistrationURL: types.StringValue(""), AllowAllKeys: types.BoolValue(false),
 		OAuthScopes: emptyList, AvailableOnPublicInternet: types.BoolValue(false), OAuth2Flow: types.StringValue("authorization_code"), Instructions: types.StringValue(""),
 		ToolNameToDisplayName: emptyMap, ToolNameToDescription: emptyMap,
+		DelegateAuthToUpstream: types.BoolValue(false), OAuthPassthrough: types.BoolValue(false), DCRBridge: types.BoolValue(false), IsBYOK: types.BoolValue(false),
+		BYOKDescription: emptyList, BYOKAPIKeyHelpURL: types.StringValue(""), SourceURL: types.StringValue(""), Timeout: types.Float64Value(1), MaxConcurrentRequests: types.Int64Value(1),
 	}
 	request, err := (&MCPServerResource{}).buildMCPServerCreateRequest(ctx, &config, &config, nil, false)
 	if err != nil {
@@ -186,7 +191,7 @@ func TestMCPFieldDeltaEmitsAllAndOnlyV198RemovalSentinels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(delta) != 19 {
+	if len(delta) != 28 {
 		t.Fatalf("delta contains unrelated or missing sentinel: %#v", delta)
 	}
 	for _, fieldPath := range mcpFieldPaths {

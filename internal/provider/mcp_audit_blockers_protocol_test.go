@@ -254,7 +254,9 @@ func TestMCPServerEqualRemoteOwnershipTakeoverAndUnknownRetentionProtocol(t *tes
 			"oauth_scopes": protocolMCPStringList("scope"), "available_on_public_internet": false, "oauth2_flow": "authorization_code", "instructions": "retained instructions",
 			"tool_name_to_display_name": map[string]tftypes.Value{"tool": tftypes.NewValue(tftypes.String, "display")},
 			"tool_name_to_description":  map[string]tftypes.Value{"tool": tftypes.NewValue(tftypes.String, "description")},
-			"spec_version":              "2024-11-05", "mcp_info_json": "{}", "field_ownership_generation": int64(2),
+			"delegate_auth_to_upstream": false, "oauth_passthrough": false, "dcr_bridge": nil, "is_byok": false,
+			"byok_description": protocolMCPStringList(), "byok_api_key_help_url": nil, "source_url": nil, "timeout": nil, "max_concurrent_requests": nil,
+			"spec_version": "2024-11-05", "mcp_info_json": "{}", "field_ownership_generation": int64(2),
 		}))
 		unknowns := map[string]interface{}{
 			"alias": tftypes.UnknownValue, "description": tftypes.UnknownValue, "url": tftypes.UnknownValue, "spec_path": tftypes.UnknownValue, "command": tftypes.UnknownValue,
@@ -263,6 +265,9 @@ func TestMCPServerEqualRemoteOwnershipTakeoverAndUnknownRetentionProtocol(t *tes
 			"env": tftypes.UnknownValue, "static_headers": tftypes.UnknownValue, "credentials": tftypes.UnknownValue, "allow_all_keys": tftypes.UnknownValue,
 			"oauth_scopes": tftypes.UnknownValue, "available_on_public_internet": tftypes.UnknownValue, "oauth2_flow": tftypes.UnknownValue, "instructions": tftypes.UnknownValue,
 			"tool_name_to_display_name": tftypes.UnknownValue, "tool_name_to_description": tftypes.UnknownValue,
+			"delegate_auth_to_upstream": tftypes.UnknownValue, "oauth_passthrough": tftypes.UnknownValue, "dcr_bridge": tftypes.UnknownValue, "is_byok": tftypes.UnknownValue,
+			"byok_description": tftypes.UnknownValue, "byok_api_key_help_url": tftypes.UnknownValue, "source_url": tftypes.UnknownValue,
+			"timeout": tftypes.UnknownValue, "max_concurrent_requests": tftypes.UnknownValue,
 		}
 		configValues := map[string]interface{}{"server_name": "unknown-fields", "transport": "http"}
 		for name, value := range unknowns {

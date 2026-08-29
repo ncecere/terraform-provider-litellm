@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/mapvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -91,6 +93,45 @@ func (v mcpSafeEnumValidator) ValidateString(_ context.Context, req validator.St
 	}
 	if _, ok := v.allowed[req.ConfigValue.ValueString()]; !ok {
 		resp.Diagnostics.AddAttributeError(req.Path, "Invalid MCP Configuration", v.description)
+	}
+}
+
+type mcpPositiveFloat64Validator struct{}
+
+var _ validator.Float64 = mcpPositiveFloat64Validator{}
+
+func (mcpPositiveFloat64Validator) Description(context.Context) string {
+	return "The value must be a finite number greater than zero."
+}
+func (v mcpPositiveFloat64Validator) MarkdownDescription(ctx context.Context) string {
+	return v.Description(ctx)
+}
+func (v mcpPositiveFloat64Validator) ValidateFloat64(_ context.Context, req validator.Float64Request, resp *validator.Float64Response) {
+	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		return
+	}
+	value := req.ConfigValue.ValueFloat64()
+	if math.IsNaN(value) || math.IsInf(value, 0) || value <= 0 {
+		resp.Diagnostics.AddAttributeError(req.Path, "Invalid MCP Positive Number", "The configured number must be finite and greater than zero.")
+	}
+}
+
+type mcpPositiveInt64Validator struct{}
+
+var _ validator.Int64 = mcpPositiveInt64Validator{}
+
+func (mcpPositiveInt64Validator) Description(context.Context) string {
+	return "The value must be a positive integer representable by LiteLLM's durable database column."
+}
+func (v mcpPositiveInt64Validator) MarkdownDescription(ctx context.Context) string {
+	return v.Description(ctx)
+}
+func (mcpPositiveInt64Validator) ValidateInt64(_ context.Context, req validator.Int64Request, resp *validator.Int64Response) {
+	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		return
+	}
+	if req.ConfigValue.ValueInt64() <= 0 || req.ConfigValue.ValueInt64() > math.MaxInt32 {
+		resp.Diagnostics.AddAttributeError(req.Path, "Invalid MCP Positive Integer", "The configured integer must be positive and within LiteLLM's durable database range.")
 	}
 }
 
@@ -201,21 +242,30 @@ type MCPServerResourceModel struct {
 	MCPInfoOwnershipGeneration types.Int64   `tfsdk:"mcp_info_ownership_generation"`
 	FieldOwnershipGeneration   types.Int64   `tfsdk:"field_ownership_generation"`
 	// New fields for expanded API support
-	Credentials               types.Map    `tfsdk:"credentials"`
-	AllowedTools              types.List   `tfsdk:"allowed_tools"`
-	ExtraHeaders              types.List   `tfsdk:"extra_headers"`
-	StaticHeaders             types.Map    `tfsdk:"static_headers"`
-	AuthorizationURL          types.String `tfsdk:"authorization_url"`
-	TokenURL                  types.String `tfsdk:"token_url"`
-	RegistrationURL           types.String `tfsdk:"registration_url"`
-	AllowAllKeys              types.Bool   `tfsdk:"allow_all_keys"`
-	SkipURLValidation         types.Bool   `tfsdk:"skip_url_validation"`
-	OAuthScopes               types.List   `tfsdk:"oauth_scopes"`
-	AvailableOnPublicInternet types.Bool   `tfsdk:"available_on_public_internet"`
-	OAuth2Flow                types.String `tfsdk:"oauth2_flow"`
-	Instructions              types.String `tfsdk:"instructions"`
-	ToolNameToDisplayName     types.Map    `tfsdk:"tool_name_to_display_name"`
-	ToolNameToDescription     types.Map    `tfsdk:"tool_name_to_description"`
+	Credentials               types.Map     `tfsdk:"credentials"`
+	AllowedTools              types.List    `tfsdk:"allowed_tools"`
+	ExtraHeaders              types.List    `tfsdk:"extra_headers"`
+	StaticHeaders             types.Map     `tfsdk:"static_headers"`
+	AuthorizationURL          types.String  `tfsdk:"authorization_url"`
+	TokenURL                  types.String  `tfsdk:"token_url"`
+	RegistrationURL           types.String  `tfsdk:"registration_url"`
+	AllowAllKeys              types.Bool    `tfsdk:"allow_all_keys"`
+	SkipURLValidation         types.Bool    `tfsdk:"skip_url_validation"`
+	OAuthScopes               types.List    `tfsdk:"oauth_scopes"`
+	AvailableOnPublicInternet types.Bool    `tfsdk:"available_on_public_internet"`
+	OAuth2Flow                types.String  `tfsdk:"oauth2_flow"`
+	Instructions              types.String  `tfsdk:"instructions"`
+	ToolNameToDisplayName     types.Map     `tfsdk:"tool_name_to_display_name"`
+	ToolNameToDescription     types.Map     `tfsdk:"tool_name_to_description"`
+	DelegateAuthToUpstream    types.Bool    `tfsdk:"delegate_auth_to_upstream"`
+	OAuthPassthrough          types.Bool    `tfsdk:"oauth_passthrough"`
+	DCRBridge                 types.Bool    `tfsdk:"dcr_bridge"`
+	IsBYOK                    types.Bool    `tfsdk:"is_byok"`
+	BYOKDescription           types.List    `tfsdk:"byok_description"`
+	BYOKAPIKeyHelpURL         types.String  `tfsdk:"byok_api_key_help_url"`
+	SourceURL                 types.String  `tfsdk:"source_url"`
+	Timeout                   types.Float64 `tfsdk:"timeout"`
+	MaxConcurrentRequests     types.Int64   `tfsdk:"max_concurrent_requests"`
 	// Computed fields
 	CreatedAt types.String `tfsdk:"created_at"`
 	CreatedBy types.String `tfsdk:"created_by"`
@@ -230,7 +280,7 @@ func (r *MCPServerResource) Metadata(ctx context.Context, req resource.MetadataR
 func (r *MCPServerResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		Description: "Manages a LiteLLM MCP (Model Context Protocol) server.",
-		Version:     5,
+		Version:     6,
 		Attributes: map[string]schema.Attribute{
 			"mcp_info_json": schema.StringAttribute{
 				Description: "Sensitive complete MCP info JSON object. The root must be a non-null object; {} explicitly owns and clears the whole document. Authoritative reads expose the complete object without dropping unknown members or exact JSON numbers.",
@@ -435,6 +485,55 @@ func (r *MCPServerResource) Schema(ctx context.Context, req resource.SchemaReque
 				ElementType: types.StringType,
 				Validators:  []validator.Map{mcpToolNameMapValidator{}},
 			},
+			"delegate_auth_to_upstream": schema.BoolAttribute{
+				Description: "Whether LiteLLM delegates authentication to the upstream MCP server.",
+				Optional:    true,
+				Computed:    true,
+			},
+			"oauth_passthrough": schema.BoolAttribute{
+				Description: "Whether OAuth Authorization headers are passed through to the upstream MCP server.",
+				Optional:    true,
+				Computed:    true,
+			},
+			"dcr_bridge": schema.BoolAttribute{
+				Description: "Whether the dynamic client registration bridge is enabled.",
+				Optional:    true,
+				Computed:    true,
+			},
+			"is_byok": schema.BoolAttribute{
+				Description: "Whether this MCP server uses bring-your-own-key configuration.",
+				Optional:    true,
+				Computed:    true,
+			},
+			"byok_description": schema.ListAttribute{
+				Description: "Bring-your-own-key setup description lines.",
+				Optional:    true,
+				Computed:    true,
+				ElementType: types.StringType,
+				Validators:  []validator.List{listvalidator.NoNullValues()},
+			},
+			"byok_api_key_help_url": schema.StringAttribute{
+				Description: "Bring-your-own-key API key help URL.",
+				Optional:    true,
+				Computed:    true,
+			},
+			"source_url": schema.StringAttribute{
+				Description: "Source URL associated with the MCP server.",
+				Optional:    true,
+				Computed:    true,
+			},
+			"timeout": schema.Float64Attribute{
+				Description: "Positive finite request timeout.",
+				Optional:    true,
+				Computed:    true,
+				Validators:  []validator.Float64{mcpPositiveFloat64Validator{}},
+			},
+			"max_concurrent_requests": schema.Int64Attribute{
+				Description: "Positive maximum number of concurrent requests.",
+				Optional:    true,
+				Computed:    true,
+				Validators:  []validator.Int64{mcpPositiveInt64Validator{}},
+			},
 			"created_at": schema.StringAttribute{
 				Description: "Timestamp when the server was created.",
 				Computed:    true,
@@ -526,6 +625,7 @@ func (r *MCPServerResource) ValidateConfig(ctx context.Context, req resource.Val
 		}
 	}
 	validateMCPInfoJSONConfig(data, &resp.Diagnostics)
+	validateMCP208CrossConfiguration(data, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() || data.Transport.IsNull() || data.Transport.IsUnknown() {
 		return
 	}
@@ -565,6 +665,55 @@ func (r *MCPServerResource) ValidateConfig(ctx context.Context, req resource.Val
 				)
 			}
 		}
+	}
+}
+
+func validateMCP208CrossConfiguration(data MCPServerResourceModel, diagnostics *diag.Diagnostics) {
+	knownTrue := func(value types.Bool) bool {
+		return !value.IsNull() && !value.IsUnknown() && value.ValueBool()
+	}
+	if knownTrue(data.DCRBridge) && !data.AuthType.IsUnknown() {
+		if data.AuthType.IsNull() || (data.AuthType.ValueString() != "true_passthrough" && data.AuthType.ValueString() != "oauth_delegate") {
+			diagnostics.AddAttributeError(path.Root("dcr_bridge"), "Invalid MCP Authentication Configuration", "Enabling the DCR bridge requires a compatible known authentication type.")
+		}
+	}
+	if knownTrue(data.DelegateAuthToUpstream) && !data.AuthType.IsUnknown() {
+		if data.AuthType.IsNull() || data.AuthType.ValueString() != "oauth2" {
+			diagnostics.AddAttributeError(path.Root("delegate_auth_to_upstream"), "Invalid MCP Authentication Configuration", "Delegating authentication upstream requires the known OAuth2 authentication type.")
+		} else if !data.OAuth2Flow.IsNull() && !data.OAuth2Flow.IsUnknown() && data.OAuth2Flow.ValueString() != "authorization_code" {
+			// v1.98 deliberately denies anonymous upstream delegation for M2M
+			// client-credentials servers so callers cannot use LiteLLM's service
+			// account. An omitted/unknown flow may still be stamped by LiteLLM.
+			diagnostics.AddAttributeError(path.Root("delegate_auth_to_upstream"), "Invalid MCP Authentication Configuration", "Delegating authentication upstream cannot be combined with a known machine-to-machine OAuth2 flow.")
+		}
+	}
+	if !knownTrue(data.OAuthPassthrough) || data.AuthType.IsUnknown() || data.ExtraHeaders.IsUnknown() {
+		return
+	}
+	if data.AuthType.IsNull() || data.AuthType.ValueString() != "none" {
+		diagnostics.AddAttributeError(path.Root("oauth_passthrough"), "Invalid MCP Authentication Configuration", "OAuth passthrough requires the known unauthenticated authentication type and an Authorization header member.")
+		return
+	}
+	if data.ExtraHeaders.IsNull() {
+		diagnostics.AddAttributeError(path.Root("oauth_passthrough"), "Invalid MCP Authentication Configuration", "OAuth passthrough requires the known unauthenticated authentication type and an Authorization header member.")
+		return
+	}
+	unknownMember := false
+	for _, member := range data.ExtraHeaders.Elements() {
+		value, ok := member.(types.String)
+		if !ok || value.IsNull() {
+			continue
+		}
+		if value.IsUnknown() {
+			unknownMember = true
+			continue
+		}
+		if strings.EqualFold(value.ValueString(), "Authorization") {
+			return
+		}
+	}
+	if !unknownMember {
+		diagnostics.AddAttributeError(path.Root("oauth_passthrough"), "Invalid MCP Authentication Configuration", "OAuth passthrough requires the known unauthenticated authentication type and an Authorization header member.")
 	}
 }
 
@@ -639,6 +788,7 @@ func (r *MCPServerResource) ModifyPlan(ctx context.Context, req resource.ModifyP
 	// intentionally not based on ProposedNewState, where Optional+Computed
 	// values can contain prior state.
 	validateMCPInfoJSONConfig(config, &resp.Diagnostics)
+	validateMCP208CrossConfiguration(config, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -700,7 +850,13 @@ func (r *MCPServerResource) ModifyPlan(ctx context.Context, req resource.ModifyP
 
 	// Optional+Computed fields distinguish omission from an explicit empty value
 	// through Config plus private provenance. Omitted unowned values retain an
-	// import/API projection; removing a committed-owned value plans a typed null.
+	// import/API projection; removing a committed-owned value plans its exact
+	// durable removal projection.
+	emptyBYOKDescription, emptyBYOKDiags := checkedStringListValue(ctx, []attr.Value{}, path.Root("byok_description"))
+	resp.Diagnostics.Append(emptyBYOKDiags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
 	for _, item := range []struct {
 		name       string
 		fieldPath  string
@@ -721,6 +877,15 @@ func (r *MCPServerResource) ModifyPlan(ctx context.Context, req resource.ModifyP
 		{name: "instructions", fieldPath: mcpFieldInstructionsPath, configured: config.Instructions, priorValue: state.Instructions, nullValue: types.StringNull()},
 		{name: "tool_name_to_display_name", fieldPath: mcpFieldToolNameToDisplayNamePath, configured: config.ToolNameToDisplayName, priorValue: state.ToolNameToDisplayName, nullValue: types.MapNull(types.StringType)},
 		{name: "tool_name_to_description", fieldPath: mcpFieldToolNameToDescriptionPath, configured: config.ToolNameToDescription, priorValue: state.ToolNameToDescription, nullValue: types.MapNull(types.StringType)},
+		{name: "delegate_auth_to_upstream", fieldPath: mcpFieldDelegateAuthToUpstreamPath, configured: config.DelegateAuthToUpstream, priorValue: state.DelegateAuthToUpstream, nullValue: types.BoolValue(false)},
+		{name: "oauth_passthrough", fieldPath: mcpFieldOAuthPassthroughPath, configured: config.OAuthPassthrough, priorValue: state.OAuthPassthrough, nullValue: types.BoolValue(false)},
+		{name: "dcr_bridge", fieldPath: mcpFieldDCRBridgePath, configured: config.DCRBridge, priorValue: state.DCRBridge, nullValue: types.BoolNull()},
+		{name: "is_byok", fieldPath: mcpFieldIsBYOKPath, configured: config.IsBYOK, priorValue: state.IsBYOK, nullValue: types.BoolValue(false)},
+		{name: "byok_description", fieldPath: mcpFieldBYOKDescriptionPath, configured: config.BYOKDescription, priorValue: state.BYOKDescription, nullValue: emptyBYOKDescription},
+		{name: "byok_api_key_help_url", fieldPath: mcpFieldBYOKAPIKeyHelpURLPath, configured: config.BYOKAPIKeyHelpURL, priorValue: state.BYOKAPIKeyHelpURL, nullValue: types.StringNull()},
+		{name: "source_url", fieldPath: mcpFieldSourceURLPath, configured: config.SourceURL, priorValue: state.SourceURL, nullValue: types.StringNull()},
+		{name: "timeout", fieldPath: mcpFieldTimeoutPath, configured: config.Timeout, priorValue: state.Timeout, nullValue: types.Float64Null()},
+		{name: "max_concurrent_requests", fieldPath: mcpFieldMaxConcurrentRequestsPath, configured: config.MaxConcurrentRequests, priorValue: state.MaxConcurrentRequests, nullValue: types.Int64Null()},
 	} {
 		if !hasState || !item.configured.IsNull() {
 			continue
@@ -786,6 +951,15 @@ func (r *MCPServerResource) ModifyPlan(ctx context.Context, req resource.ModifyP
 			{name: "instructions", configured: config.Instructions, planned: plan.Instructions, prior: state.Instructions},
 			{name: "tool_name_to_display_name", configured: config.ToolNameToDisplayName, planned: plan.ToolNameToDisplayName, prior: state.ToolNameToDisplayName},
 			{name: "tool_name_to_description", configured: config.ToolNameToDescription, planned: plan.ToolNameToDescription, prior: state.ToolNameToDescription},
+			{name: "delegate_auth_to_upstream", configured: config.DelegateAuthToUpstream, planned: plan.DelegateAuthToUpstream, prior: state.DelegateAuthToUpstream},
+			{name: "oauth_passthrough", configured: config.OAuthPassthrough, planned: plan.OAuthPassthrough, prior: state.OAuthPassthrough},
+			{name: "dcr_bridge", configured: config.DCRBridge, planned: plan.DCRBridge, prior: state.DCRBridge},
+			{name: "is_byok", configured: config.IsBYOK, planned: plan.IsBYOK, prior: state.IsBYOK},
+			{name: "byok_description", configured: config.BYOKDescription, planned: plan.BYOKDescription, prior: state.BYOKDescription},
+			{name: "byok_api_key_help_url", configured: config.BYOKAPIKeyHelpURL, planned: plan.BYOKAPIKeyHelpURL, prior: state.BYOKAPIKeyHelpURL},
+			{name: "source_url", configured: config.SourceURL, planned: plan.SourceURL, prior: state.SourceURL},
+			{name: "timeout", configured: config.Timeout, planned: plan.Timeout, prior: state.Timeout},
+			{name: "max_concurrent_requests", configured: config.MaxConcurrentRequests, planned: plan.MaxConcurrentRequests, prior: state.MaxConcurrentRequests},
 		} {
 			if item.configured.IsNull() && item.planned.IsUnknown() && !item.prior.IsUnknown() {
 				resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root(item.name), item.prior)...)
@@ -826,7 +1000,7 @@ func (r *MCPServerResource) ModifyPlan(ctx context.Context, req resource.ModifyP
 	// ownership-only changes such as equal-value takeover.
 }
 
-func validateMCPServerOptionalResponseFields(result map[string]interface{}, stringFields, boolFields, stringListFields, stringMapFields []string) error {
+func validateMCPServerOptionalResponseFields(result map[string]interface{}, stringFields, boolFields, stringListFields, stringMapFields, floatFields, intFields []string) error {
 	for _, field := range stringFields {
 		if value, present := result[field]; present && value != nil {
 			if _, ok := value.(string); !ok {
@@ -869,6 +1043,26 @@ func validateMCPServerOptionalResponseFields(result map[string]interface{}, stri
 			if _, ok := item.(string); !ok {
 				return fmt.Errorf("MCP server response contains a malformed optional string-map field")
 			}
+		}
+	}
+	for _, field := range floatFields {
+		value, present := result[field]
+		if !present || value == nil {
+			continue
+		}
+		number, err := float64FromAPI(value)
+		if !dataSourceAPIJSONNumber(value) || err != nil || number <= 0 {
+			return fmt.Errorf("MCP server response contains a malformed optional positive-number field")
+		}
+	}
+	for _, field := range intFields {
+		value, present := result[field]
+		if !present || value == nil {
+			continue
+		}
+		number, err := exactInt64FromAPI(value)
+		if !dataSourceAPIJSONNumber(value) || err != nil || number <= 0 {
+			return fmt.Errorf("MCP server response contains a malformed optional positive-integer field")
 		}
 	}
 	return nil
@@ -1043,6 +1237,9 @@ func (r *MCPServerResource) Read(ctx context.Context, req resource.ReadRequest, 
 		data.OAuthScopes = priorFields.OAuthScopes
 		data.AvailableOnPublicInternet, data.OAuth2Flow, data.Instructions = priorFields.AvailableOnPublicInternet, priorFields.OAuth2Flow, priorFields.Instructions
 		data.ToolNameToDisplayName, data.ToolNameToDescription = priorFields.ToolNameToDisplayName, priorFields.ToolNameToDescription
+		data.DelegateAuthToUpstream, data.OAuthPassthrough, data.DCRBridge, data.IsBYOK = priorFields.DelegateAuthToUpstream, priorFields.OAuthPassthrough, priorFields.DCRBridge, priorFields.IsBYOK
+		data.BYOKDescription, data.BYOKAPIKeyHelpURL, data.SourceURL = priorFields.BYOKDescription, priorFields.BYOKAPIKeyHelpURL, priorFields.SourceURL
+		data.Timeout, data.MaxConcurrentRequests = priorFields.Timeout, priorFields.MaxConcurrentRequests
 		resolveUnknownMCPServerState(&data, nil)
 	}
 	if err != nil {
@@ -1282,10 +1479,10 @@ func (r *MCPServerResource) ImportState(ctx context.Context, req resource.Import
 	}
 }
 
-// UpgradeState handles v0, v1, v2, and v3 directly so Terraform 1.1 never
+// UpgradeState handles every historical schema directly so Terraform 1.1 never
 // needs to understand an intermediate schema. Existing values, flags, types,
-// blocks, and v3 field-ownership generations remain byte-for-byte compatible;
-// only computed lifecycle controls absent from the source schema are initialized.
+// blocks, private data, and field-ownership generations remain compatible;
+// only controls absent from the source schema are initialized.
 func (r *MCPServerResource) UpgradeState(ctx context.Context) map[int64]resource.StateUpgrader {
 	upgrade := func(convertExtraHeaders, addMCPInfoControls, addFieldOwnershipControl bool) resource.StateUpgrader {
 		return resource.StateUpgrader{PriorSchema: nil, StateUpgrader: func(ctx context.Context, req resource.UpgradeStateRequest, resp *resource.UpgradeStateResponse) {
@@ -1338,6 +1535,15 @@ func (r *MCPServerResource) UpgradeState(ctx context.Context) map[int64]resource
 			initialize("instructions", "null")
 			initialize("tool_name_to_display_name", "null")
 			initialize("tool_name_to_description", "null")
+			initialize("delegate_auth_to_upstream", "null")
+			initialize("oauth_passthrough", "null")
+			initialize("dcr_bridge", "null")
+			initialize("is_byok", "null")
+			initialize("byok_description", "null")
+			initialize("byok_api_key_help_url", "null")
+			initialize("source_url", "null")
+			initialize("timeout", "null")
+			initialize("max_concurrent_requests", "null")
 			initialize("updated_at", "null")
 			initialize("updated_by", "null")
 			upgradedJSON, err := json.Marshal(priorState)
@@ -1354,6 +1560,7 @@ func (r *MCPServerResource) UpgradeState(ctx context.Context) map[int64]resource
 		2: upgrade(false, false, true),
 		3: upgrade(false, false, false),
 		4: upgrade(false, false, false),
+		5: upgrade(false, false, false),
 	}
 }
 
@@ -1593,6 +1800,15 @@ func partialMCPServerState(serverID string) MCPServerResourceModel {
 		Instructions:               types.StringNull(),
 		ToolNameToDisplayName:      types.MapNull(types.StringType),
 		ToolNameToDescription:      types.MapNull(types.StringType),
+		DelegateAuthToUpstream:     types.BoolNull(),
+		OAuthPassthrough:           types.BoolNull(),
+		DCRBridge:                  types.BoolNull(),
+		IsBYOK:                     types.BoolNull(),
+		BYOKDescription:            types.ListNull(types.StringType),
+		BYOKAPIKeyHelpURL:          types.StringNull(),
+		SourceURL:                  types.StringNull(),
+		Timeout:                    types.Float64Null(),
+		MaxConcurrentRequests:      types.Int64Null(),
 		MCPInfoJSON:                types.StringNull(),
 		MCPInfoOverridesJSON:       types.StringNull(),
 		MCPInfoClearPaths:          types.ListNull(types.StringType),
@@ -1647,6 +1863,24 @@ func resolveUnknownMCPServerState(data *MCPServerResourceModel, previous *MCPSer
 		}
 		return types.MapNull(types.StringType)
 	}
+	resolveFloat64 := func(current, fallback types.Float64) types.Float64 {
+		if !current.IsUnknown() {
+			return current
+		}
+		if previous != nil && !fallback.IsUnknown() {
+			return fallback
+		}
+		return types.Float64Null()
+	}
+	resolveInt64 := func(current, fallback types.Int64) types.Int64 {
+		if !current.IsUnknown() {
+			return current
+		}
+		if previous != nil && !fallback.IsUnknown() {
+			return fallback
+		}
+		return types.Int64Null()
+	}
 
 	data.ID = resolveString(data.ID, prior.ID)
 	data.ServerID = resolveString(data.ServerID, prior.ServerID)
@@ -1668,14 +1902,21 @@ func resolveUnknownMCPServerState(data *MCPServerResourceModel, previous *MCPSer
 	data.CreatedBy = resolveString(data.CreatedBy, prior.CreatedBy)
 	data.UpdatedAt = resolveString(data.UpdatedAt, prior.UpdatedAt)
 	data.UpdatedBy = resolveString(data.UpdatedBy, prior.UpdatedBy)
+	data.BYOKAPIKeyHelpURL = resolveString(data.BYOKAPIKeyHelpURL, prior.BYOKAPIKeyHelpURL)
+	data.SourceURL = resolveString(data.SourceURL, prior.SourceURL)
 	data.AllowAllKeys = resolveBool(data.AllowAllKeys, prior.AllowAllKeys)
 	data.AvailableOnPublicInternet = resolveBool(data.AvailableOnPublicInternet, prior.AvailableOnPublicInternet)
+	data.DelegateAuthToUpstream = resolveBool(data.DelegateAuthToUpstream, prior.DelegateAuthToUpstream)
+	data.OAuthPassthrough = resolveBool(data.OAuthPassthrough, prior.OAuthPassthrough)
+	data.DCRBridge = resolveBool(data.DCRBridge, prior.DCRBridge)
+	data.IsBYOK = resolveBool(data.IsBYOK, prior.IsBYOK)
 	data.SkipURLValidation = resolveBool(data.SkipURLValidation, prior.SkipURLValidation)
 	data.MCPAccessGroups = resolveList(data.MCPAccessGroups, prior.MCPAccessGroups)
 	data.Args = resolveList(data.Args, prior.Args)
 	data.AllowedTools = resolveList(data.AllowedTools, prior.AllowedTools)
 	data.ExtraHeaders = resolveList(data.ExtraHeaders, prior.ExtraHeaders)
 	data.OAuthScopes = resolveList(data.OAuthScopes, prior.OAuthScopes)
+	data.BYOKDescription = resolveList(data.BYOKDescription, prior.BYOKDescription)
 	data.Env = resolveStringMap(data.Env, prior.Env)
 	data.Credentials = resolveStringMap(data.Credentials, prior.Credentials)
 	data.StaticHeaders = resolveStringMap(data.StaticHeaders, prior.StaticHeaders)
@@ -1684,6 +1925,8 @@ func resolveUnknownMCPServerState(data *MCPServerResourceModel, previous *MCPSer
 	data.MCPInfoJSON = resolveString(data.MCPInfoJSON, prior.MCPInfoJSON)
 	data.MCPInfoOverridesJSON = resolveString(data.MCPInfoOverridesJSON, prior.MCPInfoOverridesJSON)
 	data.MCPInfoClearPaths = resolveList(data.MCPInfoClearPaths, prior.MCPInfoClearPaths)
+	data.Timeout = resolveFloat64(data.Timeout, prior.Timeout)
+	data.MaxConcurrentRequests = resolveInt64(data.MaxConcurrentRequests, prior.MaxConcurrentRequests)
 	if data.MCPInfoOwnershipGeneration.IsUnknown() {
 		if previous != nil && !prior.MCPInfoOwnershipGeneration.IsUnknown() {
 			data.MCPInfoOwnershipGeneration = prior.MCPInfoOwnershipGeneration
@@ -1804,10 +2047,12 @@ func validateMCPServerResponse(result map[string]interface{}, expectedServerID s
 	}
 	return validateMCPServerOptionalResponseFields(
 		result,
-		[]string{"server_name", "url", "spec_path", "alias", "description", "command", "authorization_url", "token_url", "registration_url", "auth_type", "oauth2_flow", "instructions", "created_at", "created_by", "updated_at", "updated_by"},
-		[]string{"allow_all_keys", "available_on_public_internet"},
-		[]string{"mcp_access_groups", "args", "allowed_tools", "extra_headers"},
+		[]string{"server_name", "url", "spec_path", "alias", "description", "command", "authorization_url", "token_url", "registration_url", "auth_type", "oauth2_flow", "instructions", "byok_api_key_help_url", "source_url", "created_at", "created_by", "updated_at", "updated_by"},
+		[]string{"allow_all_keys", "available_on_public_internet", "delegate_auth_to_upstream", "oauth_passthrough", "dcr_bridge", "is_byok"},
+		[]string{"mcp_access_groups", "args", "allowed_tools", "extra_headers", "byok_description"},
 		[]string{"env", "static_headers", "credentials", "tool_name_to_display_name", "tool_name_to_description"},
+		[]string{"timeout"},
+		[]string{"max_concurrent_requests"},
 	)
 }
 
@@ -2175,6 +2420,62 @@ func (r *MCPServerResource) readMCPServerResultProjection(ctx context.Context, d
 		if allowAllKeys, present := result["allow_all_keys"].(bool); present {
 			data.AllowAllKeys = types.BoolValue(allowAllKeys)
 		}
+	}
+
+	projectDefaultFalse := func(name string, current *types.Bool) {
+		if raw, present := result[name]; present && raw != nil {
+			*current = types.BoolValue(raw.(bool))
+		} else if imported || current.IsUnknown() {
+			// Imports and first creates adopt LiteLLM's durable false default.
+			// A direct v0-v5 upgrade retains its typed null until the API actually
+			// exposes the field or configuration takes ownership.
+			*current = types.BoolValue(false)
+		}
+	}
+	projectDefaultFalse("delegate_auth_to_upstream", &data.DelegateAuthToUpstream)
+	projectDefaultFalse("oauth_passthrough", &data.OAuthPassthrough)
+	projectDefaultFalse("is_byok", &data.IsBYOK)
+	if raw, present := result["dcr_bridge"]; present && raw != nil {
+		data.DCRBridge = types.BoolValue(raw.(bool))
+	} else {
+		data.DCRBridge = types.BoolNull()
+	}
+	if raw, present := result["byok_api_key_help_url"]; present && raw != nil {
+		data.BYOKAPIKeyHelpURL = types.StringValue(raw.(string))
+	} else {
+		data.BYOKAPIKeyHelpURL = types.StringNull()
+	}
+	if raw, present := result["source_url"]; present && raw != nil {
+		data.SourceURL = types.StringValue(raw.(string))
+	} else {
+		data.SourceURL = types.StringNull()
+	}
+	byokDescription, byokPresence, byokDiagnostics := strictAPIStringList(ctx, result, "byok_description", path.Root("byok_description"))
+	if byokDiagnostics.HasError() {
+		return collectionProjectionError(ctx, byokDiagnostics)
+	}
+	if byokPresence == apiValuePresent {
+		data.BYOKDescription = byokDescription
+	} else if imported || data.BYOKDescription.IsUnknown() {
+		emptyDescription, emptyDiagnostics := checkedStringListValue(ctx, []attr.Value{}, path.Root("byok_description"))
+		if emptyDiagnostics.HasError() {
+			return collectionProjectionError(ctx, emptyDiagnostics)
+		}
+		data.BYOKDescription = emptyDescription
+	}
+	if timeout, err := dataSourceNullableFloat64At(result, "timeout"); err != nil {
+		return fmt.Errorf("invalid MCP server response: timeout is malformed")
+	} else if !timeout.IsNull() && timeout.ValueFloat64() <= 0 {
+		return fmt.Errorf("invalid MCP server response: timeout is malformed")
+	} else {
+		data.Timeout = timeout
+	}
+	if maximum, err := dataSourceNullableInt64At(result, "max_concurrent_requests"); err != nil {
+		return fmt.Errorf("invalid MCP server response: maximum concurrency is malformed")
+	} else if !maximum.IsNull() && maximum.ValueInt64() <= 0 {
+		return fmt.Errorf("invalid MCP server response: maximum concurrency is malformed")
+	} else {
+		data.MaxConcurrentRequests = maximum
 	}
 
 	// A present object is the sole authoritative complete MCP-info snapshot.
