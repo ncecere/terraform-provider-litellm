@@ -235,6 +235,7 @@ type MCPServerResourceModel struct {
 	Command                    types.String  `tfsdk:"command"`
 	Args                       types.List    `tfsdk:"args"`
 	Env                        types.Map     `tfsdk:"env"`
+	EnvVars                    types.List    `tfsdk:"env_vars"`
 	MCPInfo                    *MCPInfoModel `tfsdk:"mcp_info"`
 	MCPInfoJSON                types.String  `tfsdk:"mcp_info_json"`
 	MCPInfoOverridesJSON       types.String  `tfsdk:"mcp_info_overrides_json"`
@@ -280,7 +281,7 @@ func (r *MCPServerResource) Metadata(ctx context.Context, req resource.MetadataR
 func (r *MCPServerResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		Description: "Manages a LiteLLM MCP (Model Context Protocol) server.",
-		Version:     6,
+		Version:     7,
 		Attributes: map[string]schema.Attribute{
 			"mcp_info_json": schema.StringAttribute{
 				Description: "Sensitive complete MCP info JSON object. The root must be a non-null object; {} explicitly owns and clears the whole document. Authoritative reads expose the complete object without dropping unknown members or exact JSON numbers.",
@@ -393,6 +394,39 @@ func (r *MCPServerResource) Schema(ctx context.Context, req resource.SchemaReque
 				Computed:    true,
 				Sensitive:   true,
 				ElementType: types.StringType,
+			},
+			"env_vars": schema.ListNestedAttribute{
+				Description: "Ordered LiteLLM MCP environment-variable definitions.",
+				Optional:    true,
+				Computed:    true,
+				Sensitive:   true,
+				Validators:  []validator.List{mcpEnvVarsValidator{}},
+				NestedObject: schema.NestedAttributeObject{Attributes: map[string]schema.Attribute{
+					"name": schema.StringAttribute{
+						Description: "Environment-variable name.",
+						Required:    true,
+						Validators:  []validator.String{mcpEnvVarNameValidator{}},
+					},
+					"value": schema.StringAttribute{
+						Description: "Admin-provided value or user-scope placeholder.",
+						Optional:    true,
+						Computed:    true,
+						Default:     stringdefault.StaticString(""),
+					},
+					"scope": schema.StringAttribute{
+						Description: "Value scope: global or user.",
+						Optional:    true,
+						Computed:    true,
+						Default:     stringdefault.StaticString("global"),
+						Validators: []validator.String{
+							newMCPSafeEnumValidator([]string{"global", "user"}, "Scope must be global or user."),
+						},
+					},
+					"description": schema.StringAttribute{
+						Description: "Optional nullable environment-variable description.",
+						Optional:    true,
+					},
+				}},
 			},
 			"credentials": schema.MapAttribute{
 				Description: "Credentials map for the MCP server authentication.",
@@ -855,6 +889,8 @@ func (r *MCPServerResource) ModifyPlan(ctx context.Context, req resource.ModifyP
 	// durable removal projection.
 	emptyBYOKDescription, emptyBYOKDiags := checkedStringListValue(ctx, []attr.Value{}, path.Root("byok_description"))
 	resp.Diagnostics.Append(emptyBYOKDiags...)
+	emptyEnvVars, emptyEnvVarDiags := mcpEnvVarsTerraformValue(ctx, []mcpEnvVar{}, path.Root("env_vars"))
+	resp.Diagnostics.Append(emptyEnvVarDiags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -869,6 +905,7 @@ func (r *MCPServerResource) ModifyPlan(ctx context.Context, req resource.ModifyP
 		{name: "mcp_access_groups", fieldPath: mcpFieldAccessGroupsPath, configured: config.MCPAccessGroups, priorValue: state.MCPAccessGroups, nullValue: types.ListNull(types.StringType)},
 		{name: "args", fieldPath: mcpFieldArgsPath, configured: config.Args, priorValue: state.Args, nullValue: types.ListNull(types.StringType)},
 		{name: "env", fieldPath: mcpFieldEnvPath, configured: config.Env, priorValue: state.Env, nullValue: types.MapNull(types.StringType)},
+		{name: "env_vars", fieldPath: mcpFieldEnvVarsPath, configured: config.EnvVars, priorValue: state.EnvVars, nullValue: emptyEnvVars},
 		{name: "credentials", fieldPath: mcpFieldCredentialsPath, configured: config.Credentials, priorValue: state.Credentials, nullValue: types.MapNull(types.StringType)},
 		{name: "allowed_tools", fieldPath: mcpFieldAllowedToolsPath, configured: config.AllowedTools, priorValue: state.AllowedTools, nullValue: types.ListNull(types.StringType)},
 		{name: "extra_headers", fieldPath: mcpFieldExtraHeadersPath, configured: config.ExtraHeaders, priorValue: state.ExtraHeaders, nullValue: types.ListNull(types.StringType)},
@@ -943,6 +980,7 @@ func (r *MCPServerResource) ModifyPlan(ctx context.Context, req resource.ModifyP
 			{name: "mcp_access_groups", configured: config.MCPAccessGroups, planned: plan.MCPAccessGroups, prior: state.MCPAccessGroups},
 			{name: "args", configured: config.Args, planned: plan.Args, prior: state.Args},
 			{name: "env", configured: config.Env, planned: plan.Env, prior: state.Env},
+			{name: "env_vars", configured: config.EnvVars, planned: plan.EnvVars, prior: state.EnvVars},
 			{name: "credentials", configured: config.Credentials, planned: plan.Credentials, prior: state.Credentials},
 			{name: "allowed_tools", configured: config.AllowedTools, planned: plan.AllowedTools, prior: state.AllowedTools},
 			{name: "extra_headers", configured: config.ExtraHeaders, planned: plan.ExtraHeaders, prior: state.ExtraHeaders},
@@ -1173,7 +1211,9 @@ func (r *MCPServerResource) Create(ctx context.Context, req resource.CreateReque
 		resp.Diagnostics.AddError("MCP Server Readback Not Confirmed", "LiteLLM accepted the create, but direct readback did not return a valid MCP info object. Only the confirmed identity was retained for recovery.")
 		return
 	}
-	if mcpOwnedEndpointReadbackMismatch(&planned, &data, nil) || verifyMCPCreateEndpointReadback(planned, readback) != nil || verifyMCPFieldCreateReadback(ctx, config, readback, plannedFields) != nil {
+	readbackIntent := config
+	readbackIntent.EnvVars = planned.EnvVars
+	if mcpOwnedEndpointReadbackMismatch(&planned, &data, nil) || verifyMCPCreateEndpointReadback(planned, readback) != nil || verifyMCPFieldCreateReadback(ctx, readbackIntent, readback, plannedFields) != nil {
 		partial := partialMCPServerState(serverID)
 		resp.Diagnostics.Append(resp.State.Set(ctx, &partial)...)
 		resp.Diagnostics.AddError("Inconsistent MCP Endpoint Readback", "LiteLLM accepted the create but did not persist the requested endpoint or transport. Only the confirmed identity was retained for recovery.")
@@ -1233,6 +1273,7 @@ func (r *MCPServerResource) Read(ctx context.Context, req resource.ReadRequest, 
 		data.Alias, data.Description, data.Command = priorFields.Alias, priorFields.Description, priorFields.Command
 		data.AuthorizationURL, data.TokenURL, data.RegistrationURL = priorFields.AuthorizationURL, priorFields.TokenURL, priorFields.RegistrationURL
 		data.MCPAccessGroups, data.Args, data.Env = priorFields.MCPAccessGroups, priorFields.Args, priorFields.Env
+		data.EnvVars = priorFields.EnvVars
 		data.AllowedTools, data.ExtraHeaders, data.StaticHeaders = priorFields.AllowedTools, priorFields.ExtraHeaders, priorFields.StaticHeaders
 		data.Credentials, data.AllowAllKeys = priorFields.Credentials, priorFields.AllowAllKeys
 		data.OAuthScopes = priorFields.OAuthScopes
@@ -1530,6 +1571,7 @@ func (r *MCPServerResource) UpgradeState(ctx context.Context) map[int64]resource
 			if addFieldOwnershipControl {
 				initialize("field_ownership_generation", "0")
 			}
+			initialize("env_vars", "null")
 			initialize("oauth_scopes", "null")
 			initialize("available_on_public_internet", "null")
 			initialize("oauth2_flow", "null")
@@ -1562,6 +1604,7 @@ func (r *MCPServerResource) UpgradeState(ctx context.Context) map[int64]resource
 		3: upgrade(false, false, false),
 		4: upgrade(false, false, false),
 		5: upgrade(false, false, false),
+		6: upgrade(false, false, false),
 	}
 }
 
@@ -1684,6 +1727,13 @@ func (r *MCPServerResource) buildMCPServerRequest(ctx context.Context, data *MCP
 			mcpReq["env"] = env
 		}
 	}
+	if !data.EnvVars.IsNull() && !data.EnvVars.IsUnknown() {
+		values, _, diagnostics := strictTerraformMCPEnvVars(ctx, data.EnvVars, path.Root("env_vars"))
+		if diagnostics.HasError() {
+			return nil, fmt.Errorf("invalid MCP environment-variable collection")
+		}
+		mcpReq["env_vars"] = mcpEnvVarsWire(values)
+	}
 	if !data.Credentials.IsNull() && !data.Credentials.IsUnknown() {
 		credentials, err := convertMap(data.Credentials, "credentials", true)
 		if err != nil {
@@ -1791,6 +1841,7 @@ func partialMCPServerState(serverID string) MCPServerResourceModel {
 		MCPAccessGroups:            types.ListNull(types.StringType),
 		Args:                       types.ListNull(types.StringType),
 		Env:                        types.MapNull(types.StringType),
+		EnvVars:                    types.ListNull(mcpEnvVarObjectType),
 		Credentials:                types.MapNull(types.StringType),
 		AllowedTools:               types.ListNull(types.StringType),
 		ExtraHeaders:               types.ListNull(types.StringType),
@@ -1919,6 +1970,13 @@ func resolveUnknownMCPServerState(data *MCPServerResourceModel, previous *MCPSer
 	data.OAuthScopes = resolveList(data.OAuthScopes, prior.OAuthScopes)
 	data.BYOKDescription = resolveList(data.BYOKDescription, prior.BYOKDescription)
 	data.Env = resolveStringMap(data.Env, prior.Env)
+	if data.EnvVars.IsUnknown() {
+		if previous != nil && !prior.EnvVars.IsUnknown() {
+			data.EnvVars = prior.EnvVars
+		} else {
+			data.EnvVars = types.ListNull(mcpEnvVarObjectType)
+		}
+	}
 	data.Credentials = resolveStringMap(data.Credentials, prior.Credentials)
 	data.StaticHeaders = resolveStringMap(data.StaticHeaders, prior.StaticHeaders)
 	data.ToolNameToDisplayName = resolveStringMap(data.ToolNameToDisplayName, prior.ToolNameToDisplayName)
@@ -2045,6 +2103,9 @@ func validateMCPServerResponse(result map[string]interface{}, expectedServerID s
 	}
 	if !validTransport {
 		return fmt.Errorf("MCP server response contains an invalid transport")
+	}
+	if err := validateMCPEnvVarsAPI(result); err != nil {
+		return fmt.Errorf("MCP server response contains a malformed environment-variable collection")
 	}
 	return validateMCPServerOptionalResponseFields(
 		result,
@@ -2361,6 +2422,19 @@ func (r *MCPServerResource) readMCPServerResultProjection(ctx context.Context, d
 		if err := projection(); err != nil {
 			return err
 		}
+	}
+	envVars, envVarsPresence, _, envVarsDiagnostics := strictAPIMCPEnvVars(ctx, result, "env_vars", path.Root("env_vars"))
+	if envVarsDiagnostics.HasError() {
+		return collectionProjectionError(ctx, envVarsDiagnostics)
+	}
+	if envVarsPresence == apiValuePresent {
+		// Every full-admin list, including an explicit empty list, is
+		// authoritative. Projection does not infer Terraform ownership.
+		data.EnvVars = envVars
+	} else if envVarsPresence != apiValuePresent && data.EnvVars.IsUnknown() {
+		// Null and omission are role masking. They do not establish ownership or
+		// erase a known configured value; first reads remain typed null.
+		data.EnvVars = types.ListNull(mcpEnvVarObjectType)
 	}
 
 	// Credential values and credentials.scopes are never authoritative in the

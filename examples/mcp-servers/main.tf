@@ -157,9 +157,25 @@ resource "litellm_mcp_server" "oauth_protected" {
     "upstream_resource" = "auto"
   }
 
+  env_vars = [
+    {
+      name        = "ENTERPRISE_API_KEY"
+      value       = var.enterprise_api_key
+      scope       = "global"
+      description = "Shared enterprise credential"
+    },
+    {
+      name        = "USER_TOKEN"
+      scope       = "user"
+      description = "Personal enterprise token"
+    }
+  ]
+
   static_headers = {
-    "Accept"       = "application/json"
-    "Content-Type" = "application/json"
+    "Accept"           = "application/json"
+    "Content-Type"     = "application/json"
+    "X-Enterprise-Key" = "$${ENTERPRISE_API_KEY}"
+    "X-User-Token"     = "$${USER_TOKEN}"
   }
 
   allow_all_keys = false
@@ -252,6 +268,12 @@ variable "oauth_client_id" {
 
 variable "oauth_client_secret" {
   description = "OAuth client secret"
+  type        = string
+  sensitive   = true
+}
+
+variable "enterprise_api_key" {
+  description = "Shared enterprise API key"
   type        = string
   sensitive   = true
 }

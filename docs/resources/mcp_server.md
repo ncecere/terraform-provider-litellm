@@ -51,6 +51,20 @@ resource "litellm_mcp_server" "full" {
     "ENV_VAR" = "value"
   }
 
+  env_vars = [
+    {
+      name        = "GLOBAL_API_KEY"
+      value       = var.global_api_key
+      scope       = "global"
+      description = "Shared upstream API key"
+    },
+    {
+      name        = "USER_API_KEY"
+      scope       = "user"
+      description = "Personal upstream API key"
+    }
+  ]
+
   credentials = {
     "auth_value" = "example-bearer-token"
   }
@@ -194,6 +208,7 @@ The following arguments are supported:
 - `command` - (String, Sensitive) Command to execute for `stdio` transport.
 - `args` - (List of String, Sensitive) Arguments to pass to the command for `stdio` transport.
 - `env` - (Map of String, Sensitive) Environment variables to set when running the MCP server.
+- `env_vars` - (List of Object, Computed, Sensitive) Ordered environment-variable definitions used by LiteLLM when interpolating `${NAME}` references in static headers. `name` is required and must match `[A-Za-z_][A-Za-z0-9_]*`; names must be unique. `value` defaults to an empty string, `scope` defaults to `global` and accepts `global` or `user`, and `description` is optional. LiteLLM encrypts global values at rest. User-scoped values are admin placeholders; each user's actual secret is managed through separate LiteLLM endpoints. An empty list is an explicit clear. API null/omission is treated as role masking and does not erase known state.
 - `credentials` - (Map of String, Sensitive) Credentials for authenticating with the MCP server. For static `api_key`, `bearer_token`, `basic`, `authorization`, and `token` modes, LiteLLM v1.98 reads the secret from `auth_value`; keys named `token` or `api_key` are ignored. OAuth2 uses fields such as `client_id` and `client_secret`; optional `upstream_resource` configures the non-secret RFC 8707 resource indicator. The resource keeps the complete map sensitive, while the singular data source may expose only LiteLLM's separately reviewed `upstream_resource` scalar.
 - `allowed_tools` - (List of String) List of tool names that are allowed to be used from this server.
 - `extra_headers` - (List of String) Extra header names to forward/include in requests. This matches the LiteLLM API schema.
@@ -228,15 +243,15 @@ The following arguments are supported:
 
 ### Presence-aware field clears
 
-The existing `alias`, `description`, `command`, OAuth URL, access-group, argument, environment, tool/header, credential, and `allow_all_keys` arguments, plus the v1.98 parity and advanced runtime fields above, have presence-aware ownership without changing any earlier value type. Alias is now Optional+Computed so its canonical LiteLLM normalization/default can be represented without drift. A known configured value, including an empty collection, empty string, or `false`, acquires ownership. An unknown expression retains prior ownership. Removing a previously owned argument sends LiteLLM v1.98's exact clear sentinel; an omitted unowned argument is never projected into an Update.
+The existing `alias`, `description`, `command`, OAuth URL, access-group, argument, environment, `env_vars`, tool/header, credential, and `allow_all_keys` arguments, plus the v1.98 parity and advanced runtime fields above, have presence-aware ownership without changing any earlier value type. Alias is now Optional+Computed so its canonical LiteLLM normalization/default can be represented without drift. A known configured value, including an empty collection, empty string, or `false`, acquires ownership. An unknown expression retains prior ownership. Removing a previously owned argument sends LiteLLM v1.98's exact clear sentinel; an omitted unowned argument is never projected into an Update.
 
 Update always performs an identity- and type-valid direct singular read first, then sends only the changed managed values and owned removals. Collection null/omission/empty responses may be role-redacted and therefore do not erase a prior owned projection. Credential response values, including OAuth scopes, are never authoritative; configured sensitive values survive redaction. Scope confirmation is limited to an accepted write plus identity/schema-valid direct readback and never pretends the values were observed. Because v1.98 merges credential maps, deleting individual configured keys is rejected. Remove the entire `credentials` argument and apply its top-level `null` clear first, then re-add the replacement map in a second apply.
 
 LiteLLM v1.98 can implicitly clear OAuth endpoints when `url` or the credential authentication class changes, and replaces the complete credentials object on an authentication-class change. The provider rejects the operation before PUT unless every affected existing value is explicitly owned, genuinely changed or cleared, and supplied completely in the same update. A credential-class change must configure both the complete `credentials` map and a known `oauth_scopes` list (use `[]` for no scopes); unknown, omitted, or previously owned scopes are not recoverable from redacted responses. It never attempts a restorative second PUT.
 
-Legacy state has no trustworthy presence history. On the first ownership-aware plan (schema v3, upgraded directly to the current schema v6), ownership is acquired only from known non-null configuration; public state is never used as ownership evidence. Consequently, removing an ambiguously historical value during that first upgrade does not clear it remotely. For a safe migration, first apply with the value still configured to record ownership, then remove it and apply again. This two-step rule prevents accidental first-upgrade clears.
+Legacy state has no trustworthy presence history. On the first ownership-aware plan (schema v3, upgraded directly to the current schema v7), ownership is acquired only from known non-null configuration; public state is never used as ownership evidence. Consequently, removing an ambiguously historical value during that first upgrade does not clear it remotely. For a safe migration, first apply with the value still configured to record ownership, then remove it and apply again. This two-step rule prevents accidental first-upgrade clears.
 
-Schema v6 upgrades v0 through v5 directly. It retains the v0 `extra_headers` conversion and existing MCP-info controls, preserves existing ownership generations, and initializes additive parity and advanced runtime fields to typed null without changing earlier lifecycle values. Imports project authoritative values for the nine advanced runtime fields but leave their private ownership empty until configuration explicitly takes over.
+Schema v7 upgrades v0 through v6 directly. It retains the v0 `extra_headers` conversion and existing MCP-info controls, preserves existing ownership generations, and initializes additive parity, advanced runtime, and `env_vars` fields to typed null without changing earlier lifecycle values. Imports project authoritative advanced values without inferring private ownership. A full-admin import can adopt decrypted `env_vars` into sensitive state; a masked null leaves the field null and unmanaged.
 
 ### Nested Blocks
 
@@ -266,7 +281,7 @@ In addition to all arguments above, the following attributes are exported:
 - `updated_at` - Timestamp of the latest server update. Null/omission under role redaction preserves a known prior value; a first restricted create/import resolves it to null.
 - `updated_by` - The user or system that last updated the server, with the same role-redaction retention semantics as `updated_at`.
 - `mcp_info_ownership_generation` - A non-sensitive computed generation that changes when MCP info ownership intent changes, including equal-value takeover. It forces Apply without making the resource ID unknown.
-- `field_ownership_generation` - A non-sensitive computed generation for presence-aware ownership of MCP fields, including the v1.98 parity and advanced runtime additions. It forces Apply for ownership-only takeover or removal without changing identity.
+- `field_ownership_generation` - A non-sensitive computed generation for presence-aware ownership of MCP fields, including the v1.98 parity, advanced runtime, and sensitive environment-variable additions. It forces Apply for ownership-only takeover or removal without changing identity.
 
 ## Migrating to the v1.98 transport contract
 
@@ -312,7 +327,7 @@ Standard input/output communication executed by the LiteLLM runtime. A URL is no
 - For authenticated modes, provide the credentials and endpoint-specific fields required by the selected authentication type.
 - LiteLLM's BYOK flag and descriptive fields configure its per-user credential workflow; this resource never reads or writes an individual user's BYOK secret.
 - `delegate_auth_to_upstream`, `oauth_passthrough`, and `dcr_bridge` change authentication boundaries. Review reverse-proxy header handling and LiteLLM access controls before enabling them.
-- Terraform marks `credentials`, `oauth_scopes`, endpoint, stdio command/argument/environment, static-header, and OAuth URL attributes sensitive, which redacts normal CLI output. Sensitive values are still stored in Terraform state; protect the state backend accordingly.
+- Terraform marks `credentials`, `oauth_scopes`, `env_vars`, endpoint, stdio command/argument/environment, static-header, and OAuth URL attributes sensitive, which redacts normal CLI output. Sensitive values are still stored in Terraform state; protect the state backend accordingly.
 - Existing outputs derived from `url`, `spec_path`, `command`, `args`, `env`, `static_headers`, `authorization_url`, `token_url`, or `registration_url` must opt into sensitivity with `sensitive = true`.
 - Use `mcp_access_groups` to control which teams or users can access the MCP server tools.
 - Configure cost tracking through the `mcp_info.mcp_server_cost_info` block to monitor spending on MCP tool usage.

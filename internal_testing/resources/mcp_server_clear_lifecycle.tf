@@ -22,15 +22,28 @@ resource "litellm_mcp_server" "clear_lifecycle" {
   transport   = "http"
   auth_type   = "true_passthrough"
 
-  alias                        = local.mcp_clear_set ? "clear_alias" : null
-  description                  = local.mcp_clear_set ? "clear description" : null
-  command                      = local.mcp_clear_set ? "node" : null
-  authorization_url            = local.mcp_clear_set ? "https://auth.example.com/authorize" : null
-  token_url                    = local.mcp_clear_set ? "https://auth.example.com/token" : null
-  registration_url             = local.mcp_clear_set ? "https://auth.example.com/register" : null
-  mcp_access_groups            = local.mcp_clear_set ? ["clear-group"] : null
-  args                         = local.mcp_clear_set ? ["server.js"] : null
-  env                          = local.mcp_clear_set ? { CLEAR_ENV = "set" } : null
+  alias             = local.mcp_clear_set ? "clear_alias" : null
+  description       = local.mcp_clear_set ? "clear description" : null
+  command           = local.mcp_clear_set ? "node" : null
+  authorization_url = local.mcp_clear_set ? "https://auth.example.com/authorize" : null
+  token_url         = local.mcp_clear_set ? "https://auth.example.com/token" : null
+  registration_url  = local.mcp_clear_set ? "https://auth.example.com/register" : null
+  mcp_access_groups = local.mcp_clear_set ? ["clear-group"] : null
+  args              = local.mcp_clear_set ? ["server.js"] : null
+  env               = local.mcp_clear_set ? { CLEAR_ENV = "set" } : null
+  env_vars = local.mcp_clear_set ? [
+    {
+      name        = "CLEAR_GLOBAL"
+      value       = "clear-value"
+      scope       = "global"
+      description = "Clear test credential"
+    },
+    {
+      name        = "CLEAR_USER"
+      scope       = "user"
+      description = "Per-user clear test credential"
+    }
+  ] : null
   allowed_tools                = local.mcp_clear_set ? ["clear_tool"] : null
   extra_headers                = local.mcp_clear_set ? ["X-Clear"] : null
   static_headers               = local.mcp_clear_set ? { "X-Clear-Static" = "set" } : null

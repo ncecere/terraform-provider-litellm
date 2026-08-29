@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
@@ -122,6 +123,12 @@ func mcpFieldDesiredValue(ctx context.Context, data MCPServerResourceModel, fiel
 		return mcpFieldStringList(ctx, data.ExtraHeaders)
 	case mcpFieldBYOKDescriptionPath:
 		return mcpFieldStringList(ctx, data.BYOKDescription)
+	case mcpFieldEnvVarsPath:
+		values, _, diagnostics := strictTerraformMCPEnvVars(ctx, data.EnvVars, path.Root("env_vars"))
+		if diagnostics.HasError() {
+			return nil, fmt.Errorf("invalid MCP environment-variable collection")
+		}
+		return mcpEnvVarsWire(values), nil
 	case mcpFieldEnvPath:
 		return mcpFieldStringMap(ctx, data.Env)
 	case mcpFieldStaticHeadersPath:
@@ -164,6 +171,8 @@ func mcpFieldRemovalSentinel(fieldPath string) interface{} {
 	case mcpFieldAccessGroupsPath, mcpFieldArgsPath, mcpFieldAllowedToolsPath, mcpFieldExtraHeadersPath,
 		mcpFieldOAuthScopesPath, mcpFieldBYOKDescriptionPath:
 		return []string{}
+	case mcpFieldEnvVarsPath:
+		return []map[string]interface{}{}
 	case mcpFieldEnvPath, mcpFieldStaticHeadersPath, mcpFieldToolNameToDisplayNamePath,
 		mcpFieldToolNameToDescriptionPath:
 		return map[string]string{}
@@ -221,7 +230,13 @@ func (r *MCPServerResource) buildMCPServerCreateRequest(ctx context.Context, pla
 		if presence[fieldPath] != 1 || fieldPath == mcpFieldOAuthScopesPath {
 			continue
 		}
-		value, err := mcpFieldDesiredValue(ctx, *config, fieldPath)
+		desiredSource := *config
+		if fieldPath == mcpFieldEnvVarsPath {
+			// Nested defaults are materialized in the plan, while top-level Config
+			// remains the sole proof that the list itself was configured.
+			desiredSource.EnvVars = plan.EnvVars
+		}
+		value, err := mcpFieldDesiredValue(ctx, desiredSource, fieldPath)
 		if err != nil {
 			return nil, fmt.Errorf("configured MCP collection is invalid")
 		}
@@ -309,6 +324,14 @@ func verifyMCPFieldCreateReadback(ctx context.Context, config MCPServerResourceM
 			// v1.98 redacts credentials.scopes from every management response.
 			// Successful mutation plus a complete identity-valid direct response is
 			// the strongest available confirmation; scopes are never observable.
+			continue
+		}
+		if fieldPath == mcpFieldEnvVarsPath {
+			want, err := mcpFieldDesiredValue(ctx, config, fieldPath)
+			got, presence, errObserved := canonicalMCPEnvVarsAPIWire(observed)
+			if err != nil || errObserved != nil || presence != apiValuePresent || !mcpWireValuesEqual(want, got) {
+				return fmt.Errorf("owned MCP environment variables did not converge")
+			}
 			continue
 		}
 		if fieldPath == mcpFieldCredentialsPath {
@@ -529,7 +552,11 @@ func buildMCPFieldDelta(ctx context.Context, plan MCPServerResourceModel, config
 		if presence[fieldPath] != 1 {
 			continue
 		}
-		desired, err := mcpFieldDesiredValue(ctx, config, fieldPath)
+		desiredSource := config
+		if fieldPath == mcpFieldEnvVarsPath {
+			desiredSource.EnvVars = plan.EnvVars
+		}
+		desired, err := mcpFieldDesiredValue(ctx, desiredSource, fieldPath)
 		if err != nil {
 			return nil, err
 		}
@@ -844,6 +871,38 @@ func verifyMCPFieldUpdateReadback(ctx context.Context, plan, config MCPServerRes
 		name := mcpFieldWireName(fieldPath)
 		if fieldPath == mcpFieldOAuthScopesPath {
 			// credentials.scopes is deliberately not projected by LiteLLM v1.98.
+			continue
+		}
+		if fieldPath == mcpFieldEnvVarsPath {
+			sent, changed := delta[name]
+			if changed || (candidate.Owned[fieldPath] && !committed.Owned[fieldPath]) {
+				want := sent
+				if !changed {
+					var err error
+					desiredSource := config
+					desiredSource.EnvVars = plan.EnvVars
+					want, err = mcpFieldDesiredValue(ctx, desiredSource, fieldPath)
+					if err != nil {
+						return fmt.Errorf("MCP environment-variable intent is invalid")
+					}
+				}
+				got, presence, err := canonicalMCPEnvVarsAPIWire(observed)
+				if err != nil || presence != apiValuePresent || !mcpWireValuesEqual(want, got) {
+					return fmt.Errorf("MCP environment-variable readback did not converge")
+				}
+				continue
+			}
+			if committed.Owned[fieldPath] || candidate.Owned[fieldPath] {
+				continue
+			}
+			prior, priorPresence, priorErr := canonicalMCPEnvVarsAPIWire(baseline)
+			if priorErr != nil || priorPresence != apiValuePresent {
+				continue
+			}
+			got, presence, err := canonicalMCPEnvVarsAPIWire(observed)
+			if err != nil || presence != apiValuePresent || !mcpWireValuesEqual(prior, got) {
+				return fmt.Errorf("visible unmanaged MCP environment variables changed")
+			}
 			continue
 		}
 		if sent, changed := delta[name]; changed {

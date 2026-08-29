@@ -32,6 +32,7 @@ const (
 	mcpFieldAccessGroupsPath            = "/mcp_access_groups"
 	mcpFieldArgsPath                    = "/args"
 	mcpFieldEnvPath                     = "/env"
+	mcpFieldEnvVarsPath                 = "/env_vars"
 	mcpFieldAllowedToolsPath            = "/allowed_tools"
 	mcpFieldExtraHeadersPath            = "/extra_headers"
 	mcpFieldStaticHeadersPath           = "/static_headers"
@@ -64,6 +65,7 @@ var mcpFieldPaths = []string{
 	mcpFieldCredentialsPath,
 	mcpFieldDescriptionPath,
 	mcpFieldEnvPath,
+	mcpFieldEnvVarsPath,
 	mcpFieldExtraHeadersPath,
 	mcpFieldAccessGroupsPath,
 	mcpFieldRegistrationURLPath,
@@ -411,6 +413,7 @@ func mcpFieldConfigPresence(config MCPServerResourceModel) map[string]int {
 	set(mcpFieldAccessGroupsPath, config.MCPAccessGroups)
 	set(mcpFieldArgsPath, config.Args)
 	set(mcpFieldEnvPath, config.Env)
+	set(mcpFieldEnvVarsPath, config.EnvVars)
 	set(mcpFieldAllowedToolsPath, config.AllowedTools)
 	set(mcpFieldExtraHeadersPath, config.ExtraHeaders)
 	set(mcpFieldStaticHeadersPath, config.StaticHeaders)

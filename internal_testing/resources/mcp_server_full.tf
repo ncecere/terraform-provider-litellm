@@ -22,6 +22,20 @@ resource "litellm_mcp_server" "full" {
     "ENV_VAR" = "test-value"
   }
 
+  env_vars = [
+    {
+      name        = "GLOBAL_API_KEY"
+      value       = "fake-global-api-key"
+      scope       = "global"
+      description = "Shared test credential"
+    },
+    {
+      name        = "USER_API_KEY"
+      scope       = "user"
+      description = "Per-user test credential"
+    }
+  ]
+
   authorization_url = "https://auth.example.com/oauth/authorize"
   token_url         = "https://auth.example.com/oauth/token"
   registration_url  = "https://auth.example.com/oauth/register"
