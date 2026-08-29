@@ -896,11 +896,11 @@
     "evidence": [
       {
         "file": "internal/provider/resource_prompt.go",
-        "line": 305
+        "line": 304
       },
       {
         "file": "internal/provider/resource_prompt.go",
-        "line": 320
+        "line": 319
       }
     ]
   },
@@ -928,19 +928,23 @@
       },
       {
         "file": "internal/provider/resource_prompt.go",
-        "line": 260
+        "line": 259
       },
       {
         "file": "internal/provider/resource_prompt.go",
-        "line": 311
+        "line": 310
       },
       {
         "file": "internal/provider/resource_prompt.go",
-        "line": 322
+        "line": 321
       },
       {
         "file": "internal/provider/resource_prompt.go",
-        "line": 513
+        "line": 526
+      },
+      {
+        "file": "internal/provider/resource_prompt.go",
+        "line": 528
       }
     ]
   },
@@ -956,7 +960,7 @@
     "evidence": [
       {
         "file": "internal/provider/resource_prompt.go",
-        "line": 319
+        "line": 318
       }
     ]
   },
@@ -970,7 +974,7 @@
     "evidence": [
       {
         "file": "internal/provider/resource_prompt.go",
-        "line": 283
+        "line": 282
       }
     ]
   },

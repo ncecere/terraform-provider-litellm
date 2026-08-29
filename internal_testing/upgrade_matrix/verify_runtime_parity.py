@@ -357,6 +357,17 @@ REVIEWED_ISSUE202_GUARDRAIL_PATHS = (
 REVIEWED_ISSUE202_GUARDRAIL_RUNTIME_DIFF_SHA256 = (
     "e944aef251fa4e4d42cf9318487dc64fb59049019ee1fd7eccf17baab0e17849"
 )
+REVIEWED_ISSUE202_PROMPT_BASE = "df8239fbd98fb3d695b71713893593c44b525607"
+REVIEWED_ISSUE202_PROMPT_PATHS = (
+    "internal/provider/prompt_helpers.go",
+    "internal/provider/prompt_safe_read_protocol_test.go",
+    "internal/provider/prompt_safe_read_test.go",
+    "internal/provider/read_test.go",
+    "internal/provider/resource_prompt.go",
+)
+REVIEWED_ISSUE202_PROMPT_RUNTIME_DIFF_SHA256 = (
+    "9aea51dac8c907033bff9288d357c6f3b211a6708f60ec67904ba73b73a1a264"
+)
 
 
 def git(*args: str) -> str:
@@ -530,6 +541,12 @@ def main() -> int:
             and digest == REVIEWED_ISSUE202_GUARDRAIL_RUNTIME_DIFF_SHA256
         ):
             reviewed = "issue202-guardrail"
+        elif (
+            comparison == REVIEWED_ISSUE202_PROMPT_BASE
+            and changed_paths == REVIEWED_ISSUE202_PROMPT_PATHS
+            and digest == REVIEWED_ISSUE202_PROMPT_RUNTIME_DIFF_SHA256
+        ):
+            reviewed = "issue202-prompt"
         if reviewed is not None:
             print(
                 f"Provider runtime parity verified: reviewed={reviewed} "

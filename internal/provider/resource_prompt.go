@@ -213,12 +213,11 @@ func (r *PromptResource) Read(ctx context.Context, req resource.ReadRequest, res
 		return
 	}
 	imported := string(importedMarker) == "true"
-	if err := r.readPromptWithRetry(ctx, &data, 8, imported); err != nil {
-		if isPromptAbsentError(err) {
-			resp.State.RemoveResource(ctx)
-			return
-		}
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read prompt: %s", err))
+	if err := r.refreshPrompt(ctx, &data, imported); err != nil {
+		// LiteLLM v1.98 does not expose whether a singular 400/404 or a
+		// versions-route 404 came from Prisma or its process-local registry.
+		// No current response can therefore prove durable absence safely.
+		resp.Diagnostics.AddError("Prompt Read Error", "Unable to read and validate the scoped prompt. Response and request details were omitted.")
 		return
 	}
 
@@ -498,7 +497,19 @@ func promptBoolFromAPI(params map[string]interface{}, field string) (types.Bool,
 	return types.BoolValue(boolean), nil
 }
 
+// readPrompt is reserved for operation-coupled Create/Update confirmation. It
+// deliberately performs one request per existing convergence-loop attempt.
 func (r *PromptResource) readPrompt(ctx context.Context, data *PromptResourceModel, adoptImportedDefaults bool) error {
+	return r.readPromptWithTransport(ctx, data, adoptImportedDefaults, false)
+}
+
+// refreshPrompt is the ordinary Terraform refresh path. Only this scoped,
+// explicit-environment DB read uses bounded safe-read retries.
+func (r *PromptResource) refreshPrompt(ctx context.Context, data *PromptResourceModel, adoptImportedDefaults bool) error {
+	return r.readPromptWithTransport(ctx, data, adoptImportedDefaults, true)
+}
+
+func (r *PromptResource) readPromptWithTransport(ctx context.Context, data *PromptResourceModel, adoptImportedDefaults, safeRead bool) error {
 	promptID := data.PromptID.ValueString()
 	if promptID == "" {
 		promptID = data.ID.ValueString()
@@ -510,9 +521,27 @@ func (r *PromptResource) readPrompt(ctx context.Context, data *PromptResourceMod
 	endpoint := promptEndpoint(promptID, environment, nil)
 
 	var rawResult map[string]interface{}
-	if err := r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &rawResult); err != nil {
+	var err error
+	if safeRead {
+		err = r.client.DoReadWithResponse(ctx, http.MethodGet, endpoint, nil, &rawResult)
+	} else {
+		err = r.client.DoRequestWithResponse(ctx, http.MethodGet, endpoint, nil, &rawResult)
+	}
+	if err != nil {
 		return err
 	}
+	if err := projectPromptResourceAPIObject(data, rawResult, promptID, environment, adoptImportedDefaults); err != nil {
+		// Create and Update include this error in diagnostics, so do not return
+		// response field names or other response-derived details here.
+		return fmt.Errorf("prompt response validation failed")
+	}
+	return nil
+}
+
+// projectPromptResourceAPIObject validates every modeled response field before
+// assigning a candidate, so malformed successful reads cannot partially mutate
+// prior state or mutation-recovery state.
+func projectPromptResourceAPIObject(data *PromptResourceModel, rawResult map[string]interface{}, promptID, environment string, adoptImportedDefaults bool) error {
 	observed, err := promptObject(rawResult, true, promptID, environment)
 	if err != nil {
 		return err
@@ -522,69 +551,82 @@ func (r *PromptResource) readPrompt(ctx context.Context, data *PromptResourceMod
 	}
 	integration, ok := observed.Params["prompt_integration"].(string)
 	if !ok || integration == "" {
-		return fmt.Errorf("prompt response omitted required litellm_params.prompt_integration")
+		return fmt.Errorf("prompt response omitted required integration")
 	}
-
-	data.ID = types.StringValue(observed.PromptID)
-	data.PromptID = types.StringValue(observed.PromptID)
-	data.Environment = types.StringValue(observed.Environment)
-	data.Version = types.Int64Value(observed.Version)
-	data.PromptIntegration = types.StringValue(integration)
-	data.CreatedAt = types.StringNull()
-	data.UpdatedAt = types.StringNull()
-	if observed.CreatedAt != nil {
-		data.CreatedAt = types.StringValue(*observed.CreatedAt)
-	}
-	if observed.UpdatedAt != nil {
-		data.UpdatedAt = types.StringValue(*observed.UpdatedAt)
-	}
-
-	data.APIBase, err = promptStringFromAPI(observed.Params, "api_base")
+	apiBase, err := promptStringFromAPI(observed.Params, "api_base")
 	if err != nil {
 		return err
 	}
-	data.DotpromptContent, err = promptStringFromAPI(observed.Params, "dotprompt_content")
+	if _, err := promptStringFromAPI(observed.Params, "api_key"); err != nil {
+		return err
+	}
+	dotpromptContent, err := promptStringFromAPI(observed.Params, "dotprompt_content")
 	if err != nil {
 		return err
 	}
-	if adoptImportedDefaults || !data.IgnorePromptManagerModel.IsNull() || data.IgnorePromptManagerModel.IsUnknown() {
-		data.IgnorePromptManagerModel, err = promptBoolFromAPI(observed.Params, "ignore_prompt_manager_model")
-		if err != nil {
-			return err
-		}
+	ignoreModel, err := promptBoolFromAPI(observed.Params, "ignore_prompt_manager_model")
+	if err != nil {
+		return err
 	}
-	if adoptImportedDefaults || !data.IgnorePromptManagerOptionalParams.IsNull() || data.IgnorePromptManagerOptionalParams.IsUnknown() {
-		data.IgnorePromptManagerOptionalParams, err = promptBoolFromAPI(observed.Params, "ignore_prompt_manager_optional_params")
-		if err != nil {
-			return err
-		}
+	ignoreOptional, err := promptBoolFromAPI(observed.Params, "ignore_prompt_manager_optional_params")
+	if err != nil {
+		return err
 	}
-	value, exists := observed.Params["provider_specific_query_params"]
-	if !exists || value == nil {
-		data.ProviderSpecificQueryParams = types.StringNull()
-	} else {
+	queryParams := types.StringNull()
+	if value, exists := observed.Params["provider_specific_query_params"]; exists && value != nil {
 		object, valid := value.(map[string]interface{})
 		if !valid {
-			return fmt.Errorf("prompt response field %q must be an object or null", "litellm_params.provider_specific_query_params")
+			return fmt.Errorf("prompt response query parameters were malformed")
 		}
 		encoded, marshalErr := json.Marshal(object)
 		if marshalErr != nil {
-			return fmt.Errorf("prompt response field %q could not be encoded", "litellm_params.provider_specific_query_params")
+			return fmt.Errorf("prompt response query parameters could not be encoded")
 		}
-		if data.ProviderSpecificQueryParams.IsNull() || data.ProviderSpecificQueryParams.IsUnknown() || !jsonSemanticallyEqual(data.ProviderSpecificQueryParams.ValueString(), string(encoded)) {
-			data.ProviderSpecificQueryParams = types.StringValue(string(encoded))
-		}
+		queryParams = types.StringValue(string(encoded))
 	}
-	if adoptImportedDefaults || !data.PromptType.IsNull() || data.PromptType.IsUnknown() {
-		data.PromptType = types.StringNull()
-		if value, exists := observed.Info["prompt_type"]; exists && value != nil {
-			promptType, valid := value.(string)
-			if !valid {
-				return fmt.Errorf("prompt response field %q must be a string or null", "prompt_info.prompt_type")
-			}
-			data.PromptType = types.StringValue(promptType)
-		}
+	if observed.Info == nil {
+		return fmt.Errorf("prompt response omitted required prompt information")
 	}
+	promptTypeValue, exists := observed.Info["prompt_type"]
+	if !exists || promptTypeValue == nil {
+		return fmt.Errorf("prompt response omitted required prompt type")
+	}
+	promptType, valid := promptTypeValue.(string)
+	if !valid || (promptType != "db" && promptType != "config") {
+		return fmt.Errorf("prompt response returned an invalid prompt type")
+	}
+
+	candidate := *data
+	candidate.ID = types.StringValue(observed.PromptID)
+	candidate.PromptID = types.StringValue(observed.PromptID)
+	candidate.Environment = types.StringValue(observed.Environment)
+	candidate.Version = types.Int64Value(observed.Version)
+	candidate.PromptIntegration = types.StringValue(integration)
+	candidate.CreatedAt = types.StringNull()
+	candidate.UpdatedAt = types.StringNull()
+	if observed.CreatedAt != nil {
+		candidate.CreatedAt = types.StringValue(*observed.CreatedAt)
+	}
+	if observed.UpdatedAt != nil {
+		candidate.UpdatedAt = types.StringValue(*observed.UpdatedAt)
+	}
+	candidate.APIBase = apiBase
+	candidate.DotpromptContent = dotpromptContent
+	if adoptImportedDefaults || !candidate.IgnorePromptManagerModel.IsNull() || candidate.IgnorePromptManagerModel.IsUnknown() {
+		candidate.IgnorePromptManagerModel = ignoreModel
+	}
+	if adoptImportedDefaults || !candidate.IgnorePromptManagerOptionalParams.IsNull() || candidate.IgnorePromptManagerOptionalParams.IsUnknown() {
+		candidate.IgnorePromptManagerOptionalParams = ignoreOptional
+	}
+	if !queryParams.IsNull() && !queryParams.IsUnknown() && !candidate.ProviderSpecificQueryParams.IsNull() && !candidate.ProviderSpecificQueryParams.IsUnknown() && jsonSemanticallyEqual(candidate.ProviderSpecificQueryParams.ValueString(), queryParams.ValueString()) {
+		// Preserve configured spelling when the API document is semantically equal.
+	} else {
+		candidate.ProviderSpecificQueryParams = queryParams
+	}
+	if adoptImportedDefaults || !candidate.PromptType.IsNull() || candidate.PromptType.IsUnknown() {
+		candidate.PromptType = types.StringValue(promptType)
+	}
+	*data = candidate
 	return nil
 }
 
