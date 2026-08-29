@@ -700,7 +700,7 @@ func (r *MCPServerResource) ValidateConfig(ctx context.Context, req resource.Val
 	}
 	validateMCPInfoJSONConfig(data, &resp.Diagnostics)
 	validateMCP208CrossConfiguration(data, &resp.Diagnostics)
-	validateMCPTokenExchangeConfiguration(data, &resp.Diagnostics)
+	validateMCPTokenExchangeConfigurationForConfig(data, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() || data.Transport.IsNull() || data.Transport.IsUnknown() {
 		return
 	}
@@ -744,6 +744,14 @@ func (r *MCPServerResource) ValidateConfig(ctx context.Context, req resource.Val
 }
 
 func validateMCPTokenExchangeConfiguration(data MCPServerResourceModel, diagnostics *diag.Diagnostics) {
+	validateMCPTokenExchangeConfigurationPhase(data, diagnostics, false)
+}
+
+func validateMCPTokenExchangeConfigurationForConfig(data MCPServerResourceModel, diagnostics *diag.Diagnostics) {
+	validateMCPTokenExchangeConfigurationPhase(data, diagnostics, true)
+}
+
+func validateMCPTokenExchangeConfigurationPhase(data MCPServerResourceModel, diagnostics *diag.Diagnostics, deferUnknownDependencies bool) {
 	canonical := map[string]types.String{
 		"token_exchange_endpoint": data.TokenExchangeEndpoint,
 		"audience":                data.Audience,
@@ -775,7 +783,9 @@ func validateMCPTokenExchangeConfiguration(data MCPServerResourceModel, diagnost
 		}
 		canonicalConfigured = true
 		if data.Credentials.IsUnknown() {
-			diagnostics.AddAttributeError(path.Root(name), "Ambiguous MCP Token Exchange Source", "A canonical token-exchange field cannot be configured while credentials is unknown because absence of its legacy alias cannot be proven.")
+			if !deferUnknownDependencies {
+				diagnostics.AddAttributeError(path.Root(name), "Ambiguous MCP Token Exchange Source", "A canonical token-exchange field cannot be configured while credentials is unknown because absence of its legacy alias cannot be proven.")
+			}
 			continue
 		}
 		if legacyPresent[name] {
@@ -838,14 +848,24 @@ func validateMCPTokenExchangeConfiguration(data MCPServerResourceModel, diagnost
 		if !endpointKnown {
 			endpointKnown = legacyKnown["token_exchange_endpoint"] != ""
 		}
-		if !endpointKnown {
+		endpointUnknown := data.TokenURL.IsUnknown() || data.TokenExchangeEndpoint.IsUnknown() || data.Credentials.IsUnknown()
+		if !endpointKnown && !(deferUnknownDependencies && endpointUnknown) {
 			diagnostics.AddAttributeError(path.Root("token_exchange_endpoint"), "Incomplete Entra OBO Configuration", "Entra OBO requires an explicitly configured known non-empty token_exchange_endpoint or token_url; masked or imported state is not proof.")
 		}
-		if data.OAuthScopes.IsNull() || data.OAuthScopes.IsUnknown() || len(data.OAuthScopes.Elements()) == 0 {
+		if data.OAuthScopes.IsNull() {
+			diagnostics.AddAttributeError(path.Root("oauth_scopes"), "Incomplete Entra OBO Configuration", "Entra OBO requires explicitly configured known non-empty OAuth scopes.")
+		} else if data.OAuthScopes.IsUnknown() {
+			if !deferUnknownDependencies {
+				diagnostics.AddAttributeError(path.Root("oauth_scopes"), "Incomplete Entra OBO Configuration", "Entra OBO requires explicitly configured known non-empty OAuth scopes.")
+			}
+		} else if len(data.OAuthScopes.Elements()) == 0 {
 			diagnostics.AddAttributeError(path.Root("oauth_scopes"), "Incomplete Entra OBO Configuration", "Entra OBO requires explicitly configured known non-empty OAuth scopes.")
 		} else {
 			for _, raw := range data.OAuthScopes.Elements() {
 				value, ok := raw.(types.String)
+				if ok && value.IsUnknown() && deferUnknownDependencies {
+					continue
+				}
 				if !ok || value.IsNull() || value.IsUnknown() || value.ValueString() == "" {
 					diagnostics.AddAttributeError(path.Root("oauth_scopes"), "Incomplete Entra OBO Configuration", "Entra OBO requires explicitly configured known non-empty OAuth scopes.")
 					break
@@ -855,16 +875,20 @@ func validateMCPTokenExchangeConfiguration(data MCPServerResourceModel, diagnost
 	}
 	if requireExplicitClient {
 		complete := !data.Credentials.IsNull() && !data.Credentials.IsUnknown()
+		unknown := data.Credentials.IsUnknown()
 		if complete {
 			for _, name := range []string{"client_id", "client_secret"} {
 				raw, present := data.Credentials.Elements()[name]
 				value, ok := raw.(types.String)
+				if present && ok && value.IsUnknown() {
+					unknown = true
+				}
 				if !present || !ok || value.IsNull() || value.IsUnknown() || value.ValueString() == "" {
 					complete = false
 				}
 			}
 		}
-		if !complete {
+		if !complete && !(deferUnknownDependencies && unknown) {
 			diagnostics.AddAttributeError(path.Root("credentials"), "Incomplete MCP Token Exchange Credentials", "Canonical token exchange requires explicitly configured known non-empty client_id and client_secret credentials; masked or imported state is not proof.")
 		}
 	}
@@ -888,6 +912,17 @@ func resolveMCPTokenExchangeValidationConfig(config, plan MCPServerResourceModel
 	resolved.TokenExchangeProfile = resolveString(config.TokenExchangeProfile, plan.TokenExchangeProfile)
 	if config.Credentials.IsUnknown() {
 		resolved.Credentials = plan.Credentials
+	} else if !config.Credentials.IsNull() {
+		for _, raw := range config.Credentials.Elements() {
+			value, ok := raw.(types.String)
+			if ok && value.IsUnknown() {
+				// A map with statically known keys can still contain values sourced
+				// from variables. Validate those values from the proposed plan rather
+				// than treating configuration-time unknowns as missing credentials.
+				resolved.Credentials = plan.Credentials
+				break
+			}
+		}
 	}
 	if config.OAuthScopes.IsUnknown() {
 		resolved.OAuthScopes = plan.OAuthScopes

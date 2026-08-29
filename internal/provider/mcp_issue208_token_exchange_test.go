@@ -252,6 +252,22 @@ func TestMCPTokenExchangeSourceAndRuntimeValidation(t *testing.T) {
 	if diagnostics := validateTokenExchangeConfig(resolved); diagnostics.HasError() {
 		t.Fatalf("jointly resolved conditional token-exchange values were rejected: %v", diagnostics)
 	}
+
+	variableConfig := conditionalPlan
+	variableConfig.Credentials = tokenExchangeCredentials(map[string]attr.Value{
+		"client_id":                  types.StringUnknown(),
+		"client_secret":              types.StringUnknown(),
+		"token_endpoint_auth_method": types.StringValue("client_secret_basic"),
+	})
+	var configDiagnostics diag.Diagnostics
+	validateMCPTokenExchangeConfigurationForConfig(variableConfig, &configDiagnostics)
+	if configDiagnostics.HasError() {
+		t.Fatalf("configuration-time unknown credential values did not defer to the proposed plan: %v", configDiagnostics)
+	}
+	resolved = resolveMCPTokenExchangeValidationConfig(variableConfig, conditionalPlan)
+	if diagnostics := validateTokenExchangeConfig(resolved); diagnostics.HasError() {
+		t.Fatalf("jointly resolved credential map values were rejected: %v", diagnostics)
+	}
 }
 
 func TestMCPTokenExchangeLegacyWireLiftingAndCanonicalWireShape(t *testing.T) {
