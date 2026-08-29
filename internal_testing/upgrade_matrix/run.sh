@@ -24,6 +24,7 @@ IMPORT_ID_FILE=
 PROXY_PID=
 SESSION=
 MATRIX_LEDGER_KEY_FILE=
+SCENARIO_ASSERTION_OVERRIDE=
 COMMAND_TIMEOUT=${MATRIX_COMMAND_TIMEOUT:-300}
 case $COMMAND_TIMEOUT in ''|*[!0-9]*) printf '%s\n' 'Matrix failed: invalid command timeout' >&2; exit 1 ;; esac
 [ "$COMMAND_TIMEOUT" -ge 1 ] && [ "$COMMAND_TIMEOUT" -le 900 ] || { printf '%s\n' 'Matrix failed: command timeout is out of bounds' >&2; exit 1; }
@@ -92,7 +93,7 @@ cleanup() {
       if [ "$controller_absence_status" -eq 0 ]; then
         cleanup_status=1
       else
-        assert_authoritative_not_found "$SCRATCH/controller-absence.out" "$IMPORT_RESOURCE_TYPE" || cleanup_status=1
+        assert_post_destroy_import_rejected "$SCRATCH/controller-absence.out" "$IMPORT_RESOURCE_TYPE" || cleanup_status=1
       fi
     fi
   fi
@@ -310,10 +311,12 @@ record() {
   diagnostic_evidence=${SCENARIO_DIAGNOSTIC_EVIDENCE:-}
   diagnostic_override=${SCENARIO_DIAGNOSTIC_CODE_OVERRIDE:-auto}
   fallback_presence_evidence=${SCENARIO_FALLBACK_PRESENCE_EVIDENCE:-}
+  assertion_override=$SCENARIO_ASSERTION_OVERRIDE
   SCENARIO_EVIDENCE=
   SCENARIO_DIAGNOSTIC_EVIDENCE=
   SCENARIO_DIAGNOSTIC_CODE_OVERRIDE=
   SCENARIO_FALLBACK_PRESENCE_EVIDENCE=
+  SCENARIO_ASSERTION_OVERRIDE=
   log_size=$(wc -c <"$LOG")
   [ "$log_size" -le 10485760 ] || fail 'private child log exceeded its bounded size'
   assertion=terraform-plan-state-api
@@ -335,6 +338,14 @@ record() {
     documentation) assertion=validated-documentation ;;
   esac
   [ "$status" != skipped ] || assertion=allowlisted-unavailability
+  case "$assertion_override" in
+    '') ;;
+    import-fail-closed-inconclusive-absence)
+      [ "$category" = import ] && [ "$status" = passed ] || fail 'inconclusive import assertion was assigned outside a passed import'
+      assertion=$assertion_override
+      ;;
+    *) fail 'scenario assertion override was not reviewed' ;;
+  esac
   diagnostic=
   case "$name" in
     failure_recovery:model_failed_create_retry) diagnostic=model-create-error ;;
@@ -523,6 +534,19 @@ assert_authoritative_not_found() {
   # "not found" or HTTP-status text can describe unrelated plugin failures.
   python3 "$SCRIPT_DIR/absence_diagnostic.py" "$evidence" "$resource_type" || \
     fail 'post-destroy check was not an exact provider/API not-found result'
+}
+
+assert_post_destroy_import_rejected() {
+  evidence=$1 resource_type=$2
+  if [ "$resource_type" = litellm_prompt ]; then
+    # LiteLLM v1.98 cannot distinguish Prisma-backed Prompt absence from its
+    # process-local registry fallback. Require the exact value-free fail-closed
+    # diagnostic without claiming authoritative remote absence.
+    python3 "$SCRIPT_DIR/prompt_import_diagnostic.py" "$evidence" || \
+      fail 'post-destroy Prompt import was not the exact fail-closed diagnostic'
+    return
+  fi
+  assert_authoritative_not_found "$evidence" "$resource_type"
 }
 
 assert_fallback_delete_unconfirmed() {
@@ -805,7 +829,7 @@ PY
   set -e
   cat "$SCRATCH/import-absence.out" >>"$LOG"
   [ "$absence_status" -ne 0 ] || fail 'destroyed import target remained authoritative'
-  assert_authoritative_not_found "$SCRATCH/import-absence.out" "$resource_type"
+  assert_post_destroy_import_rejected "$SCRATCH/import-absence.out" "$resource_type"
   CLEANUP_MODE=none
   rm -rf "$producer" "$importer"
   WORKSPACE=
@@ -815,6 +839,9 @@ PY
   IMPORT_RESOURCE_TYPE=
   IMPORT_ID_FILE=
   SCENARIO_EVIDENCE=$SCRATCH/import-absence.out
+  if [ "$resource_type" = litellm_prompt ]; then
+    SCENARIO_ASSERTION_OVERRIDE=import-fail-closed-inconclusive-absence
+  fi
   record "import:$resource_type" import passed ''
 }
 

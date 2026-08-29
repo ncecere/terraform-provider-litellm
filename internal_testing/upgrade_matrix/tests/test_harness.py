@@ -79,6 +79,9 @@ class HarnessTests(unittest.TestCase):
         self.assertIn(
             "upgrade-private-plan-trigger-migration", harness.ASSERTION_CODES
         )
+        self.assertIn(
+            "import-fail-closed-inconclusive-absence", harness.ASSERTION_CODES
+        )
 
     def test_diagnostic_evidence_binds_exact_failed_command_result(self):
         with tempfile.TemporaryDirectory() as raw:
