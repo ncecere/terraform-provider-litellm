@@ -93,7 +93,7 @@ The following attributes are exported:
   * `byok_api_key_help_url` - Informational BYOK API-key help URL.
   * `source_url` - Informational source URL.
   * `timeout` - Positive finite timeout in seconds, or null for LiteLLM's runtime default.
-  * `max_concurrent_requests` - Positive outbound request limit, or null for unlimited concurrency.
+  * `max_concurrent_requests` - Exact outbound request limit. LiteLLM treats null and non-positive values as unlimited.
   * `created_at` - Creation timestamp.
   * `updated_at` - Last update timestamp.
 
