@@ -1111,6 +1111,11 @@ SMOKE_DELETE_LOGS=1
 mkdir -m 700 "$SMOKE_PRIVATE_ROOT"
 export PROVIDER_DIR SMOKE_PRIVATE_ROOT SMOKE_DELETE_LOGS
 LITELLM_ACCEPTANCE_ASSEMBLY_ONLY=0 sh "$REPO_ROOT/internal_testing/acceptance.sh" >>"$LOG" 2>&1 || fail 'lifecycle/data-source matrix failed'
+# The PATH shim bounds the acceptance script's historical `terraform` calls.
+# Direct matrix commands already use run_cli's bounded supervisor, so restore
+# the selected executable to prevent nested supervisors from emitting duplicate
+# command receipts for one diagnostic.
+CLI=$selected_cli
 # Project is the only registered resource and pair of data sources unavailable
 # in the pinned OSS edition. These are explicit execution records, never passes.
 record 'resource_coverage:litellm_project' resource_coverage skipped enterprise-license-required
