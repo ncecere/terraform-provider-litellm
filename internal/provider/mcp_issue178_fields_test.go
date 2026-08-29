@@ -380,6 +380,24 @@ func TestMCP178ScopesOnlyIntentCannotSatisfyAuthClassCredentialSafety(t *testing
 	if err := validateMCPImplicitClearSafety(config, MCPServerResourceModel{}, planned, map[string]interface{}{}, delta, false, true); err != nil {
 		t.Fatalf("complete generic credential and scope intent was rejected: %v", err)
 	}
+
+	withoutScopes := config
+	withoutScopes.OAuthScopes = types.ListNull(types.StringType)
+	withoutScopeOwnership := cloneMCPFieldOwnership(planned)
+	delete(withoutScopeOwnership.Owned, mcpFieldOAuthScopesPath)
+	if err := validateMCPImplicitClearSafety(withoutScopes, MCPServerResourceModel{}, withoutScopeOwnership, map[string]interface{}{}, map[string]interface{}{
+		"credentials": map[string]interface{}{"client_id": "client", "client_secret": "secret"},
+	}, false, true); err == nil {
+		t.Fatal("auth-class replacement without explicit native scope intent was accepted")
+	}
+
+	unknownScopes := config
+	unknownScopes.OAuthScopes = types.ListUnknown(types.StringType)
+	if err := validateMCPImplicitClearSafety(unknownScopes, MCPServerResourceModel{}, planned, map[string]interface{}{}, map[string]interface{}{
+		"credentials": map[string]interface{}{"client_id": "client", "client_secret": "secret"},
+	}, false, true); err == nil {
+		t.Fatal("auth-class replacement with unknown owned scopes was accepted")
+	}
 }
 
 func TestMCP178OAuthFlowImplicitClearProtection(t *testing.T) {

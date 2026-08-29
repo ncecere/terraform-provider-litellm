@@ -349,12 +349,20 @@ func validateMCPImplicitClearSafety(config, state MCPServerResourceModel, planne
 		}
 	}
 	if authClassChanged {
-		// v1.98 clears credentials on a credential-class change unless a complete
-		// generic credential intent is supplied in that same PUT. A scopes-only
-		// credentials object is not complete and must never satisfy this guard.
-		// Management responses redact values, so they are always non-authoritative.
-		_, supplied := delta["credentials"]
-		if !supplied || presence[mcpFieldCredentialsPath] != 1 || !planned.Owned[mcpFieldCredentialsPath] {
+		// v1.98 replaces the complete credentials object on a credential-class
+		// change. Both the generic string members and native scopes must therefore
+		// be explicit and known in this apply. Prior or API-only scopes cannot be
+		// recovered from management responses because they are always redacted.
+		rawCredentials, supplied := delta["credentials"]
+		scopesSupplied := false
+		switch credentials := rawCredentials.(type) {
+		case map[string]interface{}:
+			_, scopesSupplied = credentials["scopes"]
+		case map[string]string:
+			_, scopesSupplied = credentials["scopes"]
+		}
+		if !supplied || presence[mcpFieldCredentialsPath] != 1 || !planned.Owned[mcpFieldCredentialsPath] ||
+			presence[mcpFieldOAuthScopesPath] != 1 || !planned.Owned[mcpFieldOAuthScopesPath] || !scopesSupplied {
 			return fmt.Errorf("credential intent is incomplete for an authentication change")
 		}
 	}
