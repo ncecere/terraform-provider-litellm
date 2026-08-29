@@ -21,8 +21,8 @@ func TestMCPParitySchemasAndSensitivity(t *testing.T) {
 
 	var resourceResponse frameworkresource.SchemaResponse
 	(&MCPServerResource{}).Schema(ctx, frameworkresource.SchemaRequest{}, &resourceResponse)
-	if resourceResponse.Schema.Version != 4 {
-		t.Fatalf("resource schema version = %d, want 4", resourceResponse.Schema.Version)
+	if resourceResponse.Schema.Version != 5 {
+		t.Fatalf("resource schema version = %d, want 5", resourceResponse.Schema.Version)
 	}
 	for _, name := range []string{"url", "spec_path", "command", "args", "env", "static_headers", "authorization_url", "token_url", "registration_url"} {
 		if !resourceResponse.Schema.Attributes[name].IsSensitive() {

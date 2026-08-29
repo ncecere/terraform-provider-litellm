@@ -239,7 +239,7 @@ func TestMCPServerEqualRemoteOwnershipTakeoverAndUnknownRetentionProtocol(t *tes
 			if request.Method == http.MethodPut {
 				puts.Add(1)
 			}
-			_, _ = writer.Write([]byte(`{"server_id":"unknown-fields","server_name":"unknown-fields","alias":"retained_alias","description":"retained","transport":"http","auth_type":"none","url":null,"spec_path":null,"command":null,"authorization_url":null,"token_url":null,"registration_url":null,"mcp_access_groups":[],"args":[],"allowed_tools":[],"extra_headers":[],"env":{},"static_headers":{},"credentials":null,"allow_all_keys":true,"mcp_info":{}}`))
+			_, _ = writer.Write([]byte(`{"server_id":"unknown-fields","server_name":"unknown-fields","alias":"retained_alias","description":"retained","transport":"http","auth_type":"none","url":null,"spec_path":null,"command":null,"authorization_url":null,"token_url":null,"registration_url":null,"mcp_access_groups":[],"args":[],"allowed_tools":[],"extra_headers":[],"env":{},"static_headers":{},"credentials":null,"allow_all_keys":true,"available_on_public_internet":false,"oauth2_flow":"authorization_code","instructions":"retained instructions","tool_name_to_display_name":{"tool":"display"},"tool_name_to_description":{"tool":"description"},"mcp_info":{}}`))
 		}))
 		defer server.Close()
 		protocolServer, schemas := configuredImportProtocolServer(t, ctx, server.URL)
@@ -251,13 +251,18 @@ func TestMCPServerEqualRemoteOwnershipTakeoverAndUnknownRetentionProtocol(t *tes
 			"mcp_access_groups": protocolMCPStringList("group"), "args": protocolMCPStringList("server.js"), "allowed_tools": protocolMCPStringList("tool"), "extra_headers": protocolMCPStringList("X-Known"),
 			"env": map[string]tftypes.Value{"KNOWN": tftypes.NewValue(tftypes.String, "value")}, "static_headers": map[string]tftypes.Value{"X-Known": tftypes.NewValue(tftypes.String, "value")},
 			"credentials": map[string]tftypes.Value{"secret": tftypes.NewValue(tftypes.String, "value")}, "allow_all_keys": true,
-			"spec_version": "2024-11-05", "mcp_info_json": "{}", "field_ownership_generation": int64(2),
+			"oauth_scopes": protocolMCPStringList("scope"), "available_on_public_internet": false, "oauth2_flow": "authorization_code", "instructions": "retained instructions",
+			"tool_name_to_display_name": map[string]tftypes.Value{"tool": tftypes.NewValue(tftypes.String, "display")},
+			"tool_name_to_description":  map[string]tftypes.Value{"tool": tftypes.NewValue(tftypes.String, "description")},
+			"spec_version":              "2024-11-05", "mcp_info_json": "{}", "field_ownership_generation": int64(2),
 		}))
 		unknowns := map[string]interface{}{
 			"alias": tftypes.UnknownValue, "description": tftypes.UnknownValue, "url": tftypes.UnknownValue, "spec_path": tftypes.UnknownValue, "command": tftypes.UnknownValue,
 			"authorization_url": tftypes.UnknownValue, "token_url": tftypes.UnknownValue, "registration_url": tftypes.UnknownValue,
 			"mcp_access_groups": tftypes.UnknownValue, "args": tftypes.UnknownValue, "allowed_tools": tftypes.UnknownValue, "extra_headers": tftypes.UnknownValue,
 			"env": tftypes.UnknownValue, "static_headers": tftypes.UnknownValue, "credentials": tftypes.UnknownValue, "allow_all_keys": tftypes.UnknownValue,
+			"oauth_scopes": tftypes.UnknownValue, "available_on_public_internet": tftypes.UnknownValue, "oauth2_flow": tftypes.UnknownValue, "instructions": tftypes.UnknownValue,
+			"tool_name_to_display_name": tftypes.UnknownValue, "tool_name_to_description": tftypes.UnknownValue,
 		}
 		configValues := map[string]interface{}{"server_name": "unknown-fields", "transport": "http"}
 		for name, value := range unknowns {
