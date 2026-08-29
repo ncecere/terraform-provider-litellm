@@ -30,7 +30,7 @@ func TestMCP208SchemaV6AndDataSourceParity(t *testing.T) {
 	ctx := context.Background()
 	var resourceResponse frameworkresource.SchemaResponse
 	(&MCPServerResource{}).Schema(ctx, frameworkresource.SchemaRequest{}, &resourceResponse)
-	if resourceResponse.Schema.Version != 6 {
+	if resourceResponse.Schema.Version != 7 {
 		t.Fatalf("schema version = %d", resourceResponse.Schema.Version)
 	}
 	for _, name := range mcp208FieldNames {

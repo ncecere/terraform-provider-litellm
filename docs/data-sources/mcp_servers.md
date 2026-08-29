@@ -97,7 +97,7 @@ The following attributes are exported:
   * `created_at` - Creation timestamp.
   * `updated_at` - Last update timestamp.
 
-Results are sorted by unique `server_id`; a duplicate, malformed identity, malformed later collection/map, or non-null `credentials` member rejects the complete read before state is published. The list endpoint is read exactly once: the provider does not make per-item singular or health requests. Audit identities, health enrichment, credentials (including write-only OAuth scopes and per-user BYOK secrets), and `upstream_resource` are intentionally unavailable in list items.
+Results are sorted by unique `server_id`; a duplicate, malformed identity, malformed later collection/map, or non-null `credentials` member rejects the complete read before state is published. The list endpoint is read exactly once: the provider does not make per-item singular or health requests. Audit identities, health enrichment, credentials (including write-only OAuth scopes and per-user BYOK secrets), decrypted `env_vars`, and `upstream_resource` are intentionally unavailable in list items.
 
 LiteLLM may fabricate empty access-group, tool, argument, extra-header, and environment collections during role sanitization or registry-table construction. Those ambiguous empties are projected as null, while nonempty values are retained. `static_headers = {}` is authoritative because the sanitizer uses null for that field. The exact restricted `mcp_info = {"is_public": true}` sentinel becomes null; `{}` remains known canonical JSON. Explicit `allow_all_keys = false` remains known false.
 

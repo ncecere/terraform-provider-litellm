@@ -242,6 +242,7 @@ func TestMCPServerTransportConfigValidation(t *testing.T) {
 			MCPAccessGroups:            types.ListNull(types.StringType),
 			Args:                       types.ListNull(types.StringType),
 			Env:                        types.MapNull(types.StringType),
+			EnvVars:                    types.ListNull(mcpEnvVarObjectType),
 			Credentials:                types.MapNull(types.StringType),
 			AllowedTools:               types.ListNull(types.StringType),
 			ExtraHeaders:               types.ListNull(types.StringType),

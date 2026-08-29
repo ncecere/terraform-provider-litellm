@@ -313,7 +313,7 @@ value=json.load(open(sys.argv[1],encoding="utf-8"))
 # management reads redact them, so unit/protocol tests verify their exact wire intent.
 for field in ("alias","description","command","authorization_url","token_url","registration_url","oauth2_flow","instructions","byok_api_key_help_url","source_url","timeout","max_concurrent_requests"):
     assert value.get(field) is None,(field,value.get(field))
-for field in ("mcp_access_groups","args","allowed_tools","extra_headers","byok_description"):
+for field in ("mcp_access_groups","args","allowed_tools","extra_headers","byok_description","env_vars"):
     assert value.get(field)==[],(field,value.get(field))
 for field in ("env","static_headers","tool_name_to_display_name","tool_name_to_description"):
     assert value.get(field)=={},(field,value.get(field))

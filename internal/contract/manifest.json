@@ -16,7 +16,7 @@
   "provider_golden": {
     "operation_count": 108,
     "path": "internal/contractapi/testdata/provider-operations.golden.json",
-    "sha256": "5d5e8d1501e62f33c0453ad461a890eb6af8d366e370328147e850f395f88943"
+    "sha256": "f28c71bbd75acfeeb37b920315c1d2a48e7d2a41bebe9e4c8414092f03721d39"
   },
   "provider_operations": [
     {
@@ -1639,7 +1639,7 @@
         },
         {
           "file": "internal/provider/resource_mcp_server.go",
-          "line": 2004
+          "line": 2062
         }
       ],
       "method": "GET",
@@ -1651,7 +1651,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_mcp_server.go",
-          "line": 1141
+          "line": 1179
         }
       ],
       "method": "POST",
@@ -1663,7 +1663,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_mcp_server.go",
-          "line": 1293
+          "line": 1334
         }
       ],
       "method": "PUT",
@@ -1675,7 +1675,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_mcp_server.go",
-          "line": 1460
+          "line": 1501
         }
       ],
       "method": "DELETE",
@@ -1693,11 +1693,11 @@
         },
         {
           "file": "internal/provider/resource_mcp_server.go",
-          "line": 1985
+          "line": 2043
         },
         {
           "file": "internal/provider/resource_mcp_server.go",
-          "line": 1994
+          "line": 2052
         }
       ],
       "method": "GET",
