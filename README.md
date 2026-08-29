@@ -246,6 +246,8 @@ cd terraform-provider-litellm
 make install
 ```
 
+The historical Go module identifier is retained for provider-build compatibility. This repository is distributed as a Terraform provider executable and does not expose a supported Go library API. Use `registry.terraform.io/ncecere/litellm` in Terraform or OpenTofu configurations rather than importing the Go module.
+
 ### Development Commands
 
 The Makefile provides several useful commands for development:
@@ -270,7 +272,7 @@ The Makefile provides several useful commands for development:
 make test
 ```
 
-**Smoke tests** (manual run against a local LiteLLM proxy) exercise real plan/apply/destroy for selected resources and data sources. Results are written to `internal_testing/.smoke/smoke.log`.
+**Smoke tests** (manual run against a local LiteLLM proxy) exercise real plan/apply/destroy for selected resources and data sources. Results are written to timestamped files under `internal_testing/.smoke-logs/`.
 
 1. Start the proxy and DB: `make local` (runs `docker compose up -d` in `internal_testing/`).
 2. Optionally follow logs: `make logs`.
@@ -282,9 +284,9 @@ make test
    make smoke resources=model_minimal.tf,key_minimal.tf datasources=keys_list.tf,model.tf
    ```
 
-   All listed files are applied in a single Terraform run (shared state). Requires `make build` and a valid `internal_testing/terraform.tfvars` (copy from `terraform.tfvars.example`).
+   All listed files are applied in a single Terraform run (shared state). The harness builds the provider and copies its checked local test variables into an isolated private workspace.
 
-4. Inspect output: `internal_testing/.smoke/smoke.log` (no-color, section headers PLAN / APPLY / DESTROY / SUMMARY).
+4. Inspect the timestamped private log under `internal_testing/.smoke-logs/`.
 
 See [internal_testing/README.md](internal_testing/README.md) for full details (Docker layout, directory structure, tfvars).
 

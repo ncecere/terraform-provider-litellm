@@ -132,6 +132,16 @@ jobs:
         with:
           gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
           passphrase: ${{ secrets.PASSPHRASE }}
+      - name: Verify Registry signing-key continuity
+        env:
+          IMPORTED_FINGERPRINT: ${{ steps.import_gpg.outputs.fingerprint }}
+        run: |
+          expected="$(jq -er '.previous_provider.signing_key.fingerprint' internal_testing/upgrade_matrix/tools.lock.json)"
+          actual="$(printf '%s' "$IMPORTED_FINGERPRINT" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')"
+          if ! printf '%s' "$actual" | grep -Eq '^[0-9A-F]{40}$' || [ "$actual" != "$expected" ]; then
+            echo 'Imported release key does not match the reviewed Registry signing key.' >&2
+            exit 1
+          fi
       - name: Run GoReleaser only after all four full lanes
         uses: goreleaser/goreleaser-action@286f3b13b1b49da4ac219696163fb8c1c93e1200 # v6.0.0
         with:

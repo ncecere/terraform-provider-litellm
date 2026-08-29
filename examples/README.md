@@ -35,8 +35,7 @@ Before running any example:
 
 ```bash
 cd minimal
-cp terraform.tfvars.example terraform.tfvars
-# Edit terraform.tfvars with your values
+export TF_VAR_openai_api_key="your-openai-api-key"
 terraform init -upgrade
 terraform plan
 terraform apply
@@ -46,8 +45,8 @@ terraform apply
 
 ```bash
 cd complete
-cp terraform.tfvars.example terraform.tfvars
-# Edit terraform.tfvars with your values
+# Set each required TF_VAR_* value declared near the end of main.tf.
+export TF_VAR_openai_api_key="your-openai-api-key"
 terraform init -upgrade
 terraform plan
 terraform apply
@@ -123,22 +122,17 @@ Search tool configurations for different providers:
 5. **Use access groups**: Simplify model access management
 6. **Configure guardrails**: Protect against harmful content
 
-## Variable Files
+## Input Variables
 
-Each example includes a `variables.tf` file. Create a `terraform.tfvars` file with your values:
-
-```hcl
-# terraform.tfvars example
-litellm_api_base = "https://litellm.example.com"
-litellm_api_key  = "sk-your-api-key"
-openai_api_key   = "sk-your-openai-key"
-```
-
-Or use environment variables:
+Example inputs are declared in each example's `.tf` files. Supply required values with `TF_VAR_*` environment variables or create your own untracked `terraform.tfvars` file. Provider authentication uses `LITELLM_API_BASE` and `LITELLM_API_KEY` rather than Terraform input variables.
 
 ```bash
+export LITELLM_API_BASE="https://litellm.example.com"
+export LITELLM_API_KEY="sk-your-api-key"
 export TF_VAR_openai_api_key="sk-your-openai-key"
 ```
+
+Do not commit credentials or local variable files.
 
 ## Troubleshooting
 

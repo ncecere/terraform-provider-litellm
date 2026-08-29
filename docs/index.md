@@ -112,11 +112,13 @@ The LiteLLM provider supports the following resources:
 * [`litellm_key`](./resources/key.md) - Manage API keys
 * [`litellm_key_block`](./resources/key_block.md) - Block/unblock API keys
 * [`litellm_credential`](./resources/credential.md) - Manage credentials for various providers
+* [`litellm_jwt_key_mapping`](./resources/jwt_key_mapping.md) - Map JWT claims to existing virtual keys
 
 ### Organization & Team Management
 
 * [`litellm_organization`](./resources/organization.md) - Manage organizations
 * [`litellm_organization_member`](./resources/organization_member.md) - Manage organization memberships
+* [`litellm_project`](./resources/project.md) - Manage projects within teams
 * [`litellm_team`](./resources/team.md) - Manage teams and their permissions
 * [`litellm_team_block`](./resources/team_block.md) - Block/unblock teams
 * [`litellm_team_member`](./resources/team_member.md) - Manage team member configurations
@@ -127,6 +129,7 @@ The LiteLLM provider supports the following resources:
 
 * [`litellm_budget`](./resources/budget.md) - Manage budget configurations
 * [`litellm_access_group`](./resources/access_group.md) - Manage model access groups
+* [`litellm_unified_access_group`](./resources/unified_access_group.md) - Manage unified access-control groups
 * [`litellm_tag`](./resources/tag.md) - Manage tags for organization
 
 ### AI Safety & Configuration
@@ -134,6 +137,7 @@ The LiteLLM provider supports the following resources:
 * [`litellm_prompt`](./resources/prompt.md) - Manage prompt templates
 * [`litellm_guardrail`](./resources/guardrail.md) - Manage content guardrails
 * [`litellm_fallback`](./resources/fallback.md) - Manage model fallback configurations
+* [`litellm_agent`](./resources/agent.md) - Manage agent registrations and capabilities
 
 ### Integrations
 
@@ -147,16 +151,20 @@ The LiteLLM provider supports the following resources:
 
 * [`litellm_model`](./data-sources/model.md) - Retrieve model information
 * [`litellm_key`](./data-sources/key.md) - Retrieve API key information
+* [`litellm_jwt_key_mapping`](./data-sources/jwt_key_mapping.md) - Retrieve a JWT key mapping
 * [`litellm_team`](./data-sources/team.md) - Retrieve team information
 * [`litellm_organization`](./data-sources/organization.md) - Retrieve organization information
+* [`litellm_project`](./data-sources/project.md) - Retrieve project information
 * [`litellm_user`](./data-sources/user.md) - Retrieve user information
 * [`litellm_credential`](./data-sources/credential.md) - Retrieve credential information
 * [`litellm_budget`](./data-sources/budget.md) - Retrieve budget information
 * [`litellm_tag`](./data-sources/tag.md) - Retrieve tag information
 * [`litellm_access_group`](./data-sources/access_group.md) - Retrieve access group information
+* [`litellm_unified_access_group`](./data-sources/unified_access_group.md) - Retrieve a unified access-control group
 * [`litellm_prompt`](./data-sources/prompt.md) - Retrieve prompt information
 * [`litellm_guardrail`](./data-sources/guardrail.md) - Retrieve guardrail information
 * [`litellm_fallback`](./data-sources/fallback.md) - Retrieve fallback configuration for a model
+* [`litellm_agent`](./data-sources/agent.md) - Retrieve agent information
 * [`litellm_mcp_server`](./data-sources/mcp_server.md) - Retrieve MCP server information
 * [`litellm_search_tool`](./data-sources/search_tool.md) - Retrieve search tool information
 * [`litellm_vector_store`](./data-sources/vector_store.md) - Retrieve vector store information
@@ -165,14 +173,18 @@ The LiteLLM provider supports the following resources:
 
 * [`litellm_models`](./data-sources/models.md) - List all models
 * [`litellm_keys`](./data-sources/keys.md) - List all API keys
+* [`litellm_jwt_key_mappings`](./data-sources/jwt_key_mappings.md) - List JWT key mappings
 * [`litellm_teams`](./data-sources/teams.md) - List all teams
 * [`litellm_organizations`](./data-sources/organizations.md) - List all organizations
+* [`litellm_projects`](./data-sources/projects.md) - List all projects
 * [`litellm_users`](./data-sources/users.md) - List all users
 * [`litellm_budgets`](./data-sources/budgets.md) - List all budgets
 * [`litellm_tags`](./data-sources/tags.md) - List all tags
 * [`litellm_access_groups`](./data-sources/access_groups.md) - List all access groups
+* [`litellm_unified_access_groups`](./data-sources/unified_access_groups.md) - List unified access-control groups
 * [`litellm_prompts`](./data-sources/prompts.md) - List all prompts
 * [`litellm_guardrails`](./data-sources/guardrails.md) - List all guardrails
+* [`litellm_agents`](./data-sources/agents.md) - List all agents
 * [`litellm_mcp_servers`](./data-sources/mcp_servers.md) - List all MCP servers
 * [`litellm_search_tools`](./data-sources/search_tools.md) - List all search tools
 
