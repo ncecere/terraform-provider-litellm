@@ -6,11 +6,19 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
+
+var mcpCredentialLiftedAliasNames = map[string]bool{
+	"token_exchange_endpoint": true,
+	"audience":                true,
+	"subject_token_type":      true,
+	"token_exchange_profile":  true,
+}
 
 var mcpCredentialStringKeysV198 = map[string]bool{
 	"auth_value": true, "client_id": true, "client_secret": true,
@@ -73,12 +81,22 @@ func mcpFieldDesiredValue(ctx context.Context, data MCPServerResourceModel, fiel
 		return stringValue(data.Description)
 	case mcpFieldCommandPath:
 		return stringValue(data.Command)
+	case mcpFieldIssuerPath:
+		return stringValue(data.Issuer)
 	case mcpFieldAuthorizationURLPath:
 		return stringValue(data.AuthorizationURL)
 	case mcpFieldTokenURLPath:
 		return stringValue(data.TokenURL)
 	case mcpFieldRegistrationURLPath:
 		return stringValue(data.RegistrationURL)
+	case mcpFieldTokenExchangeEndpointPath:
+		return stringValue(data.TokenExchangeEndpoint)
+	case mcpFieldAudiencePath:
+		return stringValue(data.Audience)
+	case mcpFieldSubjectTokenTypePath:
+		return stringValue(data.SubjectTokenType)
+	case mcpFieldTokenExchangeProfilePath:
+		return stringValue(data.TokenExchangeProfile)
 	case mcpFieldAllowAllKeysPath:
 		return boolValue(data.AllowAllKeys)
 	case mcpFieldAvailablePublicInternetPath:
@@ -160,10 +178,66 @@ var mcpCredentialLiftedColumnNames = []string{
 	"token_exchange_profile",
 }
 
+// liftMCPTokenExchangeCredentialAliases implements LiteLLM v1.98's legacy
+// request dialect without changing Terraform's configured/state map shape.
+// Explicit top-level values are installed by the canonical sibling lifecycle;
+// callers reject dual-source intent before this wire-only transformation.
+func liftMCPTokenExchangeCredentialAliases(request map[string]interface{}) error {
+	raw, present := request["credentials"]
+	if !present || raw == nil {
+		return nil
+	}
+	credentials := map[string]string{}
+	switch value := raw.(type) {
+	case map[string]string:
+		for name, member := range value {
+			credentials[name] = member
+		}
+	case map[string]interface{}:
+		for name, member := range value {
+			stringMember, ok := member.(string)
+			if !ok {
+				// Native scopes are merged after the string map and are not a
+				// lifted alias. Preserve their exact list value.
+				continue
+			}
+			credentials[name] = stringMember
+		}
+	default:
+		return fmt.Errorf("credential intent has an incompatible shape")
+	}
+	for _, name := range mcpCredentialLiftedColumnNames {
+		value, configured := credentials[name]
+		if !configured {
+			continue
+		}
+		if _, collision := request[name]; collision {
+			return fmt.Errorf("canonical and legacy token-exchange sources collide")
+		}
+		request[name] = value
+		delete(credentials, name)
+	}
+	switch value := raw.(type) {
+	case map[string]string:
+		request["credentials"] = credentials
+	case map[string]interface{}:
+		stripped := make(map[string]interface{}, len(value))
+		for name, member := range value {
+			if !mcpCredentialLiftedAliasNames[name] {
+				stripped[name] = member
+			}
+		}
+		request["credentials"] = stripped
+	}
+	return nil
+}
+
 func mcpFieldRemovalSentinel(fieldPath string) interface{} {
 	switch fieldPath {
 	case mcpFieldAliasPath, mcpFieldDescriptionPath, mcpFieldCommandPath,
-		mcpFieldAuthorizationURLPath, mcpFieldTokenURLPath, mcpFieldRegistrationURLPath,
+		mcpFieldIssuerPath, mcpFieldAuthorizationURLPath, mcpFieldTokenURLPath, mcpFieldRegistrationURLPath,
+		mcpFieldTokenExchangeEndpointPath, mcpFieldAudiencePath, mcpFieldSubjectTokenTypePath,
+		mcpFieldTokenExchangeProfilePath,
 		mcpFieldCredentialsPath, mcpFieldOAuth2FlowPath, mcpFieldInstructionsPath,
 		mcpFieldDCRBridgePath, mcpFieldBYOKAPIKeyHelpURLPath, mcpFieldSourceURLPath,
 		mcpFieldTimeoutPath, mcpFieldMaxConcurrentRequestsPath:
@@ -247,6 +321,9 @@ func (r *MCPServerResource) buildMCPServerCreateRequest(ctx context.Context, pla
 		if err != nil || mergeMCPScopesCredentialIntent(request, scopes) != nil {
 			return nil, fmt.Errorf("configured MCP credential intent is invalid")
 		}
+	}
+	if err := liftMCPTokenExchangeCredentialAliases(request); err != nil {
+		return nil, fmt.Errorf("configured MCP token-exchange intent is invalid")
 	}
 	return request, nil
 }
@@ -371,19 +448,41 @@ func mcpKnownRawString(result map[string]interface{}, name string) (string, bool
 	return resultValue, ok
 }
 
-func validateMCPImplicitClearSafety(config, state MCPServerResourceModel, planned mcpFieldOwnership, hydration map[string]interface{}, delta map[string]interface{}, urlChanged, authClassChanged bool) error {
-	if !urlChanged && !authClassChanged {
+func validateMCPImplicitClearSafety(config, state MCPServerResourceModel, planned mcpFieldOwnership, hydration map[string]interface{}, delta map[string]interface{}, urlChanged, authClassChanged bool, issuerChange ...bool) error {
+	issuerChanged := len(issuerChange) != 0 && issuerChange[0]
+	if !urlChanged && !authClassChanged && !issuerChanged {
 		return nil
 	}
 	presence := mcpFieldConfigPresence(config)
+	legacyPrior := map[string]bool{}
+	legacyConfigured := map[string]bool{}
+	if !state.Credentials.IsNull() && !state.Credentials.IsUnknown() {
+		for name := range state.Credentials.Elements() {
+			if mcpCredentialLiftedAliasNames[name] {
+				legacyPrior[name] = true
+			}
+		}
+	}
+	if !config.Credentials.IsNull() && !config.Credentials.IsUnknown() {
+		for name := range config.Credentials.Elements() {
+			if mcpCredentialLiftedAliasNames[name] {
+				legacyConfigured[name] = true
+			}
+		}
+	}
 	for _, item := range []struct {
 		fieldPath string
 		prior     types.String
 	}{
+		{fieldPath: mcpFieldIssuerPath, prior: state.Issuer},
 		{fieldPath: mcpFieldAuthorizationURLPath, prior: state.AuthorizationURL},
 		{fieldPath: mcpFieldTokenURLPath, prior: state.TokenURL},
 		{fieldPath: mcpFieldRegistrationURLPath, prior: state.RegistrationURL},
 		{fieldPath: mcpFieldOAuth2FlowPath, prior: state.OAuth2Flow},
+		{fieldPath: mcpFieldTokenExchangeEndpointPath, prior: state.TokenExchangeEndpoint},
+		{fieldPath: mcpFieldAudiencePath, prior: state.Audience},
+		{fieldPath: mcpFieldSubjectTokenTypePath, prior: state.SubjectTokenType},
+		{fieldPath: mcpFieldTokenExchangeProfilePath, prior: state.TokenExchangeProfile},
 	} {
 		name := mcpFieldWireName(item.fieldPath)
 		raw, present := hydration[name]
@@ -396,6 +495,12 @@ func validateMCPImplicitClearSafety(config, state MCPServerResourceModel, planne
 		desired, supplied := delta[name]
 		explicitRemoval := planned.Removals[item.fieldPath] && supplied && desired == nil
 		explicitChange := planned.Owned[item.fieldPath] && presence[item.fieldPath] == 1 && supplied && !mcpWireValuesEqual(desired, raw)
+		if mcpCredentialLiftedAliasNames[name] && supplied {
+			legacyRemoval := desired == nil && legacyPrior[name] && (planned.Removals[mcpFieldCredentialsPath] || (authClassChanged && planned.Owned[mcpFieldCredentialsPath] && !legacyConfigured[name]))
+			legacyChange := legacyConfigured[name] && planned.Owned[mcpFieldCredentialsPath] && presence[mcpFieldCredentialsPath] == 1 && !mcpWireValuesEqual(desired, raw)
+			explicitRemoval = explicitRemoval || legacyRemoval
+			explicitChange = explicitChange || legacyChange
+		}
 		if !explicitRemoval && !explicitChange {
 			return fmt.Errorf("an unowned or unchanged OAuth endpoint would be cleared implicitly")
 		}
@@ -410,18 +515,6 @@ func validateMCPImplicitClearSafety(config, state MCPServerResourceModel, planne
 		explicitChange := planned.Owned[mcpFieldDCRBridgePath] && presence[mcpFieldDCRBridgePath] == 1 && supplied && !mcpWireValuesEqual(desired, dcrRaw)
 		if !explicitRemoval && !explicitChange {
 			return fmt.Errorf("a DCR bridge value lacks explicit changed intent")
-		}
-	}
-	for _, name := range []string{
-		"issuer", "token_exchange_endpoint",
-		"audience", "subject_token_type", "token_exchange_profile",
-	} {
-		if raw, present := hydration[name]; present && raw != nil {
-			desired, supplied := delta[name]
-			if supplied && !mcpWireValuesEqual(desired, raw) {
-				continue
-			}
-			return fmt.Errorf("a hidden authentication-flow value would be cleared implicitly")
 		}
 	}
 	if authClassChanged {
@@ -470,10 +563,24 @@ func validateMCPFieldCredentialMerge(ctx context.Context, plan, state, config MC
 	if err != nil {
 		return err
 	}
+	presence := mcpFieldConfigPresence(config)
+	canonicalHandoff := map[string]string{
+		"token_exchange_endpoint": mcpFieldTokenExchangeEndpointPath,
+		"audience":                mcpFieldAudiencePath,
+		"subject_token_type":      mcpFieldSubjectTokenTypePath,
+		"token_exchange_profile":  mcpFieldTokenExchangeProfilePath,
+	}
 	for key := range prior {
-		if _, present := desired[key]; !present {
-			return fmt.Errorf("LiteLLM v1.98 merges credential maps; clear credentials first, apply, then re-add the replacement map")
+		if _, present := desired[key]; present {
+			continue
 		}
+		if siblingPath, lifted := canonicalHandoff[key]; lifted && presence[siblingPath] == 1 && candidate.Owned[siblingPath] {
+			// LiteLLM atomically strips the legacy blob key while applying the
+			// explicitly configured canonical column. No other merge-only key
+			// deletion is representable in one PUT.
+			continue
+		}
+		return fmt.Errorf("LiteLLM v1.98 merges credential maps; clear credentials first, apply, then re-add the replacement map")
 	}
 	return nil
 }
@@ -515,13 +622,6 @@ func buildMCPFieldDelta(ctx context.Context, plan MCPServerResourceModel, config
 	}
 	delta := map[string]interface{}{}
 	presence := mcpFieldConfigPresence(config)
-	addLiftedCredentialIntent := func(credentials map[string]string) {
-		for _, name := range mcpCredentialLiftedColumnNames {
-			if value, present := credentials[name]; present {
-				delta[name] = value
-			}
-		}
-	}
 	if candidate.Removals[mcpFieldCredentialsPath] {
 		priorCredentials, err := mcpFieldStringMap(ctx, state.Credentials)
 		if err != nil {
@@ -567,13 +667,12 @@ func buildMCPFieldDelta(ctx context.Context, plan MCPServerResourceModel, config
 			// emptiness over hidden existing keys. Create remains safe because no
 			// prior row exists.
 			if !committed.Owned[fieldPath] {
-				credentials, validCredentials := desired.(map[string]string)
+				_, validCredentials := desired.(map[string]string)
 				if recoverAcceptedCreate && validCredentials {
 					// The accepted-create marker is bound to this exact credential
 					// class and key set. Re-send every configured value so opaque value
 					// changes are applied rather than inferred from masked readback.
 					delta[name] = desired
-					addLiftedCredentialIntent(credentials)
 					continue
 				}
 				replacesCredentialClass := mcpCredentialClassWillReplace(plan, state, hydration) || mcpCredentialOwnershipClassWillReplace(committed, candidate)
@@ -582,7 +681,6 @@ func buildMCPFieldDelta(ctx context.Context, plan MCPServerResourceModel, config
 					return nil, fmt.Errorf("credentials cannot be adopted safely through LiteLLM's merge-only update without a credential-class replacement or a confirmed Terraform clear")
 				}
 				delta[name] = desired
-				addLiftedCredentialIntent(credentials)
 			} else {
 				credentials, validCredentials := desired.(map[string]string)
 				if !validCredentials {
@@ -618,7 +716,6 @@ func buildMCPFieldDelta(ctx context.Context, plan MCPServerResourceModel, config
 				}
 				if writeCredentials {
 					delta[name] = desired
-					addLiftedCredentialIntent(credentials)
 				}
 			}
 			continue
@@ -629,6 +726,33 @@ func buildMCPFieldDelta(ctx context.Context, plan MCPServerResourceModel, config
 		// role empty collection sentinels are not authoritative equality.
 		if !present || !mcpWireValuesEqual(desired, remote) || mcpAmbiguousEmptyCollectionNeedsWrite(ctx, fieldPath, desired, remote, state, committed) {
 			delta[name] = desired
+		}
+	}
+
+	// A lifted-alias deletion is representable in one merge-only PUT only as an
+	// explicit handoff to its configured canonical sibling. Force that sibling
+	// onto the wire even when authoritative readback is already equal, so the
+	// credentials rewrite and column authority are one upstream transaction.
+	if !state.Credentials.IsNull() && !state.Credentials.IsUnknown() && !config.Credentials.IsNull() && !config.Credentials.IsUnknown() {
+		priorCredentials, priorErr := mcpFieldStringMap(ctx, state.Credentials)
+		desiredCredentials, desiredErr := mcpFieldStringMap(ctx, config.Credentials)
+		if priorErr != nil || desiredErr != nil {
+			return nil, fmt.Errorf("credential handoff requires complete known maps")
+		}
+		canonicalValues := map[string]types.String{
+			"token_exchange_endpoint": config.TokenExchangeEndpoint,
+			"audience":                config.Audience,
+			"subject_token_type":      config.SubjectTokenType,
+			"token_exchange_profile":  config.TokenExchangeProfile,
+		}
+		for name, canonicalValue := range canonicalValues {
+			if _, previouslyLegacy := priorCredentials[name]; !previouslyLegacy {
+				continue
+			}
+			if _, retainedLegacy := desiredCredentials[name]; retainedLegacy || canonicalValue.IsNull() || canonicalValue.IsUnknown() {
+				continue
+			}
+			delta[name] = canonicalValue.ValueString()
 		}
 	}
 
@@ -665,6 +789,9 @@ func buildMCPFieldDelta(ctx context.Context, plan MCPServerResourceModel, config
 				return nil, err
 			}
 		}
+	}
+	if err := liftMCPTokenExchangeCredentialAliases(delta); err != nil {
+		return nil, err
 	}
 	return delta, nil
 }
@@ -1053,7 +1180,21 @@ func (r *MCPServerResource) Update(ctx context.Context, req resource.UpdateReque
 	}
 	desiredAuth, authSent := delta["auth_type"].(string)
 	authClassChanged := authSent && mcpAuthCredentialClass(remoteAuth) != mcpAuthCredentialClass(desiredAuth)
-	if err := validateMCPImplicitClearSafety(config, state, plannedFields, hydration, delta, urlChanged, authClassChanged); err != nil {
+	remoteIssuer := ""
+	if raw, present := hydration["issuer"].(string); present {
+		remoteIssuer = strings.TrimSpace(raw)
+	} else if !state.Issuer.IsNull() && !state.Issuer.IsUnknown() {
+		remoteIssuer = strings.TrimSpace(state.Issuer.ValueString())
+	}
+	issuerChanged := false
+	if desired, sent := delta["issuer"]; sent && remoteIssuer != "" {
+		desiredIssuer := ""
+		if value, ok := desired.(string); ok {
+			desiredIssuer = strings.TrimSpace(value)
+		}
+		issuerChanged = desiredIssuer != remoteIssuer
+	}
+	if err := validateMCPImplicitClearSafety(config, state, plannedFields, hydration, delta, urlChanged, authClassChanged, issuerChanged); err != nil {
 		resp.State, resp.Private = req.State, req.Private
 		resp.Diagnostics.AddError("Unsafe MCP URL or Authentication Update", "LiteLLM v1.98 would implicitly clear an unowned, unknown, or unchanged OAuth/credential value ("+err.Error()+"). Configure every affected value with a genuinely changed or cleared complete intent in one apply. No PUT was attempted; restorative PUTs are never used.")
 		return

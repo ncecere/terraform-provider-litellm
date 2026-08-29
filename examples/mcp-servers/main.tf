@@ -185,6 +185,28 @@ resource "litellm_mcp_server" "oauth_protected" {
   ]
 }
 
+# RFC 8693 token exchange. Canonical fields must not be duplicated in credentials.
+resource "litellm_mcp_server" "token_exchange" {
+  server_name = "partner_obo"
+  description = "Partner API using caller-token exchange"
+  url         = "https://partner.example.com/mcp"
+  transport   = "http"
+  auth_type   = "oauth2_token_exchange"
+
+  issuer                  = "https://identity.example.com"
+  token_exchange_endpoint = "https://identity.example.com/oauth2/token"
+  audience                = "api://partner"
+  subject_token_type      = "urn:ietf:params:oauth:token-type:access_token"
+  token_exchange_profile  = "rfc8693"
+  oauth_scopes            = ["partner.read"]
+
+  credentials = {
+    "client_id"                  = var.token_exchange_client_id
+    "client_secret"              = var.token_exchange_client_secret
+    "token_endpoint_auth_method" = "client_secret_basic"
+  }
+}
+
 # OpenAPI-backed server. spec_path is resolved by the LiteLLM runtime.
 resource "litellm_mcp_server" "inventory_openapi" {
   server_name = "inventory_api"
@@ -278,6 +300,17 @@ variable "enterprise_api_key" {
   sensitive   = true
 }
 
+variable "token_exchange_client_id" {
+  description = "OAuth client ID used for token exchange"
+  type        = string
+}
+
+variable "token_exchange_client_secret" {
+  description = "OAuth client secret used for token exchange"
+  type        = string
+  sensitive   = true
+}
+
 # =============================================================================
 # OUTPUTS
 # =============================================================================
@@ -287,6 +320,7 @@ output "mcp_server_ids" {
     github       = litellm_mcp_server.github.server_id
     zapier       = litellm_mcp_server.zapier.server_id
     enterprise   = litellm_mcp_server.oauth_protected.server_id
+    token_obo    = litellm_mcp_server.token_exchange.server_id
     python_local = litellm_mcp_server.local_python.server_id
     nodejs_local = litellm_mcp_server.local_nodejs.server_id
   }

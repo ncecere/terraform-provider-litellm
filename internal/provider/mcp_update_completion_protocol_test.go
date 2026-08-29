@@ -216,7 +216,7 @@ func TestMCPServerCredentialsClearIncludesOwnedLiftedColumnsProtocol(t *testing.
 	before := map[string]interface{}{
 		"server_id": "clear-lifted", "server_name": "clear-lifted", "transport": "http", "url": "https://known.invalid/mcp",
 		"auth_type": "oauth2_token_exchange", "credentials": nil, "audience": "audience", "subject_token_type": "subject",
-		"token_exchange_endpoint": "https://token.invalid/exchange", "token_exchange_profile": "unowned-profile", "mcp_info": map[string]interface{}{},
+		"token_exchange_endpoint": "https://token.invalid/exchange", "token_exchange_profile": "rfc8693", "mcp_info": map[string]interface{}{},
 	}
 	owned := mcpFieldOwnership{Owned: map[string]bool{mcpFieldCredentialsPath: true}, Removals: map[string]bool{}, Generation: 1, Versioned: true}
 	for _, test := range []struct {
@@ -231,7 +231,7 @@ func TestMCPServerCredentialsClearIncludesOwnedLiftedColumnsProtocol(t *testing.
 			after := map[string]interface{}{
 				"server_id": "clear-lifted", "server_name": "clear-lifted", "transport": "http", "url": "https://known.invalid/mcp",
 				"auth_type": "oauth2_token_exchange", "credentials": nil, "audience": nil, "subject_token_type": nil,
-				"token_exchange_endpoint": nil, "token_exchange_profile": "unowned-profile", "mcp_info": map[string]interface{}{},
+				"token_exchange_endpoint": nil, "token_exchange_profile": "rfc8693", "mcp_info": map[string]interface{}{},
 			}
 			if test.retainAudience {
 				after["audience"] = "audience"

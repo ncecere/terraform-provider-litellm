@@ -48,7 +48,7 @@ func assertMCPServerIdentityOnlyState(t *testing.T, schema *tfprotov6.Schema, st
 	for _, field := range []string{
 		"server_name", "alias", "description", "url", "spec_path", "transport", "spec_version", "auth_type",
 		"mcp_access_groups", "command", "args", "env", "mcp_info", "credentials", "allowed_tools", "extra_headers",
-		"static_headers", "authorization_url", "token_url", "registration_url", "allow_all_keys", "skip_url_validation",
+		"static_headers", "issuer", "authorization_url", "token_url", "registration_url", "token_exchange_endpoint", "audience", "subject_token_type", "token_exchange_profile", "allow_all_keys", "skip_url_validation",
 		"created_at", "created_by",
 	} {
 		if !attributes[field].IsNull() {

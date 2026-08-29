@@ -348,6 +348,35 @@ PY
   SUCCESS=1
   printf '\nSmoke passed: MCP set-to-clear, exact observable sentinels, no drift, import, repeated refresh, and cleanup succeeded.\n' >&3
   exit 0
+elif [ "${SMOKE_MCP_TOKEN_EXCHANGE_LIFECYCLE:-}" = "1" ]; then
+  echo '=== MCP TOKEN EXCHANGE SET TO CLEAR ==='
+  terraform apply -auto-approve -var=mcp_token_exchange_phase=cleared
+  STEADY_ARGS='-var=mcp_token_exchange_phase=cleared'
+  CLEANUP_ARGS=$STEADY_ARGS
+  mcp_token_exchange_id=$(terraform output -raw mcp_token_exchange_lifecycle_id)
+  curl --fail --silent --show-error -H 'Authorization: Bearer sk-testing-key' "http://localhost:4000/v1/mcp/server/$mcp_token_exchange_id" >mcp-token-exchange-cleared.json
+  python3 - mcp-token-exchange-cleared.json <<'PY'
+import json,sys
+value=json.load(open(sys.argv[1],encoding="utf-8"))
+for field in ("issuer","token_exchange_endpoint","audience","subject_token_type","token_exchange_profile"):
+    assert value.get(field) is None,(field,value.get(field))
+PY
+  for refresh_number in 1 2; do
+    echo "=== MCP TOKEN EXCHANGE CLEAR REFRESH-ONLY $refresh_number ==="
+    terraform apply -refresh-only -auto-approve $STEADY_ARGS
+  done
+  set +e
+  terraform plan -detailed-exitcode $STEADY_ARGS >mcp-token-exchange-no-drift.log 2>&1
+  mcp_token_exchange_plan_status=$?
+  set -e
+  cat mcp-token-exchange-no-drift.log
+  [ "$mcp_token_exchange_plan_status" -eq 0 ] || { echo 'MCP token-exchange clear did not reach zero drift.' >&3; exit 1; }
+  terraform destroy -auto-approve $STEADY_ARGS
+  terraform state list >matrix-final-state.list
+  [ ! -s matrix-final-state.list ] || { echo 'MCP token-exchange cleanup left state.' >&3; exit 1; }
+  SUCCESS=1
+  printf '\nSmoke passed: MCP token-exchange set-to-clear, repeated refresh, no drift, and cleanup succeeded.\n' >&3
+  exit 0
 elif [ "${SMOKE_MCP_IMPORT:-}" = "1" ]; then
   echo '=== MCP IMPORT PROJECTION ==='
   mcp_import_id=$(terraform output -raw mcp_import_seed_id)
