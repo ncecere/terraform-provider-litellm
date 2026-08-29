@@ -26,9 +26,14 @@ const (
 	mcpFieldAliasPath                   = "/alias"
 	mcpFieldDescriptionPath             = "/description"
 	mcpFieldCommandPath                 = "/command"
+	mcpFieldIssuerPath                  = "/issuer"
 	mcpFieldAuthorizationURLPath        = "/authorization_url"
 	mcpFieldTokenURLPath                = "/token_url"
 	mcpFieldRegistrationURLPath         = "/registration_url"
+	mcpFieldTokenExchangeEndpointPath   = "/token_exchange_endpoint"
+	mcpFieldAudiencePath                = "/audience"
+	mcpFieldSubjectTokenTypePath        = "/subject_token_type"
+	mcpFieldTokenExchangeProfilePath    = "/token_exchange_profile"
 	mcpFieldAccessGroupsPath            = "/mcp_access_groups"
 	mcpFieldArgsPath                    = "/args"
 	mcpFieldEnvPath                     = "/env"
@@ -60,6 +65,7 @@ var mcpFieldPaths = []string{
 	mcpFieldAllowAllKeysPath,
 	mcpFieldAllowedToolsPath,
 	mcpFieldArgsPath,
+	mcpFieldAudiencePath,
 	mcpFieldAuthorizationURLPath,
 	mcpFieldCommandPath,
 	mcpFieldCredentialsPath,
@@ -68,8 +74,12 @@ var mcpFieldPaths = []string{
 	mcpFieldEnvVarsPath,
 	mcpFieldExtraHeadersPath,
 	mcpFieldAccessGroupsPath,
+	mcpFieldIssuerPath,
 	mcpFieldRegistrationURLPath,
 	mcpFieldStaticHeadersPath,
+	mcpFieldSubjectTokenTypePath,
+	mcpFieldTokenExchangeEndpointPath,
+	mcpFieldTokenExchangeProfilePath,
 	mcpFieldTokenURLPath,
 	mcpFieldOAuthScopesPath,
 	mcpFieldAvailablePublicInternetPath,
@@ -407,9 +417,14 @@ func mcpFieldConfigPresence(config MCPServerResourceModel) map[string]int {
 	set(mcpFieldAliasPath, config.Alias)
 	set(mcpFieldDescriptionPath, config.Description)
 	set(mcpFieldCommandPath, config.Command)
+	set(mcpFieldIssuerPath, config.Issuer)
 	set(mcpFieldAuthorizationURLPath, config.AuthorizationURL)
 	set(mcpFieldTokenURLPath, config.TokenURL)
 	set(mcpFieldRegistrationURLPath, config.RegistrationURL)
+	set(mcpFieldTokenExchangeEndpointPath, config.TokenExchangeEndpoint)
+	set(mcpFieldAudiencePath, config.Audience)
+	set(mcpFieldSubjectTokenTypePath, config.SubjectTokenType)
+	set(mcpFieldTokenExchangeProfilePath, config.TokenExchangeProfile)
 	set(mcpFieldAccessGroupsPath, config.MCPAccessGroups)
 	set(mcpFieldArgsPath, config.Args)
 	set(mcpFieldEnvPath, config.Env)

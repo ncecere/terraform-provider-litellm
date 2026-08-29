@@ -247,9 +247,14 @@ type MCPServerResourceModel struct {
 	AllowedTools              types.List    `tfsdk:"allowed_tools"`
 	ExtraHeaders              types.List    `tfsdk:"extra_headers"`
 	StaticHeaders             types.Map     `tfsdk:"static_headers"`
+	Issuer                    types.String  `tfsdk:"issuer"`
 	AuthorizationURL          types.String  `tfsdk:"authorization_url"`
 	TokenURL                  types.String  `tfsdk:"token_url"`
 	RegistrationURL           types.String  `tfsdk:"registration_url"`
+	TokenExchangeEndpoint     types.String  `tfsdk:"token_exchange_endpoint"`
+	Audience                  types.String  `tfsdk:"audience"`
+	SubjectTokenType          types.String  `tfsdk:"subject_token_type"`
+	TokenExchangeProfile      types.String  `tfsdk:"token_exchange_profile"`
 	AllowAllKeys              types.Bool    `tfsdk:"allow_all_keys"`
 	SkipURLValidation         types.Bool    `tfsdk:"skip_url_validation"`
 	OAuthScopes               types.List    `tfsdk:"oauth_scopes"`
@@ -281,7 +286,7 @@ func (r *MCPServerResource) Metadata(ctx context.Context, req resource.MetadataR
 func (r *MCPServerResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		Description: "Manages a LiteLLM MCP (Model Context Protocol) server.",
-		Version:     7,
+		Version:     8,
 		Attributes: map[string]schema.Attribute{
 			"mcp_info_json": schema.StringAttribute{
 				Description: "Sensitive complete MCP info JSON object. The root must be a non-null object; {} explicitly owns and clears the whole document. Authoritative reads expose the complete object without dropping unknown members or exact JSON numbers.",
@@ -454,6 +459,12 @@ func (r *MCPServerResource) Schema(ctx context.Context, req resource.SchemaReque
 				Sensitive:   true,
 				ElementType: types.StringType,
 			},
+			"issuer": schema.StringAttribute{
+				Description: "OAuth issuer anchor. LiteLLM may mask this value by role; null or omission on read does not prove a clear.",
+				Optional:    true,
+				Computed:    true,
+				Sensitive:   true,
+			},
 			"authorization_url": schema.StringAttribute{
 				Description: "OAuth authorization URL for the MCP server.",
 				Optional:    true,
@@ -468,6 +479,30 @@ func (r *MCPServerResource) Schema(ctx context.Context, req resource.SchemaReque
 				Description: "OAuth registration URL for the MCP server.",
 				Optional:    true,
 				Sensitive:   true,
+			},
+			"token_exchange_endpoint": schema.StringAttribute{
+				Description: "Canonical OAuth token-exchange endpoint. The legacy credentials key remains accepted as an alternative source, but the two sources cannot be configured together.",
+				Optional:    true,
+				Computed:    true,
+				Sensitive:   true,
+			},
+			"audience": schema.StringAttribute{
+				Description: "Canonical OAuth audience used by RFC 8693 token exchange, ID-JAG, or OAuth2 client credentials.",
+				Optional:    true,
+				Computed:    true,
+			},
+			"subject_token_type": schema.StringAttribute{
+				Description: "Canonical RFC 8693 subject token type.",
+				Optional:    true,
+				Computed:    true,
+			},
+			"token_exchange_profile": schema.StringAttribute{
+				Description: "Canonical token-exchange wire profile.",
+				Optional:    true,
+				Computed:    true,
+				Validators: []validator.String{
+					newMCPSafeEnumValidator([]string{"rfc8693", "entra_obo"}, "Token exchange profile must be rfc8693 or entra_obo."),
+				},
 			},
 			"allow_all_keys": schema.BoolAttribute{
 				Description: "Whether to allow all API keys to access this MCP server.",
@@ -649,7 +684,12 @@ func (r *MCPServerResource) ValidateConfig(ctx context.Context, req resource.Val
 		return
 	}
 
-	for name, value := range map[string]types.String{"url": data.URL, "spec_path": data.SpecPath} {
+	for name, value := range map[string]types.String{
+		"url": data.URL, "spec_path": data.SpecPath,
+		"issuer": data.Issuer, "token_exchange_endpoint": data.TokenExchangeEndpoint,
+		"audience": data.Audience, "subject_token_type": data.SubjectTokenType,
+		"token_exchange_profile": data.TokenExchangeProfile,
+	} {
 		if !value.IsNull() && !value.IsUnknown() && value.ValueString() == "" {
 			resp.Diagnostics.AddAttributeError(
 				path.Root(name),
@@ -660,6 +700,7 @@ func (r *MCPServerResource) ValidateConfig(ctx context.Context, req resource.Val
 	}
 	validateMCPInfoJSONConfig(data, &resp.Diagnostics)
 	validateMCP208CrossConfiguration(data, &resp.Diagnostics)
+	validateMCPTokenExchangeConfigurationForConfig(data, &resp.Diagnostics)
 	if resp.Diagnostics.HasError() || data.Transport.IsNull() || data.Transport.IsUnknown() {
 		return
 	}
@@ -700,6 +741,193 @@ func (r *MCPServerResource) ValidateConfig(ctx context.Context, req resource.Val
 			}
 		}
 	}
+}
+
+func validateMCPTokenExchangeConfiguration(data MCPServerResourceModel, diagnostics *diag.Diagnostics) {
+	validateMCPTokenExchangeConfigurationPhase(data, diagnostics, false)
+}
+
+func validateMCPTokenExchangeConfigurationForConfig(data MCPServerResourceModel, diagnostics *diag.Diagnostics) {
+	validateMCPTokenExchangeConfigurationPhase(data, diagnostics, true)
+}
+
+func validateMCPTokenExchangeConfigurationPhase(data MCPServerResourceModel, diagnostics *diag.Diagnostics, deferUnknownDependencies bool) {
+	canonical := map[string]types.String{
+		"token_exchange_endpoint": data.TokenExchangeEndpoint,
+		"audience":                data.Audience,
+		"subject_token_type":      data.SubjectTokenType,
+		"token_exchange_profile":  data.TokenExchangeProfile,
+	}
+	legacyPresent := map[string]bool{}
+	legacyKnown := map[string]string{}
+	if !data.Credentials.IsNull() && !data.Credentials.IsUnknown() {
+		for name, raw := range data.Credentials.Elements() {
+			if !mcpCredentialLiftedAliasNames[name] {
+				continue
+			}
+			legacyPresent[name] = true
+			value, ok := raw.(types.String)
+			if !ok || value.IsNull() || value.IsUnknown() {
+				continue
+			}
+			legacyKnown[name] = value.ValueString()
+		}
+	}
+
+	canonicalConfigured := false
+	for name, value := range canonical {
+		if value.IsNull() || value.IsUnknown() {
+			// Unknown expressions are validated from their resolved proposed value
+			// in ModifyPlan. They are not wire intent while still unknown.
+			continue
+		}
+		canonicalConfigured = true
+		if data.Credentials.IsUnknown() {
+			if !deferUnknownDependencies {
+				diagnostics.AddAttributeError(path.Root(name), "Ambiguous MCP Token Exchange Source", "A canonical token-exchange field cannot be configured while credentials is unknown because absence of its legacy alias cannot be proven.")
+			}
+			continue
+		}
+		if legacyPresent[name] {
+			diagnostics.AddAttributeError(path.Root(name), "Conflicting MCP Token Exchange Sources", "A canonical token-exchange field and its legacy credentials alias cannot both be configured, even when their values are equal.")
+		}
+	}
+
+	authKnown := !data.AuthType.IsNull() && !data.AuthType.IsUnknown()
+	authType := ""
+	if authKnown {
+		authType = data.AuthType.ValueString()
+	}
+	fieldConfigured := func(name string) bool {
+		return (!canonical[name].IsNull() && !canonical[name].IsUnknown()) || legacyPresent[name]
+	}
+	if authKnown {
+		for _, name := range []string{"token_exchange_endpoint", "subject_token_type"} {
+			if fieldConfigured(name) && authType != "oauth2_token_exchange" && authType != "oauth2_id_jag" {
+				diagnostics.AddAttributeError(path.Root(name), "Invalid MCP Token Exchange Authentication", "This token-exchange field requires oauth2_token_exchange or oauth2_id_jag authentication.")
+			}
+		}
+		if fieldConfigured("token_exchange_profile") && authType != "oauth2_token_exchange" {
+			diagnostics.AddAttributeError(path.Root("token_exchange_profile"), "Invalid MCP Token Exchange Authentication", "The token-exchange profile requires oauth2_token_exchange authentication.")
+		}
+		if fieldConfigured("audience") {
+			allowed := authType == "oauth2_token_exchange" || authType == "oauth2_id_jag"
+			if authType == "oauth2" && !data.OAuth2Flow.IsUnknown() {
+				allowed = !data.OAuth2Flow.IsNull() && data.OAuth2Flow.ValueString() == "client_credentials"
+			}
+			if !allowed && !(authType == "oauth2" && data.OAuth2Flow.IsUnknown()) {
+				diagnostics.AddAttributeError(path.Root("audience"), "Invalid MCP Token Exchange Authentication", "Audience requires token exchange, ID-JAG, or the explicit OAuth2 client_credentials flow.")
+			}
+		}
+		if !data.Issuer.IsNull() && authType != "oauth2" && authType != "true_passthrough" && authType != "oauth_delegate" && authType != "oauth2_token_exchange" {
+			diagnostics.AddAttributeError(path.Root("issuer"), "Invalid MCP Issuer Authentication", "Issuer requires oauth2, true_passthrough, oauth_delegate, or oauth2_token_exchange authentication.")
+		}
+	}
+
+	profile := ""
+	profileConfigured := false
+	if !data.TokenExchangeProfile.IsNull() && !data.TokenExchangeProfile.IsUnknown() {
+		profileConfigured = true
+		profile = data.TokenExchangeProfile.ValueString()
+	} else if legacyPresent["token_exchange_profile"] {
+		profileConfigured = true
+		profile = legacyKnown["token_exchange_profile"]
+	}
+
+	requireExplicitClient := authKnown && authType == "oauth2_token_exchange" && (canonicalConfigured || mcpKnownNonEmptyString(data.Issuer))
+	if profileConfigured && profile == "entra_obo" {
+		requireExplicitClient = true
+		for _, name := range []string{"audience", "subject_token_type"} {
+			if !canonical[name].IsNull() && !canonical[name].IsUnknown() {
+				diagnostics.AddAttributeError(path.Root(name), "Invalid Entra OBO Configuration", "Entra OBO does not use audience or subject_token_type; remove the newly configured canonical field.")
+			} else if legacyPresent[name] {
+				diagnostics.AddAttributeWarning(path.Root("credentials"), "Legacy Entra OBO Configuration", "A legacy token-exchange credential alias is retained for compatibility but is unused by the Entra OBO profile. Collection keys and values were omitted from this diagnostic.")
+			}
+		}
+		endpointKnown := mcpKnownNonEmptyString(data.TokenURL) || mcpKnownNonEmptyString(data.TokenExchangeEndpoint)
+		if !endpointKnown {
+			endpointKnown = legacyKnown["token_exchange_endpoint"] != ""
+		}
+		endpointUnknown := data.TokenURL.IsUnknown() || data.TokenExchangeEndpoint.IsUnknown() || data.Credentials.IsUnknown()
+		if !endpointKnown && !(deferUnknownDependencies && endpointUnknown) {
+			diagnostics.AddAttributeError(path.Root("token_exchange_endpoint"), "Incomplete Entra OBO Configuration", "Entra OBO requires an explicitly configured known non-empty token_exchange_endpoint or token_url; masked or imported state is not proof.")
+		}
+		if data.OAuthScopes.IsNull() {
+			diagnostics.AddAttributeError(path.Root("oauth_scopes"), "Incomplete Entra OBO Configuration", "Entra OBO requires explicitly configured known non-empty OAuth scopes.")
+		} else if data.OAuthScopes.IsUnknown() {
+			if !deferUnknownDependencies {
+				diagnostics.AddAttributeError(path.Root("oauth_scopes"), "Incomplete Entra OBO Configuration", "Entra OBO requires explicitly configured known non-empty OAuth scopes.")
+			}
+		} else if len(data.OAuthScopes.Elements()) == 0 {
+			diagnostics.AddAttributeError(path.Root("oauth_scopes"), "Incomplete Entra OBO Configuration", "Entra OBO requires explicitly configured known non-empty OAuth scopes.")
+		} else {
+			for _, raw := range data.OAuthScopes.Elements() {
+				value, ok := raw.(types.String)
+				if ok && value.IsUnknown() && deferUnknownDependencies {
+					continue
+				}
+				if !ok || value.IsNull() || value.IsUnknown() || value.ValueString() == "" {
+					diagnostics.AddAttributeError(path.Root("oauth_scopes"), "Incomplete Entra OBO Configuration", "Entra OBO requires explicitly configured known non-empty OAuth scopes.")
+					break
+				}
+			}
+		}
+	}
+	if requireExplicitClient {
+		complete := !data.Credentials.IsNull() && !data.Credentials.IsUnknown()
+		unknown := data.Credentials.IsUnknown()
+		if complete {
+			for _, name := range []string{"client_id", "client_secret"} {
+				raw, present := data.Credentials.Elements()[name]
+				value, ok := raw.(types.String)
+				if present && ok && value.IsUnknown() {
+					unknown = true
+				}
+				if !present || !ok || value.IsNull() || value.IsUnknown() || value.ValueString() == "" {
+					complete = false
+				}
+			}
+		}
+		if !complete && !(deferUnknownDependencies && unknown) {
+			diagnostics.AddAttributeError(path.Root("credentials"), "Incomplete MCP Token Exchange Credentials", "Canonical token exchange requires explicitly configured known non-empty client_id and client_secret credentials; masked or imported state is not proof.")
+		}
+	}
+}
+
+func resolveMCPTokenExchangeValidationConfig(config, plan MCPServerResourceModel) MCPServerResourceModel {
+	resolved := config
+	resolveString := func(configured types.String, planned types.String) types.String {
+		if configured.IsUnknown() {
+			return planned
+		}
+		return configured
+	}
+	resolved.AuthType = resolveString(config.AuthType, plan.AuthType)
+	resolved.OAuth2Flow = resolveString(config.OAuth2Flow, plan.OAuth2Flow)
+	resolved.Issuer = resolveString(config.Issuer, plan.Issuer)
+	resolved.TokenURL = resolveString(config.TokenURL, plan.TokenURL)
+	resolved.TokenExchangeEndpoint = resolveString(config.TokenExchangeEndpoint, plan.TokenExchangeEndpoint)
+	resolved.Audience = resolveString(config.Audience, plan.Audience)
+	resolved.SubjectTokenType = resolveString(config.SubjectTokenType, plan.SubjectTokenType)
+	resolved.TokenExchangeProfile = resolveString(config.TokenExchangeProfile, plan.TokenExchangeProfile)
+	if config.Credentials.IsUnknown() {
+		resolved.Credentials = plan.Credentials
+	} else if !config.Credentials.IsNull() {
+		for _, raw := range config.Credentials.Elements() {
+			value, ok := raw.(types.String)
+			if ok && value.IsUnknown() {
+				// A map with statically known keys can still contain values sourced
+				// from variables. Validate those values from the proposed plan rather
+				// than treating configuration-time unknowns as missing credentials.
+				resolved.Credentials = plan.Credentials
+				break
+			}
+		}
+	}
+	if config.OAuthScopes.IsUnknown() {
+		resolved.OAuthScopes = plan.OAuthScopes
+	}
+	return resolved
 }
 
 func validateMCP208CrossConfiguration(data MCPServerResourceModel, diagnostics *diag.Diagnostics) {
@@ -824,6 +1052,7 @@ func (r *MCPServerResource) ModifyPlan(ctx context.Context, req resource.ModifyP
 	// values can contain prior state.
 	validateMCPInfoJSONConfig(config, &resp.Diagnostics)
 	validateMCP208CrossConfiguration(config, &resp.Diagnostics)
+	validateMCPTokenExchangeConfiguration(resolveMCPTokenExchangeValidationConfig(config, plan), &resp.Diagnostics)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -910,6 +1139,11 @@ func (r *MCPServerResource) ModifyPlan(ctx context.Context, req resource.ModifyP
 		{name: "allowed_tools", fieldPath: mcpFieldAllowedToolsPath, configured: config.AllowedTools, priorValue: state.AllowedTools, nullValue: types.ListNull(types.StringType)},
 		{name: "extra_headers", fieldPath: mcpFieldExtraHeadersPath, configured: config.ExtraHeaders, priorValue: state.ExtraHeaders, nullValue: types.ListNull(types.StringType)},
 		{name: "static_headers", fieldPath: mcpFieldStaticHeadersPath, configured: config.StaticHeaders, priorValue: state.StaticHeaders, nullValue: types.MapNull(types.StringType)},
+		{name: "issuer", fieldPath: mcpFieldIssuerPath, configured: config.Issuer, priorValue: state.Issuer, nullValue: types.StringNull()},
+		{name: "token_exchange_endpoint", fieldPath: mcpFieldTokenExchangeEndpointPath, configured: config.TokenExchangeEndpoint, priorValue: state.TokenExchangeEndpoint, nullValue: types.StringNull()},
+		{name: "audience", fieldPath: mcpFieldAudiencePath, configured: config.Audience, priorValue: state.Audience, nullValue: types.StringNull()},
+		{name: "subject_token_type", fieldPath: mcpFieldSubjectTokenTypePath, configured: config.SubjectTokenType, priorValue: state.SubjectTokenType, nullValue: types.StringNull()},
+		{name: "token_exchange_profile", fieldPath: mcpFieldTokenExchangeProfilePath, configured: config.TokenExchangeProfile, priorValue: state.TokenExchangeProfile, nullValue: types.StringNull()},
 		{name: "available_on_public_internet", fieldPath: mcpFieldAvailablePublicInternetPath, configured: config.AvailableOnPublicInternet, priorValue: state.AvailableOnPublicInternet, nullValue: types.BoolNull()},
 		{name: "oauth2_flow", fieldPath: mcpFieldOAuth2FlowPath, configured: config.OAuth2Flow, priorValue: state.OAuth2Flow, nullValue: types.StringNull()},
 		{name: "instructions", fieldPath: mcpFieldInstructionsPath, configured: config.Instructions, priorValue: state.Instructions, nullValue: types.StringNull()},
@@ -985,6 +1219,11 @@ func (r *MCPServerResource) ModifyPlan(ctx context.Context, req resource.ModifyP
 			{name: "allowed_tools", configured: config.AllowedTools, planned: plan.AllowedTools, prior: state.AllowedTools},
 			{name: "extra_headers", configured: config.ExtraHeaders, planned: plan.ExtraHeaders, prior: state.ExtraHeaders},
 			{name: "static_headers", configured: config.StaticHeaders, planned: plan.StaticHeaders, prior: state.StaticHeaders},
+			{name: "issuer", configured: config.Issuer, planned: plan.Issuer, prior: state.Issuer},
+			{name: "token_exchange_endpoint", configured: config.TokenExchangeEndpoint, planned: plan.TokenExchangeEndpoint, prior: state.TokenExchangeEndpoint},
+			{name: "audience", configured: config.Audience, planned: plan.Audience, prior: state.Audience},
+			{name: "subject_token_type", configured: config.SubjectTokenType, planned: plan.SubjectTokenType, prior: state.SubjectTokenType},
+			{name: "token_exchange_profile", configured: config.TokenExchangeProfile, planned: plan.TokenExchangeProfile, prior: state.TokenExchangeProfile},
 			{name: "available_on_public_internet", configured: config.AvailableOnPublicInternet, planned: plan.AvailableOnPublicInternet, prior: state.AvailableOnPublicInternet},
 			{name: "oauth2_flow", configured: config.OAuth2Flow, planned: plan.OAuth2Flow, prior: state.OAuth2Flow},
 			{name: "instructions", configured: config.Instructions, planned: plan.Instructions, prior: state.Instructions},
@@ -1275,6 +1514,8 @@ func (r *MCPServerResource) Read(ctx context.Context, req resource.ReadRequest, 
 		data.MCPAccessGroups, data.Args, data.Env = priorFields.MCPAccessGroups, priorFields.Args, priorFields.Env
 		data.EnvVars = priorFields.EnvVars
 		data.AllowedTools, data.ExtraHeaders, data.StaticHeaders = priorFields.AllowedTools, priorFields.ExtraHeaders, priorFields.StaticHeaders
+		data.Issuer, data.TokenExchangeEndpoint = priorFields.Issuer, priorFields.TokenExchangeEndpoint
+		data.Audience, data.SubjectTokenType, data.TokenExchangeProfile = priorFields.Audience, priorFields.SubjectTokenType, priorFields.TokenExchangeProfile
 		data.Credentials, data.AllowAllKeys = priorFields.Credentials, priorFields.AllowAllKeys
 		data.OAuthScopes = priorFields.OAuthScopes
 		data.AvailableOnPublicInternet, data.OAuth2Flow, data.Instructions = priorFields.AvailableOnPublicInternet, priorFields.OAuth2Flow, priorFields.Instructions
@@ -1572,6 +1813,11 @@ func (r *MCPServerResource) UpgradeState(ctx context.Context) map[int64]resource
 				initialize("field_ownership_generation", "0")
 			}
 			initialize("env_vars", "null")
+			initialize("issuer", "null")
+			initialize("token_exchange_endpoint", "null")
+			initialize("audience", "null")
+			initialize("subject_token_type", "null")
+			initialize("token_exchange_profile", "null")
 			initialize("oauth_scopes", "null")
 			initialize("available_on_public_internet", "null")
 			initialize("oauth2_flow", "null")
@@ -1605,6 +1851,7 @@ func (r *MCPServerResource) UpgradeState(ctx context.Context) map[int64]resource
 		4: upgrade(false, false, false),
 		5: upgrade(false, false, false),
 		6: upgrade(false, false, false),
+		7: upgrade(false, false, false),
 	}
 }
 
@@ -1633,6 +1880,9 @@ func (r *MCPServerResource) buildMCPServerRequest(ctx context.Context, data *MCP
 	if !data.Command.IsNull() && !data.Command.IsUnknown() && data.Command.ValueString() != "" {
 		mcpReq["command"] = data.Command.ValueString()
 	}
+	if mcpKnownNonEmptyString(data.Issuer) {
+		mcpReq["issuer"] = data.Issuer.ValueString()
+	}
 	if !data.AuthorizationURL.IsNull() && !data.AuthorizationURL.IsUnknown() && data.AuthorizationURL.ValueString() != "" {
 		mcpReq["authorization_url"] = data.AuthorizationURL.ValueString()
 	}
@@ -1641,6 +1891,16 @@ func (r *MCPServerResource) buildMCPServerRequest(ctx context.Context, data *MCP
 	}
 	if !data.RegistrationURL.IsNull() && !data.RegistrationURL.IsUnknown() && data.RegistrationURL.ValueString() != "" {
 		mcpReq["registration_url"] = data.RegistrationURL.ValueString()
+	}
+	for name, value := range map[string]types.String{
+		"token_exchange_endpoint": data.TokenExchangeEndpoint,
+		"audience":                data.Audience,
+		"subject_token_type":      data.SubjectTokenType,
+		"token_exchange_profile":  data.TokenExchangeProfile,
+	} {
+		if mcpKnownNonEmptyString(value) {
+			mcpReq[name] = value.ValueString()
+		}
 	}
 
 	// Boolean fields - check IsNull and IsUnknown
@@ -1846,6 +2106,11 @@ func partialMCPServerState(serverID string) MCPServerResourceModel {
 		AllowedTools:               types.ListNull(types.StringType),
 		ExtraHeaders:               types.ListNull(types.StringType),
 		StaticHeaders:              types.MapNull(types.StringType),
+		Issuer:                     types.StringNull(),
+		TokenExchangeEndpoint:      types.StringNull(),
+		Audience:                   types.StringNull(),
+		SubjectTokenType:           types.StringNull(),
+		TokenExchangeProfile:       types.StringNull(),
 		OAuthScopes:                types.ListNull(types.StringType),
 		AvailableOnPublicInternet:  types.BoolNull(),
 		OAuth2Flow:                 types.StringNull(),
@@ -1948,6 +2213,11 @@ func resolveUnknownMCPServerState(data *MCPServerResourceModel, previous *MCPSer
 	data.AuthorizationURL = resolveString(data.AuthorizationURL, prior.AuthorizationURL)
 	data.TokenURL = resolveString(data.TokenURL, prior.TokenURL)
 	data.RegistrationURL = resolveString(data.RegistrationURL, prior.RegistrationURL)
+	data.Issuer = resolveString(data.Issuer, prior.Issuer)
+	data.TokenExchangeEndpoint = resolveString(data.TokenExchangeEndpoint, prior.TokenExchangeEndpoint)
+	data.Audience = resolveString(data.Audience, prior.Audience)
+	data.SubjectTokenType = resolveString(data.SubjectTokenType, prior.SubjectTokenType)
+	data.TokenExchangeProfile = resolveString(data.TokenExchangeProfile, prior.TokenExchangeProfile)
 	data.OAuth2Flow = resolveString(data.OAuth2Flow, prior.OAuth2Flow)
 	data.Instructions = resolveString(data.Instructions, prior.Instructions)
 	data.CreatedAt = resolveString(data.CreatedAt, prior.CreatedAt)
@@ -2109,7 +2379,7 @@ func validateMCPServerResponse(result map[string]interface{}, expectedServerID s
 	}
 	return validateMCPServerOptionalResponseFields(
 		result,
-		[]string{"server_name", "url", "spec_path", "alias", "description", "command", "authorization_url", "token_url", "registration_url", "auth_type", "oauth2_flow", "instructions", "byok_api_key_help_url", "source_url", "created_at", "created_by", "updated_at", "updated_by"},
+		[]string{"server_name", "url", "spec_path", "alias", "description", "command", "issuer", "authorization_url", "token_url", "registration_url", "token_exchange_endpoint", "audience", "subject_token_type", "token_exchange_profile", "auth_type", "oauth2_flow", "instructions", "byok_api_key_help_url", "source_url", "created_at", "created_by", "updated_at", "updated_by"},
 		[]string{"allow_all_keys", "available_on_public_internet", "delegate_auth_to_upstream", "oauth_passthrough", "dcr_bridge", "is_byok"},
 		[]string{"mcp_access_groups", "args", "allowed_tools", "extra_headers", "byok_description"},
 		[]string{"env", "static_headers", "credentials", "tool_name_to_display_name", "tool_name_to_description"},
@@ -2302,6 +2572,33 @@ func (r *MCPServerResource) readMCPServerResultProjection(ctx context.Context, d
 	}
 	if authType, ok := result["auth_type"].(string); ok {
 		data.AuthType = types.StringValue(authType)
+	}
+	for _, item := range []struct {
+		fieldPath string
+		name      string
+		current   *types.String
+	}{
+		{fieldPath: mcpFieldIssuerPath, name: "issuer", current: &data.Issuer},
+		{fieldPath: mcpFieldTokenExchangeEndpointPath, name: "token_exchange_endpoint", current: &data.TokenExchangeEndpoint},
+		{fieldPath: mcpFieldAudiencePath, name: "audience", current: &data.Audience},
+		{fieldPath: mcpFieldSubjectTokenTypePath, name: "subject_token_type", current: &data.SubjectTokenType},
+		{fieldPath: mcpFieldTokenExchangeProfilePath, name: "token_exchange_profile", current: &data.TokenExchangeProfile},
+	} {
+		projected := imported || fieldOwnership.Owned[item.fieldPath] || (!item.current.IsNull() && !item.current.IsUnknown())
+		if item.fieldPath == mcpFieldTokenExchangeProfilePath {
+			if observed, present := result[item.name].(string); present && observed != "rfc8693" && observed != "entra_obo" {
+				if fieldOwnership.Owned[item.fieldPath] || (!item.current.IsNull() && !item.current.IsUnknown()) {
+					return fmt.Errorf("invalid MCP server response: owned token exchange profile is invalid")
+				}
+				if item.current.IsUnknown() {
+					*item.current = types.StringNull()
+				}
+				continue
+			}
+		}
+		if projected && !fieldOwnership.Removals[item.fieldPath] {
+			projectNullableSensitiveString(item.name, item.current)
+		}
 	}
 	if raw, present := result["oauth2_flow"]; present {
 		flowValue := types.StringNull()

@@ -61,11 +61,11 @@ func protocolMCPEnvVars(t *testing.T, schema *tfprotov6.Schema, values ...map[st
 	return result
 }
 
-func TestMCPEnvVarsSchemaV7AndDataSourcesUnchanged(t *testing.T) {
+func TestMCPEnvVarsSchemaV8AndDataSourcesUnchanged(t *testing.T) {
 	ctx := context.Background()
 	var response frameworkresource.SchemaResponse
 	(&MCPServerResource{}).Schema(ctx, frameworkresource.SchemaRequest{}, &response)
-	if response.Schema.Version != 7 {
+	if response.Schema.Version != 8 {
 		t.Fatalf("schema version=%d", response.Schema.Version)
 	}
 	attribute, ok := response.Schema.Attributes["env_vars"].(resourceschema.ListNestedAttribute)

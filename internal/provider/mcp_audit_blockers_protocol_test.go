@@ -277,6 +277,13 @@ func TestMCPServerEqualRemoteOwnershipTakeoverAndUnknownRetentionProtocol(t *tes
 		proposed := organizationProjectProtocolReplace(t, schema, state, unknowns)
 		owned := map[string]bool{}
 		for _, fieldPath := range mcpFieldPaths {
+			switch fieldPath {
+			case mcpFieldIssuerPath, mcpFieldTokenExchangeEndpointPath, mcpFieldAudiencePath, mcpFieldSubjectTokenTypePath, mcpFieldTokenExchangeProfilePath:
+				// The canonical siblings are deliberately not part of this legacy
+				// all-unknown fixture: credentials is also unknown, so configuring
+				// either source would correctly make dual-source absence unprovable.
+				continue
+			}
 			owned[fieldPath] = true
 		}
 		committed := mcpFieldOwnership{Owned: owned, Removals: map[string]bool{}, Generation: 2, Versioned: true}

@@ -79,7 +79,8 @@ func TestMCPFieldOwnershipGrammarRejectsMalformedIntent(t *testing.T) {
 func TestMCPFieldRemovalSentinelsV198(t *testing.T) {
 	want := map[string]interface{}{
 		mcpFieldAliasPath: nil, mcpFieldDescriptionPath: nil, mcpFieldCommandPath: nil,
-		mcpFieldAuthorizationURLPath: nil, mcpFieldTokenURLPath: nil, mcpFieldRegistrationURLPath: nil,
+		mcpFieldIssuerPath: nil, mcpFieldAuthorizationURLPath: nil, mcpFieldTokenURLPath: nil, mcpFieldRegistrationURLPath: nil,
+		mcpFieldTokenExchangeEndpointPath: nil, mcpFieldAudiencePath: nil, mcpFieldSubjectTokenTypePath: nil, mcpFieldTokenExchangeProfilePath: nil,
 		mcpFieldAccessGroupsPath: []string{}, mcpFieldArgsPath: []string{}, mcpFieldAllowedToolsPath: []string{}, mcpFieldExtraHeadersPath: []string{},
 		mcpFieldEnvPath: map[string]string{}, mcpFieldEnvVarsPath: []map[string]interface{}{}, mcpFieldStaticHeadersPath: map[string]string{}, mcpFieldCredentialsPath: nil,
 		mcpFieldAllowAllKeysPath: false, mcpFieldOAuthScopesPath: []string{}, mcpFieldAvailablePublicInternetPath: true,
@@ -89,7 +90,7 @@ func TestMCPFieldRemovalSentinelsV198(t *testing.T) {
 		mcpFieldIsBYOKPath: false, mcpFieldBYOKDescriptionPath: []string{}, mcpFieldBYOKAPIKeyHelpURLPath: nil,
 		mcpFieldSourceURLPath: nil, mcpFieldTimeoutPath: nil, mcpFieldMaxConcurrentRequestsPath: nil,
 	}
-	if len(want) != 30 || len(mcpFieldPaths) != 30 {
+	if len(want) != 35 || len(mcpFieldPaths) != 35 {
 		t.Fatalf("sentinel inventory changed: want=%d paths=%d", len(want), len(mcpFieldPaths))
 	}
 	for _, fieldPath := range mcpFieldPaths {
@@ -151,7 +152,8 @@ func TestMCPServerCreateSendsConfiguredEmptyAndFalseFields(t *testing.T) {
 		ServerName: types.StringValue("server"), Transport: types.StringValue("http"), AuthType: types.StringValue("none"), URL: types.StringValue("https://example.invalid"),
 		Alias: types.StringValue("alias"), Description: types.StringValue(""), MCPAccessGroups: emptyList, Command: types.StringValue(""), Args: emptyList, Env: emptyMap,
 		EnvVars: types.ListValueMust(mcpEnvVarObjectType, nil), Credentials: emptyMap, AllowedTools: emptyList, ExtraHeaders: emptyList, StaticHeaders: emptyMap,
-		AuthorizationURL: types.StringValue(""), TokenURL: types.StringValue(""), RegistrationURL: types.StringValue(""), AllowAllKeys: types.BoolValue(false),
+		Issuer: types.StringValue(""), AuthorizationURL: types.StringValue(""), TokenURL: types.StringValue(""), RegistrationURL: types.StringValue(""),
+		TokenExchangeEndpoint: types.StringValue(""), Audience: types.StringValue(""), SubjectTokenType: types.StringValue(""), TokenExchangeProfile: types.StringValue(""), AllowAllKeys: types.BoolValue(false),
 		OAuthScopes: emptyList, AvailableOnPublicInternet: types.BoolValue(false), OAuth2Flow: types.StringValue("authorization_code"), Instructions: types.StringValue(""),
 		ToolNameToDisplayName: emptyMap, ToolNameToDescription: emptyMap,
 		DelegateAuthToUpstream: types.BoolValue(false), OAuthPassthrough: types.BoolValue(false), DCRBridge: types.BoolValue(false), IsBYOK: types.BoolValue(false),
@@ -191,7 +193,7 @@ func TestMCPFieldDeltaEmitsAllAndOnlyV198RemovalSentinels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(delta) != 29 {
+	if len(delta) != 34 {
 		t.Fatalf("delta contains unrelated or missing sentinel: %#v", delta)
 	}
 	for _, fieldPath := range mcpFieldPaths {
