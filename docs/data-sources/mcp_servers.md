@@ -80,10 +80,15 @@ The following attributes are exported:
   * `registration_url` - (Sensitive) OAuth registration URL.
   * `status` - Current status.
   * `allow_all_keys` - Whether all keys are allowed.
+  * `available_on_public_internet` - LiteLLM's public-internet classification hint, not a complete reverse-proxy security boundary.
+  * `oauth2_flow` - Stored OAuth2 flow (`client_credentials` or `authorization_code`).
+  * `instructions` - Server instructions, including an explicit empty string.
+  * `tool_name_to_display_name` - Tool display-name overrides.
+  * `tool_name_to_description` - Tool description overrides.
   * `created_at` - Creation timestamp.
   * `updated_at` - Last update timestamp.
 
-Results are sorted by unique `server_id`; a duplicate, malformed identity, malformed later collection/map, or non-null `credentials` member rejects the complete read before state is published. The list endpoint is read exactly once: the provider does not make per-item singular or health requests. Audit identities, health enrichment, credentials, and `upstream_resource` are intentionally unavailable in list items.
+Results are sorted by unique `server_id`; a duplicate, malformed identity, malformed later collection/map, or non-null `credentials` member rejects the complete read before state is published. The list endpoint is read exactly once: the provider does not make per-item singular or health requests. Audit identities, health enrichment, credentials (including write-only OAuth scopes), and `upstream_resource` are intentionally unavailable in list items.
 
 LiteLLM may fabricate empty access-group, tool, argument, extra-header, and environment collections during role sanitization or registry-table construction. Those ambiguous empties are projected as null, while nonempty values are retained. `static_headers = {}` is authoritative because the sanitizer uses null for that field. The exact restricted `mcp_info = {"is_public": true}` sentinel becomes null; `{}` remains known canonical JSON. Explicit `allow_all_keys = false` remains known false.
 

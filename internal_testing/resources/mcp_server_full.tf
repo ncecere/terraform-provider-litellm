@@ -2,13 +2,17 @@
 # All attributes populated
 
 resource "litellm_mcp_server" "full" {
-  server_name    = "test_mcp_full"
-  alias          = "mcp_full"
-  description    = "Full test MCP server"
-  url            = "https://example.com/mcp-full"
-  transport      = "sse"
-  auth_type      = "bearer_token"
-  allow_all_keys = true
+  server_name                  = "test_mcp_full"
+  alias                        = "mcp_full"
+  description                  = "Full test MCP server"
+  url                          = "https://example.com/mcp-full"
+  transport                    = "sse"
+  auth_type                    = "oauth2"
+  oauth2_flow                  = "authorization_code"
+  oauth_scopes                 = ["mcp.read", "mcp.write"]
+  available_on_public_internet = false
+  instructions                 = ""
+  allow_all_keys               = true
 
   mcp_access_groups = ["test-access-group-full"]
   allowed_tools     = ["tool1", "tool2"]
@@ -18,8 +22,23 @@ resource "litellm_mcp_server" "full" {
     "ENV_VAR" = "test-value"
   }
 
+  authorization_url = "https://auth.example.com/oauth/authorize"
+  token_url         = "https://auth.example.com/oauth/token"
+  registration_url  = "https://auth.example.com/oauth/register"
+
   credentials = {
-    "auth_value" = "fake-bearer-token"
+    "client_id"     = "test-client"
+    "client_secret" = "fake-client-secret"
+  }
+
+  tool_name_to_display_name = {
+    "tool1" = "Tool_One"
+    "tool2" = "Tool_Two"
+  }
+
+  tool_name_to_description = {
+    "tool1" = "First test tool"
+    "tool2" = "Second test tool"
   }
 
   extra_headers = ["X-Custom-Header"]
@@ -58,4 +77,13 @@ output "mcp_server_full_updated_at" {
 
 output "mcp_server_full_updated_by" {
   value = litellm_mcp_server.full.updated_by
+}
+
+output "mcp_server_full_oauth_scopes" {
+  value     = litellm_mcp_server.full.oauth_scopes
+  sensitive = true
+}
+
+output "mcp_server_full_oauth2_flow" {
+  value = litellm_mcp_server.full.oauth2_flow
 }

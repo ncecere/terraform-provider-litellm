@@ -25,3 +25,15 @@ output "ds_mcp_server_auth_type" {
 output "ds_mcp_server_created_at" {
   value = data.litellm_mcp_server.lookup.created_at
 }
+
+output "ds_mcp_server_available_on_public_internet" {
+  value = data.litellm_mcp_server.lookup.available_on_public_internet
+}
+
+output "ds_mcp_server_oauth2_flow" {
+  value = data.litellm_mcp_server.lookup.oauth2_flow
+}
+
+output "ds_mcp_server_instructions" {
+  value = data.litellm_mcp_server.lookup.instructions
+}
