@@ -20,7 +20,7 @@ resource "litellm_mcp_server" "clear_lifecycle" {
   server_name = "test_mcp_clear_lifecycle"
   url         = "https://example.com/mcp-clear-lifecycle"
   transport   = "http"
-  auth_type   = "none"
+  auth_type   = "true_passthrough"
 
   alias                        = local.mcp_clear_set ? "clear_alias" : null
   description                  = local.mcp_clear_set ? "clear description" : null
@@ -41,6 +41,15 @@ resource "litellm_mcp_server" "clear_lifecycle" {
   instructions                 = local.mcp_clear_set ? "" : null
   tool_name_to_display_name    = local.mcp_clear_set ? { clear_tool = "Clear_Tool" } : null
   tool_name_to_description     = local.mcp_clear_set ? { clear_tool = "Clear test tool" } : null
+  delegate_auth_to_upstream    = local.mcp_clear_set ? false : null
+  oauth_passthrough            = local.mcp_clear_set ? false : null
+  dcr_bridge                   = local.mcp_clear_set ? true : null
+  is_byok                      = local.mcp_clear_set ? true : null
+  byok_description             = local.mcp_clear_set ? ["Clear test setup"] : null
+  byok_api_key_help_url        = local.mcp_clear_set ? "https://example.com/help" : null
+  source_url                   = local.mcp_clear_set ? "https://example.com/source" : null
+  timeout                      = local.mcp_clear_set ? 12.5 : null
+  max_concurrent_requests      = local.mcp_clear_set ? 4 : null
 }
 
 output "mcp_clear_lifecycle_id" {
