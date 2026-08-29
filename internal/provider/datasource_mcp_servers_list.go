@@ -21,30 +21,35 @@ type MCPServersListDataSource struct {
 }
 
 type MCPServerListItem struct {
-	ServerID         types.String `tfsdk:"server_id"`
-	ServerName       types.String `tfsdk:"server_name"`
-	Alias            types.String `tfsdk:"alias"`
-	Description      types.String `tfsdk:"description"`
-	URL              types.String `tfsdk:"url"`
-	SpecPath         types.String `tfsdk:"spec_path"`
-	Transport        types.String `tfsdk:"transport"`
-	SpecVersion      types.String `tfsdk:"spec_version"`
-	AuthType         types.String `tfsdk:"auth_type"`
-	MCPAccessGroups  types.List   `tfsdk:"mcp_access_groups"`
-	MCPInfoJSON      types.String `tfsdk:"mcp_info_json"`
-	Command          types.String `tfsdk:"command"`
-	Args             types.List   `tfsdk:"args"`
-	Env              types.Map    `tfsdk:"env"`
-	AllowedTools     types.List   `tfsdk:"allowed_tools"`
-	ExtraHeaders     types.List   `tfsdk:"extra_headers"`
-	StaticHeaders    types.Map    `tfsdk:"static_headers"`
-	AuthorizationURL types.String `tfsdk:"authorization_url"`
-	TokenURL         types.String `tfsdk:"token_url"`
-	RegistrationURL  types.String `tfsdk:"registration_url"`
-	Status           types.String `tfsdk:"status"`
-	AllowAllKeys     types.Bool   `tfsdk:"allow_all_keys"`
-	CreatedAt        types.String `tfsdk:"created_at"`
-	UpdatedAt        types.String `tfsdk:"updated_at"`
+	ServerID                  types.String `tfsdk:"server_id"`
+	ServerName                types.String `tfsdk:"server_name"`
+	Alias                     types.String `tfsdk:"alias"`
+	Description               types.String `tfsdk:"description"`
+	URL                       types.String `tfsdk:"url"`
+	SpecPath                  types.String `tfsdk:"spec_path"`
+	Transport                 types.String `tfsdk:"transport"`
+	SpecVersion               types.String `tfsdk:"spec_version"`
+	AuthType                  types.String `tfsdk:"auth_type"`
+	MCPAccessGroups           types.List   `tfsdk:"mcp_access_groups"`
+	MCPInfoJSON               types.String `tfsdk:"mcp_info_json"`
+	Command                   types.String `tfsdk:"command"`
+	Args                      types.List   `tfsdk:"args"`
+	Env                       types.Map    `tfsdk:"env"`
+	AllowedTools              types.List   `tfsdk:"allowed_tools"`
+	ExtraHeaders              types.List   `tfsdk:"extra_headers"`
+	StaticHeaders             types.Map    `tfsdk:"static_headers"`
+	AuthorizationURL          types.String `tfsdk:"authorization_url"`
+	TokenURL                  types.String `tfsdk:"token_url"`
+	RegistrationURL           types.String `tfsdk:"registration_url"`
+	Status                    types.String `tfsdk:"status"`
+	AllowAllKeys              types.Bool   `tfsdk:"allow_all_keys"`
+	AvailableOnPublicInternet types.Bool   `tfsdk:"available_on_public_internet"`
+	OAuth2Flow                types.String `tfsdk:"oauth2_flow"`
+	Instructions              types.String `tfsdk:"instructions"`
+	ToolNameToDisplayName     types.Map    `tfsdk:"tool_name_to_display_name"`
+	ToolNameToDescription     types.Map    `tfsdk:"tool_name_to_description"`
+	CreatedAt                 types.String `tfsdk:"created_at"`
+	UpdatedAt                 types.String `tfsdk:"updated_at"`
 }
 
 type MCPServersListDataSourceModel struct {
@@ -174,6 +179,28 @@ func (d *MCPServersListDataSource) Schema(ctx context.Context, req datasource.Sc
 							Description: "Whether all API keys are allowed to access this MCP server.",
 							Computed:    true,
 						},
+						"available_on_public_internet": schema.BoolAttribute{
+							Description: "Whether the MCP server is available from the public internet.",
+							Computed:    true,
+						},
+						"oauth2_flow": schema.StringAttribute{
+							Description: "OAuth2 flow persisted by LiteLLM.",
+							Computed:    true,
+						},
+						"instructions": schema.StringAttribute{
+							Description: "Instructions associated with the MCP server.",
+							Computed:    true,
+						},
+						"tool_name_to_display_name": schema.MapAttribute{
+							Description: "Tool-name display overrides.",
+							Computed:    true,
+							ElementType: types.StringType,
+						},
+						"tool_name_to_description": schema.MapAttribute{
+							Description: "Tool-name description overrides.",
+							Computed:    true,
+							ElementType: types.StringType,
+						},
 						"created_at": schema.StringAttribute{
 							Description: "Timestamp when the server was created.",
 							Computed:    true,
@@ -231,30 +258,35 @@ func (d *MCPServersListDataSource) Read(ctx context.Context, req datasource.Read
 			return
 		}
 		data.MCPServers = append(data.MCPServers, MCPServerListItem{
-			ServerID:         server.ServerID,
-			ServerName:       server.ServerName,
-			Alias:            server.Alias,
-			Description:      server.Description,
-			URL:              server.URL,
-			SpecPath:         server.SpecPath,
-			Transport:        server.Transport,
-			SpecVersion:      server.SpecVersion,
-			AuthType:         server.AuthType,
-			MCPAccessGroups:  server.MCPAccessGroups,
-			MCPInfoJSON:      server.MCPInfoJSON,
-			Command:          server.Command,
-			Args:             server.Args,
-			Env:              server.Env,
-			AllowedTools:     server.AllowedTools,
-			ExtraHeaders:     server.ExtraHeaders,
-			StaticHeaders:    server.StaticHeaders,
-			AuthorizationURL: server.AuthorizationURL,
-			TokenURL:         server.TokenURL,
-			RegistrationURL:  server.RegistrationURL,
-			Status:           server.Status,
-			AllowAllKeys:     server.AllowAllKeys,
-			CreatedAt:        server.CreatedAt,
-			UpdatedAt:        server.UpdatedAt,
+			ServerID:                  server.ServerID,
+			ServerName:                server.ServerName,
+			Alias:                     server.Alias,
+			Description:               server.Description,
+			URL:                       server.URL,
+			SpecPath:                  server.SpecPath,
+			Transport:                 server.Transport,
+			SpecVersion:               server.SpecVersion,
+			AuthType:                  server.AuthType,
+			MCPAccessGroups:           server.MCPAccessGroups,
+			MCPInfoJSON:               server.MCPInfoJSON,
+			Command:                   server.Command,
+			Args:                      server.Args,
+			Env:                       server.Env,
+			AllowedTools:              server.AllowedTools,
+			ExtraHeaders:              server.ExtraHeaders,
+			StaticHeaders:             server.StaticHeaders,
+			AuthorizationURL:          server.AuthorizationURL,
+			TokenURL:                  server.TokenURL,
+			RegistrationURL:           server.RegistrationURL,
+			Status:                    server.Status,
+			AllowAllKeys:              server.AllowAllKeys,
+			AvailableOnPublicInternet: server.AvailableOnPublicInternet,
+			OAuth2Flow:                server.OAuth2Flow,
+			Instructions:              server.Instructions,
+			ToolNameToDisplayName:     server.ToolNameToDisplayName,
+			ToolNameToDescription:     server.ToolNameToDescription,
+			CreatedAt:                 server.CreatedAt,
+			UpdatedAt:                 server.UpdatedAt,
 		})
 	}
 	sort.SliceStable(data.MCPServers, func(i, j int) bool {

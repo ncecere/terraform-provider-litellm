@@ -67,6 +67,11 @@ The following attributes are exported:
 * `token_url` - (Sensitive) OAuth token URL.
 * `registration_url` - (Sensitive) OAuth registration URL.
 * `allow_all_keys` - Whether all keys are allowed.
+* `available_on_public_internet` - LiteLLM's public-internet classification hint. This is not a complete security boundary behind an untrusted reverse proxy.
+* `oauth2_flow` - Stored OAuth2 flow (`client_credentials` or `authorization_code`), including a value stamped by LiteLLM.
+* `instructions` - Server instructions; an empty string remains observable.
+* `tool_name_to_display_name` - Tool display-name overrides.
+* `tool_name_to_description` - Tool description overrides.
 * `status` - Current status.
 * `last_health_check` - Last health check timestamp.
 * `health_check_error` - Health check error message.
@@ -76,6 +81,6 @@ The following attributes are exported:
 * `updated_by` - Last updater user ID.
 * `upstream_resource` - Non-sensitive RFC 8707 upstream resource indicator. This is the only credential member exposed, and only when LiteLLM returns exactly that one nonempty string member in its redacted `credentials` object.
 
-LiteLLM role sanitizers can replace access groups, allowed tools, command arguments, extra header names, and environment maps with empty collections. The data source treats those ambiguous empty values as null; nonempty values remain known. An empty `static_headers` object remains authoritative because LiteLLM masks that field with null instead. The exact restricted `mcp_info = {"is_public": true}` sentinel is also projected as null, while `{}` remains known canonical JSON.
+LiteLLM role sanitizers can replace access groups, allowed tools, command arguments, extra header names, and environment maps with empty collections. The data source treats those ambiguous empty values as null; nonempty values remain known. An empty `static_headers` object remains authoritative because LiteLLM masks that field with null instead. The exact restricted `mcp_info = {"is_public": true}` sentinel is also projected as null, while `{}` remains known canonical JSON. OAuth scopes are intentionally absent because LiteLLM v1.98 strips `credentials.scopes` from management responses.
 
 Because `url`, `spec_path`, `command`, `args`, `env`, `static_headers`, and the OAuth endpoint attributes are sensitive, existing outputs derived from them must declare `sensitive = true`.

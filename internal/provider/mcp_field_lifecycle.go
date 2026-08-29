@@ -67,6 +67,14 @@ func mcpFieldDesiredValue(ctx context.Context, data MCPServerResourceModel, fiel
 		return stringValue(data.RegistrationURL)
 	case mcpFieldAllowAllKeysPath:
 		return boolValue(data.AllowAllKeys)
+	case mcpFieldAvailablePublicInternetPath:
+		return boolValue(data.AvailableOnPublicInternet)
+	case mcpFieldOAuth2FlowPath:
+		return stringValue(data.OAuth2Flow)
+	case mcpFieldInstructionsPath:
+		return stringValue(data.Instructions)
+	case mcpFieldOAuthScopesPath:
+		return mcpFieldStringList(ctx, data.OAuthScopes)
 	case mcpFieldAccessGroupsPath:
 		return mcpFieldStringList(ctx, data.MCPAccessGroups)
 	case mcpFieldArgsPath:
@@ -79,6 +87,10 @@ func mcpFieldDesiredValue(ctx context.Context, data MCPServerResourceModel, fiel
 		return mcpFieldStringMap(ctx, data.Env)
 	case mcpFieldStaticHeadersPath:
 		return mcpFieldStringMap(ctx, data.StaticHeaders)
+	case mcpFieldToolNameToDisplayNamePath:
+		return mcpFieldStringMap(ctx, data.ToolNameToDisplayName)
+	case mcpFieldToolNameToDescriptionPath:
+		return mcpFieldStringMap(ctx, data.ToolNameToDescription)
 	case mcpFieldCredentialsPath:
 		credentials, err := mcpFieldStringMap(ctx, data.Credentials)
 		if err != nil {
@@ -106,14 +118,21 @@ func mcpFieldRemovalSentinel(fieldPath string) interface{} {
 	switch fieldPath {
 	case mcpFieldAliasPath, mcpFieldDescriptionPath, mcpFieldCommandPath,
 		mcpFieldAuthorizationURLPath, mcpFieldTokenURLPath, mcpFieldRegistrationURLPath,
-		mcpFieldCredentialsPath:
+		mcpFieldCredentialsPath, mcpFieldOAuth2FlowPath, mcpFieldInstructionsPath:
 		return nil
-	case mcpFieldAccessGroupsPath, mcpFieldArgsPath, mcpFieldAllowedToolsPath, mcpFieldExtraHeadersPath:
+	case mcpFieldAccessGroupsPath, mcpFieldArgsPath, mcpFieldAllowedToolsPath, mcpFieldExtraHeadersPath,
+		mcpFieldOAuthScopesPath:
 		return []string{}
-	case mcpFieldEnvPath, mcpFieldStaticHeadersPath:
+	case mcpFieldEnvPath, mcpFieldStaticHeadersPath, mcpFieldToolNameToDisplayNamePath,
+		mcpFieldToolNameToDescriptionPath:
 		return map[string]string{}
 	case mcpFieldAllowAllKeysPath:
 		return false
+	case mcpFieldAvailablePublicInternetPath:
+		// The column is non-nullable with @default(true), and the partial PUT
+		// contract cannot transmit null. Releasing ownership restores that exact
+		// durable default explicitly.
+		return true
 	default:
 		return nil
 	}
@@ -158,7 +177,7 @@ func (r *MCPServerResource) buildMCPServerCreateRequest(ctx context.Context, pla
 	}
 	presence := mcpFieldConfigPresence(*config)
 	for _, fieldPath := range mcpFieldPaths {
-		if presence[fieldPath] != 1 {
+		if presence[fieldPath] != 1 || fieldPath == mcpFieldOAuthScopesPath {
 			continue
 		}
 		value, err := mcpFieldDesiredValue(ctx, *config, fieldPath)
@@ -167,7 +186,39 @@ func (r *MCPServerResource) buildMCPServerCreateRequest(ctx context.Context, pla
 		}
 		request[mcpFieldWireName(fieldPath)] = value
 	}
+	if presence[mcpFieldOAuthScopesPath] == 1 {
+		scopes, err := mcpFieldStringList(ctx, config.OAuthScopes)
+		if err != nil || mergeMCPScopesCredentialIntent(request, scopes) != nil {
+			return nil, fmt.Errorf("configured MCP credential intent is invalid")
+		}
+	}
 	return request, nil
+}
+
+func mergeMCPScopesCredentialIntent(request map[string]interface{}, scopes []string) error {
+	credentials := map[string]interface{}{}
+	if raw, present := request["credentials"]; present {
+		switch existing := raw.(type) {
+		case map[string]string:
+			for name, value := range existing {
+				credentials[name] = value
+			}
+		case map[string]interface{}:
+			for name, value := range existing {
+				credentials[name] = value
+			}
+		case nil:
+			return fmt.Errorf("credential clear and OAuth scope intent cannot be combined safely")
+		default:
+			return fmt.Errorf("credential intent has an incompatible shape")
+		}
+	}
+	if _, collision := credentials["scopes"]; collision {
+		return fmt.Errorf("credential scope aliases cannot be combined")
+	}
+	credentials["scopes"] = scopes
+	request["credentials"] = credentials
+	return nil
 }
 
 func mcpObservedCredentialString(observed map[string]interface{}, name string) (string, bool) {
@@ -213,6 +264,12 @@ func verifyMCPObservableCredentialReadback(ctx context.Context, desired types.Ma
 
 func verifyMCPFieldCreateReadback(ctx context.Context, config MCPServerResourceModel, observed map[string]interface{}, ownership mcpFieldOwnership) error {
 	for fieldPath := range ownership.Owned {
+		if fieldPath == mcpFieldOAuthScopesPath {
+			// v1.98 redacts credentials.scopes from every management response.
+			// Successful mutation plus a complete identity-valid direct response is
+			// the strongest available confirmation; scopes are never observable.
+			continue
+		}
 		if fieldPath == mcpFieldCredentialsPath {
 			// Secret credential values are redacted, but v1.98 exposes four
 			// lifted token-exchange columns and upstream_resource. Verify every
@@ -262,6 +319,7 @@ func validateMCPImplicitClearSafety(config, state MCPServerResourceModel, planne
 		{fieldPath: mcpFieldAuthorizationURLPath, prior: state.AuthorizationURL},
 		{fieldPath: mcpFieldTokenURLPath, prior: state.TokenURL},
 		{fieldPath: mcpFieldRegistrationURLPath, prior: state.RegistrationURL},
+		{fieldPath: mcpFieldOAuth2FlowPath, prior: state.OAuth2Flow},
 	} {
 		name := mcpFieldWireName(item.fieldPath)
 		raw, present := hydration[name]
@@ -279,7 +337,7 @@ func validateMCPImplicitClearSafety(config, state MCPServerResourceModel, planne
 		}
 	}
 	for _, name := range []string{
-		"issuer", "oauth2_flow", "dcr_bridge", "token_exchange_endpoint",
+		"issuer", "dcr_bridge", "token_exchange_endpoint",
 		"audience", "subject_token_type", "token_exchange_profile",
 	} {
 		if raw, present := hydration[name]; present && raw != nil {
@@ -291,10 +349,20 @@ func validateMCPImplicitClearSafety(config, state MCPServerResourceModel, planne
 		}
 	}
 	if authClassChanged {
-		// v1.98 clears credentials on a credential-class change unless a complete
-		// credential intent is supplied in that same PUT. Management responses
-		// redact values, so they are always non-authoritative.
-		if _, supplied := delta["credentials"]; !supplied || presence[mcpFieldCredentialsPath] == 2 {
+		// v1.98 replaces the complete credentials object on a credential-class
+		// change. Both the generic string members and native scopes must therefore
+		// be explicit and known in this apply. Prior or API-only scopes cannot be
+		// recovered from management responses because they are always redacted.
+		rawCredentials, supplied := delta["credentials"]
+		scopesSupplied := false
+		switch credentials := rawCredentials.(type) {
+		case map[string]interface{}:
+			_, scopesSupplied = credentials["scopes"]
+		case map[string]string:
+			_, scopesSupplied = credentials["scopes"]
+		}
+		if !supplied || presence[mcpFieldCredentialsPath] != 1 || !planned.Owned[mcpFieldCredentialsPath] ||
+			presence[mcpFieldOAuthScopesPath] != 1 || !planned.Owned[mcpFieldOAuthScopesPath] || !scopesSupplied {
 			return fmt.Errorf("credential intent is incomplete for an authentication change")
 		}
 	}
@@ -393,10 +461,13 @@ func buildMCPFieldDelta(ctx context.Context, plan MCPServerResourceModel, config
 		}
 	}
 	for fieldPath := range candidate.Removals {
+		if fieldPath == mcpFieldOAuthScopesPath {
+			continue
+		}
 		delta[mcpFieldWireName(fieldPath)] = mcpFieldRemovalSentinel(fieldPath)
 	}
 	for fieldPath := range candidate.Owned {
-		if candidate.Removals[fieldPath] {
+		if candidate.Removals[fieldPath] || fieldPath == mcpFieldOAuthScopesPath {
 			continue
 		}
 		// Unknown configuration is not mutation intent. It retains candidate
@@ -478,6 +549,41 @@ func buildMCPFieldDelta(ctx context.Context, plan MCPServerResourceModel, config
 		// role empty collection sentinels are not authoritative equality.
 		if !present || !mcpWireValuesEqual(desired, remote) || mcpAmbiguousEmptyCollectionNeedsWrite(ctx, fieldPath, desired, remote, state, committed) {
 			delta[name] = desired
+		}
+	}
+
+	// Scopes share the native credentials object but have independent public
+	// ownership. Construct that object only after generic credential delta logic
+	// so neither intent can overwrite the other.
+	scopesOwned := candidate.Owned[mcpFieldOAuthScopesPath]
+	scopesRemoved := candidate.Removals[mcpFieldOAuthScopesPath]
+	scopesSatisfiedByCredentialClear := false
+	if candidate.Removals[mcpFieldCredentialsPath] && scopesOwned {
+		scopes, err := mcpFieldStringList(ctx, config.OAuthScopes)
+		if err != nil || len(scopes) != 0 {
+			return nil, fmt.Errorf("credentials cannot be cleared while configured OAuth scopes must be retained")
+		}
+		// credentials=null clears every blob member, so it exactly satisfies an
+		// explicitly configured empty scope list without a second mutation.
+		scopesSatisfiedByCredentialClear = true
+	}
+	if scopesRemoved {
+		if !candidate.Removals[mcpFieldCredentialsPath] {
+			if err := mergeMCPScopesCredentialIntent(delta, []string{}); err != nil {
+				return nil, err
+			}
+		}
+	} else if scopesOwned && !scopesSatisfiedByCredentialClear && presence[mcpFieldOAuthScopesPath] == 1 {
+		scopes, err := mcpFieldStringList(ctx, config.OAuthScopes)
+		if err != nil {
+			return nil, err
+		}
+		writeScopes := recoverAcceptedCreate || !committed.Owned[mcpFieldOAuthScopesPath] ||
+			!config.OAuthScopes.Equal(state.OAuthScopes) || mcpCredentialClassWillReplace(plan, state, hydration)
+		if writeScopes {
+			if err := mergeMCPScopesCredentialIntent(delta, scopes); err != nil {
+				return nil, err
+			}
 		}
 	}
 	return delta, nil
@@ -683,9 +789,17 @@ func verifyMCPCredentialLiftedColumns(baseline, observed, delta map[string]inter
 func verifyMCPFieldUpdateReadback(ctx context.Context, plan, config MCPServerResourceModel, committed, candidate mcpFieldOwnership, baseline, observed, delta map[string]interface{}) error {
 	for _, fieldPath := range mcpFieldPaths {
 		name := mcpFieldWireName(fieldPath)
+		if fieldPath == mcpFieldOAuthScopesPath {
+			// credentials.scopes is deliberately not projected by LiteLLM v1.98.
+			continue
+		}
 		if sent, changed := delta[name]; changed {
 			if fieldPath == mcpFieldCredentialsPath {
-				if sent != nil && verifyMCPObservableCredentialReadback(ctx, config.Credentials, observed) != nil {
+				// A native scopes-only mutation necessarily uses the credentials
+				// object without creating generic credential ownership. Do not ask a
+				// null generic map to confirm that write; scopes remain unobservable.
+				genericCredentialIntent := candidate.Owned[mcpFieldCredentialsPath] || candidate.Removals[mcpFieldCredentialsPath]
+				if genericCredentialIntent && sent != nil && verifyMCPObservableCredentialReadback(ctx, config.Credentials, observed) != nil {
 					return fmt.Errorf("observable credential configuration did not converge")
 				}
 				continue

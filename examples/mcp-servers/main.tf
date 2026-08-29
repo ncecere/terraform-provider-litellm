@@ -128,6 +128,21 @@ resource "litellm_mcp_server" "oauth_protected" {
   authorization_url = "https://auth.enterprise.com/oauth/authorize"
   token_url         = "https://auth.enterprise.com/oauth/token"
   registration_url  = "https://auth.enterprise.com/oauth/register"
+  oauth2_flow       = "authorization_code"
+  oauth_scopes      = ["mcp.read", "mcp.write"]
+
+  available_on_public_internet = false
+  instructions                 = "Prefer read-only tools unless a write is explicitly requested."
+
+  tool_name_to_display_name = {
+    list_records   = "List_Records"
+    update_records = "Update_Records"
+  }
+
+  tool_name_to_description = {
+    list_records   = "List enterprise records"
+    update_records = "Update enterprise records"
+  }
 
   credentials = {
     "client_id"         = var.oauth_client_id

@@ -23,20 +23,26 @@ const (
 )
 
 const (
-	mcpFieldAliasPath            = "/alias"
-	mcpFieldDescriptionPath      = "/description"
-	mcpFieldCommandPath          = "/command"
-	mcpFieldAuthorizationURLPath = "/authorization_url"
-	mcpFieldTokenURLPath         = "/token_url"
-	mcpFieldRegistrationURLPath  = "/registration_url"
-	mcpFieldAccessGroupsPath     = "/mcp_access_groups"
-	mcpFieldArgsPath             = "/args"
-	mcpFieldEnvPath              = "/env"
-	mcpFieldAllowedToolsPath     = "/allowed_tools"
-	mcpFieldExtraHeadersPath     = "/extra_headers"
-	mcpFieldStaticHeadersPath    = "/static_headers"
-	mcpFieldCredentialsPath      = "/credentials"
-	mcpFieldAllowAllKeysPath     = "/allow_all_keys"
+	mcpFieldAliasPath                   = "/alias"
+	mcpFieldDescriptionPath             = "/description"
+	mcpFieldCommandPath                 = "/command"
+	mcpFieldAuthorizationURLPath        = "/authorization_url"
+	mcpFieldTokenURLPath                = "/token_url"
+	mcpFieldRegistrationURLPath         = "/registration_url"
+	mcpFieldAccessGroupsPath            = "/mcp_access_groups"
+	mcpFieldArgsPath                    = "/args"
+	mcpFieldEnvPath                     = "/env"
+	mcpFieldAllowedToolsPath            = "/allowed_tools"
+	mcpFieldExtraHeadersPath            = "/extra_headers"
+	mcpFieldStaticHeadersPath           = "/static_headers"
+	mcpFieldCredentialsPath             = "/credentials"
+	mcpFieldAllowAllKeysPath            = "/allow_all_keys"
+	mcpFieldOAuthScopesPath             = "/oauth_scopes"
+	mcpFieldAvailablePublicInternetPath = "/available_on_public_internet"
+	mcpFieldOAuth2FlowPath              = "/oauth2_flow"
+	mcpFieldInstructionsPath            = "/instructions"
+	mcpFieldToolNameToDisplayNamePath   = "/tool_name_to_display_name"
+	mcpFieldToolNameToDescriptionPath   = "/tool_name_to_description"
 )
 
 var mcpFieldPaths = []string{
@@ -54,6 +60,12 @@ var mcpFieldPaths = []string{
 	mcpFieldRegistrationURLPath,
 	mcpFieldStaticHeadersPath,
 	mcpFieldTokenURLPath,
+	mcpFieldOAuthScopesPath,
+	mcpFieldAvailablePublicInternetPath,
+	mcpFieldOAuth2FlowPath,
+	mcpFieldInstructionsPath,
+	mcpFieldToolNameToDisplayNamePath,
+	mcpFieldToolNameToDescriptionPath,
 }
 
 var mcpFieldAllowedPaths = func() map[string]bool {
@@ -386,6 +398,12 @@ func mcpFieldConfigPresence(config MCPServerResourceModel) map[string]int {
 	set(mcpFieldStaticHeadersPath, config.StaticHeaders)
 	set(mcpFieldCredentialsPath, config.Credentials)
 	set(mcpFieldAllowAllKeysPath, config.AllowAllKeys)
+	set(mcpFieldOAuthScopesPath, config.OAuthScopes)
+	set(mcpFieldAvailablePublicInternetPath, config.AvailableOnPublicInternet)
+	set(mcpFieldOAuth2FlowPath, config.OAuth2Flow)
+	set(mcpFieldInstructionsPath, config.Instructions)
+	set(mcpFieldToolNameToDisplayNamePath, config.ToolNameToDisplayName)
+	set(mcpFieldToolNameToDescriptionPath, config.ToolNameToDescription)
 	return result
 }
 

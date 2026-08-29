@@ -82,9 +82,11 @@ func TestMCPFieldRemovalSentinelsV198(t *testing.T) {
 		mcpFieldAuthorizationURLPath: nil, mcpFieldTokenURLPath: nil, mcpFieldRegistrationURLPath: nil,
 		mcpFieldAccessGroupsPath: []string{}, mcpFieldArgsPath: []string{}, mcpFieldAllowedToolsPath: []string{}, mcpFieldExtraHeadersPath: []string{},
 		mcpFieldEnvPath: map[string]string{}, mcpFieldStaticHeadersPath: map[string]string{}, mcpFieldCredentialsPath: nil,
-		mcpFieldAllowAllKeysPath: false,
+		mcpFieldAllowAllKeysPath: false, mcpFieldOAuthScopesPath: []string{}, mcpFieldAvailablePublicInternetPath: true,
+		mcpFieldOAuth2FlowPath: nil, mcpFieldInstructionsPath: nil,
+		mcpFieldToolNameToDisplayNamePath: map[string]string{}, mcpFieldToolNameToDescriptionPath: map[string]string{},
 	}
-	if len(want) != 14 || len(mcpFieldPaths) != 14 {
+	if len(want) != 20 || len(mcpFieldPaths) != 20 {
 		t.Fatalf("sentinel inventory changed: want=%d paths=%d", len(want), len(mcpFieldPaths))
 	}
 	for _, fieldPath := range mcpFieldPaths {
@@ -147,12 +149,24 @@ func TestMCPServerCreateSendsConfiguredEmptyAndFalseFields(t *testing.T) {
 		Alias: types.StringValue("alias"), Description: types.StringValue(""), MCPAccessGroups: emptyList, Command: types.StringValue(""), Args: emptyList, Env: emptyMap,
 		Credentials: emptyMap, AllowedTools: emptyList, ExtraHeaders: emptyList, StaticHeaders: emptyMap,
 		AuthorizationURL: types.StringValue(""), TokenURL: types.StringValue(""), RegistrationURL: types.StringValue(""), AllowAllKeys: types.BoolValue(false),
+		OAuthScopes: emptyList, AvailableOnPublicInternet: types.BoolValue(false), OAuth2Flow: types.StringValue("authorization_code"), Instructions: types.StringValue(""),
+		ToolNameToDisplayName: emptyMap, ToolNameToDescription: emptyMap,
 	}
 	request, err := (&MCPServerResource{}).buildMCPServerCreateRequest(ctx, &config, &config, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, fieldPath := range mcpFieldPaths {
+		if fieldPath == mcpFieldOAuthScopesPath {
+			credentials, ok := request["credentials"].(map[string]interface{})
+			if !ok {
+				t.Fatalf("native credential object missing from create: %#v", request)
+			}
+			if scopes, present := credentials["scopes"]; !present || !mcpWireValuesEqual(scopes, []string{}) {
+				t.Fatalf("explicit empty scopes omitted from create: %#v", request)
+			}
+			continue
+		}
 		if _, present := request[mcpFieldWireName(fieldPath)]; !present {
 			t.Fatalf("explicit empty/false field omitted from create: %s (%#v)", fieldPath, request)
 		}
@@ -172,10 +186,15 @@ func TestMCPFieldDeltaEmitsAllAndOnlyV198RemovalSentinels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(delta) != 14 {
+	if len(delta) != 19 {
 		t.Fatalf("delta contains unrelated or missing sentinel: %#v", delta)
 	}
 	for _, fieldPath := range mcpFieldPaths {
+		if fieldPath == mcpFieldOAuthScopesPath {
+			// A simultaneous full credentials clear also clears native scopes; a
+			// second top-level alias would be invalid and unsafe.
+			continue
+		}
 		name := mcpFieldWireName(fieldPath)
 		got, present := delta[name]
 		if !present || !mcpWireValuesEqual(got, mcpFieldRemovalSentinel(fieldPath)) {

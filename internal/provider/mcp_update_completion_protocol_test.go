@@ -389,8 +389,10 @@ func TestMCPServerInitialEmptyCredentialsClassReplacementProtocol(t *testing.T) 
 		"transport": "http", "url": "https://known.invalid/mcp", "auth_type": "none", "spec_version": "2024-11-05",
 	}
 	emptyCredentials := map[string]tftypes.Value{}
+	emptyScopes := protocolMCPStringList()
 	config := map[string]interface{}{
 		"server_name": "replace-empty-credentials", "transport": "http", "url": "https://known.invalid/mcp", "auth_type": "api_key", "credentials": emptyCredentials,
+		"oauth_scopes": emptyScopes,
 	}
 	before := map[string]interface{}{
 		"server_id": "replace-empty-credentials", "server_name": "replace-empty-credentials", "transport": "http",
@@ -400,14 +402,14 @@ func TestMCPServerInitialEmptyCredentialsClassReplacementProtocol(t *testing.T) 
 		"server_id": "replace-empty-credentials", "server_name": "replace-empty-credentials", "transport": "http",
 		"url": "https://known.invalid/mcp", "auth_type": "api_key", "credentials": nil, "mcp_info": map[string]interface{}{},
 	}
-	result := runMCPUpdateCompletionProtocol(t, state, config, map[string]interface{}{"auth_type": "api_key", "credentials": emptyCredentials}, before, after, protocolMCPFieldPrivate(t, emptyMCPFieldOwnership()))
+	result := runMCPUpdateCompletionProtocol(t, state, config, map[string]interface{}{"auth_type": "api_key", "credentials": emptyCredentials, "oauth_scopes": emptyScopes}, before, after, protocolMCPFieldPrivate(t, emptyMCPFieldOwnership()))
 	if accessGroupProtocolDiagnosticsHaveError(result.applied.Diagnostics) || result.puts != 1 {
 		t.Fatalf("credential-class replacement was rejected: puts=%d diagnostics=%v", result.puts, result.applied.Diagnostics)
 	}
-	if value, present := result.body["credentials"]; !present || !mcpWireValuesEqual(value, map[string]string{}) {
-		t.Fatalf("empty replacement credentials missing from PUT: %#v", result.body)
+	if value, present := result.body["credentials"]; !present || !mcpWireValuesEqual(value, map[string]interface{}{"scopes": []string{}}) {
+		t.Fatalf("empty replacement credentials and scopes missing from PUT: %#v", result.body)
 	}
-	if ownership := protocolCommittedMCPFieldOwnership(t, result.applied.Private); !ownership.Owned[mcpFieldCredentialsPath] {
+	if ownership := protocolCommittedMCPFieldOwnership(t, result.applied.Private); !ownership.Owned[mcpFieldCredentialsPath] || !ownership.Owned[mcpFieldOAuthScopesPath] {
 		t.Fatalf("replacement credential ownership was not committed: %#v", ownership)
 	}
 }
@@ -445,13 +447,15 @@ func TestMCPServerOwnedCredentialsClassReplacementProtocol(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			emptyScopes := protocolMCPStringList()
 			state := map[string]interface{}{
 				"id": "replace-owned-credentials", "server_id": "replace-owned-credentials", "server_name": "replace-owned-credentials",
 				"transport": "http", "url": "https://known.invalid/mcp", "auth_type": "oauth2", "spec_version": "2024-11-05",
-				"credentials": test.prior, "field_ownership_generation": int64(1),
+				"credentials": test.prior, "oauth_scopes": emptyScopes, "field_ownership_generation": int64(1),
 			}
 			config := map[string]interface{}{
 				"server_name": "replace-owned-credentials", "transport": "http", "url": "https://known.invalid/mcp", "auth_type": "api_key", "credentials": test.desired,
+				"oauth_scopes": emptyScopes,
 			}
 			before := map[string]interface{}{
 				"server_id": "replace-owned-credentials", "server_name": "replace-owned-credentials", "transport": "http",
@@ -465,13 +469,18 @@ func TestMCPServerOwnedCredentialsClassReplacementProtocol(t *testing.T) {
 				before[test.clearedLifted] = "old-audience"
 				after[test.clearedLifted] = nil
 			}
-			owned := mcpFieldOwnership{Owned: map[string]bool{mcpFieldCredentialsPath: true}, Removals: map[string]bool{}, Generation: 1, Versioned: true}
-			result := runMCPUpdateCompletionProtocol(t, state, config, map[string]interface{}{"auth_type": "api_key", "credentials": test.desired}, before, after, protocolMCPFieldPrivate(t, owned))
+			owned := mcpFieldOwnership{Owned: map[string]bool{mcpFieldCredentialsPath: true, mcpFieldOAuthScopesPath: true}, Removals: map[string]bool{}, Generation: 1, Versioned: true}
+			result := runMCPUpdateCompletionProtocol(t, state, config, map[string]interface{}{"auth_type": "api_key", "credentials": test.desired, "oauth_scopes": emptyScopes}, before, after, protocolMCPFieldPrivate(t, owned))
 			if accessGroupProtocolDiagnosticsHaveError(result.applied.Diagnostics) || result.puts != 1 {
 				t.Fatalf("owned credential-class replacement failed: puts=%d diagnostics=%v", result.puts, result.applied.Diagnostics)
 			}
-			if value, present := result.body["credentials"]; !present || !mcpWireValuesEqual(value, test.expected) {
-				t.Fatalf("complete replacement credentials missing from PUT: %#v", result.body)
+			expectedCredentials := make(map[string]interface{}, len(test.expected)+1)
+			for name, value := range test.expected {
+				expectedCredentials[name] = value
+			}
+			expectedCredentials["scopes"] = []string{}
+			if value, present := result.body["credentials"]; !present || !mcpWireValuesEqual(value, expectedCredentials) {
+				t.Fatalf("complete replacement credentials and scopes missing from PUT: %#v", result.body)
 			}
 			if test.clearedLifted != "" {
 				if value, present := result.body[test.clearedLifted]; !present || value != nil {
