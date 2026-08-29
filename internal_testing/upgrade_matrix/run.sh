@@ -997,6 +997,12 @@ EOF
   fi
   port_file=$SCRATCH/fault-port.json
   stats_file=$SCRATCH/fault-stats.json
+  [ -z "$PROXY_PID" ] || fail 'a prior controlled fault proxy is still active'
+  # Each scenario requires a newly created readiness file and independent
+  # statistics. The proxy itself opens both with O_EXCL, so stale files must be
+  # removed explicitly rather than being mistaken for a newly ready process.
+  rm -f -- "$port_file" "$stats_file"
+  [ ! -e "$port_file" ] && [ ! -e "$stats_file" ] || fail 'controlled fault proxy evidence paths were not reset'
   python3 "$SCRIPT_DIR/fault_proxy.py" --endpoint "$endpoint" --port-file "$port_file" --stats-file "$stats_file" >>"$LOG" 2>&1 &
   PROXY_PID=$!
   attempt=0

@@ -35,6 +35,7 @@ grep -q 'terraform state rm "$fallback_delete_address"' "$REPO_ROOT/internal_tes
 grep -q 'validate_fixture_name "$file"' "$REPO_ROOT/internal_testing/smoke.sh"
 grep -q 'scenario command evidence is not bound to one exact' "$SCRIPT_DIR/harness.py"
 grep -q 'CLI=$selected_cli' "$SCRIPT_DIR/run.sh"
+grep -q 'rm -f -- "$port_file" "$stats_file"' "$SCRIPT_DIR/run.sh"
 grep -q 'run_cli state rm "$IMPORT_ADDRESS"' "$SCRIPT_DIR/run.sh"
 grep -q 'registry.opentofu.org/ncecere/litellm' "$REPO_ROOT/internal_testing/smoke.sh"
 grep -q 'registry.opentofu.org/ncecere/litellm' "$SCRIPT_DIR/run.sh"
