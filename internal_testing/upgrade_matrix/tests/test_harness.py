@@ -57,6 +57,12 @@ class HarnessTests(unittest.TestCase):
             "litellm_project": [0, 1],
             "litellm_team": [0, 1],
         })
+        self.assertEqual(matrix["upgrade_expected_computed_migrations"]["litellm_mcp_server"], [
+            "alias", "available_on_public_internet", "byok_description",
+            "delegate_auth_to_upstream", "field_ownership_generation", "is_byok",
+            "mcp_info_ownership_generation", "oauth_passthrough",
+            "tool_name_to_description", "tool_name_to_display_name", "updated_at", "updated_by",
+        ])
         nested = [
             (resource_type, path)
             for resource_type, paths in matrix["upgrade_expected_computed_migrations"].items()
