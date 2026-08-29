@@ -309,15 +309,16 @@ elif [ "${SMOKE_MCP_CLEAR_LIFECYCLE:-}" = "1" ]; then
   python3 - mcp-cleared.json <<'PY'
 import json,sys
 value=json.load(open(sys.argv[1],encoding="utf-8"))
-# Credentials are intentionally excluded: v1.98 management reads redact them,
-# so the provider's unit/protocol lane verifies the top-level null wire intent.
-for field in ("alias","description","command","authorization_url","token_url","registration_url"):
+# Credentials and credentials.scopes are intentionally excluded: v1.98
+# management reads redact them, so unit/protocol tests verify their exact wire intent.
+for field in ("alias","description","command","authorization_url","token_url","registration_url","oauth2_flow","instructions"):
     assert value.get(field) is None,(field,value.get(field))
 for field in ("mcp_access_groups","args","allowed_tools","extra_headers"):
     assert value.get(field)==[],(field,value.get(field))
-for field in ("env","static_headers"):
+for field in ("env","static_headers","tool_name_to_display_name","tool_name_to_description"):
     assert value.get(field)=={},(field,value.get(field))
 assert value.get("allow_all_keys") is False,value.get("allow_all_keys")
+assert value.get("available_on_public_internet") is True,value.get("available_on_public_internet")
 PY
   for refresh_number in 1 2; do
     echo "=== MCP CLEAR REFRESH-ONLY $refresh_number ==="
