@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	frameworkdatasource "github.com/hashicorp/terraform-plugin-framework/datasource"
@@ -131,6 +134,16 @@ func TestMCP208CrossValidationUnknownDeferralAndValueFreeNumbers(t *testing.T) {
 	if diagnostics := validate(MCPServerResourceModel{DelegateAuthToUpstream: types.BoolValue(true), AuthType: types.StringValue("oauth2"), OAuth2Flow: types.StringValue("client_credentials")}); !diagnostics.HasError() {
 		t.Fatal("machine-to-machine delegated authentication was accepted")
 	}
+	if diagnostics := validate(MCPServerResourceModel{DelegateAuthToUpstream: types.BoolValue(true), AuthType: types.StringValue("oauth2"), OAuth2Flow: types.StringNull()}); !diagnostics.HasError() {
+		t.Fatal("omitted delegated authentication flow was accepted")
+	}
+	unknownDelegation := MCPServerResourceModel{DelegateAuthToUpstream: types.BoolValue(true), AuthType: types.StringValue("oauth2"), OAuth2Flow: types.StringUnknown()}
+	if diagnostics := validate(unknownDelegation); diagnostics.HasError() {
+		t.Fatalf("unknown delegated authentication flow did not defer: %v", diagnostics)
+	}
+	if _, err := mcpFieldDesiredValue(context.Background(), unknownDelegation, mcpFieldDelegateAuthToUpstreamPath); err == nil {
+		t.Fatal("unknown delegated authentication flow reached mutation construction")
+	}
 	if diagnostics := validate(MCPServerResourceModel{DelegateAuthToUpstream: types.BoolValue(true), AuthType: types.StringValue("oauth2"), OAuth2Flow: types.StringValue("authorization_code")}); diagnostics.HasError() {
 		t.Fatalf("interactive delegated authentication was rejected: %v", diagnostics)
 	}
@@ -209,10 +222,17 @@ func TestMCP208ProjectionNumberStrictnessTransactionalityAndParity(t *testing.T)
 	if !reflect.DeepEqual(before, resourceData) {
 		t.Fatal("late malformed field partially changed resource projection")
 	}
-	for _, bad := range []interface{}{json.Number("0"), json.Number("-1"), json.Number("9223372036854775808")} {
+	for unlimited, want := range map[json.Number]int64{"0": 0, "-1": -1} {
+		malformed["max_concurrent_requests"] = unlimited
+		projected, err := projectMCPServerDataSource(malformed, "safe")
+		if err != nil || projected.MaxConcurrentRequests.ValueInt64() != want {
+			t.Fatalf("valid upstream unlimited concurrency sentinel was rejected: %v", err)
+		}
+	}
+	for _, bad := range []interface{}{json.Number("1.5"), json.Number("9223372036854775808")} {
 		malformed["max_concurrent_requests"] = bad
 		if _, err := projectMCPServerDataSource(malformed, "safe"); err == nil {
-			t.Fatal("invalid maximum concurrency was accepted")
+			t.Fatal("malformed maximum concurrency was accepted")
 		}
 	}
 	malformed["max_concurrent_requests"] = json.Number("1")
@@ -371,6 +391,39 @@ func TestMCP208OwnedFieldsClearAndMismatchProtocol(t *testing.T) {
 			t.Fatalf("advanced mismatch changed committed ownership: %#v", committed)
 		}
 	})
+}
+
+func TestMCP208DelegatedAuthOmittedFlowRejectedBeforeMutationProtocol(t *testing.T) {
+	ctx := context.Background()
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		http.Error(writer, "unexpected", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	protocolServer, schemas := configuredImportProtocolServer(t, ctx, server.URL)
+	schema := schemas.ResourceSchemas["litellm_mcp_server"]
+	state := accessGroupProtocolDynamicValue(t, schema, organizationProjectProtocolValue(t, schema, map[string]interface{}{
+		"id": "delegate-m2m", "server_id": "delegate-m2m", "server_name": "delegate-m2m",
+		"transport": "http", "url": "https://known.invalid/mcp", "auth_type": "oauth2",
+		"oauth2_flow": "client_credentials", "delegate_auth_to_upstream": false, "spec_version": "2024-11-05",
+	}))
+	config := accessGroupProtocolDynamicValue(t, schema, organizationProjectProtocolValue(t, schema, map[string]interface{}{
+		"server_name": "delegate-m2m", "transport": "http", "url": "https://known.invalid/mcp",
+		"auth_type": "oauth2", "delegate_auth_to_upstream": true,
+	}))
+	proposed := organizationProjectProtocolReplace(t, schema, state, map[string]interface{}{"delegate_auth_to_upstream": true})
+	planned, err := protocolServer.PlanResourceChange(ctx, &tfprotov6.PlanResourceChangeRequest{
+		TypeName: "litellm_mcp_server", Config: config, PriorState: state, ProposedNewState: proposed,
+		PriorPrivate: protocolMCPFieldPrivate(t, emptyMCPFieldOwnership()),
+	})
+	if err != nil || !accessGroupProtocolDiagnosticsHaveError(planned.Diagnostics) {
+		t.Fatalf("omitted-flow M2M takeover was not rejected: err=%v diagnostics=%v", err, planned.Diagnostics)
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("plan-time delegated-auth rejection made %d remote requests", requests.Load())
+	}
 }
 
 func TestMCP208DCRImplicitClearBlocksPUTProtocol(t *testing.T) {

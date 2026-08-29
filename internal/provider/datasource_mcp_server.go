@@ -452,7 +452,7 @@ func projectMCPServerDataSourceForRole(result map[string]interface{}, expectedSe
 	if data.Timeout, err = dataSourceNullableFloat64At(result, "timeout"); err != nil || (!data.Timeout.IsNull() && data.Timeout.ValueFloat64() <= 0) {
 		return MCPServerDataSourceModel{}, fmt.Errorf("MCP server response timeout is malformed")
 	}
-	if data.MaxConcurrentRequests, err = dataSourceNullableInt64At(result, "max_concurrent_requests"); err != nil || (!data.MaxConcurrentRequests.IsNull() && data.MaxConcurrentRequests.ValueInt64() <= 0) {
+	if data.MaxConcurrentRequests, err = dataSourceNullableInt64At(result, "max_concurrent_requests"); err != nil {
 		return MCPServerDataSourceModel{}, fmt.Errorf("MCP server response maximum concurrency is malformed")
 	}
 	if data.CreatedAt, err = dataSourceNullableStringAt(result, "created_at"); err != nil {

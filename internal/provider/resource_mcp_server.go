@@ -680,11 +680,12 @@ func validateMCP208CrossConfiguration(data MCPServerResourceModel, diagnostics *
 	if knownTrue(data.DelegateAuthToUpstream) && !data.AuthType.IsUnknown() {
 		if data.AuthType.IsNull() || data.AuthType.ValueString() != "oauth2" {
 			diagnostics.AddAttributeError(path.Root("delegate_auth_to_upstream"), "Invalid MCP Authentication Configuration", "Delegating authentication upstream requires the known OAuth2 authentication type.")
-		} else if !data.OAuth2Flow.IsNull() && !data.OAuth2Flow.IsUnknown() && data.OAuth2Flow.ValueString() != "authorization_code" {
-			// v1.98 deliberately denies anonymous upstream delegation for M2M
-			// client-credentials servers so callers cannot use LiteLLM's service
-			// account. An omitted/unknown flow may still be stamped by LiteLLM.
-			diagnostics.AddAttributeError(path.Root("delegate_auth_to_upstream"), "Invalid MCP Authentication Configuration", "Delegating authentication upstream cannot be combined with a known machine-to-machine OAuth2 flow.")
+		} else if !data.OAuth2Flow.IsUnknown() && (data.OAuth2Flow.IsNull() || data.OAuth2Flow.ValueString() != "authorization_code") {
+			// v1.98 stamps an omitted M2M-shaped create as client_credentials
+			// and deliberately denies upstream delegation for that effective flow.
+			// Requiring explicit authorization_code avoids treating redacted legacy
+			// credentials or an omitted flow as proof of an interactive boundary.
+			diagnostics.AddAttributeError(path.Root("delegate_auth_to_upstream"), "Invalid MCP Authentication Configuration", "Delegating authentication upstream requires an explicit interactive OAuth2 flow.")
 		}
 	}
 	if !knownTrue(data.OAuthPassthrough) || data.AuthType.IsUnknown() || data.ExtraHeaders.IsUnknown() {
@@ -1060,9 +1061,9 @@ func validateMCPServerOptionalResponseFields(result map[string]interface{}, stri
 		if !present || value == nil {
 			continue
 		}
-		number, err := exactInt64FromAPI(value)
-		if !dataSourceAPIJSONNumber(value) || err != nil || number <= 0 {
-			return fmt.Errorf("MCP server response contains a malformed optional positive-integer field")
+		_, err := exactInt64FromAPI(value)
+		if !dataSourceAPIJSONNumber(value) || err != nil {
+			return fmt.Errorf("MCP server response contains a malformed optional integer field")
 		}
 	}
 	return nil
@@ -2472,9 +2473,10 @@ func (r *MCPServerResource) readMCPServerResultProjection(ctx context.Context, d
 	}
 	if maximum, err := dataSourceNullableInt64At(result, "max_concurrent_requests"); err != nil {
 		return fmt.Errorf("invalid MCP server response: maximum concurrency is malformed")
-	} else if !maximum.IsNull() && maximum.ValueInt64() <= 0 {
-		return fmt.Errorf("invalid MCP server response: maximum concurrency is malformed")
 	} else {
+		// v1.98 treats every non-positive exact integer as an observable unlimited
+		// sentinel. Configuration uses null as the sole writable unlimited form,
+		// but imports and reads must not reject valid upstream representations.
 		data.MaxConcurrentRequests = maximum
 	}
 

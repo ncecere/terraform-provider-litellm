@@ -87,7 +87,15 @@ func mcpFieldDesiredValue(ctx context.Context, data MCPServerResourceModel, fiel
 	case mcpFieldInstructionsPath:
 		return stringValue(data.Instructions)
 	case mcpFieldDelegateAuthToUpstreamPath:
-		return boolValue(data.DelegateAuthToUpstream)
+		value, err := boolValue(data.DelegateAuthToUpstream)
+		if err != nil {
+			return nil, err
+		}
+		if value.(bool) && (data.AuthType.IsNull() || data.AuthType.IsUnknown() || data.AuthType.ValueString() != "oauth2" ||
+			data.OAuth2Flow.IsNull() || data.OAuth2Flow.IsUnknown() || data.OAuth2Flow.ValueString() != "authorization_code") {
+			return nil, fmt.Errorf("upstream delegation requires complete interactive OAuth intent")
+		}
+		return value, nil
 	case mcpFieldOAuthPassthroughPath:
 		return boolValue(data.OAuthPassthrough)
 	case mcpFieldDCRBridgePath:
