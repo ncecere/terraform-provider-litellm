@@ -49,6 +49,14 @@ class HarnessTests(unittest.TestCase):
             matrix["upgrade_expected_private_plan_triggers"],
             {"litellm_agent": ["id"]},
         )
+        self.assertEqual(matrix["upgrade_expected_schema_migrations"], {
+            "litellm_key": [1, 2],
+            "litellm_key_block": [0, 1],
+            "litellm_mcp_server": [1, 8],
+            "litellm_organization": [0, 1],
+            "litellm_project": [0, 1],
+            "litellm_team": [0, 1],
+        })
         nested = [
             (resource_type, path)
             for resource_type, paths in matrix["upgrade_expected_computed_migrations"].items()
