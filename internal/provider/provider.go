@@ -150,6 +150,7 @@ func (p *LiteLLMProvider) Resources(ctx context.Context) []func() resource.Resou
 		NewTeamMemberResource,
 		NewTeamMemberAddResource,
 		NewMCPServerResource,
+		NewMCPToolsetResource,
 		NewCredentialResource,
 		NewVectorStoreResource,
 		NewOrganizationResource,

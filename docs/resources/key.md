@@ -186,6 +186,17 @@ resource "litellm_key" "routed" {
 
 Removing the entire block sends an explicit empty object to clear the key-level override and restores team/global inheritance. Setting `fallbacks = jsonencode([])` retains a non-empty key-level settings document and intentionally suppresses inherited fallbacks.
 
+### Key with MCP Toolsets
+
+```hcl
+resource "litellm_key" "incident_response" {
+  key_alias       = "incident-response"
+  mcp_toolset_ids = [litellm_mcp_toolset.incident_response.toolset_id]
+}
+```
+
+The key assignment is the effective LiteLLM toolset grant. If the key belongs to a team whose `mcp_toolset_ids` is nonempty, the key's set must be a subset of the team's set.
+
 ### Service Account Key
 
 ```hcl
@@ -242,6 +253,8 @@ The following arguments are supported:
 * `key_alias` - (Optional) Human-readable alias for this key.
 
 * `models` - (Optional) List of models that can be used with this key.
+
+* `mcp_toolset_ids` - (Optional) Unordered set of MCP toolset IDs granted directly to the key. Omit it to leave remote assignments unmanaged. Set it to `[]` to clear toolset assignments without changing sibling object permissions.
 
 * `max_budget` - (Optional) Maximum budget for this key.
 

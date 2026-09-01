@@ -14,6 +14,7 @@
     {"type":"litellm_team_member","fixture":["team_minimal.tf","issue210_team_member_v201.tf"],"import_fixture":["team_minimal.tf","issue210_team_member_import.tf"],"address":"litellm_team_member.upgrade","import_expression":"litellm_team_member.upgrade.id","lane":"oss","action":false},
     {"type":"litellm_team_member_add","fixture":["team_minimal.tf","team_member_add_minimal.tf"],"address":"litellm_team_member_add.minimal","import_expression":"composite_team_member_add(litellm_team_member_add.minimal)","lane":"oss","action":false},
     {"type":"litellm_mcp_server","fixture":["mcp_server_minimal.tf"],"address":"litellm_mcp_server.minimal","import_expression":"litellm_mcp_server.minimal.id","lane":"oss","action":false},
+    {"type":"litellm_mcp_toolset","fixture":["mcp_server_minimal.tf","mcp_toolset.tf"],"address":"litellm_mcp_toolset.populated","import_expression":"litellm_mcp_toolset.populated.toolset_id","lane":"oss","action":false,"introduced_after_previous":true,"limitations":["previous-release-resource-unavailable"]},
     {"type":"litellm_credential","fixture":["issue210_credential_v201.tf"],"import_fixture":["issue210_credential_import.tf"],"address":"litellm_credential.upgrade","import_expression":"litellm_credential.upgrade.id","import_stale_outputs":["issue210_credential_upgrade_id"],"lane":"oss","action":false,"limitations":["masked-values-metadata-only-import"]},
     {"type":"litellm_vector_store","fixture":["vector_store_minimal.tf"],"address":"litellm_vector_store.minimal","import_expression":"litellm_vector_store.minimal.id","lane":"oss","action":false},
     {"type":"litellm_organization","fixture":["organization_minimal.tf"],"address":"litellm_organization.minimal","import_expression":"litellm_organization.minimal.id","lane":"oss","action":false},
@@ -43,11 +44,11 @@
     "litellm_prompts":"inventory-endpoint-may-be-unavailable"
   },
   "scenario_counts": {
-    "resource_coverage":24,
-    "upgrade":24,
-    "lifecycle":24,
-    "import":24,
-    "drift":24,
+    "resource_coverage":25,
+    "upgrade":25,
+    "lifecycle":25,
+    "import":25,
+    "drift":25,
     "replacement":3,
     "failure_recovery":2,
     "data_source":35,
@@ -72,12 +73,12 @@
     }
   },
   "upgrade_expected_schema_migrations": {
-    "litellm_key": [1, 2],
+    "litellm_key": [1, 3],
     "litellm_key_block": [0, 1],
     "litellm_mcp_server": [1, 8],
     "litellm_organization": [0, 1],
     "litellm_project": [0, 1],
-    "litellm_team": [0, 1]
+    "litellm_team": [0, 2]
   },
   "upgrade_expected_identity_migrations": {
     "litellm_key_block": "sha256-of-prior-id"
@@ -109,6 +110,7 @@
   "terraform_1_11_4_expected_skips": [
     {"category":"resource_coverage","subject":"litellm_project","reason":"enterprise-license-required"},
     {"category":"upgrade","subject":"litellm_jwt_key_mapping","reason":"previous-release-resource-unavailable"},
+    {"category":"upgrade","subject":"litellm_mcp_toolset","reason":"previous-release-resource-unavailable"},
     {"category":"upgrade","subject":"litellm_project","reason":"enterprise-license-required"},
     {"category":"lifecycle","subject":"litellm_project","reason":"enterprise-license-required"},
     {"category":"import","subject":"litellm_agent","reason":"role-redacted-state-requires-admin"},

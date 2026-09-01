@@ -132,6 +132,7 @@ internal_testing/
     guardrail_full.tf
     mcp_server_minimal.tf
     mcp_server_full.tf
+    mcp_toolset.tf                  # populated and empty toolset definitions
     vector_store_minimal.tf
     vector_store_full.tf
     search_tool_minimal.tf
@@ -194,7 +195,7 @@ make smoke resources=model_minimal.tf
 make smoke resources=agent_minimal.tf datasources=agent.tf,agents_list.tf
 ```
 
-The explicit acceptance matrix covers 23 of 24 resources; `litellm_project` is
+The explicit acceptance matrix covers 24 of 25 resources; `litellm_project` is
 excluded because its endpoint requires LiteLLM Enterprise. Credential coverage
 includes non-empty values-only, heterogeneous legacy/JSON, true model-only,
 full/by-name and by-model data sources, a two-apply nested update/removal case,

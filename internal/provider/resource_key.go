@@ -14,6 +14,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/mapvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/resourcevalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -164,6 +165,7 @@ type KeyResourceModel struct {
 	Tags                     types.List    `tfsdk:"tags"`
 	Blocked                  types.Bool    `tfsdk:"blocked"`
 	RouterSettings           types.Object  `tfsdk:"router_settings"`
+	MCPToolsetIDs            types.Set     `tfsdk:"mcp_toolset_ids"`
 }
 
 func (r *KeyResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -173,7 +175,7 @@ func (r *KeyResource) Metadata(ctx context.Context, req resource.MetadataRequest
 func (r *KeyResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		Description: "Manages a LiteLLM API key.",
-		Version:     2,
+		Version:     3,
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				Description: "Non-sensitive unique identifier for this key (SHA256 hash of the key value).",
@@ -220,6 +222,14 @@ func (r *KeyResource) Schema(ctx context.Context, req resource.SchemaRequest, re
 				Optional:    true,
 				Computed:    true,
 				ElementType: types.StringType,
+			},
+			"mcp_toolset_ids": schema.SetAttribute{
+				Description: "MCP toolset IDs granted directly to this key. Omit this attribute to leave remote toolset grants unmanaged; set it to an empty set to clear them.",
+				Optional:    true,
+				ElementType: types.StringType,
+				Validators: []validator.Set{
+					setvalidator.ValueStringsAre(stringvalidator.LengthAtLeast(1)),
+				},
 			},
 			"allowed_routes": schema.ListAttribute{
 				Description: "List of allowed API routes.",
@@ -970,6 +980,12 @@ func (r *KeyResource) Update(ctx context.Context, req resource.UpdateRequest, re
 	}
 	updateReq["key"] = keyIdentifier
 
+	// LiteLLM persists object_permission before the key row, so a mutation that
+	// carries assignments must not publish planned state until an authoritative
+	// readback confirms both halves committed together.
+	_, assignmentMutation := updateReq["object_permission"]
+	plannedToolsets := data.MCPToolsetIDs
+
 	retainPriorUpdate := func(localCtx context.Context) {
 		if len(pendingTransitionPrivate) != 0 && resp.Private != nil {
 			resp.Diagnostics.Append(resp.Private.SetKey(localCtx, keyPendingUpdatePrivateKey, pendingTransitionPrivate)...)
@@ -992,7 +1008,18 @@ func (r *KeyResource) Update(ctx context.Context, req resource.UpdateRequest, re
 			return
 		}
 	} else if err := r.readKey(ctx, &data); err != nil {
+		if assignmentMutation {
+			retainPriorUpdate(context.WithoutCancel(ctx))
+			resp.Diagnostics.AddError("MCP Toolset Assignment Not Confirmed", "LiteLLM accepted the key update, but an authoritative readback did not confirm the toolset assignments. Terraform retained prior state; refresh reconciles the assignments.")
+			return
+		}
 		resp.Diagnostics.AddWarning("Read Error", keyResourceReadError(err))
+	}
+
+	if assignmentMutation && !resp.Diagnostics.HasError() && !data.MCPToolsetIDs.Equal(plannedToolsets) {
+		retainPriorUpdate(context.WithoutCancel(ctx))
+		resp.Diagnostics.AddError("MCP Toolset Assignment Did Not Converge", "LiteLLM accepted the key update, but authoritative readback did not match the planned toolset assignments. Terraform retained prior state.")
+		return
 	}
 
 	if !data.RouterSettings.IsNull() || !state.RouterSettings.IsNull() {
@@ -1106,9 +1133,10 @@ func (r *KeyResource) ImportState(ctx context.Context, req resource.ImportStateR
 	}
 }
 
-// UpgradeState handles direct migrations to schema v2. Version 0 also hashes
-// the historical raw key ID; both prior versions initialize semantic JSON as
-// unconfigured typed nulls and never adopt remote dictionary data.
+// UpgradeState handles direct migrations to schema v3. Version 0 also hashes
+// the historical raw key ID; versions 0 and 1 initialize semantic JSON as
+// unconfigured typed nulls and never adopt remote dictionary data. Every
+// prior version initializes mcp_toolset_ids as an unmanaged null.
 func (r *KeyResource) UpgradeState(ctx context.Context) map[int64]resource.StateUpgrader {
 	return map[int64]resource.StateUpgrader{
 		0: {
@@ -1162,6 +1190,9 @@ func (r *KeyResource) UpgradeState(ctx context.Context) map[int64]resource.State
 				priorState["metadata_json"] = json.RawMessage("null")
 				priorState["config_json"] = json.RawMessage("null")
 				priorState["permissions_json"] = json.RawMessage("null")
+				if _, present := priorState["mcp_toolset_ids"]; !present {
+					priorState["mcp_toolset_ids"] = json.RawMessage("null")
+				}
 
 				upgradedJSON, err := json.Marshal(priorState)
 				if err != nil {
@@ -1195,6 +1226,32 @@ func (r *KeyResource) UpgradeState(ctx context.Context) map[int64]resource.State
 				priorState["metadata_json"] = json.RawMessage("null")
 				priorState["config_json"] = json.RawMessage("null")
 				priorState["permissions_json"] = json.RawMessage("null")
+				if _, present := priorState["mcp_toolset_ids"]; !present {
+					priorState["mcp_toolset_ids"] = json.RawMessage("null")
+				}
+				upgraded, err := json.Marshal(priorState)
+				if err != nil {
+					resp.Diagnostics.AddError("Unable to Upgrade State", "Failed to encode upgraded key state.")
+					return
+				}
+				resp.DynamicValue = &tfprotov6.DynamicValue{JSON: upgraded}
+			},
+		},
+		2: {
+			PriorSchema: nil,
+			StateUpgrader: func(ctx context.Context, req resource.UpgradeStateRequest, resp *resource.UpgradeStateResponse) {
+				if req.RawState == nil {
+					resp.Diagnostics.AddError("Unable to Upgrade State", "RawState is nil. This is a bug in the provider.")
+					return
+				}
+				var priorState map[string]json.RawMessage
+				if err := json.Unmarshal(req.RawState.JSON, &priorState); err != nil {
+					resp.Diagnostics.AddError("Unable to Upgrade State", "Failed to decode prior key state.")
+					return
+				}
+				if _, present := priorState["mcp_toolset_ids"]; !present {
+					priorState["mcp_toolset_ids"] = json.RawMessage("null")
+				}
 				upgraded, err := json.Marshal(priorState)
 				if err != nil {
 					resp.Diagnostics.AddError("Unable to Upgrade State", "Failed to encode upgraded key state.")
@@ -1365,6 +1422,9 @@ func (r *KeyResource) buildKeyRequest(ctx context.Context, data *KeyResourceMode
 			return nil, diagnostics
 		}
 		keyReq["router_settings"] = routerSettings
+	}
+	if toolsetDiagnostics := addMCPToolsetIDsToRequest(ctx, keyReq, data.MCPToolsetIDs); toolsetDiagnostics.HasError() {
+		return nil, toolsetDiagnostics
 	}
 
 	// Handle service account
@@ -1862,6 +1922,10 @@ func (r *KeyResource) readKeyWithTransport(ctx context.Context, data *KeyResourc
 
 	modelTPMOwned := imported || (!data.ModelTPMLimit.IsNull() && !data.ModelTPMLimit.IsUnknown())
 	if err := updateInt64MapFromAPI(&data.ModelTPMLimit, info, imported, modelTPMOwned, "metadata", "model_tpm_limit"); err != nil {
+		return err
+	}
+	data.MCPToolsetIDs, err = readMCPToolsetIDs(ctx, info, data.MCPToolsetIDs, imported)
+	if err != nil {
 		return err
 	}
 

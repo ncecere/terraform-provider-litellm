@@ -38,8 +38,8 @@ func TestTeamSemanticSchemaAndDirectUpgradeProtocol(t *testing.T) {
 	defer server.Close()
 	protocolServer, schemas := configuredImportProtocolServer(t, ctx, server.URL)
 	schema := schemas.ResourceSchemas["litellm_team"]
-	if schema.Version != 1 {
-		t.Fatalf("schema version=%d want=1", schema.Version)
+	if schema.Version != 2 {
+		t.Fatalf("schema version=%d want=2", schema.Version)
 	}
 	raw, _ := json.Marshal(map[string]interface{}{"id": "team-upgrade", "team_id": "team-upgrade", "team_alias": "alias", "metadata": map[string]interface{}{"legacy": "keep"}})
 	upgraded, err := protocolServer.UpgradeResourceState(ctx, &tfprotov6.UpgradeResourceStateRequest{TypeName: "litellm_team", Version: 0, RawState: &tfprotov6.RawState{JSON: raw}})

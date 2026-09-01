@@ -17,8 +17,8 @@ func TestTeamSemanticSchemaAndDirectUpgrade(t *testing.T) {
 	resourceUnderTest := &TeamResource{}
 	var schemaResponse frameworkresource.SchemaResponse
 	resourceUnderTest.Schema(ctx, frameworkresource.SchemaRequest{}, &schemaResponse)
-	if schemaResponse.Schema.Version != 1 {
-		t.Fatalf("schema version=%d want=1", schemaResponse.Schema.Version)
+	if schemaResponse.Schema.Version != 2 {
+		t.Fatalf("schema version=%d want=2", schemaResponse.Schema.Version)
 	}
 	attribute, ok := schemaResponse.Schema.Attributes["metadata_json"].(resourceschema.StringAttribute)
 	if !ok || !attribute.Optional || !attribute.Computed || !attribute.Sensitive || attribute.Required {

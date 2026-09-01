@@ -142,6 +142,7 @@ The LiteLLM provider supports the following resources:
 ### Integrations
 
 * [`litellm_mcp_server`](./resources/mcp_server.md) - Manage MCP (Model Context Protocol) servers
+* [`litellm_mcp_toolset`](./resources/mcp_toolset.md) - Manage MCP toolset definitions
 * [`litellm_search_tool`](./resources/search_tool.md) - Manage search tool configurations
 * [`litellm_vector_store`](./resources/vector_store.md) - Manage vector stores
 

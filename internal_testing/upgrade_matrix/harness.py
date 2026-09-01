@@ -93,6 +93,7 @@ ASSERTION_CODES = {
 MODERN_MANDATORY_SKIPS = {
     ("resource_coverage", "litellm_project", "enterprise-license-required"),
     ("upgrade", "litellm_jwt_key_mapping", "previous-release-resource-unavailable"),
+    ("upgrade", "litellm_mcp_toolset", "previous-release-resource-unavailable"),
     ("upgrade", "litellm_project", "enterprise-license-required"),
     ("lifecycle", "litellm_project", "enterprise-license-required"),
     ("import", "litellm_agent", "role-redacted-state-requires-admin"),
@@ -309,8 +310,8 @@ def check_inventory(matrix: dict) -> None:
     resources = matrix["resources"]
     expected_resources = {item["type"] for item in resources}
     expected_data_sources = set(matrix["data_sources"])
-    if len(resources) != 24 or len(expected_resources) != 24:
-        raise HarnessError("resource inventory must contain exactly 24 unique types")
+    if len(resources) != 25 or len(expected_resources) != 25:
+        raise HarnessError("resource inventory must contain exactly 25 unique types")
     if len(matrix["data_sources"]) != 35 or len(expected_data_sources) != 35:
         raise HarnessError("data-source inventory must contain exactly 35 unique types")
     if expected_resources != provider_types("", "resource"):
@@ -321,7 +322,7 @@ def check_inventory(matrix: dict) -> None:
     introduced = {item["type"] for item in resources if item.get("introduced_after_previous")}
     if matrix.get("non_importable_resources") != [] or actions != sorted(matrix.get("action_resources", [])):
         raise HarnessError("importable/action resource accounting is incomplete")
-    if introduced != {"litellm_jwt_key_mapping"}:
+    if introduced != {"litellm_jwt_key_mapping", "litellm_mcp_toolset"}:
         raise HarnessError("post-v2.0.1 resource accounting is incomplete")
     for item in resources:
         for required in ("fixture", "address", "import_expression", "lane", "action"):
@@ -343,20 +344,20 @@ def check_inventory(matrix: dict) -> None:
     )}:
         raise HarnessError("fallback lifecycle skip contract changed without review")
     expected_counts = {
-        "resource_coverage": 24, "upgrade": 24, "lifecycle": 24, "import": 24,
-        "drift": 24, "replacement": 3, "failure_recovery": 2,
+        "resource_coverage": 25, "upgrade": 25, "lifecycle": 25, "import": 25,
+        "drift": 25, "replacement": 3, "failure_recovery": 2,
         "data_source": 35, "documentation": 3,
     }
     if matrix.get("scenario_counts") != expected_counts:
         raise HarnessError("scenario count contract changed without explicit accounting")
-    if sum(expected_counts.values()) + len(matrix.get("optional_features", [])) != 166:
-        raise HarnessError("execution matrix must contain exactly 166 independently reviewed scenarios")
+    if sum(expected_counts.values()) + len(matrix.get("optional_features", [])) != 171:
+        raise HarnessError("execution matrix must contain exactly 171 independently reviewed scenarios")
     expected_skips = matrix.get("terraform_1_11_4_expected_skips", [])
     skip_identities = {(item.get("category"), item.get("subject"), item.get("reason")) for item in expected_skips}
     conditional_skips = matrix.get("terraform_1_11_4_conditional_skips", [])
     conditional_identities = {(item.get("category"), item.get("subject"), item.get("reason")) for item in conditional_skips}
-    if len(expected_skips) != 10 or skip_identities != MODERN_MANDATORY_SKIPS:
-        raise HarnessError("modern CLI lanes must have the exact ten independently reviewed mandatory skips")
+    if len(expected_skips) != 11 or skip_identities != MODERN_MANDATORY_SKIPS:
+        raise HarnessError("modern CLI lanes must have the exact eleven independently reviewed mandatory skips")
     if len(conditional_skips) != 2 or conditional_identities != FALLBACK_CONDITIONAL_SKIPS:
         raise HarnessError("fallback conditional skip inventory is not exact")
     for scenario in matrix.get("replacement_scenarios", []):

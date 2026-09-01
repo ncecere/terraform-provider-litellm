@@ -1,10 +1,10 @@
 {
   "classification": {
     "excluded_non_durable": 504,
-    "operation_count": 693,
+    "operation_count": 688,
     "path": "internal/contract/reviewed-operation-classification.json",
-    "sha256": "c1fa3c7f88f6d738cc30dfc94c402f0eddce0a5663f45890692714cadef3c393",
-    "unsupported_durable": 189
+    "sha256": "7812184edd3beb358e0f7e6e054507197ff30f9d5a5da325f970499ff3e7b053",
+    "unsupported_durable": 184
   },
   "generation_command": "make contract-update LITELLM_SOURCE=../litellm",
   "openapi": {
@@ -14,9 +14,9 @@
     "sha256": "ab876dc970a8cc835e30cbdf65ece45a7bfd90bad0c7585bd4557d27c4a7615a"
   },
   "provider_golden": {
-    "operation_count": 108,
+    "operation_count": 113,
     "path": "internal/contractapi/testdata/provider-operations.golden.json",
-    "sha256": "a1a5114f93cc432a97f4da76def86ce238d712fba471dbb2d703768e7cecfe51"
+    "sha256": "3a4296f6974e11d5611978fd1e171b99993f350c129c0e3b2c2ac790f57e2e95"
   },
   "provider_operations": [
     {
@@ -476,7 +476,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_key.go",
-          "line": 1049
+          "line": 1076
         }
       ],
       "method": "POST",
@@ -488,11 +488,11 @@
       "evidence": [
         {
           "file": "internal/provider/resource_key.go",
-          "line": 633
+          "line": 643
         },
         {
           "file": "internal/provider/resource_key.go",
-          "line": 635
+          "line": 645
         }
       ],
       "method": "POST",
@@ -508,15 +508,15 @@
         },
         {
           "file": "internal/provider/resource_key.go",
-          "line": 1416
+          "line": 1476
         },
         {
           "file": "internal/provider/resource_key.go",
-          "line": 1433
+          "line": 1493
         },
         {
           "file": "internal/provider/resource_key.go",
-          "line": 1478
+          "line": 1538
         },
         {
           "file": "internal/provider/resource_key_block.go",
@@ -567,11 +567,11 @@
       "evidence": [
         {
           "file": "internal/provider/resource_key.go",
-          "line": 633
+          "line": 643
         },
         {
           "file": "internal/provider/resource_key.go",
-          "line": 635
+          "line": 645
         }
       ],
       "method": "POST",
@@ -595,7 +595,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_key.go",
-          "line": 979
+          "line": 995
         },
         {
           "file": "internal/provider/resource_unified_access_group.go",
@@ -1172,7 +1172,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_team.go",
-          "line": 926
+          "line": 949
         }
       ],
       "method": "POST",
@@ -1188,11 +1188,11 @@
         },
         {
           "file": "internal/provider/resource_team.go",
-          "line": 1268
+          "line": 1300
         },
         {
           "file": "internal/provider/resource_team.go",
-          "line": 1281
+          "line": 1313
         },
         {
           "file": "internal/provider/resource_team_block.go",
@@ -1296,7 +1296,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_team.go",
-          "line": 580
+          "line": 591
         }
       ],
       "method": "POST",
@@ -1312,7 +1312,7 @@
         },
         {
           "file": "internal/provider/resource_team.go",
-          "line": 1395
+          "line": 1427
         }
       ],
       "method": "GET",
@@ -1326,7 +1326,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_team.go",
-          "line": 872
+          "line": 887
         }
       ],
       "method": "POST",
@@ -1350,11 +1350,11 @@
       "evidence": [
         {
           "file": "internal/provider/resource_team.go",
-          "line": 847
+          "line": 862
         },
         {
           "file": "internal/provider/resource_team.go",
-          "line": 856
+          "line": 871
         }
       ],
       "method": "POST",
@@ -1704,6 +1704,78 @@
       "path": "/v1/mcp/server/{server_id}",
       "path_parameters": [
         "server_id"
+      ],
+      "query_parameters": []
+    },
+    {
+      "evidence": [
+        {
+          "file": "internal/provider/resource_mcp_toolset.go",
+          "line": 477
+        }
+      ],
+      "method": "GET",
+      "path": "/v1/mcp/toolset",
+      "path_parameters": [],
+      "query_parameters": []
+    },
+    {
+      "evidence": [
+        {
+          "file": "internal/provider/resource_mcp_toolset.go",
+          "line": 404
+        }
+      ],
+      "method": "POST",
+      "path": "/v1/mcp/toolset",
+      "path_parameters": [],
+      "query_parameters": []
+    },
+    {
+      "evidence": [
+        {
+          "file": "internal/provider/resource_mcp_toolset.go",
+          "line": 551
+        }
+      ],
+      "method": "PUT",
+      "path": "/v1/mcp/toolset",
+      "path_parameters": [],
+      "query_parameters": []
+    },
+    {
+      "evidence": [
+        {
+          "file": "internal/provider/resource_mcp_toolset.go",
+          "line": 569
+        }
+      ],
+      "method": "DELETE",
+      "path": "/v1/mcp/toolset/{toolset_id}",
+      "path_parameters": [
+        "toolset_id"
+      ],
+      "query_parameters": []
+    },
+    {
+      "evidence": [
+        {
+          "file": "internal/provider/resource_mcp_toolset.go",
+          "line": 505
+        },
+        {
+          "file": "internal/provider/resource_mcp_toolset.go",
+          "line": 532
+        },
+        {
+          "file": "internal/provider/resource_mcp_toolset.go",
+          "line": 559
+        }
+      ],
+      "method": "GET",
+      "path": "/v1/mcp/toolset/{toolset_id}",
+      "path_parameters": [
+        "toolset_id"
       ],
       "query_parameters": []
     },

@@ -36,10 +36,10 @@ class HarnessTests(unittest.TestCase):
     def test_inventory_and_assembly_contract(self):
         matrix = harness.load_json(harness.MATRIX_PATH)
         harness.check_inventory(matrix)
-        self.assertEqual(len(matrix["resources"]), 24)
+        self.assertEqual(len(matrix["resources"]), 25)
         self.assertEqual(len(matrix["data_sources"]), 35)
-        self.assertEqual(sum(matrix["scenario_counts"].values()) + len(matrix["optional_features"]), 166)
-        self.assertEqual(len(matrix["terraform_1_11_4_expected_skips"]), 10)
+        self.assertEqual(sum(matrix["scenario_counts"].values()) + len(matrix["optional_features"]), 171)
+        self.assertEqual(len(matrix["terraform_1_11_4_expected_skips"]), 11)
         self.assertEqual(len(matrix["terraform_1_11_4_conditional_skips"]), 2)
         fallback = next(item for item in matrix["resources"] if item["type"] == "litellm_fallback")
         self.assertEqual(fallback["lifecycle_skip_reason"], "fallback-delete-not-authoritative")
@@ -50,12 +50,12 @@ class HarnessTests(unittest.TestCase):
             {"litellm_agent": ["id"]},
         )
         self.assertEqual(matrix["upgrade_expected_schema_migrations"], {
-            "litellm_key": [1, 2],
+            "litellm_key": [1, 3],
             "litellm_key_block": [0, 1],
             "litellm_mcp_server": [1, 8],
             "litellm_organization": [0, 1],
             "litellm_project": [0, 1],
-            "litellm_team": [0, 1],
+            "litellm_team": [0, 2],
         })
         self.assertEqual(matrix["upgrade_expected_computed_migrations"]["litellm_mcp_server"], [
             "alias", "available_on_public_internet", "byok_description",
