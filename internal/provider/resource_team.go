@@ -789,7 +789,7 @@ func (r *TeamResource) Update(ctx context.Context, req resource.UpdateRequest, r
 		resp.Diagnostics.AddError("Invalid Team Configuration", "The team update request could not be converted safely. No request was sent.")
 		return
 	}
-	applyTeamNullableClears(teamReq, &state, &data)
+	applyTeamUpdateFieldChanges(teamReq, &state, &data)
 	metadataChanged := semanticChanged ||
 		(!data.Metadata.IsUnknown() && !data.Metadata.Equal(state.Metadata)) ||
 		(!data.Tags.IsUnknown() && !data.Tags.Equal(state.Tags)) ||
@@ -1403,4 +1403,11 @@ func (r *TeamResource) readTeamWithOwnership(ctx context.Context, data *TeamReso
 
 	*data = projected
 	return nil
+}
+
+func applyTeamUpdateFieldChanges(teamReq map[string]interface{}, state, plan *TeamResourceModel) {
+	applyTeamNullableClears(teamReq, state, plan)
+	if plan.BudgetDuration.Equal(state.BudgetDuration) {
+		delete(teamReq, "budget_duration")
+	}
 }

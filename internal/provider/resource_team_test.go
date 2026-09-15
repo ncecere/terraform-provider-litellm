@@ -1086,3 +1086,58 @@ func TestApplyTeamNullableClears_NoTransition_NoOp(t *testing.T) {
 		t.Errorf("unexpected team member budget clear request: %#v", clearReq)
 	}
 }
+
+func TestApplyTeamUpdateFieldChangesHandlesBudgetDuration(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		state     types.String
+		plan      types.String
+		wantValue interface{}
+		wantField bool
+	}{
+		{
+			name:      "unchanged",
+			state:     types.StringValue("1mo"),
+			plan:      types.StringValue("1mo"),
+			wantField: false,
+		},
+		{
+			name:      "changed",
+			state:     types.StringValue("1mo"),
+			plan:      types.StringValue("30d"),
+			wantValue: "30d",
+			wantField: true,
+		},
+		{
+			name:      "cleared",
+			state:     types.StringValue("1mo"),
+			plan:      types.StringNull(),
+			wantValue: nil,
+			wantField: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var requestValue interface{}
+			if !test.plan.IsNull() {
+				requestValue = test.plan.ValueString()
+			}
+			request := map[string]interface{}{"budget_duration": requestValue}
+			state := &TeamResourceModel{BudgetDuration: test.state}
+			plan := &TeamResourceModel{BudgetDuration: test.plan}
+
+			applyTeamUpdateFieldChanges(request, state, plan)
+
+			got, exists := request["budget_duration"]
+			if exists != test.wantField {
+				t.Fatalf("budget_duration presence = %t, want %t", exists, test.wantField)
+			}
+			if exists && got != test.wantValue {
+				t.Fatalf("budget_duration = %#v, want %#v", got, test.wantValue)
+			}
+		})
+	}
+}
