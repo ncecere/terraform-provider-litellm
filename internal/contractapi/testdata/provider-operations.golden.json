@@ -375,7 +375,7 @@
     "evidence": [
       {
         "file": "internal/provider/resource_jwt_key_mapping.go",
-        "line": 537
+        "line": 599
       }
     ]
   },
@@ -389,11 +389,11 @@
     "evidence": [
       {
         "file": "internal/provider/jwt_key_mapping_api.go",
-        "line": 180
+        "line": 203
       },
       {
         "file": "internal/provider/jwt_key_mapping_api.go",
-        "line": 182
+        "line": 205
       }
     ]
   },
@@ -408,7 +408,7 @@
     "evidence": [
       {
         "file": "internal/provider/jwt_key_mapping_api.go",
-        "line": 278
+        "line": 301
       }
     ]
   },
@@ -420,7 +420,7 @@
     "evidence": [
       {
         "file": "internal/provider/resource_jwt_key_mapping.go",
-        "line": 257
+        "line": 300
       }
     ]
   },
@@ -432,11 +432,11 @@
     "evidence": [
       {
         "file": "internal/provider/resource_jwt_key_mapping.go",
-        "line": 286
+        "line": 329
       },
       {
         "file": "internal/provider/resource_jwt_key_mapping.go",
-        "line": 465
+        "line": 527
       }
     ]
   },

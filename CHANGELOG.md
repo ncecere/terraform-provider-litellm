@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 - No security-sensitive provider behavior changes in this release beyond those listed under Fixed.
 
+### Added
+- **`litellm_jwt_key_mapping` issuer scope**: Add optional `jwt_issuer` to the resource and computed `jwt_issuer` to both data sources. LiteLLM 1.104.0 scopes mappings by issuer plus claim pair; changing a configured issuer replaces the mapping with the same `key_wo` safeguards as a claim change, an omitted issuer preserves the existing scope, and the global scope is null.
+
+### Fixed
+- **`litellm_jwt_key_mapping` on LiteLLM 1.104.0**: Every create, read, import, and data-source read failed with "Invalid API Response" because LiteLLM 1.104.0 returns a new `jwt_issuer` field that the strict decoder rejected. Responses with and without the field are now accepted, and issuer identity is verified on every read-back. Deleting a mapping's virtual key now also deletes the mapping upstream; the resource documentation describes how to re-create both together.
+
 ### Changed
 - **Development and release API contract**: Re-pin the reproducible LiteLLM API contract from v1.98.0 to v1.104.0 (`79645770fedc7ec2627e6468d31062f20f82aecc`). The exporter verifies v1.104.0's 35 lazy feature routers, excludes undocumented Starlette transport routes from OpenAPI comparison, and requires the now-public `PATCH /v2/organization/{organization_id}` route in generated OpenAPI. All provider HTTP operations resolve unchanged; the 105 new upstream operations are classified in the reviewed inventory.
 
