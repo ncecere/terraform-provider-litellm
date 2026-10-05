@@ -80,7 +80,7 @@ func (r *BudgetResource) Schema(ctx context.Context, req resource.SchemaRequest,
 				Optional:    true,
 			},
 			"tpd_limit": schema.Int64Attribute{
-				Description: "Max tokens per day allowed for this budget. Requires LiteLLM 1.104.0 or later.",
+				Description: "Max tokens per day allowed for this budget. Requires LiteLLM 1.104.0 or later, which enforces it only for batch submissions by keys that use this budget.",
 				Optional:    true,
 			},
 			"rpm_limit": schema.Int64Attribute{

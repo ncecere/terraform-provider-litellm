@@ -168,7 +168,7 @@ The following arguments are supported:
 * `max_budget` - (Optional) Maximum budget allocated to the team.
 * `budget_duration` - (Optional) Recurring team budget reset interval. Use a positive integer followed by `s`, `m`, `h`, `d`, or `w` (for example, `30d`, `24h`, or `1w`); one of the exact aliases `hourly`, `daily`, `weekly`, or `monthly`; or exactly `1mo`. Zero values, other month counts such as `2mo` or `12mo`, case variants, and malformed aliases or units are rejected.
 * `tpm_limit` - (Optional) Tokens per minute limit for the team.
-* `tpd_limit` - (Optional) Tokens per day limit. Requires LiteLLM 1.104.0 or later. Removing it clears the limit.
+* `tpd_limit` - (Optional) Tokens per day limit. Requires LiteLLM 1.104.0 or later, which enforces it only for batch submissions (not ordinary completion requests). Removing it clears the limit.
 * `rpm_limit` - (Optional) Requests per minute limit for the team.
 * `tpm_limit_type` - (Optional, Forces replacement) Create-only TPM limit type. LiteLLM accepts exactly `"guaranteed_throughput"` or `"best_effort_throughput"` when creating a team. Adding, changing, or removing it replaces the team.
 * `rpm_limit_type` - (Optional, Forces replacement) Create-only RPM limit type. LiteLLM accepts exactly `"guaranteed_throughput"` or `"best_effort_throughput"` when creating a team. Adding, changing, or removing it replaces the team.

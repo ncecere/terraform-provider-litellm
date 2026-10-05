@@ -90,7 +90,7 @@ func (r *ProjectResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 			"budget_duration":       schema.StringAttribute{Description: "Budget reset duration (for example, '30d' or '1h').", Optional: true},
 			"budget_id":             schema.StringAttribute{Description: "Budget ID associated with this project. Reassociation is not safely supported by LiteLLM.", Optional: true, Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
 			"tpm_limit":             schema.Int64Attribute{Description: "Tokens per minute limit.", Optional: true},
-			"tpd_limit":             schema.Int64Attribute{Description: "Tokens per day limit. Requires LiteLLM 1.104.0 or later. Removing it clears the limit.", Optional: true},
+			"tpd_limit":             schema.Int64Attribute{Description: "Tokens per day limit. Requires LiteLLM 1.104.0 or later, which stores it but does not enforce it for projects. Removing it clears the limit.", Optional: true},
 			"rpm_limit":             schema.Int64Attribute{Description: "Requests per minute limit.", Optional: true},
 			"max_parallel_requests": schema.Int64Attribute{Description: "Maximum parallel requests allowed.", Optional: true},
 			"model_max_budget":      schema.MapAttribute{Description: "Legacy per-model budget map shape retained for schema compatibility.", Optional: true, Computed: true, ElementType: types.Float64Type, Validators: []validator.Map{mapvalidator.NoNullValues()}},

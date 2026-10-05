@@ -277,7 +277,7 @@ func (r *TeamResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 				Optional:    true,
 			},
 			"tpd_limit": schema.Int64Attribute{
-				Description: "Tokens per day limit for the team. Requires LiteLLM 1.104.0 or later. Removing it clears the limit.",
+				Description: "Tokens per day limit for the team. Requires LiteLLM 1.104.0 or later, which enforces it only for batch submissions. Removing it clears the limit.",
 				Optional:    true,
 			},
 			"rpm_limit": schema.Int64Attribute{

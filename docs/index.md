@@ -66,7 +66,7 @@ resource "litellm_key" "dev_key" {
 
 The baseline clients are Terraform 1.1.0 or later (provider protocol 6.0) and OpenTofu 1.6.0 or later. Terraform 1.0 is unsupported because its `ignore_changes` planning behavior can erase omitted-versus-empty map intent before provider dispatch. Provider development requires Go 1.24.0 or later. The acceptance harness tests exactly LiteLLM 1.104.0.
 
-The optional write-only attributes `litellm_key.key_wo`, `litellm_key.send_invite_email`, and `litellm_user.send_invite_email` require Terraform or OpenTofu 1.11.0 or later only when configured; they do not raise the global client minimum. Run `terraform init -upgrade` or `tofu init -upgrade` after updating the provider constraint.
+The optional write-only attributes `litellm_key.key_wo`, `litellm_key.send_invite_email`, `litellm_user.send_invite_email`, and `litellm_jwt_key_mapping.key_wo` require Terraform or OpenTofu 1.11.0 or later only when configured; they do not raise the global client minimum. `litellm_jwt_key_mapping.key_hash` maps a key without a write-only attribute. Run `terraform init -upgrade` or `tofu init -upgrade` after updating the provider constraint.
 
 The published provider source is exactly `registry.terraform.io/ncecere/litellm`. Correcting the executable's served address does not change protocol 6, schemas, HCL types, state values, IDs, or import formats, so normal state under the published source needs no migration. Development-only state actually recorded under the unpublished `registry.terraform.io/nicholas-cecere/litellm` address must be migrated explicitly; no address alias is installed:
 

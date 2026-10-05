@@ -49,7 +49,7 @@ The following arguments are supported:
 * `soft_budget` - (Optional) Soft budget threshold. When exceeded, alerts are triggered but requests are not blocked.
 * `max_parallel_requests` - (Optional) Maximum number of parallel requests allowed.
 * `tpm_limit` - (Optional) Tokens per minute limit.
-* `tpd_limit` - (Optional) Tokens per day limit. Requires LiteLLM 1.104.0 or later. Removing it clears the limit.
+* `tpd_limit` - (Optional) Tokens per day limit. Requires LiteLLM 1.104.0 or later, which enforces it only for batch submissions by keys that use this budget through `budget_id`. Removing it clears the limit.
 * `rpm_limit` - (Optional) Requests per minute limit.
 * `budget_duration` - (Optional) Duration for the budget cycle (e.g., `"30d"`, `"7d"`, `"1h"`).
 * `model_max_budget` - (Optional) A JSON object string mapping model names to LiteLLM `BudgetConfig` objects. Supported nested fields are `max_budget` (alias `budget_limit`), `budget_duration` (alias `time_period`), `tpm_limit`, and `rpm_limit`. Unknown fields, conflicting aliases, non-object model values, malformed JSON, and wrong root shapes are rejected before mutation. API canonicalization of aliases, key order, whitespace, or equivalent exact number notation does not cause drift. This feature may require a LiteLLM Enterprise license.

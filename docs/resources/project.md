@@ -98,7 +98,7 @@ Imports and upgraded states leave `metadata_json` null and unmanaged. Explicit c
 - `budget_duration` - (Optional String) Reset duration such as `"30d"` or `"1h"`.
 - `budget_id` - (Optional String) Existing budget to associate during creation. Reassociation after creation is blocked because LiteLLM cannot converge it safely.
 - `tpm_limit` - (Optional Int64) Tokens-per-minute limit.
-- `tpd_limit` - (Optional Int64) Tokens-per-day limit. Requires LiteLLM 1.104.0 or later. Removing it clears the limit.
+- `tpd_limit` - (Optional Int64) Tokens-per-day limit. Requires LiteLLM 1.104.0 or later, which stores it but does not enforce it for projects (it enforces `tpd_limit` only for batch submissions, at key and team scope). Removing it clears the limit.
 - `rpm_limit` - (Optional Int64) Requests-per-minute limit.
 - `max_parallel_requests` - (Optional Int64) Concurrent request limit.
 - `model_max_budget` - (Optional Map of Float64) Legacy schema-compatible shape. Existing scalar-map state remains readable and can be cleared, but new non-empty additions and changes are rejected because LiteLLM requires structured GenericBudgetConfig objects.

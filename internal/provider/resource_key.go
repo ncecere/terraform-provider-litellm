@@ -300,7 +300,7 @@ func (r *KeyResource) Schema(ctx context.Context, req resource.SchemaRequest, re
 				Computed:    true,
 			},
 			"tpd_limit": schema.Int64Attribute{
-				Description: "Tokens per day limit. Requires LiteLLM 1.104.0 or later. Removing it clears the limit.",
+				Description: "Tokens per day limit. Requires LiteLLM 1.104.0 or later, which enforces it only for batch submissions. Removing it clears the limit.",
 				Optional:    true,
 				Validators:  []validator.Int64{int64validator.AtLeast(0)},
 			},
