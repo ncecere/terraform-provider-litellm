@@ -4,7 +4,7 @@ Manages one user membership in a LiteLLM organization. Removing this resource re
 
 Organization endpoints require a LiteLLM Enterprise license from LiteLLM 1.102.0, including reads. On an unlicensed proxy every operation fails with `LiteLLM Enterprise License Required` and Terraform state is left unchanged.
 
-LiteLLM's organization member API also creates an internal user when neither the supplied `user_id` nor `user_email` identifies an existing user. The provider uses that API behavior; it does not make a separate user-creation request.
+LiteLLM's organization member API also creates an internal user when the supplied `user_id` does not identify an existing user and no `user_email` is configured. The provider uses that API behavior; it does not make a separate user-creation request.
 
 ## Example Usage
 
@@ -23,25 +23,29 @@ resource "litellm_organization_member" "admin" {
 }
 ```
 
-### Resolve or create by email
+### Existing user with email
 
 ```hcl
+resource "litellm_user" "viewer" {
+  user_id    = "viewer-user"
+  user_email = "viewer@example.com"
+}
+
 resource "litellm_organization_member" "viewer" {
   organization_id = litellm_organization.company.id
-  user_email      = "viewer@example.com"
+  user_id         = litellm_user.viewer.user_id
+  user_email      = litellm_user.viewer.user_email
   role            = "internal_user_viewer"
 }
 ```
 
-After an email-only create, LiteLLM's resolved `user_id` is stored in state and used as the canonical membership identity.
-
-~> **LiteLLM limitation:** LiteLLM's member-add endpoint can return HTTP 500 while resolving an email-only request for an existing user. Configure the canonical `user_id` when it is known; `user_email` can remain alongside it as the fallback identity. The provider reports the failure without exposing the response body and retains any structurally confirmed membership identity for recovery.
+~> **LiteLLM limitation:** LiteLLM's member-add endpoint (verified on 1.98.0 and 1.104.0) returns HTTP 500 whenever `user_email` is sent and `user_id` does not identify an existing user: it looks the email up with a unique-field query on a column that is not unique. Email-only requests therefore always fail, as does adding a new user by `user_id` together with `user_email`. Configure `user_id` alone to let LiteLLM create a new user, or create the user first (for example with `litellm_user`) and pass its `user_id`; `user_email` is accepted alongside an existing `user_id`. The provider reports the failure without exposing the response body and retains any structurally confirmed membership identity for recovery.
 
 ## Argument Reference
 
 - `organization_id` - (Required, ForceNew) Organization ID.
-- `user_id` - (Optional, Computed, ForceNew) User ID to resolve or create. At least one of `user_id` and `user_email` must be a non-empty known value. When both are configured, LiteLLM looks up `user_id` first, then falls back to an existing `user_email` if that ID does not exist. If the fallback resolves a different canonical ID, the provider retains that membership in state and reports the mismatch rather than losing the created object.
-- `user_email` - (Optional, ForceNew) Email used to resolve or create the user. Once a `user_id` is resolved, this resource does not manage changes to the user's email.
+- `user_id` - (Optional, Computed, ForceNew) User ID to resolve or create. At least one of `user_id` and `user_email` must be a non-empty known value. When both are configured, LiteLLM looks up `user_id` first and falls back to `user_email` only if that ID does not exist; see the limitation above for that fallback. If the fallback resolves a different canonical ID, the provider retains that membership in state and reports the mismatch rather than losing the created object.
+- `user_email` - (Optional, ForceNew) Email used to resolve the user. Because of the LiteLLM limitation above, configure it only together with the `user_id` of an existing user. Once a `user_id` is resolved, this resource does not manage changes to the user's email.
 - `role` - (Required) Organization-scoped role. LiteLLM accepts exactly `org_admin`, `internal_user`, and `internal_user_viewer`. Global roles such as `proxy_admin` and `proxy_admin_viewer` are not valid organization membership roles.
 - `max_budget_in_organization` - (Optional) Maximum spend for this user within the organization. LiteLLM declares this field on the add request but does not persist it there, so the provider follows a successful add with `/organization/member_update`. Role and non-null budget changes are updated in place.
 
