@@ -161,7 +161,7 @@ func (r *PromptResource) Create(ctx context.Context, req resource.CreateRequest,
 	}
 
 	if !data.PromptType.IsNull() && !data.PromptType.IsUnknown() && data.PromptType.ValueString() == "config" {
-		resp.Diagnostics.AddError("Config Prompt Is Read-Only", "LiteLLM v1.98 cannot update or delete config prompts. Import them for read-only visibility, or use prompt_type = \"db\" for managed resources.")
+		resp.Diagnostics.AddError("Config Prompt Is Read-Only", "LiteLLM cannot update or delete config prompts. Import them for read-only visibility, or use prompt_type = \"db\" for managed resources.")
 		return
 	}
 	exists, existenceErr := promptScopedExists(ctx, r.client, data.PromptID.ValueString(), data.Environment.ValueString())
@@ -258,7 +258,7 @@ func (r *PromptResource) Update(ctx context.Context, req resource.UpdateRequest,
 	data.PromptID = state.PromptID
 	if (!state.PromptType.IsNull() && !state.PromptType.IsUnknown() && state.PromptType.ValueString() == "config") ||
 		(!data.PromptType.IsNull() && !data.PromptType.IsUnknown() && data.PromptType.ValueString() == "config") {
-		resp.Diagnostics.AddError("Config Prompt Is Read-Only", "LiteLLM v1.98 cannot update config prompts. Keep imported config prompts unchanged, or manage a database prompt instead.")
+		resp.Diagnostics.AddError("Config Prompt Is Read-Only", "LiteLLM cannot update config prompts. Keep imported config prompts unchanged, or manage a database prompt instead.")
 		return
 	}
 
@@ -390,7 +390,7 @@ func validateMutablePromptInfo(info map[string]interface{}) error {
 	case "db":
 		return nil
 	case "config":
-		return fmt.Errorf("LiteLLM reports this as a config prompt, which v1.98 cannot update or delete through the management API")
+		return fmt.Errorf("LiteLLM reports this as a config prompt, which LiteLLM cannot update or delete through the management API")
 	default:
 		return fmt.Errorf("prompt response field %q returned unsupported value %q", "prompt_info.prompt_type", promptType)
 	}

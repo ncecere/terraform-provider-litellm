@@ -45,6 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - **Development and release API contract**: Re-pin the reproducible LiteLLM API contract from v1.98.0 to v1.104.0 (`79645770fedc7ec2627e6468d31062f20f82aecc`). The exporter verifies v1.104.0's 35 lazy feature routers, excludes undocumented Starlette transport routes from OpenAPI comparison, and requires the now-public `PATCH /v2/organization/{organization_id}` route in generated OpenAPI. All provider HTTP operations resolve unchanged; the 105 new upstream operations are classified in the reviewed inventory.
+- **Documentation and diagnostics**: Schema descriptions, diagnostics, and resource/data-source documentation no longer describe LiteLLM behavior as "v1.98" when LiteLLM 1.104.0 behaves the same; text that differs between the two versions now names both. `litellm_team_member_add` diagnostic summaries drop the version (for example "Unrepairable Membership-Only State" instead of "Unrepairable v1.98 Membership-Only State"); automation that matched the old summary text should match the new text.
 
 ## [2.1.0] - 2026-08-29
 

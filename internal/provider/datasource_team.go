@@ -190,13 +190,13 @@ func projectTeamDataSourceInfo(result map[string]interface{}, expectedTeamID str
 		Blocked:               types.BoolNull(),
 	}
 	if result == nil || len(result) == 0 {
-		return next, fmt.Errorf("invalid /team/info response: expected the authoritative v1.98 object envelope")
+		return next, fmt.Errorf("invalid /team/info response: expected the authoritative LiteLLM object envelope")
 	}
 	for field := range result {
 		switch field {
 		case "team_id", "team_info", "keys", "team_memberships":
 		default:
-			return next, fmt.Errorf("invalid /team/info response: envelope contains a field outside the authoritative v1.98 relation")
+			return next, fmt.Errorf("invalid /team/info response: envelope contains a field outside the authoritative LiteLLM relation")
 		}
 	}
 
@@ -304,13 +304,13 @@ func validateTeamDataSourceObjectRelation(result map[string]interface{}, field s
 func projectTeamDataSourcePermissions(result map[string]interface{}, expectedTeamID string) (types.List, error) {
 	null := types.ListNull(types.StringType)
 	if result == nil || len(result) == 0 {
-		return null, fmt.Errorf("invalid /team/permissions_list response: expected the authoritative v1.98 object envelope")
+		return null, fmt.Errorf("invalid /team/permissions_list response: expected the authoritative LiteLLM object envelope")
 	}
 	for field := range result {
 		switch field {
 		case "team_id", "all_available_permissions", "team_member_permissions":
 		default:
-			return null, fmt.Errorf("invalid /team/permissions_list response: envelope contains a field outside the authoritative v1.98 relation")
+			return null, fmt.Errorf("invalid /team/permissions_list response: envelope contains a field outside the authoritative LiteLLM relation")
 		}
 	}
 	teamID, err := dataSourceRequiredStringAt(result, "team_id")

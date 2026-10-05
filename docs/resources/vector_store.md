@@ -41,18 +41,18 @@ The following arguments are supported:
 - `custom_llm_provider` - (Required) The LLM provider for the vector store. Supported values: `bedrock`, `openai`, `azure`, `vertex_ai`, `pgvector`.
 - `vector_store_description` - (Optional) A human-readable description of the vector store. Removing it sends an explicit empty-string update.
 - `vector_store_metadata` - (Optional) A complete map of string key-value pairs containing metadata for the vector store. `{}` and removal of an owned map send an explicit empty-map update. Imported metadata remains unmanaged while omitted.
-- `litellm_credential_name` - (Optional) The name of the LiteLLM credential to use for authenticating with the provider. LiteLLM v1.98 does not accept this field on update, so changing or removing an owned value replaces the vector store.
+- `litellm_credential_name` - (Optional) The name of the LiteLLM credential to use for authenticating with the provider. LiteLLM does not accept this field on update, so changing or removing an owned value replaces the vector store.
 - `litellm_params` - (Optional, Sensitive) A map of string key-value pairs containing additional LiteLLM-specific parameters. LiteLLM may redact credential-bearing values on read; Terraform preserves recognized masks only when prior owned values exist. Changing or removing this create-only map replaces the vector store.
 
 ## Update and Replacement Behavior
 
-LiteLLM v1.98 updates only `custom_llm_provider`, `vector_store_name`, `vector_store_description`, and `vector_store_metadata`. Terraform never sends `litellm_credential_name` or `litellm_params` to the update endpoint because v1.98 silently ignores those fields.
+LiteLLM updates only `custom_llm_provider`, `vector_store_name`, `vector_store_description`, and `vector_store_metadata`. Terraform never sends `litellm_credential_name` or `litellm_params` to the update endpoint because LiteLLM silently ignores those fields.
 
 Explicitly configuring an imported description or metadata map transfers ownership and enables later in-place clearing. Explicitly configuring an imported credential name or parameter map transfers ownership without mutation when the value already matches; later changes use replacement. Omitted imported values remain stable.
 
 The public metadata and parameter types remain `map(string)` for compatibility. Nested API values are represented as canonical JSON strings on read; this version does not coerce Terraform strings into heterogeneous request objects.
 
-Create and update operations require two stable fresh-worker reads before Terraform commits state. LiteLLM v1.98 can persist a database mutation and then report a registry-synchronization error; when the complete planned object is subsequently confirmed, Terraform recovers with a warning. Otherwise it retains prior state and fails safely for retry. Delete errors are accepted only when a fresh authoritative read confirms absence.
+Create and update operations require two stable fresh-worker reads before Terraform commits state. LiteLLM can persist a database mutation and then report a registry-synchronization error; when the complete planned object is subsequently confirmed, Terraform recovers with a warning. Otherwise it retains prior state and fails safely for retry. Delete errors are accepted only when a fresh authoritative read confirms absence.
 
 ## Feature Availability
 

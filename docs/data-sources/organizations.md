@@ -39,6 +39,6 @@ data "litellm_organizations" "matching" {
   - `model_rpm_limit` / `model_tpm_limit`
   - `budget_duration`
   - `spend`
-  - `blocked` - Compatibility value `false`; v1.98 has no organization blocked column.
+  - `blocked` - Compatibility value `false`; LiteLLM has no organization blocked column.
 
 Every exposed budget value is decoded from each object's `litellm_budget_table`. Structured `model_max_budget` remains deferred rather than being flattened inaccurately. Null/absent relations produce null inventory values; malformed relations or mismatched identities fail the whole snapshot instead of returning a partial list. Exact integer limits above `2^53` are preserved.

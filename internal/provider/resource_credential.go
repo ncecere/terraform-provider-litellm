@@ -244,7 +244,7 @@ func (r *CredentialResource) ModifyPlan(ctx context.Context, req resource.Modify
 		if !credentialKnownModelSource(config.ModelID) && len(values.Object) == 0 {
 			resp.Diagnostics.AddError(
 				"Missing Credential Create Source",
-				"When model_id is omitted, credential_values and credential_values_json must merge to a non-empty object. LiteLLM v1.98 rejects an empty values-only object. Configure at least one value or use model_id.",
+				"When model_id is omitted, credential_values and credential_values_json must merge to a non-empty object. LiteLLM rejects an empty values-only object. Configure at least one value or use model_id.",
 			)
 		}
 		return
@@ -300,7 +300,7 @@ func (r *CredentialResource) ModifyPlan(ctx context.Context, req resource.Modify
 		credentialTopLevelKeyRemoved(credentialMetadataOwnership(metadata, true), values.UnionOwnership) {
 		resp.Diagnostics.AddError(
 			"Unsafe Top-Level Credential Removal",
-			"LiteLLM v1.98 PATCH only merges top-level credential dictionaries, and JSON null is stored rather than consumed as a clear. The provider will not delete and recreate the credential because unmanaged keys or secrets could be lost. Keep the key configured, or create a new credential under a different name with the intended complete contents.",
+			"LiteLLM PATCH only merges top-level credential dictionaries, and JSON null is stored rather than consumed as a clear. The provider will not delete and recreate the credential because unmanaged keys or secrets could be lost. Keep the key configured, or create a new credential under a different name with the intended complete contents.",
 		)
 		return
 	}
@@ -353,13 +353,13 @@ func (r *CredentialResource) Create(ctx context.Context, req resource.CreateRequ
 	if preflight.hasPresence() {
 		detail := "A credential with this exact name was present on at least one fresh-connection worker probe. Terraform did not adopt or mutate it; import it only after verifying ownership."
 		if preflight.convergenceUncertain() || preflightErr != nil {
-			detail += " LiteLLM v1.98 keeps credential lookups in process-local worker caches, and the sampled workers were not consistent. Reload or restart workers as appropriate, verify convergence, and retry."
+			detail += " LiteLLM keeps credential lookups in process-local worker caches, and the sampled workers were not consistent. Reload or restart workers as appropriate, verify convergence, and retry."
 		}
 		resp.Diagnostics.AddError("Credential Already Exists", detail)
 		return
 	}
 	if preflightErr != nil || !preflight.authoritativeAbsence() {
-		resp.Diagnostics.AddError("Credential Create Preflight Failed", "Terraform could not prove exact-name absence through four consecutive exact 404 responses over fresh connections, so it did not send the create request. Retry transient failures or reconcile LiteLLM v1.98 worker caches before retrying.")
+		resp.Diagnostics.AddError("Credential Create Preflight Failed", "Terraform could not prove exact-name absence through four consecutive exact 404 responses over fresh connections, so it did not send the create request. Retry transient failures or reconcile LiteLLM worker caches before retrying.")
 		return
 	}
 
@@ -415,7 +415,7 @@ func (r *CredentialResource) Create(ctx context.Context, req resource.CreateRequ
 	if postflightSample.absent != 0 {
 		resp.Diagnostics.AddWarning(
 			"Credential Worker Convergence Uncertain",
-			"Create was confirmed from an exact matching credential on at least one fresh-connection probe, while another LiteLLM v1.98 worker returned exact 404. The credential is durably stored in LiteLLM's database, but this lookup is served from each worker's process-local credential_list. Terraform retained the verified identity without claiming worker-cache or cluster-wide convergence.",
+			"Create was confirmed from an exact matching credential on at least one fresh-connection probe, while another LiteLLM worker returned exact 404. The credential is durably stored in LiteLLM's database, but this lookup is served from each worker's process-local credential_list. Terraform retained the verified identity without claiming worker-cache or cluster-wide convergence.",
 		)
 	}
 }
@@ -545,7 +545,7 @@ func (r *CredentialResource) Read(ctx context.Context, req resource.ReadRequest,
 			return
 		}
 		resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
-		resp.Diagnostics.AddError("Credential Read Sampling Inconclusive", "Terraform retained the credential in state because bounded fresh-connection probes did not establish either a usable present credential or four consecutive exact 404 responses. Retry transient failures or reconcile LiteLLM v1.98 process-local worker caches before retrying.")
+		resp.Diagnostics.AddError("Credential Read Sampling Inconclusive", "Terraform retained the credential in state because bounded fresh-connection probes did not establish either a usable present credential or four consecutive exact 404 responses. Retry transient failures or reconcile LiteLLM process-local worker caches before retrying.")
 		return
 	}
 	if probeErr != nil {
@@ -565,12 +565,12 @@ func (r *CredentialResource) Read(ctx context.Context, req resource.ReadRequest,
 		})
 		resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 		if len(matchingPrior) != len(sample.present) {
-			resp.Diagnostics.AddError("Credential Worker Versions Conflict", "Fresh LiteLLM v1.98 workers returned mixed presence or conflicting cached credential versions, and at least one present version did not semantically match the prior Terraform-owned state. Terraform retained prior state and did not adopt arbitrary data. Verify the durable database record and reconcile each worker's process-local credential_list before retrying.")
+			resp.Diagnostics.AddError("Credential Worker Versions Conflict", "Fresh LiteLLM workers returned mixed presence or conflicting cached credential versions, and at least one present version did not semantically match the prior Terraform-owned state. Terraform retained prior state and did not adopt arbitrary data. Verify the durable database record and reconcile each worker's process-local credential_list before retrying.")
 			return
 		}
 		resp.Diagnostics.AddWarning(
 			"Credential Worker Convergence Uncertain",
-			"At least one fresh LiteLLM v1.98 worker returned the exact identity and prior Terraform-owned semantic version while another returned exact 404 or a different cached version. Terraform retained the previously verified state. LiteLLM stores the durable record in its database but serves this lookup from each worker's process-local credential_list, so this warning does not claim worker-cache or cluster-wide convergence.",
+			"At least one fresh LiteLLM worker returned the exact identity and prior Terraform-owned semantic version while another returned exact 404 or a different cached version. Terraform retained the previously verified state. LiteLLM stores the durable record in its database but serves this lookup from each worker's process-local credential_list, so this warning does not claim worker-cache or cluster-wide convergence.",
 		)
 		return
 	}
@@ -803,7 +803,7 @@ func (r *CredentialResource) Update(ctx context.Context, req resource.UpdateRequ
 	} else if postflightSample.absent != 0 || len(matchingOld) != 0 {
 		resp.Diagnostics.AddWarning(
 			"Credential Worker Convergence Uncertain",
-			"Update was verified from at least one desired matching worker, while another LiteLLM v1.98 worker returned exact 404 or the exact old cached version. Terraform recorded the verified desired state, but the durable database write and each process-local credential_list can become visible at different times; this warning does not claim worker-cache or cluster-wide convergence.",
+			"Update was verified from at least one desired matching worker, while another LiteLLM worker returned exact 404 or the exact old cached version. Terraform recorded the verified desired state, but the durable database write and each process-local credential_list can become visible at different times; this warning does not claim worker-cache or cluster-wide convergence.",
 		)
 	}
 }
@@ -829,7 +829,7 @@ func (r *CredentialResource) Delete(ctx context.Context, req resource.DeleteRequ
 		name := data.CredentialName.ValueString()
 		preflight, preflightErr := probeCredentialEndpoint(ctx, r.client, credentialByNamePath(name), name)
 		if preflightErr != nil || preflight.convergenceUncertain() || (!preflight.hasPresence() && !preflight.authoritativeAbsence()) {
-			resp.Diagnostics.AddError("Unsafe Credential Replacement", "The exact credential was not consistently observable across bounded fresh-connection worker probes before replacement deletion. Terraform retained state; reconcile LiteLLM v1.98 process-local credential caches and retry.")
+			resp.Diagnostics.AddError("Unsafe Credential Replacement", "The exact credential was not consistently observable across bounded fresh-connection worker probes before replacement deletion. Terraform retained state; reconcile LiteLLM process-local credential caches and retry.")
 			return
 		}
 		if preflight.hasPresence() {
@@ -872,7 +872,7 @@ func (r *CredentialResource) Delete(ctx context.Context, req resource.DeleteRequ
 		if absenceErr != nil {
 			detail := "Replacement deletion requires four consecutive exact 404 responses after the exact-name DELETE. Terraform retained state and blocked recreation/adoption because absence was not proven."
 			if absenceSample.hasPresence() {
-				detail += " At least one LiteLLM v1.98 worker still serves the old credential from its process-local credential_list; reload or restart workers before retrying replacement."
+				detail += " At least one LiteLLM worker still serves the old credential from its process-local credential_list; reload or restart workers before retrying replacement."
 			}
 			resp.Diagnostics.AddError("Credential Delete Postflight Failed", detail)
 		}
@@ -890,7 +890,7 @@ func (r *CredentialResource) Delete(ctx context.Context, req resource.DeleteRequ
 	detail := "LiteLLM confirmed the durable database credential is deleted or already absent, so terminal destroy removed Terraform state."
 	switch {
 	case absenceSample.hasPresence():
-		detail += " At least one sampled v1.98 worker still serves a process-local cached copy, including masked or usable secret material."
+		detail += " At least one sampled LiteLLM worker still serves a process-local cached copy, including masked or usable secret material."
 	case absenceErr != nil:
 		detail += " Bounded worker-cache probes were inconclusive."
 	default:

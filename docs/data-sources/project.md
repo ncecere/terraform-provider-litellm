@@ -28,7 +28,7 @@ output "project_budget" {
 - `project_alias` / `description` / `team_id`
 - `models`
 - `metadata` - Metadata excluding dedicated tags and per-model rate maps.
-- `tags` - Tags read from v1.98 project metadata.
+- `tags` - Tags read from LiteLLM project metadata.
 - `blocked` / `spend`
 - `budget_id`
 - `max_budget` / `soft_budget`

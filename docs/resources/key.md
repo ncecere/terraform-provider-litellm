@@ -72,7 +72,7 @@ resource "litellm_key" "invited" {
 
 `send_invite_email` is a write-only, create-only action flag. Before creating the key, the provider verifies that `user_id` resolves to that exact LiteLLM user and a syntactically valid, non-empty email address. LiteLLM then queues email processing after successful key creation, but returns before delivery and provides no delivery acknowledgement. Configure a supported [LiteLLM email backend](https://docs.litellm.ai/docs/proxy/email) before enabling it. Service-account keys cannot use this action.
 
-LiteLLM v1.98.0's enterprise email implementation defaults `EMAIL_INCLUDE_API_KEY` to `true`, including raw generated or predefined `key_wo` values in email. Set `EMAIL_INCLUDE_API_KEY=false` unless email infrastructure and recipient mailboxes are approved secret-delivery channels.
+LiteLLM's enterprise email implementation defaults `EMAIL_INCLUDE_API_KEY` to `true`, including raw generated or predefined `key_wo` values in email. Set `EMAIL_INCLUDE_API_KEY=false` unless email infrastructure and recipient mailboxes are approved secret-delivery channels.
 
 The action is requested once per successful LiteLLM Create request, not once for the lifetime of the HCL configuration. Resource replacement requests another email. If the create response is lost before Terraform persists state, retrying can create another key and request another email; inspect LiteLLM before retrying an ambiguous failure.
 
@@ -272,9 +272,9 @@ The following arguments are supported:
 
 * `rpm_limit` - (Optional) Requests per minute limit.
 
-* `tpm_limit_type` - (Optional) Type of TPM limit enforcement. LiteLLM v1.98 accepts exactly `"guaranteed_throughput"`, `"best_effort_throughput"`, or `"dynamic"` for key requests.
+* `tpm_limit_type` - (Optional) Type of TPM limit enforcement. LiteLLM accepts exactly `"guaranteed_throughput"`, `"best_effort_throughput"`, or `"dynamic"` for key requests.
 
-* `rpm_limit_type` - (Optional) Type of RPM limit enforcement. LiteLLM v1.98 accepts exactly `"guaranteed_throughput"`, `"best_effort_throughput"`, or `"dynamic"` for key requests.
+* `rpm_limit_type` - (Optional) Type of RPM limit enforcement. LiteLLM accepts exactly `"guaranteed_throughput"`, `"best_effort_throughput"`, or `"dynamic"` for key requests.
 
 * `budget_duration` - (Optional) Duration for the budget (e.g., `"30d"`, `"7d"`).
 
@@ -310,7 +310,7 @@ The following arguments are supported:
 
 * `blocked` - (Optional) Whether this key is blocked.
 
-* `router_settings` - (Optional) Complete key-specific router-settings document. Omitting the block leaves remote settings unmanaged. A configured block replaces the complete document on update rather than merging individual fields. Supported LiteLLM v1.98.0 fields:
+* `router_settings` - (Optional) Complete key-specific router-settings document. Omitting the block leaves remote settings unmanaged. A configured block replaces the complete document on update rather than merging individual fields. Supported fields:
   * `routing_strategy_args` - (Optional) JSON object passed to the routing strategy.
   * `routing_strategy` - (Optional) Routing strategy name.
   * `routing_groups` - (Optional) JSON array of routing groups.
@@ -366,9 +366,9 @@ Switching an existing stateful `key` resource to `key_wo` replaces the key and r
 
 ## Upgrade Notes
 
-### LiteLLM v1.98 rate-limit types
+### LiteLLM rate-limit types
 
-The earlier provider documentation suggested `"key"` and `"team"`, but LiteLLM v1.98 rejects both in `/key/generate` and `/key/update`. Replace an explicitly configured old value with `"best_effort_throughput"`, `"guaranteed_throughput"`, or `"dynamic"` according to the desired enforcement behavior. The validator applies to configuration, not API read-back, so import and refresh can still preserve a legacy server value until the configuration is migrated.
+The earlier provider documentation suggested `"key"` and `"team"`, but LiteLLM rejects both in `/key/generate` and `/key/update`. Replace an explicitly configured old value with `"best_effort_throughput"`, `"guaranteed_throughput"`, or `"dynamic"` according to the desired enforcement behavior. The validator applies to configuration, not API read-back, so import and refresh can still preserve a legacy server value until the configuration is migrated.
 
 ### v1.1.0 → v1.2.0: Hashed Resource ID
 

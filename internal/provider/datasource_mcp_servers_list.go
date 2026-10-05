@@ -114,8 +114,8 @@ func (d *MCPServersListDataSource) Schema(ctx context.Context, req datasource.Sc
 							Computed:    true,
 						},
 						"spec_version": schema.StringAttribute{
-							Description:        "Deprecated compatibility field. LiteLLM v1.98 does not return an MCP specification version.",
-							DeprecationMessage: "spec_version is retained only for state compatibility and is not returned by LiteLLM v1.98.",
+							Description:        "Deprecated compatibility field. LiteLLM does not return an MCP specification version.",
+							DeprecationMessage: "spec_version is retained only for state compatibility and is not returned by LiteLLM.",
 							Computed:           true,
 						},
 						"auth_type": schema.StringAttribute{

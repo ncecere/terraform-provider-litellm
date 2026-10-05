@@ -140,14 +140,14 @@ func (r *OrganizationMemberResource) Schema(ctx context.Context, req resource.Sc
 				},
 			},
 			"role": schema.StringAttribute{
-				Description: "The member's organization role. LiteLLM v1.98.0 accepts org_admin, internal_user, or internal_user_viewer.",
+				Description: "The member's organization role. LiteLLM accepts org_admin, internal_user, or internal_user_viewer.",
 				Required:    true,
 				Validators: []validator.String{
 					stringvalidator.OneOf(organizationMemberRoles...),
 				},
 			},
 			"max_budget_in_organization": schema.Float64Attribute{
-				Description: "Maximum spend for this user within the organization. LiteLLM v1.98.0 can set or change this value but cannot clear it in place; removing a previously configured value replaces the membership.",
+				Description: "Maximum spend for this user within the organization. LiteLLM can set or change this value but cannot clear it in place; removing a previously configured value replaces the membership.",
 				Optional:    true,
 				PlanModifiers: []planmodifier.Float64{
 					organizationMemberBudgetRemovalModifier{},
@@ -614,7 +614,7 @@ func (r *OrganizationMemberResource) Create(ctx context.Context, req resource.Cr
 			responseErr = validationErr
 		}
 		title := "Malformed Organization Member Add Response"
-		detail := fmt.Sprintf("LiteLLM accepted the add, so the membership was retained in state, but its response did not match the v1.98.0 contract: %s", organizationMemberDiagnosticError(responseErr))
+		detail := fmt.Sprintf("LiteLLM accepted the add, so the membership was retained in state, but its response did not match the LiteLLM contract: %s", organizationMemberDiagnosticError(responseErr))
 		if addErr == nil && structuralErr == nil {
 			title = "Organization Member Add Verification Failed"
 			detail = fmt.Sprintf("LiteLLM accepted the add and returned a structurally valid canonical membership, which was retained in state, but it did not match the requested configuration: %s", organizationMemberDiagnosticError(responseErr))
@@ -747,7 +747,7 @@ func (r *OrganizationMemberResource) Update(ctx context.Context, req resource.Up
 		resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 		resp.Diagnostics.AddError(
 			"Unsupported Organization Member Budget Clear",
-			"LiteLLM v1.98.0 ignores max_budget_in_organization=null on /organization/member_update, so the provider did not send a mutation that would falsely report a clear. Replace the membership to remove its effective member budget.",
+			"LiteLLM ignores max_budget_in_organization=null on /organization/member_update, so the provider did not send a mutation that would falsely report a clear. Replace the membership to remove its effective member budget.",
 		)
 		return
 	}

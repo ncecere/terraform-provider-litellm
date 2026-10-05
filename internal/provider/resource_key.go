@@ -267,7 +267,7 @@ func (r *KeyResource) Schema(ctx context.Context, req resource.SchemaRequest, re
 				Optional:    true,
 			},
 			"service_account_id": schema.StringAttribute{
-				Description: "Service account ID for team-owned keys. LiteLLM v1.98 does not update this identity in place.",
+				Description: "Service account ID for team-owned keys. LiteLLM does not update this identity in place.",
 				Optional:    true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
@@ -310,14 +310,14 @@ func (r *KeyResource) Schema(ctx context.Context, req resource.SchemaRequest, re
 				Computed:    true,
 			},
 			"tpm_limit_type": schema.StringAttribute{
-				Description: "TPM limit enforcement type. LiteLLM v1.98 accepts guaranteed_throughput, best_effort_throughput, or dynamic for keys.",
+				Description: "TPM limit enforcement type. LiteLLM accepts guaranteed_throughput, best_effort_throughput, or dynamic for keys.",
 				Optional:    true,
 				Validators: []validator.String{
 					stringvalidator.OneOf("guaranteed_throughput", "best_effort_throughput", "dynamic"),
 				},
 			},
 			"rpm_limit_type": schema.StringAttribute{
-				Description: "RPM limit enforcement type. LiteLLM v1.98 accepts guaranteed_throughput, best_effort_throughput, or dynamic for keys.",
+				Description: "RPM limit enforcement type. LiteLLM accepts guaranteed_throughput, best_effort_throughput, or dynamic for keys.",
 				Optional:    true,
 				Validators: []validator.String{
 					stringvalidator.OneOf("guaranteed_throughput", "best_effort_throughput", "dynamic"),

@@ -71,4 +71,4 @@ The following attributes are exported:
   * `rpm_limit` - Requests per minute limit.
   * `blocked` - Whether the team is blocked.
 
-Results are sorted deterministically by team ID. The v1.98 `/team/list` endpoint is unpaginated, so the provider makes one escaped, single-snapshot request.
+Results are sorted deterministically by team ID. LiteLLM's `/team/list` endpoint is unpaginated, so the provider makes one escaped, single-snapshot request.

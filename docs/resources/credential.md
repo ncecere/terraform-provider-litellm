@@ -6,7 +6,7 @@ Manages a LiteLLM credential while preserving the provider's original string-map
 
 `credential_info` and `credential_values` remain `map(string)`. Existing references, outputs, and state therefore keep their original Terraform types. There is no state-version migration. `credential_values` is now optional, an additive loosening that permits model-only configuration and source-free metadata-only imports.
 
-LiteLLM v1.98 also accepts nested objects, arrays, booleans, nulls, and JSON numbers. Use the additive JSON-string attributes for those values:
+LiteLLM also accepts nested objects, arrays, booleans, nulls, and JSON numbers. Use the additive JSON-string attributes for those values:
 
 ```hcl
 resource "litellm_credential" "full" {
@@ -59,7 +59,7 @@ resource "litellm_credential" "values" {
 }
 ```
 
-When `model_id` is omitted, the merged legacy and JSON values object must be non-empty. LiteLLM v1.98 tests this object for truthiness and rejects a values-only `{}`. Omitted values, `credential_values = {}`, `credential_values_json = "{}"`, or any combination that still merges to an empty object therefore fails during planning rather than making a known-invalid request.
+When `model_id` is omitted, the merged legacy and JSON values object must be non-empty. LiteLLM tests this object for truthiness and rejects a values-only `{}`. Omitted values, `credential_values = {}`, `credential_values_json = "{}"`, or any combination that still merges to an empty object therefore fails during planning rather than making a known-invalid request.
 
 ### Model-derived values
 
@@ -91,11 +91,11 @@ When values are the active source, `credential_values_active` is `true` and `cre
 
 LiteLLM masks sensitive response leaves. The provider restores a prior owned value only when the returned mask exactly matches that same value. A mask is never adopted as a real secret.
 
-PATCH in LiteLLM v1.98 shallow-merges the two top-level dictionaries:
+PATCH in LiteLLM shallow-merges the two top-level dictionaries:
 
 * Configured leaves are owned recursively.
 * Unmanaged nested siblings are hydrated from the authoritative preflight GET before a containing object is patched.
-* Readable unmanaged top-level `credential_info` is also carried through PATCH because LiteLLM v1.98 can rebuild that dictionary before applying its shallow update; carrying it does not adopt it into Terraform ownership.
+* Readable unmanaged top-level `credential_info` is also carried through PATCH because LiteLLM can rebuild that dictionary before applying its shallow update; carrying it does not adopt it into Terraform ownership.
 * If an unmanaged nested sibling is masked and cannot be reconstructed, PATCH fails before mutation.
 * Planned object/scalar transitions that could discard unmanaged children fail before mutation.
 * Out-of-band atomic-to-object or object-to-atomic shape drift fails guarded projection/read, is never treated as fully owned, and blocks replacement deletion rather than adopting nested children.
@@ -106,9 +106,9 @@ Because top-level removal cannot be proved safe, the provider reports a plan err
 
 PATCH and DELETE 2xx response bodies must contain LiteLLM's explicit `success: true` result. This matters because affected handlers can serialize an exception with HTTP 200. PATCH postflight verifies the complete hydrated version rather than treating a successful status as convergence. DELETE has separate terminal-destroy and replacement contracts, described below.
 
-### LiteLLM v1.98 worker-cache limitation
+### LiteLLM worker-cache limitation
 
-LiteLLM v1.98 serves `GET /credentials/by_name/{credential_name}` from the process-local `litellm.credential_list`. A credential mutation updates the handling worker, but another worker or pod can continue to return exact 404 or an older credential version. One 404 is therefore not authoritative.
+LiteLLM serves `GET /credentials/by_name/{credential_name}` from the process-local `litellm.credential_list`. A credential mutation updates the handling worker, but another worker or pod can continue to return exact 404 or an older credential version. One 404 is therefore not authoritative.
 
 The provider uses an API-only fail-safe; it cannot enumerate workers or force the load balancer to select each one:
 
@@ -117,14 +117,14 @@ The provider uses an API-only fail-safe; it cannot enumerate workers or force th
 * Resource-read absence is accepted only after four consecutive fresh-connection probes all return exact HTTP 404. Create preflight blocks on any presence and sends POST only after the same authoritative absence result. POST is never fanned out or repeated.
 * A mixed resource read produces a warning and retains the previously verified state only when every present exact-name version semantically reconciles the prior Terraform-owned state. Any third/conflicting present version is an error and is never adopted. This makes apply followed by immediate plan usable when some workers return the prior exact version and others return 404.
 * Create postflight accepts one consistent requested version plus worker 404s with a warning. A conflicting present version fails closed.
-* Update preflight accepts one consistent prior-exact present version plus 404 workers. The provider builds one fully hydrated PATCH body and repeats that identical, semantically idempotent v1.98 PATCH over a bounded set of fresh connections. Postflight requires at least one desired-exact version and permits only desired-exact, known-prior-exact, or 404 results; any third version is an error. Warnings report cache uncertainty and never claim cluster convergence.
+* Update preflight accepts one consistent prior-exact present version plus 404 workers. The provider builds one fully hydrated PATCH body and repeats that identical, semantically idempotent LiteLLM PATCH over a bounded set of fresh connections. Postflight requires at least one desired-exact version and permits only desired-exact, known-prior-exact, or 404 results; any third version is an error. Warnings report cache uncertainty and never claim cluster convergence.
 
-LiteLLM v1.98 DELETE cannot use the same fan-out strategy: the handler deletes the database row before evicting its local `credential_list`, and a later DELETE fails on the missing row before evicting another worker. The provider therefore sends exactly one DELETE:
+LiteLLM DELETE cannot use the same fan-out strategy: the handler deletes the database row before evicting its local `credential_list`, and a later DELETE fails on the missing row before evicting another worker. The provider therefore sends exactly one DELETE:
 
 * Ordinary terminal destroy may remove Terraform state after one validated `success: true` durable database deletion, or exact already-absent result. Destroy always warns that cached secret material can remain usable until every stale or unsampled worker is reloaded or restarted, even when the bounded postflight sample returns only 404. The warning does **not** claim credential revocation.
 * Replacement deletion remains strict. It first requires complete Terraform ownership, and after DELETE it requires four consecutive exact 404 responses. If any worker still serves the old credential, Terraform retains state and blocks recreation/adoption until worker caches are reloaded or restarted.
 
-This policy is bounded safety sampling, not a fixed convergence interval or proof that every worker agrees. There is no promised wait time after which v1.98 caches become consistent.
+This policy is bounded safety sampling, not a fixed convergence interval or proof that every worker agrees. There is no promised wait time after which LiteLLM worker caches become consistent.
 
 Create first proves sampled exact-name absence and refuses to overwrite or adopt a collision. Unusable HTTP success, dispatched transport failures, request timeouts, and server errors receive bounded exact-name recovery sampling. Because an identical concurrent create cannot be distinguished from the provider's commit, every ambiguous outcome retains only caller-known partial state plus an uncertain-ownership private marker—even when exact configuration appears during recovery. That marker blocks refresh adoption, update, replacement, and deletion until an operator verifies ownership and imports the object or deliberately removes retained state.
 

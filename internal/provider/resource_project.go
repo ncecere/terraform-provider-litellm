@@ -84,11 +84,11 @@ func (r *ProjectResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 			"models":                schema.ListAttribute{Description: "List of models the project can access.", Optional: true, Computed: true, ElementType: types.StringType},
 			"metadata":              schema.MapAttribute{Description: "Metadata for the project. Values are strings; use jsonencode() for complex values.", Optional: true, Computed: true, ElementType: types.StringType},
 			"metadata_json":         schema.StringAttribute{Description: "Additional project metadata as a semantic JSON object.", Optional: true, Computed: true, Sensitive: true, Validators: []validator.String{keySemanticDictionaryValidator{}}},
-			"tags":                  schema.ListAttribute{Description: "Tags associated with the project. LiteLLM v1.98 stores these in project metadata.", Optional: true, Computed: true, ElementType: types.StringType},
+			"tags":                  schema.ListAttribute{Description: "Tags associated with the project. LiteLLM stores these in project metadata.", Optional: true, Computed: true, ElementType: types.StringType},
 			"max_budget":            schema.Float64Attribute{Description: "Maximum budget for this project. From LiteLLM 1.103.0, 0 means zero allowance (all spend is blocked); omit the attribute for an unlimited budget.", Optional: true},
 			"soft_budget":           schema.Float64Attribute{Description: "Soft budget limit for warnings.", Optional: true},
 			"budget_duration":       schema.StringAttribute{Description: "Budget reset duration (for example, '30d' or '1h').", Optional: true},
-			"budget_id":             schema.StringAttribute{Description: "Budget ID associated with this project. Reassociation is not safely supported by LiteLLM v1.98.", Optional: true, Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
+			"budget_id":             schema.StringAttribute{Description: "Budget ID associated with this project. Reassociation is not safely supported by LiteLLM.", Optional: true, Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
 			"tpm_limit":             schema.Int64Attribute{Description: "Tokens per minute limit.", Optional: true},
 			"tpd_limit":             schema.Int64Attribute{Description: "Tokens per day limit. Requires LiteLLM 1.104.0 or later. Removing it clears the limit.", Optional: true},
 			"rpm_limit":             schema.Int64Attribute{Description: "Requests per minute limit.", Optional: true},
@@ -134,10 +134,10 @@ func (r *ProjectResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 			resp.Diagnostics.AddAttributeError(path.Root("metadata_json"), "Invalid Semantic Project Dictionary", "The JSON object is malformed, overlaps another managed project metadata surface, or cannot be persisted exactly.")
 		}
 		if !config.BudgetID.IsNull() && projectBudgetControlsPresentInConfig(&config) {
-			resp.Diagnostics.AddAttributeError(path.Root("budget_id"), "Unsafe Shared Project Budget Controls", "budget_id cannot be combined with project budget controls during creation because LiteLLM v1.98 ignores or strips those controls for an existing shared budget.")
+			resp.Diagnostics.AddAttributeError(path.Root("budget_id"), "Unsafe Shared Project Budget Controls", "budget_id cannot be combined with project budget controls during creation because LiteLLM ignores or strips those controls for an existing shared budget.")
 		}
 		if config.ModelMaxBudget.IsUnknown() || (knownMap(config.ModelMaxBudget) && len(config.ModelMaxBudget.Elements()) > 0) {
-			resp.Diagnostics.AddAttributeError(path.Root("model_max_budget"), "Unsupported Structured Project Model Budget", "LiteLLM v1.98 requires GenericBudgetConfig objects for model_max_budget, but this resource's legacy schema is map(float64). Non-empty or unknown configuration is rejected until a migration-safe structured representation is available.")
+			resp.Diagnostics.AddAttributeError(path.Root("model_max_budget"), "Unsupported Structured Project Model Budget", "LiteLLM requires GenericBudgetConfig objects for model_max_budget, but this resource's legacy schema is map(float64). Non-empty or unknown configuration is rejected until a migration-safe structured representation is available.")
 		}
 		return
 	}
@@ -221,9 +221,9 @@ func (r *ProjectResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 		case field.config.IsNull() && field.imported:
 			resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root(field.name), field.state)...)
 		case knownString(field.state) && field.config.IsNull():
-			resp.Diagnostics.AddAttributeError(path.Root(field.name), "Unsupported Project String Clear", fmt.Sprintf("LiteLLM v1.98's /project/update excludes null %s values, so removing this configured value cannot converge. Keep it configured or set an explicit non-null replacement.", field.name))
+			resp.Diagnostics.AddAttributeError(path.Root(field.name), "Unsupported Project String Clear", fmt.Sprintf("LiteLLM's /project/update excludes null %s values, so removing this configured value cannot converge. Keep it configured or set an explicit non-null replacement.", field.name))
 		case knownString(field.state) && (field.config.IsUnknown() || field.plan.IsUnknown()):
-			resp.Diagnostics.AddAttributeError(path.Root(field.name), "Unknown Project String Transition", fmt.Sprintf("%s must be known while planning because an unknown value could resolve to an unsupported null clear on LiteLLM v1.98.", field.name))
+			resp.Diagnostics.AddAttributeError(path.Root(field.name), "Unknown Project String Transition", fmt.Sprintf("%s must be known while planning because an unknown value could resolve to an unsupported null clear on LiteLLM.", field.name))
 		}
 	}
 	if config.ModelMaxBudget.IsNull() && knownMap(state.ModelMaxBudget) {
@@ -231,7 +231,7 @@ func (r *ProjectResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 		// explicit null budget update. Override the framework's computed unknown.
 		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("model_max_budget"), types.MapNull(types.Float64Type))...)
 	} else if config.ModelMaxBudget.IsUnknown() || (knownMap(config.ModelMaxBudget) && len(config.ModelMaxBudget.Elements()) > 0 && !config.ModelMaxBudget.Equal(state.ModelMaxBudget)) {
-		resp.Diagnostics.AddAttributeError(path.Root("model_max_budget"), "Unsupported Structured Project Model Budget", "LiteLLM v1.98 requires GenericBudgetConfig objects for model_max_budget, but this resource's legacy schema is map(float64). Non-empty additions, changes, or unknown transitions are rejected until a migration-safe structured representation is available.")
+		resp.Diagnostics.AddAttributeError(path.Root("model_max_budget"), "Unsupported Structured Project Model Budget", "LiteLLM requires GenericBudgetConfig objects for model_max_budget, but this resource's legacy schema is map(float64). Non-empty additions, changes, or unknown transitions are rejected until a migration-safe structured representation is available.")
 	}
 	if resp.Diagnostics.HasError() {
 		return
@@ -793,10 +793,10 @@ func (r *ProjectResource) buildProjectRequest(ctx context.Context, data *Project
 
 func (r *ProjectResource) buildProjectCreateRequest(ctx context.Context, data *ProjectResourceModel) (map[string]interface{}, error) {
 	if knownString(data.BudgetID) && projectBudgetControlsConfigured(data) {
-		return nil, fmt.Errorf("budget_id cannot be combined with project budget controls during creation because LiteLLM v1.98 ignores or strips those controls for an existing shared budget")
+		return nil, fmt.Errorf("budget_id cannot be combined with project budget controls during creation because LiteLLM ignores or strips those controls for an existing shared budget")
 	}
 	if knownMap(data.ModelMaxBudget) && len(data.ModelMaxBudget.Elements()) > 0 {
-		return nil, fmt.Errorf("non-empty model_max_budget is unsupported because LiteLLM v1.98 requires structured GenericBudgetConfig values while the migration-compatible project schema is map(float64)")
+		return nil, fmt.Errorf("non-empty model_max_budget is unsupported because LiteLLM requires structured GenericBudgetConfig values while the migration-compatible project schema is map(float64)")
 	}
 	request := map[string]interface{}{"team_id": data.TeamID.ValueString()}
 	if knownString(data.ProjectAlias) {
@@ -848,13 +848,13 @@ func buildProjectRowUpdateRequest(ctx context.Context, plan, state *ProjectResou
 	request := map[string]interface{}{}
 	if !plan.ProjectAlias.IsUnknown() && !plan.ProjectAlias.Equal(state.ProjectAlias) {
 		if plan.ProjectAlias.IsNull() {
-			return nil, false, fmt.Errorf("project_alias cannot be cleared because LiteLLM v1.98 excludes null on update")
+			return nil, false, fmt.Errorf("project_alias cannot be cleared because LiteLLM excludes null on update")
 		}
 		request["project_alias"] = plan.ProjectAlias.ValueString()
 	}
 	if !plan.Description.IsUnknown() && !plan.Description.Equal(state.Description) {
 		if plan.Description.IsNull() {
-			return nil, false, fmt.Errorf("description cannot be cleared because LiteLLM v1.98 excludes null on update")
+			return nil, false, fmt.Errorf("description cannot be cleared because LiteLLM excludes null on update")
 		}
 		request["description"] = plan.Description.ValueString()
 	}

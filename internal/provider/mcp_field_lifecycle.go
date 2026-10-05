@@ -33,13 +33,13 @@ var mcpCredentialStringKeysV198 = map[string]bool{
 func validateMCPCredentialStringMapV198(credentials map[string]string) error {
 	for name, value := range credentials {
 		if !mcpCredentialStringKeysV198[name] {
-			return fmt.Errorf("credentials contain a key that LiteLLM v1.98 cannot represent through this schema")
+			return fmt.Errorf("credentials contain a key that LiteLLM cannot represent through this schema")
 		}
 		if name == "token_endpoint_auth_method" && value != "client_secret_basic" && value != "client_secret_post" {
 			return fmt.Errorf("credentials contain an unsupported token endpoint authentication method")
 		}
 		if name == "upstream_resource" && value == "" {
-			return fmt.Errorf("credentials contain an empty observable upstream resource that LiteLLM v1.98 cannot return")
+			return fmt.Errorf("credentials contain an empty observable upstream resource that LiteLLM cannot return")
 		}
 	}
 	return nil
@@ -685,7 +685,7 @@ func validateMCPFieldCredentialMerge(ctx context.Context, plan, state, config MC
 			// deletion is representable in one PUT.
 			continue
 		}
-		return fmt.Errorf("LiteLLM v1.98 merges credential maps; clear credentials first, apply, then re-add the replacement map")
+		return fmt.Errorf("LiteLLM merges credential maps; clear credentials first, apply, then re-add the replacement map")
 	}
 	return nil
 }
@@ -1307,7 +1307,7 @@ func (r *MCPServerResource) Update(ctx context.Context, req resource.UpdateReque
 	}
 	if err := validateMCPImplicitClearSafety(config, state, plannedFields, hydration, delta, urlChanged, authClassChanged, issuerChanged); err != nil {
 		resp.State, resp.Private = req.State, req.Private
-		resp.Diagnostics.AddError("Unsafe MCP URL or Authentication Update", "LiteLLM v1.98 would implicitly clear an unowned, unknown, or unchanged OAuth/credential value ("+err.Error()+"). Configure every affected value with a genuinely changed or cleared complete intent in one apply. No PUT was attempted; restorative PUTs are never used.")
+		resp.Diagnostics.AddError("Unsafe MCP URL or Authentication Update", "LiteLLM would implicitly clear an unowned, unknown, or unchanged OAuth/credential value ("+err.Error()+"). Configure every affected value with a genuinely changed or cleared complete intent in one apply. No PUT was attempted; restorative PUTs are never used.")
 		return
 	}
 	if config.Alias.IsNull() {

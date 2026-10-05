@@ -62,7 +62,7 @@ resource "litellm_fallback" "content_policy" {
   - `context_window` - Used when the request exceeds the model's context window.
   - `content_policy` - Used for content policy violations.
 
-  The provider validates this exact, case-sensitive LiteLLM v1.98 request enum during planning.
+  The provider validates this exact, case-sensitive LiteLLM request enum during planning.
 
 ## Attribute Reference
 
@@ -86,13 +86,13 @@ terraform import litellm_fallback.example "llama3:8b:general"
 
 For backward compatibility, a model-only ID without any colon still imports as `general`. A colon-bearing model must include an explicit final suffix of `general`, `context_window`, or `content_policy`; unknown or missing suffixes are rejected as ambiguous. The model component must not be empty. Pass the model identifier in its raw form; do not URL-encode `/`, `%`, `?`, Unicode, or other characters before constructing the import ID. The provider URL-escapes the model once when calling LiteLLM.
 
-> **LiteLLM v1.98 route limitation:** The v1.98 `/fallback/{model}` route does not capture decoded `/` characters inside `model`. The provider constructs slash-bearing requests safely, but LiteLLM v1.98 rejects them with a route-level 404. Colons, percent signs, query delimiters, and Unicode remain supported when the LiteLLM API recognizes the resulting model identity.
+> **LiteLLM route limitation:** LiteLLM's `/fallback/{model}` route does not capture decoded `/` characters inside `model`. The provider constructs slash-bearing requests safely, but LiteLLM rejects them with a route-level 404. Colons, percent signs, query delimiters, and Unicode remain supported when the LiteLLM API recognizes the resulting model identity.
 
 ## Notes
 
 * LiteLLM 1.104.0 still cannot reliably delete a fallback (LiteLLM #38425): `DELETE` can return 404 while the fallback remains configured. The provider confirms absence after every delete and keeps the resource in state with a dedicated error when the fallback is still present. LiteLLM 1.104.0 also resolves a fallback GET through provider-prefixed and wildcard routing keys, so a fallback removed outside Terraform can still read as present when an equivalent prefixed or wildcard entry exists.
 
-> **LiteLLM v1.98 deletion limitation:** LiteLLM v1.98 can return 404 from `DELETE /fallback/{model}` while the same fallback remains readable. The provider therefore confirms absence with the exact GET identity after every delete. If LiteLLM still returns the fallback, destroy fails and retains Terraform state instead of reporting false success. That confirmed retained-presence case uses a dedicated content-safe diagnostic so automation cannot confuse it with timeout, cancellation, connectivity, malformed-response, or other operational confirmation failures. Do not remove the resource from state while the routing configuration remains active. Authoritative upstream deletion is tracked in [LiteLLM #38425](https://github.com/BerriAI/litellm/issues/38425).
+> **LiteLLM deletion limitation:** LiteLLM can return 404 from `DELETE /fallback/{model}` while the same fallback remains readable. The provider therefore confirms absence with the exact GET identity after every delete. If LiteLLM still returns the fallback, destroy fails and retains Terraform state instead of reporting false success. That confirmed retained-presence case uses a dedicated content-safe diagnostic so automation cannot confuse it with timeout, cancellation, connectivity, malformed-response, or other operational confirmation failures. Do not remove the resource from state while the routing configuration remains active. Authoritative upstream deletion is tracked in [LiteLLM #38425](https://github.com/BerriAI/litellm/issues/38425).
 
 - Resource addresses, schema, state, and IDs remain unchanged: the state ID is the raw `model:fallback_type` value.
 - The LiteLLM API allows one fallback configuration per `(model, fallback_type)` pair. Creating a resource with the same model and type updates the existing configuration.

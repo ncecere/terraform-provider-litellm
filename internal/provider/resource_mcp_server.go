@@ -356,23 +356,23 @@ func (r *MCPServerResource) Schema(ctx context.Context, req resource.SchemaReque
 				Description: "Transport type for the MCP server (http, sse, stdio).",
 				Required:    true,
 				Validators: []validator.String{
-					newMCPSafeEnumValidator(mcpTransportsV198, "Transport must be one of the values accepted by LiteLLM v1.98."),
+					newMCPSafeEnumValidator(mcpTransportsV198, "Transport must be one of the values accepted by LiteLLM."),
 				},
 			},
 			"spec_version": schema.StringAttribute{
-				Description:        "Deprecated compatibility attribute. LiteLLM v1.98 does not accept or return this field.",
+				Description:        "Deprecated compatibility attribute. LiteLLM does not accept or return this field.",
 				DeprecationMessage: "spec_version is retained only for state and HCL compatibility and is not sent to LiteLLM. Remove it from configuration.",
 				Optional:           true,
 				Computed:           true,
 				Default:            stringdefault.StaticString("2024-11-05"),
 			},
 			"auth_type": schema.StringAttribute{
-				Description: "Authentication type accepted by the LiteLLM v1.98 MCP server request contract.",
+				Description: "Authentication type accepted by the LiteLLM MCP server request contract.",
 				Optional:    true,
 				Computed:    true,
 				Default:     stringdefault.StaticString("none"),
 				Validators: []validator.String{
-					newMCPSafeEnumValidator(mcpAuthTypesV198, "Authentication type must be one of the values accepted by LiteLLM v1.98."),
+					newMCPSafeEnumValidator(mcpAuthTypesV198, "Authentication type must be one of the values accepted by LiteLLM."),
 				},
 			},
 			"mcp_access_groups": schema.ListAttribute{
@@ -509,7 +509,7 @@ func (r *MCPServerResource) Schema(ctx context.Context, req resource.SchemaReque
 				Optional:    true,
 			},
 			"skip_url_validation": schema.BoolAttribute{
-				Description:        "Deprecated compatibility attribute. LiteLLM v1.98 does not accept this field; new or changed true values are unsafe, while unchanged historical state remains plannable.",
+				Description:        "Deprecated compatibility attribute. LiteLLM does not accept this field; new or changed true values are unsafe, while unchanged historical state remains plannable.",
 				DeprecationMessage: "skip_url_validation is retained only for state and HCL compatibility and is not sent to LiteLLM. Remove it from configuration.",
 				Optional:           true,
 			},
@@ -736,7 +736,7 @@ func (r *MCPServerResource) ValidateConfig(ctx context.Context, req resource.Val
 				resp.Diagnostics.AddAttributeError(
 					path.Root("command"),
 					"Invalid MCP Stdio Configuration",
-					"The command executable is not in LiteLLM v1.98's built-in stdio allowlist: deno, docker, node, npx, python, python3, uvx.",
+					"The command executable is not in LiteLLM's built-in stdio allowlist: deno, docker, node, npx, python, python3, uvx.",
 				)
 			}
 		}
@@ -1030,7 +1030,7 @@ func (r *MCPServerResource) ModifyPlan(ctx context.Context, req resource.ModifyP
 			resp.Diagnostics.AddAttributeError(
 				path.Root("server_name"),
 				"Invalid MCP Server Name",
-				"Configured server_name must contain 1 to 128 ASCII letters, digits, underscores, or periods and must not contain LiteLLM v1.98's tool-prefix separator.",
+				"Configured server_name must contain 1 to 128 ASCII letters, digits, underscores, or periods and must not contain LiteLLM's tool-prefix separator.",
 			)
 		}
 	}
@@ -1040,7 +1040,7 @@ func (r *MCPServerResource) ModifyPlan(ctx context.Context, req resource.ModifyP
 			resp.Diagnostics.AddAttributeError(
 				path.Root("alias"),
 				"Invalid MCP Server Alias",
-				"Configured alias must normalize to 1 to 128 ASCII letters, digits, underscores, or periods and must not contain LiteLLM v1.98's tool-prefix separator.",
+				"Configured alias must normalize to 1 to 128 ASCII letters, digits, underscores, or periods and must not contain LiteLLM's tool-prefix separator.",
 			)
 		}
 	}
@@ -1063,7 +1063,7 @@ func (r *MCPServerResource) ModifyPlan(ctx context.Context, req resource.ModifyP
 		resp.Diagnostics.AddAttributeError(
 			path.Root("spec_version"),
 			"Unsupported Deprecated MCP Configuration",
-			"LiteLLM v1.98 does not accept this compatibility field. A historical non-default value may remain unchanged, but new or changed non-default values are unsafe.",
+			"LiteLLM does not accept this compatibility field. A historical non-default value may remain unchanged, but new or changed non-default values are unsafe.",
 		)
 	}
 
@@ -1073,7 +1073,7 @@ func (r *MCPServerResource) ModifyPlan(ctx context.Context, req resource.ModifyP
 		resp.Diagnostics.AddAttributeError(
 			path.Root("skip_url_validation"),
 			"Unsupported Deprecated MCP Configuration",
-			"LiteLLM v1.98 does not accept this compatibility field. A historical true value may remain unchanged, but a new or changed true value is unsafe.",
+			"LiteLLM does not accept this compatibility field. A historical true value may remain unchanged, but a new or changed true value is unsafe.",
 		)
 	}
 	if resp.Diagnostics.HasError() {

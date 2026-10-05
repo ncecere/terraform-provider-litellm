@@ -285,7 +285,7 @@ func (r *TeamResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 				Optional:    true,
 			},
 			"tpm_limit_type": schema.StringAttribute{
-				Description: "Create-only TPM limit enforcement type. LiteLLM v1.98 accepts guaranteed_throughput or best_effort_throughput for new teams. Changing this value replaces the team.",
+				Description: "Create-only TPM limit enforcement type. LiteLLM accepts guaranteed_throughput or best_effort_throughput for new teams. Changing this value replaces the team.",
 				Optional:    true,
 				Validators: []validator.String{
 					stringvalidator.OneOf("guaranteed_throughput", "best_effort_throughput"),
@@ -295,7 +295,7 @@ func (r *TeamResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 				},
 			},
 			"rpm_limit_type": schema.StringAttribute{
-				Description: "Create-only RPM limit enforcement type. LiteLLM v1.98 accepts guaranteed_throughput or best_effort_throughput for new teams. Changing this value replaces the team.",
+				Description: "Create-only RPM limit enforcement type. LiteLLM accepts guaranteed_throughput or best_effort_throughput for new teams. Changing this value replaces the team.",
 				Optional:    true,
 				Validators: []validator.String{
 					stringvalidator.OneOf("guaranteed_throughput", "best_effort_throughput"),

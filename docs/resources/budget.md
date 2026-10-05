@@ -79,5 +79,5 @@ terraform import litellm_budget.example <budget-id>
 - The `max_budget` is a hard limit that blocks requests when exceeded.
 - The `budget_duration` determines when the spend counter resets.
 - The `model_max_budget` attribute accepts an object JSON string and validates every nested `BudgetConfig`. Use `jsonencode()` where possible. Empty `{}` is an explicit owned empty object; omission relinquishes Terraform ownership and does not promise an API clear. Historical finite scalar HCL remains valid only while unchanged; new or changed scalars are rejected, structured migration is allowed, and unrelated updates omit the unchanged legacy value.
-- Although v1.98 applies alias precedence when both spellings are present, the provider rejects `max_budget` with `budget_limit` and `budget_duration` with `time_period` because accepting contradictory values would hide one configured value during canonical read-back.
+- Although LiteLLM applies alias precedence when both spellings are present, the provider rejects `max_budget` with `budget_limit` and `budget_duration` with `time_period` because accepting contradictory values would hide one configured value during canonical read-back.
 - Per-model controls may require a LiteLLM Enterprise license.
