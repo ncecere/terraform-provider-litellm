@@ -2,7 +2,7 @@
   "schema_version": 1,
   "provider_source": "registry.terraform.io/ncecere/litellm",
   "previous_release": "2.0.1",
-  "local_litellm": "1.98.0",
+  "local_litellm": "1.104.0",
   "remote_target": "dev.api.ai.it.ufl.edu",
   "resources": [
     {"type":"litellm_model","fixture":["issue210_model_v201.tf"],"import_fixture":["issue210_model_import.tf"],"address":"litellm_model.upgrade","import_expression":"litellm_model.upgrade.id","lane":"oss","action":false},

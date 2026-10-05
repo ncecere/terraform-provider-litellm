@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.0]
+
+### Upgrade Notes
+- The tested backend moves from LiteLLM 1.98.0 to exactly LiteLLM 1.104.0. The published provider source remains `registry.terraform.io/ncecere/litellm`; Terraform >= 1.1.0, OpenTofu >= 1.6.0, and Go >= 1.24.0 for provider development are unchanged, and only optional write-only attributes require Terraform or OpenTofu >= 1.11.0. Published examples continue to constrain the provider to `>= 2.0.1, < 3.0.0`. No provider attribute is removed or retyped, and existing HCL, state, IDs, and imports remain valid.
+- LiteLLM 1.102 through 1.104 introduced backend behavior changes that affect Terraform-managed configuration independently of this provider release. Review them before upgrading the proxy:
+  - Every organization endpoint, including reads, requires a LiteLLM Enterprise license. Unlicensed proxies return HTTP 403 for `litellm_organization`, `litellm_organization_member`, and the organization data sources.
+  - An organization or project `max_budget` of `0` now means zero allowance instead of unlimited. Omit the attribute for an unlimited budget.
+  - stdio MCP servers are disabled unless the proxy process sets `LITELLM_ENABLE_MCP_STDIO=true`; creating or switching a `litellm_mcp_server` to stdio otherwise fails.
+  - Team-admin (non proxy-admin) keys can no longer update teams or projects unless `general_settings.team_admin_editable_team_fields` allows it. Manage `litellm_team` and `litellm_project` with a proxy-admin or org-admin key.
+  - When `config.yaml` declares a setting, runtime writes to that setting are refused, so manage router fallbacks either in the file or through `litellm_fallback`, not both.
+
+### Security
+- No security-sensitive provider behavior changes in this release beyond those listed under Fixed.
+
+### Changed
+- **Development and release API contract**: Re-pin the reproducible LiteLLM API contract from v1.98.0 to v1.104.0 (`79645770fedc7ec2627e6468d31062f20f82aecc`). The exporter verifies v1.104.0's 35 lazy feature routers, excludes undocumented Starlette transport routes from OpenAPI comparison, and requires the now-public `PATCH /v2/organization/{organization_id}` route in generated OpenAPI. All provider HTTP operations resolve unchanged; the 105 new upstream operations are classified in the reviewed inventory.
+
 ## [2.1.0] - 2026-08-29
 
 ### Upgrade Notes

@@ -23,8 +23,8 @@ if [ "$ASSEMBLY_ONLY" != "1" ]; then
     echo "Refusing destructive acceptance tests: set TF_ACC=1." >&2
     exit 1
   fi
-  if [ "${LITELLM_ACCEPTANCE_CONFIRM:-}" != "local-v1.98.0" ]; then
-    echo "Set LITELLM_ACCEPTANCE_CONFIRM=local-v1.98.0 to confirm use of the disposable local backend." >&2
+  if [ "${LITELLM_ACCEPTANCE_CONFIRM:-}" != "local-v1.104.0" ]; then
+    echo "Set LITELLM_ACCEPTANCE_CONFIRM=local-v1.104.0 to confirm use of the disposable local backend." >&2
     exit 1
   fi
   if ! command -v curl >/dev/null 2>&1; then
@@ -42,8 +42,8 @@ if [ "$ASSEMBLY_ONLY" != "1" ]; then
 
   version=$(curl --fail --silent --show-error --connect-timeout 3 --max-time 15 "$API_BASE/openapi.json" |
     python3 -c 'import json, sys; print(json.load(sys.stdin).get("info", {}).get("version", ""))')
-  if [ "$version" != "1.98.0" ]; then
-    echo "Expected disposable LiteLLM v1.98.0 at $API_BASE, found ${version:-unknown}." >&2
+  if [ "$version" != "1.104.0" ]; then
+    echo "Expected disposable LiteLLM v1.104.0 at $API_BASE, found ${version:-unknown}." >&2
     exit 1
   fi
 fi

@@ -12,7 +12,7 @@
 
 services:
   litellm:
-    image: docker.litellm.ai/berriai/litellm:v1.98.0
+    image: docker.litellm.ai/berriai/litellm:v1.104.0
     ports:
       - "127.0.0.1:${LITELLM_TEST_PORT:-4000}:4000"
     environment:

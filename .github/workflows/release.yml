@@ -71,7 +71,7 @@ jobs:
       - name: Execute full exact-tag lane
         env:
           TF_ACC: '1'
-          LITELLM_ACCEPTANCE_CONFIRM: local-v1.98.0
+          LITELLM_ACCEPTANCE_CONFIRM: local-v1.104.0
           MATRIX_CLI: ${{ runner.temp }}/tools/${{ matrix.product }}/${{ matrix.version }}/linux_amd64/${{ matrix.executable }}
           MATRIX_PROVIDER_BINARY: ${{ runner.temp }}/provider/terraform-provider-litellm
           MATRIX_CACHE: ${{ runner.temp }}/matrix-cache

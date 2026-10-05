@@ -52,14 +52,14 @@ A local execution writes both `result.json` and `result.evidence.jsonl`. The lat
 
 ## Local execution
 
-The backend is the disposable loopback-only LiteLLM v1.98.0 Compose stack. Each command has a wall deadline, child output is bounded and private, curl operations have connect/total timeouts, and cleanup failure overrides success.
+The backend is the disposable loopback-only LiteLLM v1.104.0 Compose stack. Each command has a wall deadline, child output is bounded and private, curl operations have connect/total timeouts, and cleanup failure overrides success.
 
 ```sh
 internal_testing/compose.sh up -d
 report_root=$(python3 -c 'from pathlib import Path; print(Path("/tmp/issue210-report").resolve())')
 mkdir -m 700 "$report_root"
 TF_ACC=1 \
-LITELLM_ACCEPTANCE_CONFIRM=local-v1.98.0 \
+LITELLM_ACCEPTANCE_CONFIRM=local-v1.104.0 \
 MATRIX_CLI="$HOME/.cache/terraform-provider-litellm/tools/terraform/1.11.4/$(go env GOOS)_$(go env GOARCH)/terraform" \
 MATRIX_REPORT="$report_root/result.json" \
 sh internal_testing/upgrade_matrix/run.sh local

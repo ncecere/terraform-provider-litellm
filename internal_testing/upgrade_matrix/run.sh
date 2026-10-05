@@ -218,9 +218,9 @@ export TF_IN_AUTOMATION=1 TF_INPUT=0 TF_CLI_ARGS=-no-color
 if [ "$MODE" = local ]; then
   [ "${LITELLM_API_BASE:-http://localhost:4000}" = 'http://localhost:4000' ] || fail 'local target must be loopback port 4000'
   [ "${LITELLM_API_KEY:-sk-testing-key}" = 'sk-testing-key' ] || fail 'local target must use the disposable stack credential'
-  grep -q 'docker.litellm.ai/berriai/litellm:v1.98.0' "$REPO_ROOT/internal_testing/docker-compose.yml" || fail 'local image is not the exact pinned release'
+  grep -q 'docker.litellm.ai/berriai/litellm:v1.104.0' "$REPO_ROOT/internal_testing/docker-compose.yml" || fail 'local image is not the exact pinned release'
   version=$(curl --fail --silent --show-error --connect-timeout 3 --max-time 15 'http://localhost:4000/openapi.json' 2>>"$LOG" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("info",{}).get("version",""))')
-  [ "$version" = '1.98.0' ] || fail 'local LiteLLM version check failed'
+  [ "$version" = '1.104.0' ] || fail 'local LiteLLM version check failed'
   export TF_VAR_litellm_api_base='http://localhost:4000'
   export TF_VAR_litellm_api_key='sk-testing-key'
 else

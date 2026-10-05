@@ -49,7 +49,7 @@ The `docker-compose.yml` starts two services:
 
 | Service   | Image                                        | Port  |
 |-----------|----------------------------------------------|-------|
-| `litellm` | `docker.litellm.ai/berriai/litellm:v1.98.0` | 4000  |
+| `litellm` | `docker.litellm.ai/berriai/litellm:v1.104.0` | 4000  |
 | `db`      | `postgres:16`                                | 5432  |
 
 **Defaults** (no `.env` file needed):
@@ -208,12 +208,12 @@ structured guardrail modes, full search-tool objects, budget single/list data
 sources, agent MCP tool-permission JSON arrays, empty-object projection, and
 no-drift read-back after LiteLLM canonicalizes object formatting.
 
-The matrix is restricted to a disposable loopback LiteLLM v1.98.0 backend and
+The matrix is restricted to a disposable loopback LiteLLM v1.104.0 backend and
 requires two opt-in values before it performs destructive lifecycle tests:
 
 ```bash
 make local
-TF_ACC=1 LITELLM_ACCEPTANCE_CONFIRM=local-v1.98.0 make testacc
+TF_ACC=1 LITELLM_ACCEPTANCE_CONFIRM=local-v1.104.0 make testacc
 ```
 
 The non-destructive assembly mode runs the same matrix without a provider
@@ -280,7 +280,7 @@ rm provider.tf variables.tf terraform.tfvars
 - The `key_block` and `team_block` resources are **destructive** -- they
   block the referenced key/team. Don't include them unless you intend to
   test blocking behavior. The acceptance target only permits the disposable
-  loopback v1.98.0 backend.
+  loopback v1.104.0 backend.
 - `organization_member` and `team_member` resources depend on their parent
   organization/team existing first. The files reference the minimal/full
   resource instances via `litellm_organization.minimal.id` etc.
