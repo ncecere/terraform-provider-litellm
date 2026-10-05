@@ -1161,8 +1161,24 @@ LITELLM_ACCEPTANCE_ASSEMBLY_ONLY=0 sh "$REPO_ROOT/internal_testing/acceptance.sh
 # the selected executable to prevent nested supervisors from emitting duplicate
 # command receipts for one diagnostic.
 CLI=$selected_cli
-# Project is the only registered resource and pair of data sources unavailable
-# in the pinned OSS edition. These are explicit execution records, never passes.
+# Project, and from LiteLLM 1.102.0 every organization endpoint, require an
+# Enterprise license that the pinned disposable stack does not have. These are
+# explicit execution records, never passes. Without the licensed confirmation,
+# acceptance.sh runs only a bounded organization license-gate probe (which must
+# fail with exactly the provider's license diagnostic) and has already recorded
+# the organization skips with that evidence; these records are then no-ops.
+# With LITELLM_ENTERPRISE_CONFIRM=licensed-disposable acceptance exercises the
+# organization cases normally, so no organization skip is recorded here.
+if [ "${LITELLM_ENTERPRISE_CONFIRM:-}" != licensed-disposable ]; then
+  record 'resource_coverage:litellm_organization' resource_coverage skipped enterprise-license-required
+  record 'resource_coverage:litellm_organization_member' resource_coverage skipped enterprise-license-required
+  record 'lifecycle:litellm_organization' lifecycle skipped enterprise-license-required
+  record 'lifecycle:litellm_organization_member' lifecycle skipped enterprise-license-required
+  record 'drift:litellm_organization' drift skipped enterprise-license-required
+  record 'drift:litellm_organization_member' drift skipped enterprise-license-required
+  record 'data_source:litellm_organization' data_source skipped enterprise-license-required
+  record 'data_source:litellm_organizations' data_source skipped enterprise-license-required
+fi
 record 'resource_coverage:litellm_project' resource_coverage skipped enterprise-license-required
 record 'lifecycle:litellm_project' lifecycle skipped enterprise-license-required
 record 'drift:litellm_project' drift skipped enterprise-license-required

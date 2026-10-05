@@ -39,8 +39,19 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(len(matrix["resources"]), 24)
         self.assertEqual(len(matrix["data_sources"]), 35)
         self.assertEqual(sum(matrix["scenario_counts"].values()) + len(matrix["optional_features"]), 166)
-        self.assertEqual(len(matrix["terraform_1_11_4_expected_skips"]), 10)
+        self.assertEqual(len(matrix["terraform_1_11_4_expected_skips"]), 22)
+        self.assertEqual(len(harness.MODERN_MANDATORY_SKIPS), 22)
+        self.assertEqual(len(harness.PRE_111_MANDATORY_SKIPS), 30)
         self.assertEqual(len(matrix["terraform_1_11_4_conditional_skips"]), 2)
+        enterprise = {item["type"] for item in matrix["resources"] if item["lane"] == "enterprise"}
+        self.assertEqual(enterprise, {"litellm_organization", "litellm_organization_member", "litellm_project"})
+        for item in matrix["resources"]:
+            if item["type"] in enterprise:
+                self.assertEqual(item["limitations"], ["enterprise-license-required"])
+        self.assertEqual(
+            {name for name, reason in matrix["data_source_expected_limitations"].items() if reason == "enterprise-license-required"},
+            {"litellm_organization", "litellm_organizations", "litellm_project", "litellm_projects"},
+        )
         fallback = next(item for item in matrix["resources"] if item["type"] == "litellm_fallback")
         self.assertEqual(fallback["lifecycle_skip_reason"], "fallback-delete-not-authoritative")
         self.assertEqual(fallback["import_skip_reason"], "fallback-delete-not-authoritative")
@@ -161,6 +172,29 @@ class HarnessTests(unittest.TestCase):
         for command in commands:
             self.assertEqual(command[:2], ["state", "rm"])
             self.assertNotIn("destroy", command)
+
+    def test_enterprise_organization_contract_fails_closed(self):
+        def oss_organization(matrix):
+            next(item for item in matrix["resources"] if item["type"] == "litellm_organization")["lane"] = "oss"
+
+        def drop_member_limitation(matrix):
+            next(item for item in matrix["resources"] if item["type"] == "litellm_organization_member")["limitations"] = []
+
+        def drop_data_source_limitation(matrix):
+            del matrix["data_source_expected_limitations"]["litellm_organizations"]
+
+        def drop_expected_skip(matrix):
+            matrix["terraform_1_11_4_expected_skips"] = [
+                item for item in matrix["terraform_1_11_4_expected_skips"]
+                if (item["category"], item["subject"]) != ("drift", "litellm_organization_member")
+            ]
+
+        for mutate in (oss_organization, drop_member_limitation, drop_data_source_limitation, drop_expected_skip):
+            with self.subTest(mutation=mutate.__name__):
+                matrix = harness.load_json(harness.MATRIX_PATH)
+                mutate(matrix)
+                with self.assertRaises(harness.HarnessError):
+                    harness.check_inventory(matrix)
 
     def test_unexplained_skip_fails_closed(self):
         with self.assertRaises(harness.HarnessError):

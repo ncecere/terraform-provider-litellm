@@ -154,6 +154,55 @@ run_key_external_delete_case() {
     sh "$REPO_ROOT/internal_testing/smoke.sh" "$REPO_ROOT" resources key_minimal.tf,key_block_minimal.tf
 }
 
+# From LiteLLM 1.102.0 every organization endpoint, including reads, requires an
+# Enterprise license and returns HTTP 403 without one. Unless the operator
+# confirms a licensed disposable backend, run one bounded create probe that must
+# fail with only the provider's license diagnostic, then record the organization
+# acceptance scenarios as explicit enterprise-license-required skips.
+run_organization_license_gate_probe() {
+  printf '\n===== ACCEPTANCE: organization_enterprise_license_gate =====\n'
+  orggate_log="$SMOKE_PRIVATE_ROOT/.smoke-logs/organization-license-gate.log"
+  orggate_command_log="$SMOKE_PRIVATE_ROOT/.smoke-logs/organization-license-gate.command.log"
+  rm -f "$orggate_log" "$orggate_command_log"
+  set +e
+  SMOKE_ASSEMBLY_ONLY=0 SMOKE_LOG_OVERRIDE=$orggate_log SMOKE_DIAGNOSTIC_OUTPUT=$orggate_command_log \
+    sh "$REPO_ROOT/internal_testing/smoke.sh" "$REPO_ROOT" resources organization_minimal.tf
+  orggate_status=$?
+  set -e
+  if [ "$orggate_status" -eq 0 ]; then
+    echo 'Organization license-gate probe unexpectedly succeeded: this LiteLLM backend accepts organization writes, so it is Enterprise-licensed.' >&2
+    echo 'Set LITELLM_ENTERPRISE_CONFIRM=licensed-disposable to run the organization lifecycle cases instead of recording them as skipped.' >&2
+    exit 1
+  fi
+  if [ ! -f "$orggate_command_log" ]; then
+    echo 'Organization license-gate probe failed before apply; no license diagnostic was captured.' >&2
+    exit 1
+  fi
+  if ! python3 - "$orggate_command_log" <<'PY'
+from pathlib import Path
+import re,sys
+text=Path(sys.argv[1]).read_text(encoding="utf-8",errors="replace")
+if len(text.encode()) > 2*1024*1024: raise SystemExit(1)
+normalized=re.sub(r"\s+"," ",text)
+titles=[line.strip() for line in text.splitlines() if line.strip().startswith("Error:")]
+if not titles or any(title != "Error: LiteLLM Enterprise License Required" for title in titles): raise SystemExit(1)
+if "LiteLLM returned HTTP 403" not in normalized: raise SystemExit(1)
+# A gated create must not commit anything that the bounded cleanup would need to remove.
+if "Creation complete" in text: raise SystemExit(1)
+PY
+  then
+    echo 'Organization license-gate probe failed with something other than exactly the LiteLLM Enterprise License Required diagnostic.' >&2
+    exit 1
+  fi
+  for orggate_resource in litellm_organization litellm_organization_member; do
+    emit_controlled_record resource_coverage "$orggate_resource" skipped enterprise-license-required '' "$orggate_command_log"
+    emit_controlled_record lifecycle "$orggate_resource" skipped enterprise-license-required '' "$orggate_command_log"
+    emit_controlled_record drift "$orggate_resource" skipped enterprise-license-required '' "$orggate_command_log"
+  done
+  emit_controlled_record data_source litellm_organization skipped enterprise-license-required '' "$orggate_command_log"
+  emit_controlled_record data_source litellm_organizations skipped enterprise-license-required '' "$orggate_command_log"
+}
+
 run_guardrail_external_delete_case() {
   printf '\n===== ACCEPTANCE: guardrail_external_delete =====\n'
   SMOKE_ASSEMBLY_ONLY=$ASSEMBLY_ONLY SMOKE_SUPPLEMENTAL_ONLY=1 \
@@ -161,8 +210,12 @@ run_guardrail_external_delete_case() {
     sh "$REPO_ROOT/internal_testing/smoke.sh" "$REPO_ROOT" resources guardrail_safe_read_minimal.tf
 }
 
-# Explicit coverage table. litellm_project is enterprise-only and intentionally
-# excluded; every other registered resource has a lifecycle case here.
+# Explicit coverage table. litellm_project requires a LiteLLM Enterprise license
+# and is intentionally excluded. litellm_organization and
+# litellm_organization_member require one from LiteLLM 1.102.0: they run only
+# with LITELLM_ENTERPRISE_CONFIRM=licensed-disposable (and are always assembled
+# in assembly-only mode); otherwise a license-gate probe replaces them. Every
+# other registered resource has a lifecycle case here.
 run_case access_group resources model_access_group.tf,access_group_minimal.tf datasources access_group.tf,access_groups_list.tf
 run_access_group_external_delete_case
 run_case agent resources mcp_server_minimal.tf,agent_minimal.tf,agent_bedrock_agentcore.tf,agent_mcp_tool_permissions.tf,agent_structured_advanced.tf datasources agent.tf,agents_list.tf,agent_structured_parity.tf
@@ -231,8 +284,12 @@ rm -f "$mcp_evidence"
 run_case model resources model_minimal.tf datasources model.tf,models_list.tf
 run_case model_semantic_json resources model_semantic_json.tf
 run_case model_params_semantic_json resources model_params_semantic_json.tf
-run_case organization resources organization_minimal.tf,organization_semantic_json.tf datasources organization.tf,organizations_list.tf
-run_case organization_member resources organization_minimal.tf,organization_member_minimal.tf
+if [ "$ASSEMBLY_ONLY" = "1" ] || [ "${LITELLM_ENTERPRISE_CONFIRM:-}" = "licensed-disposable" ]; then
+  run_case organization resources organization_minimal.tf,organization_semantic_json.tf datasources organization.tf,organizations_list.tf
+  run_case organization_member resources organization_minimal.tf,organization_member_minimal.tf
+else
+  run_organization_license_gate_probe
+fi
 run_case prompt resources prompt_minimal.tf datasources prompt.tf,prompts_list.tf
 run_case search_tool resources search_tool_minimal.tf datasources search_tool.tf,search_tools_list.tf
 run_search_tool_external_delete_case
@@ -251,5 +308,9 @@ run_case vector_store resources vector_store_minimal.tf datasources vector_store
 if [ "$ASSEMBLY_ONLY" = "1" ]; then
   printf '\nAcceptance assembly passed: every matrix case produced collision-free, parseable HCL.\n'
 else
-  printf '\nAcceptance passed: 23/24 resources (project is enterprise-only).\n'
+  if [ "${LITELLM_ENTERPRISE_CONFIRM:-}" = "licensed-disposable" ]; then
+    printf '\nAcceptance passed: 23/24 resources (project requires a LiteLLM Enterprise license and is not in this matrix).\n'
+  else
+    printf '\nAcceptance passed: 21/24 resources (organization, organization_member, and project require a LiteLLM Enterprise license; the organization license gate was verified).\n'
+  fi
 fi
