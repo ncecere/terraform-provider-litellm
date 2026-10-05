@@ -55,6 +55,8 @@ Refresh, update, delete, and partial recovery always use `team_id` and canonical
 
 ## Read, drift, and budgets
 
+From LiteLLM 1.104.0, a member added without their own limits shares the team's default member budget instead of receiving a copy. An imported member reports that shared budget in `max_budget_in_team` and `budget_duration`, so the values follow later changes to the team default. Configure `max_budget_in_team` explicitly to give the member their own budget.
+
 The resource reads the exact LiteLLM v1.98 `/team/info` roster and membership collections:
 
 - `members_with_roles` is authoritative for membership role and email-to-ID correlation.

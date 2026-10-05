@@ -64,7 +64,7 @@ assigned_key_ids = []
 * `access_model_names` - (Optional) Model names this access group grants access to.
 * `access_mcp_server_ids` - (Optional) MCP server IDs this access group grants access to.
 * `access_agent_ids` - (Optional) Agent IDs this access group grants access to.
-* `assigned_team_ids` - (Optional) Team IDs assigned to this access group.
+* `assigned_team_ids` - (Optional) Team IDs assigned to this access group. From LiteLLM 1.104.0 the API reports this list as computed: the stored team IDs, minus deleted teams, plus every team whose own `access_group_ids` includes this group. Manage a team link from one side only, either here or through `litellm_team.access_group_ids`. If a team links itself while this attribute is configured without it (including `[]`), every plan shows a change that cannot converge. LiteLLM also rejects unknown team IDs with HTTP 400.
 * `assigned_key_ids` - (Optional) Key membership as a Terraform `list(string)`. Prefer `litellm_key.<name>.id`, which uses `sha256:<64-hex>`. Valid bare hashes, prefixed hashes, uppercase hexadecimal digits, and their historical representations remain accepted. Raw API keys and malformed values are rejected without being hashed.
 
 LiteLLM treats key assignment as unordered membership. The provider sends sorted, deduplicated, lowercase bare hashes. When unique normalized membership is unchanged, Terraform preserves the configured or prior list exactly, including order, duplicates, prefix casing, and hexadecimal casing. Real membership drift is exposed as a deterministic sorted list of deduplicated bare hashes. Existing indexing, `concat(...)`, `list(string)` module inputs, state, and imports therefore remain compatible.
