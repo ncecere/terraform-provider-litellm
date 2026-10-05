@@ -308,7 +308,9 @@ func (r *ModelResource) Schema(ctx context.Context, req resource.SchemaRequest, 
 					"(supports_vision, supports_function_calling, supports_reasoning, …) for models " +
 					"missing from LiteLLM's model cost map. Values are strings and are converted to " +
 					"native JSON types (int, float, bool, JSON) for the API. Only keys configured " +
-					"here are managed; fields LiteLLM derives from its model cost map are left alone.",
+					"here are managed; fields LiteLLM derives from its model cost map are left alone. " +
+					"Pricing keys are rejected: LiteLLM 1.102.0 and later ignore pricing in model_info, so set " +
+					"custom prices with the dedicated cost attributes or additional_litellm_params.",
 				Optional:    true,
 				Computed:    true,
 				ElementType: types.StringType,
@@ -321,12 +323,13 @@ func (r *ModelResource) Schema(ctx context.Context, req resource.SchemaRequest, 
 				},
 			},
 			"additional_model_info_json": schema.StringAttribute{
-				Description: "Sensitive lossless JSON-object sibling for heterogeneous model_info fields. Keys cannot overlap additional_model_info or fields managed by dedicated attributes. Any change replaces the model so LiteLLM cannot retain removed nested values.",
+				Description: "Sensitive lossless JSON-object sibling for heterogeneous model_info fields. Keys cannot overlap additional_model_info or fields managed by dedicated attributes, and pricing keys are rejected because LiteLLM 1.102.0 and later ignore pricing in model_info. Any change replaces the model so LiteLLM cannot retain removed nested values.",
 				Optional:    true,
 				Computed:    true,
 				Sensitive:   true,
 				Validators: []validator.String{
 					modelSemanticDictionaryValidator{},
+					modelInfoJSONPricingKeyValidator{},
 				},
 			},
 			"additional_model_info_configured": schema.BoolAttribute{

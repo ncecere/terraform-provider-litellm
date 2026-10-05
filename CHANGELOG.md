@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - An organization or project `max_budget` of `0` now means zero allowance instead of unlimited. Omit the attribute for an unlimited budget.
   - stdio MCP servers are disabled unless the proxy process sets `LITELLM_ENABLE_MCP_STDIO=true`; creating or switching a `litellm_mcp_server` to stdio otherwise fails.
   - Team-admin (non proxy-admin) keys can no longer update teams or projects unless `general_settings.team_admin_editable_team_fields` allows it. Manage `litellm_team` and `litellm_project` with a proxy-admin or org-admin key.
+  - Pricing in `model_info` is ignored from LiteLLM 1.102.0. `litellm_model` now rejects pricing keys in `additional_model_info` and `additional_model_info_json` at plan time. Prices already stored in `model_info` keep applying after the LiteLLM upgrade, but move them to the dedicated cost attributes or `additional_litellm_params` (see the `litellm_model` "Custom pricing" documentation) before changing them. Dedicated cost attributes are unaffected.
   - When `config.yaml` declares a setting, runtime writes to that setting are refused, so manage router fallbacks either in the file or through `litellm_fallback`, not both.
 
 ### Security
@@ -25,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`litellm_jwt_key_mapping` issuer scope**: Add optional `jwt_issuer` to the resource and computed `jwt_issuer` to both data sources. LiteLLM 1.104.0 scopes mappings by issuer plus claim pair; changing a configured issuer replaces the mapping with the same `key_wo` safeguards as a claim change, an omitted issuer preserves the existing scope, and the global scope is null.
 
 ### Fixed
+- **`litellm_model` custom pricing in `model_info`**: LiteLLM 1.102.0 and later silently drop pricing sent in `model_info`, so a price in `additional_model_info` or `additional_model_info_json` was not saved, spend fell back to the catalog price, and apply then failed with "Provider produced inconsistent result" and a tainted model. Both attributes now reject LiteLLM's pricing fields, tiered `*_above_<N>_tokens` rates, and the generated `key`/`pricing_overrides` fields at plan time, before any request. Set prices with the dedicated cost attributes or `additional_litellm_params`; the model documentation describes the one-time migration for models whose prices were stored in `model_info` on LiteLLM 1.101 or earlier. A contract test derives the pricing field set from the pinned OpenAPI so a future LiteLLM pin cannot drift silently.
 - **`litellm_jwt_key_mapping` on LiteLLM 1.104.0**: Every create, read, import, and data-source read failed with "Invalid API Response" because LiteLLM 1.104.0 returns a new `jwt_issuer` field that the strict decoder rejected. Responses with and without the field are now accepted, and issuer identity is verified on every read-back. Deleting a mapping's virtual key now also deletes the mapping upstream; the resource documentation describes how to re-create both together.
 
 ### Changed

@@ -305,6 +305,7 @@ The following arguments are supported:
   * Adding keys or changing values uses an in-place model update.
   * **Removing a key, clearing the map, or removing the argument replaces the model.** LiteLLM merges `model_info` during updates, so replacement ensures removed capability metadata is not silently retained.
   * LiteLLM fields managed by dedicated resource arguments (`base_model`, `tier`, `mode`, `team_id`, `access_groups`), internal identity fields, and system-managed audit fields are rejected as reserved keys.
+  * Pricing keys are rejected before any request. LiteLLM 1.102.0 and later ignore pricing in `model_info`; see [Custom pricing](#custom-pricing).
   * Imported and cost-map-derived metadata is not adopted into this map. Set `additional_model_info` explicitly when Terraform should manage selected fields.
 
   ```hcl
@@ -325,6 +326,7 @@ The following arguments are supported:
 
   * The root must be one non-null JSON object with unique members. Nested objects, arrays, strings, booleans, numbers, and nested JSON null values are preserved without provider-side `float64` or string coercion. LiteLLM v1.98 omits arbitrary top-level null members when serializing `ModelInfo`, so the provider rejects them before any request; place a null inside a nested object or array when its presence is significant. Integers remain exact. Decimal/exponent values must survive LiteLLM v1.98's Python-float request/persistence round trip exactly; lossy values such as `1.0000000000000001` are rejected before any request instead of causing perpetual drift.
   * Top-level keys must be disjoint from `additional_model_info` and from fields managed by dedicated model attributes, including LiteLLM's mirrored `input_cost_per_token` and `output_cost_per_token` fields. Overlap is rejected before any request, without including keys or values in diagnostics.
+  * Top-level pricing keys are rejected before any request, as for `additional_model_info`; see [Custom pricing](#custom-pricing).
   * Terraform manages only recursively owned JSON paths. Cost-map-derived and other API-only `model_info` fields are not adopted on read or import.
   * `{}` is an explicitly managed empty view and differs from an omitted attribute. Imports and states upgraded from an earlier provider keep this attribute null and unmanaged.
   * Any semantic value change, nested removal, clear, or removal of the attribute replaces the model. Formatting-only changes do not mutate the API, and semantically equal readback preserves the configured spelling.
@@ -365,6 +367,39 @@ The following arguments are supported:
 * `aws_session_name` - (Optional) string (Sensitive). AWS session name for cross-account access scenarios.
 
 * `aws_role_name` - (Optional) string (Sensitive). AWS IAM role name for cross-account access scenarios.
+
+## Custom pricing
+
+Set a deployment's own prices in `litellm_params`, never in `model_info`:
+
+* the dedicated cost arguments (`input_cost_per_million_tokens`, `output_cost_per_million_tokens`, `input_cost_per_pixel`, `output_cost_per_pixel`, `input_cost_per_second`, `output_cost_per_second`), or
+* any other LiteLLM pricing field, such as `cache_read_input_token_cost` or `input_cost_per_token_above_200k_tokens`, in `additional_litellm_params` or `additional_litellm_params_json`.
+
+```hcl
+resource "litellm_model" "priced" {
+  model_name                     = "gpt-4o-mini-internal"
+  custom_llm_provider            = "openai"
+  base_model                     = "gpt-4o-mini"
+  input_cost_per_million_tokens  = 0.15
+  output_cost_per_million_tokens = 0.60
+
+  additional_litellm_params = {
+    cache_read_input_token_cost = "0.000000075"
+  }
+}
+```
+
+Changing any price, or removing a token price, is an in-place update; removing a token price falls back to LiteLLM's catalog price for `base_model`. Removing a per-pixel or per-second price replaces the model (see [Clear and Replacement Behavior](#clear-and-replacement-behavior)).
+
+LiteLLM 1.102.0 and later silently drop pricing sent in `model_info`: the model is saved without the price, spend is billed at the catalog price, and Terraform reports an inconsistent result. The provider therefore rejects pricing keys in `additional_model_info` and `additional_model_info_json` at plan time. A key is treated as pricing when it is one of LiteLLM's 107 pricing fields, a tiered `*_above_<N>_tokens` rate, or the LiteLLM-generated `key` or `pricing_overrides` fields.
+
+### Migrating pricing out of `model_info`
+
+Models created on LiteLLM 1.101 or earlier may store prices in `model_info`. After upgrading LiteLLM those stored prices still apply, but they cannot be changed, and a replacement would recreate the model without them. Move each pricing key to `litellm_params`:
+
+1. Move each pricing key from `additional_model_info` (or `additional_model_info_json`) to the matching dedicated cost argument or to `additional_litellm_params`. Keep the same value; per-million arguments use the per-token value multiplied by 1,000,000.
+2. Add `lifecycle { create_before_destroy = true }` to the model. Removing a key from `additional_model_info` replaces the model, and creating the replacement first keeps a deployment serving the model name, so LiteLLM 1.104.0 does not remove the name from access groups when the old deployment is deleted.
+3. Run `terraform apply`. The replacement stores the price in `litellm_params`, which `/model/info` lists in `model_info.pricing_overrides`.
 
 ## Clear and Replacement Behavior
 
