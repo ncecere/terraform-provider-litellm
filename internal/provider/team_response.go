@@ -148,6 +148,7 @@ func projectTeamInfoResponseWithSemantic(ctx context.Context, prior TeamResource
 		prior  types.Int64
 	}{
 		{"tpm_limit", &next.TPMLimit, prior.TPMLimit},
+		{"tpd_limit", &next.TPDLimit, prior.TPDLimit},
 		{"rpm_limit", &next.RPMLimit, prior.RPMLimit},
 	} {
 		owned := imported || knownTeamInt64(field.prior)

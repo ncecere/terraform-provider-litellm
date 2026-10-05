@@ -67,6 +67,7 @@ The following attributes are exported:
   * `max_budget` - Maximum budget.
   * `spend` - Current spend.
   * `tpm_limit` - Tokens per minute limit.
+  * `tpd_limit` - Tokens per day limit (LiteLLM 1.104.0 and later).
   * `rpm_limit` - Requests per minute limit.
   * `blocked` - Whether the team is blocked.
 

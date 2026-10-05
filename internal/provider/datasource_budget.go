@@ -26,6 +26,7 @@ type BudgetDataSourceModel struct {
 	SoftBudget          types.Float64 `tfsdk:"soft_budget"`
 	MaxParallelRequests types.Int64   `tfsdk:"max_parallel_requests"`
 	TPMLimit            types.Int64   `tfsdk:"tpm_limit"`
+	TPDLimit            types.Int64   `tfsdk:"tpd_limit"`
 	RPMLimit            types.Int64   `tfsdk:"rpm_limit"`
 	BudgetDuration      types.String  `tfsdk:"budget_duration"`
 	BudgetResetAt       types.String  `tfsdk:"budget_reset_at"`
@@ -62,6 +63,10 @@ func (d *BudgetDataSource) Schema(ctx context.Context, req datasource.SchemaRequ
 			},
 			"tpm_limit": schema.Int64Attribute{
 				Description: "Max tokens per minute.",
+				Computed:    true,
+			},
+			"tpd_limit": schema.Int64Attribute{
+				Description: "Max tokens per day (LiteLLM 1.104.0 and later).",
 				Computed:    true,
 			},
 			"rpm_limit": schema.Int64Attribute{
@@ -150,6 +155,10 @@ func (d *BudgetDataSource) Read(ctx context.Context, req datasource.ReadRequest,
 		return
 	}
 	if data.TPMLimit, err = dataSourceNullableInt64At(result, "tpm_limit"); err != nil {
+		resp.Diagnostics.AddError("Invalid API Response", err.Error())
+		return
+	}
+	if data.TPDLimit, err = dataSourceNullableInt64At(result, "tpd_limit"); err != nil {
 		resp.Diagnostics.AddError("Invalid API Response", err.Error())
 		return
 	}

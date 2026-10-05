@@ -46,6 +46,7 @@ Exactly one lookup argument is required:
 * `spend` - Current spend for this key.
 * `max_parallel_requests` - Maximum parallel requests allowed.
 * `tpm_limit` - Tokens per minute limit.
+* `tpd_limit` - Tokens per day limit (LiteLLM 1.104.0 and later).
 * `rpm_limit` - Requests per minute limit.
 * `budget_duration` - Budget reset duration.
 * `soft_budget` - Soft budget limit for warnings.

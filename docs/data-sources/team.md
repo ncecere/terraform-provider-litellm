@@ -41,6 +41,7 @@ resource "litellm_key" "team_key" {
 * `max_budget` - Maximum budget for the team.
 * `spend` - Current spend for the team.
 * `tpm_limit` - Tokens per minute limit.
+* `tpd_limit` - Tokens per day limit (LiteLLM 1.104.0 and later).
 * `rpm_limit` - Requests per minute limit.
 * `budget_duration` - Budget reset duration.
 * `metadata` - Map of metadata for the team.

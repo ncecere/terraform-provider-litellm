@@ -55,6 +55,7 @@ type ProjectResourceModel struct {
 	BudgetDuration      types.String  `tfsdk:"budget_duration"`
 	BudgetID            types.String  `tfsdk:"budget_id"`
 	TPMLimit            types.Int64   `tfsdk:"tpm_limit"`
+	TPDLimit            types.Int64   `tfsdk:"tpd_limit"`
 	RPMLimit            types.Int64   `tfsdk:"rpm_limit"`
 	MaxParallelRequests types.Int64   `tfsdk:"max_parallel_requests"`
 	ModelMaxBudget      types.Map     `tfsdk:"model_max_budget"`
@@ -89,6 +90,7 @@ func (r *ProjectResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 			"budget_duration":       schema.StringAttribute{Description: "Budget reset duration (for example, '30d' or '1h').", Optional: true},
 			"budget_id":             schema.StringAttribute{Description: "Budget ID associated with this project. Reassociation is not safely supported by LiteLLM v1.98.", Optional: true, Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
 			"tpm_limit":             schema.Int64Attribute{Description: "Tokens per minute limit.", Optional: true},
+			"tpd_limit":             schema.Int64Attribute{Description: "Tokens per day limit. Requires LiteLLM 1.104.0 or later. Removing it clears the limit.", Optional: true},
 			"rpm_limit":             schema.Int64Attribute{Description: "Requests per minute limit.", Optional: true},
 			"max_parallel_requests": schema.Int64Attribute{Description: "Maximum parallel requests allowed.", Optional: true},
 			"model_max_budget":      schema.MapAttribute{Description: "Legacy per-model budget map shape retained for schema compatibility.", Optional: true, Computed: true, ElementType: types.Float64Type, Validators: []validator.Map{mapvalidator.NoNullValues()}},
@@ -812,6 +814,7 @@ func (r *ProjectResource) buildProjectCreateRequest(ctx context.Context, data *P
 	addKnownFloat(request, "max_budget", data.MaxBudget)
 	addKnownFloat(request, "soft_budget", data.SoftBudget)
 	addKnownInt(request, "tpm_limit", data.TPMLimit)
+	addKnownInt(request, "tpd_limit", data.TPDLimit)
 	addKnownInt(request, "rpm_limit", data.RPMLimit)
 	addKnownInt(request, "max_parallel_requests", data.MaxParallelRequests)
 	if !data.ModelMaxBudget.IsNull() && !data.ModelMaxBudget.IsUnknown() {
@@ -887,6 +890,7 @@ func buildProjectBudgetUpdateRequest(plan, state *ProjectResourceModel) (map[str
 	addChangedFloat(request, "max_budget", plan.MaxBudget, state.MaxBudget)
 	addChangedFloat(request, "soft_budget", plan.SoftBudget, state.SoftBudget)
 	addChangedInt(request, "tpm_limit", plan.TPMLimit, state.TPMLimit)
+	addChangedInt(request, "tpd_limit", plan.TPDLimit, state.TPDLimit)
 	addChangedInt(request, "rpm_limit", plan.RPMLimit, state.RPMLimit)
 	addChangedInt(request, "max_parallel_requests", plan.MaxParallelRequests, state.MaxParallelRequests)
 	if !plan.BudgetDuration.IsUnknown() && !plan.BudgetDuration.Equal(state.BudgetDuration) {
@@ -1199,7 +1203,7 @@ func (r *ProjectResource) readProjectWithOwnership(ctx context.Context, data *Pr
 		name   string
 		target *types.Int64
 	}{
-		{"tpm_limit", &data.TPMLimit}, {"rpm_limit", &data.RPMLimit}, {"max_parallel_requests", &data.MaxParallelRequests},
+		{"tpm_limit", &data.TPMLimit}, {"tpd_limit", &data.TPDLimit}, {"rpm_limit", &data.RPMLimit}, {"max_parallel_requests", &data.MaxParallelRequests},
 	} {
 		owned := imported || knownInt(*field.target)
 		if err := updateBudgetInt64(field.target, table, owned, owned, field.name); err != nil {
@@ -1228,6 +1232,9 @@ func (r *ProjectResource) readProjectWithOwnership(ctx context.Context, data *Pr
 	}
 	if ownership.pendingBudget["tpm_limit"] {
 		data.TPMLimit = original.TPMLimit
+	}
+	if ownership.pendingBudget["tpd_limit"] {
+		data.TPDLimit = original.TPDLimit
 	}
 	if ownership.pendingBudget["rpm_limit"] {
 		data.RPMLimit = original.RPMLimit

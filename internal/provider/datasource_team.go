@@ -30,6 +30,7 @@ type TeamDataSourceModel struct {
 	MaxBudget             types.Float64 `tfsdk:"max_budget"`
 	Spend                 types.Float64 `tfsdk:"spend"`
 	TPMLimit              types.Int64   `tfsdk:"tpm_limit"`
+	TPDLimit              types.Int64   `tfsdk:"tpd_limit"`
 	RPMLimit              types.Int64   `tfsdk:"rpm_limit"`
 	BudgetDuration        types.String  `tfsdk:"budget_duration"`
 	Metadata              types.Map     `tfsdk:"metadata"`
@@ -83,6 +84,7 @@ func (d *TeamDataSource) Schema(ctx context.Context, req datasource.SchemaReques
 				Description: "Tokens per minute limit for the team.",
 				Computed:    true,
 			},
+			"tpd_limit": schema.Int64Attribute{Description: "Tokens per day limit (LiteLLM 1.104.0 and later).", Computed: true},
 			"rpm_limit": schema.Int64Attribute{
 				Description: "Requests per minute limit for the team.",
 				Computed:    true,
@@ -180,6 +182,7 @@ func projectTeamDataSourceInfo(result map[string]interface{}, expectedTeamID str
 		MaxBudget:             types.Float64Null(),
 		Spend:                 types.Float64Null(),
 		TPMLimit:              types.Int64Null(),
+		TPDLimit:              types.Int64Null(),
 		RPMLimit:              types.Int64Null(),
 		BudgetDuration:        types.StringNull(),
 		Metadata:              types.MapNull(types.StringType),
@@ -247,6 +250,7 @@ func projectTeamDataSourceInfo(result map[string]interface{}, expectedTeamID str
 		target *types.Int64
 	}{
 		{"tpm_limit", &next.TPMLimit},
+		{"tpd_limit", &next.TPDLimit},
 		{"rpm_limit", &next.RPMLimit},
 	} {
 		value, fieldErr := dataSourceNullableInt64At(teamInfo, field.name)

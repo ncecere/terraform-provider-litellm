@@ -33,6 +33,7 @@ type BudgetResourceModel struct {
 	SoftBudget          types.Float64 `tfsdk:"soft_budget"`
 	MaxParallelRequests types.Int64   `tfsdk:"max_parallel_requests"`
 	TPMLimit            types.Int64   `tfsdk:"tpm_limit"`
+	TPDLimit            types.Int64   `tfsdk:"tpd_limit"`
 	RPMLimit            types.Int64   `tfsdk:"rpm_limit"`
 	BudgetDuration      types.String  `tfsdk:"budget_duration"`
 	ModelMaxBudget      types.String  `tfsdk:"model_max_budget"`
@@ -76,6 +77,10 @@ func (r *BudgetResource) Schema(ctx context.Context, req resource.SchemaRequest,
 			},
 			"tpm_limit": schema.Int64Attribute{
 				Description: "Max tokens per minute allowed for this budget.",
+				Optional:    true,
+			},
+			"tpd_limit": schema.Int64Attribute{
+				Description: "Max tokens per day allowed for this budget. Requires LiteLLM 1.104.0 or later.",
 				Optional:    true,
 			},
 			"rpm_limit": schema.Int64Attribute{
@@ -298,6 +303,7 @@ func applyBudgetClears(request map[string]interface{}, planned, prior BudgetReso
 		{"soft_budget", planned.SoftBudget, prior.SoftBudget},
 		{"max_parallel_requests", planned.MaxParallelRequests, prior.MaxParallelRequests},
 		{"tpm_limit", planned.TPMLimit, prior.TPMLimit},
+		{"tpd_limit", planned.TPDLimit, prior.TPDLimit},
 		{"rpm_limit", planned.RPMLimit, prior.RPMLimit},
 	} {
 		if field.planned.IsNull() && !field.prior.IsNull() && !field.prior.IsUnknown() {
@@ -336,6 +342,9 @@ func (r *BudgetResource) buildBudgetRequest(ctx context.Context, data *BudgetRes
 	}
 	if !data.TPMLimit.IsNull() && !data.TPMLimit.IsUnknown() {
 		budgetReq["tpm_limit"] = data.TPMLimit.ValueInt64()
+	}
+	if !data.TPDLimit.IsNull() && !data.TPDLimit.IsUnknown() {
+		budgetReq["tpd_limit"] = data.TPDLimit.ValueInt64()
 	}
 	if !data.RPMLimit.IsNull() && !data.RPMLimit.IsUnknown() {
 		budgetReq["rpm_limit"] = data.RPMLimit.ValueInt64()
@@ -406,6 +415,7 @@ func (r *BudgetResource) readBudgetWithNumericOwnership(ctx context.Context, dat
 	}{
 		{"max_parallel_requests", &data.MaxParallelRequests},
 		{"tpm_limit", &data.TPMLimit},
+		{"tpd_limit", &data.TPDLimit},
 		{"rpm_limit", &data.RPMLimit},
 	} {
 		owned := imported || (!field.target.IsNull() && !field.target.IsUnknown())

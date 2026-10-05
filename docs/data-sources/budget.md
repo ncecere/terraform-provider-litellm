@@ -37,6 +37,7 @@ resource "litellm_team" "new_team" {
 * `soft_budget` - Soft budget limit for alerts.
 * `budget_duration` - Budget reset duration (e.g., "daily", "weekly", "monthly").
 * `tpm_limit` - Tokens per minute limit.
+* `tpd_limit` - Tokens per day limit (LiteLLM 1.104.0 and later).
 * `rpm_limit` - Requests per minute limit.
 * `max_parallel_requests` - Maximum parallel requests allowed.
 * `model_max_budget` - Canonical JSON object string of per-model `BudgetConfig` values. Empty `{}` remains distinct from null; malformed or wrong-shaped API values fail the read.

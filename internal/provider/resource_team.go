@@ -53,6 +53,7 @@ type TeamResourceModel struct {
 	Metadata              types.Map     `tfsdk:"metadata"`
 	MetadataJSON          types.String  `tfsdk:"metadata_json"`
 	TPMLimit              types.Int64   `tfsdk:"tpm_limit"`
+	TPDLimit              types.Int64   `tfsdk:"tpd_limit"`
 	RPMLimit              types.Int64   `tfsdk:"rpm_limit"`
 	TPMLimitType          types.String  `tfsdk:"tpm_limit_type"`
 	RPMLimitType          types.String  `tfsdk:"rpm_limit_type"`
@@ -85,6 +86,7 @@ func teamChangedFieldMismatch(desired, prior, actual TeamResourceModel) (string,
 		{"metadata", desired.Metadata, prior.Metadata, actual.Metadata},
 		{"metadata_json", desired.MetadataJSON, prior.MetadataJSON, actual.MetadataJSON},
 		{"tpm_limit", desired.TPMLimit, prior.TPMLimit, actual.TPMLimit},
+		{"tpd_limit", desired.TPDLimit, prior.TPDLimit, actual.TPDLimit},
 		{"rpm_limit", desired.RPMLimit, prior.RPMLimit, actual.RPMLimit},
 		{"max_budget", desired.MaxBudget, prior.MaxBudget, actual.MaxBudget},
 		{"budget_duration", desired.BudgetDuration, prior.BudgetDuration, actual.BudgetDuration},
@@ -272,6 +274,10 @@ func (r *TeamResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 			},
 			"tpm_limit": schema.Int64Attribute{
 				Description: "Tokens per minute limit for the team.",
+				Optional:    true,
+			},
+			"tpd_limit": schema.Int64Attribute{
+				Description: "Tokens per day limit for the team. Requires LiteLLM 1.104.0 or later. Removing it clears the limit.",
 				Optional:    true,
 			},
 			"rpm_limit": schema.Int64Attribute{
@@ -1017,6 +1023,9 @@ func (r *TeamResource) buildTeamRequest(ctx context.Context, data *TeamResourceM
 	if !data.TPMLimit.IsNull() && !data.TPMLimit.IsUnknown() {
 		teamReq["tpm_limit"] = data.TPMLimit.ValueInt64()
 	}
+	if !data.TPDLimit.IsNull() && !data.TPDLimit.IsUnknown() {
+		teamReq["tpd_limit"] = data.TPDLimit.ValueInt64()
+	}
 	if !data.RPMLimit.IsNull() && !data.RPMLimit.IsUnknown() {
 		teamReq["rpm_limit"] = data.RPMLimit.ValueInt64()
 	}
@@ -1175,6 +1184,9 @@ func applyTeamNullableClears(teamReq map[string]interface{}, state, plan *TeamRe
 	}
 	if !state.TPMLimit.IsNull() && plan.TPMLimit.IsNull() {
 		teamReq["tpm_limit"] = nil
+	}
+	if !state.TPDLimit.IsNull() && plan.TPDLimit.IsNull() {
+		teamReq["tpd_limit"] = nil
 	}
 	if !state.RPMLimit.IsNull() && plan.RPMLimit.IsNull() {
 		teamReq["rpm_limit"] = nil

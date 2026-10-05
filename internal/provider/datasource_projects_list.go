@@ -33,6 +33,7 @@ type ProjectListItemModel struct {
 	SoftBudget          types.Float64 `tfsdk:"soft_budget"`
 	BudgetDuration      types.String  `tfsdk:"budget_duration"`
 	TPMLimit            types.Int64   `tfsdk:"tpm_limit"`
+	TPDLimit            types.Int64   `tfsdk:"tpd_limit"`
 	RPMLimit            types.Int64   `tfsdk:"rpm_limit"`
 	MaxParallelRequests types.Int64   `tfsdk:"max_parallel_requests"`
 	ModelRPMLimit       types.Map     `tfsdk:"model_rpm_limit"`
@@ -60,6 +61,7 @@ func (d *ProjectsListDataSource) Schema(_ context.Context, _ datasource.SchemaRe
 		"soft_budget":           schema.Float64Attribute{Description: "Soft budget alert threshold.", Computed: true},
 		"budget_duration":       schema.StringAttribute{Description: "Budget reset duration.", Computed: true},
 		"tpm_limit":             schema.Int64Attribute{Description: "Tokens per minute limit.", Computed: true},
+		"tpd_limit":             schema.Int64Attribute{Description: "Tokens per day limit (LiteLLM 1.104.0 and later).", Computed: true},
 		"rpm_limit":             schema.Int64Attribute{Description: "Requests per minute limit.", Computed: true},
 		"max_parallel_requests": schema.Int64Attribute{Description: "Maximum parallel requests.", Computed: true},
 		"model_rpm_limit":       schema.MapAttribute{Description: "Per-model RPM limits.", Computed: true, ElementType: types.Int64Type},
@@ -170,7 +172,7 @@ func (d *ProjectsListDataSource) Read(ctx context.Context, req datasource.ReadRe
 			name   string
 			target *types.Int64
 		}{
-			{"tpm_limit", &project.TPMLimit}, {"rpm_limit", &project.RPMLimit}, {"max_parallel_requests", &project.MaxParallelRequests},
+			{"tpm_limit", &project.TPMLimit}, {"tpd_limit", &project.TPDLimit}, {"rpm_limit", &project.RPMLimit}, {"max_parallel_requests", &project.MaxParallelRequests},
 		} {
 			if err := updateBudgetInt64(field.target, table, true, true, field.name); err != nil {
 				resp.Diagnostics.AddError("Invalid API Response", err.Error())

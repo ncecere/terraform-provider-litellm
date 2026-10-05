@@ -40,6 +40,7 @@ type KeyDataSourceModel struct {
 	ProjectID           types.String  `tfsdk:"project_id"`
 	MaxParallelRequests types.Int64   `tfsdk:"max_parallel_requests"`
 	TPMLimit            types.Int64   `tfsdk:"tpm_limit"`
+	TPDLimit            types.Int64   `tfsdk:"tpd_limit"`
 	RPMLimit            types.Int64   `tfsdk:"rpm_limit"`
 	BudgetDuration      types.String  `tfsdk:"budget_duration"`
 	SoftBudget          types.Float64 `tfsdk:"soft_budget"`
@@ -119,6 +120,7 @@ func (d *KeyDataSource) Schema(ctx context.Context, req datasource.SchemaRequest
 				Description: "Tokens per minute limit.",
 				Computed:    true,
 			},
+			"tpd_limit": schema.Int64Attribute{Description: "Tokens per day limit (LiteLLM 1.104.0 and later).", Computed: true},
 			"rpm_limit": schema.Int64Attribute{
 				Description: "Requests per minute limit.",
 				Computed:    true,
@@ -276,6 +278,9 @@ func projectKeyDataSourceAPIObject(data KeyDataSourceModel, result map[string]in
 		return KeyDataSourceModel{}, err
 	}
 	if complete.TPMLimit, err = dataSourceRoleRedactedNullableInt64At(info, "tpm_limit"); err != nil {
+		return KeyDataSourceModel{}, err
+	}
+	if complete.TPDLimit, err = dataSourceRoleRedactedNullableInt64At(info, "tpd_limit"); err != nil {
 		return KeyDataSourceModel{}, err
 	}
 	if complete.RPMLimit, err = dataSourceRoleRedactedNullableInt64At(info, "rpm_limit"); err != nil {

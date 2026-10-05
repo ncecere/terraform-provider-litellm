@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/mapvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/resourcevalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
@@ -148,6 +149,7 @@ type KeyResourceModel struct {
 	Metadata                 types.Map     `tfsdk:"metadata"`
 	MetadataJSON             types.String  `tfsdk:"metadata_json"`
 	TPMLimit                 types.Int64   `tfsdk:"tpm_limit"`
+	TPDLimit                 types.Int64   `tfsdk:"tpd_limit"`
 	RPMLimit                 types.Int64   `tfsdk:"rpm_limit"`
 	TPMLimitType             types.String  `tfsdk:"tpm_limit_type"`
 	RPMLimitType             types.String  `tfsdk:"rpm_limit_type"`
@@ -296,6 +298,11 @@ func (r *KeyResource) Schema(ctx context.Context, req resource.SchemaRequest, re
 				Description: "Tokens per minute limit.",
 				Optional:    true,
 				Computed:    true,
+			},
+			"tpd_limit": schema.Int64Attribute{
+				Description: "Tokens per day limit. Requires LiteLLM 1.104.0 or later. Removing it clears the limit.",
+				Optional:    true,
+				Validators:  []validator.Int64{int64validator.AtLeast(0)},
 			},
 			"rpm_limit": schema.Int64Attribute{
 				Description: "Requests per minute limit.",
@@ -1304,6 +1311,9 @@ func (r *KeyResource) buildKeyRequest(ctx context.Context, data *KeyResourceMode
 	if !data.MaxParallelRequests.IsNull() && !data.MaxParallelRequests.IsUnknown() {
 		keyReq["max_parallel_requests"] = data.MaxParallelRequests.ValueInt64()
 	}
+	if !data.TPDLimit.IsNull() && !data.TPDLimit.IsUnknown() {
+		keyReq["tpd_limit"] = data.TPDLimit.ValueInt64()
+	}
 	if !data.TPMLimit.IsNull() && !data.TPMLimit.IsUnknown() {
 		keyReq["tpm_limit"] = data.TPMLimit.ValueInt64()
 	}
@@ -1430,6 +1440,9 @@ func keyProjectAssignmentChanges(configured, prior types.String) bool {
 //   - soft_budget is sent only when it changes, because LiteLLM writes it to
 //     the key's budget row, which other keys may share through budget_id.
 func applyKeyProjectAndSoftBudgetUpdateSemantics(updateReq map[string]interface{}, planned, prior KeyResourceModel) {
+	if planned.TPDLimit.IsNull() && !prior.TPDLimit.IsNull() && !prior.TPDLimit.IsUnknown() {
+		updateReq["tpd_limit"] = nil
+	}
 	if planned.ProjectID.IsNull() && !prior.ProjectID.IsNull() && !prior.ProjectID.IsUnknown() {
 		updateReq["project_id"] = nil
 	}
@@ -1683,6 +1696,7 @@ func (r *KeyResource) readKeyWithTransport(ctx context.Context, data *KeyResourc
 		target *types.Int64
 	}{
 		{"tpm_limit", &data.TPMLimit},
+		{"tpd_limit", &data.TPDLimit},
 		{"rpm_limit", &data.RPMLimit},
 		{"max_parallel_requests", &data.MaxParallelRequests},
 	} {

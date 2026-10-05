@@ -268,6 +268,7 @@ The following arguments are supported:
 * `metadata_json` - (Optional, Sensitive) Non-null JSON object for lossless heterogeneous metadata. It is independently recursively owned, cannot overlap `metadata` or dedicated metadata fields, and requires caller-selected `key` or `key_wo` identity on create.
 
 * `tpm_limit` - (Optional) Tokens per minute limit.
+* `tpd_limit` - (Optional) Tokens per day limit. Requires LiteLLM 1.104.0 or later. Removing it clears the limit.
 
 * `rpm_limit` - (Optional) Requests per minute limit.
 
