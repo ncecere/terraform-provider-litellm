@@ -550,31 +550,17 @@ func mcpInfoDataSourceValue(result map[string]interface{}) (types.String, error)
 }
 
 func mcpUpstreamResourceDataSourceValue(result map[string]interface{}) (types.String, error) {
-	raw, present := result["credentials"]
-	if !present || raw == nil {
-		return types.StringNull(), nil
-	}
-
-	var credentials map[string]interface{}
-	switch value := raw.(type) {
-	case map[string]interface{}:
-		credentials = value
-	case map[string]string:
-		credentials = make(map[string]interface{}, len(value))
-		for name, member := range value {
-			credentials[name] = member
-		}
-	default:
+	// LiteLLM 1.104.0 may also project upstream_token_header and the native
+	// scopes list; 1.98.0 projected only upstream_resource. Any other member is
+	// malformed.
+	projection, err := decodeMCPCredentialProjection(result, true)
+	if err != nil {
 		return types.StringNull(), fmt.Errorf("MCP server credentials projection is malformed")
 	}
-	if len(credentials) != 1 {
-		return types.StringNull(), fmt.Errorf("MCP server credentials projection is malformed")
+	if upstreamResource, ok := projection.Strings["upstream_resource"]; ok {
+		return types.StringValue(upstreamResource), nil
 	}
-	upstreamResource, ok := credentials["upstream_resource"].(string)
-	if !ok || upstreamResource == "" {
-		return types.StringNull(), fmt.Errorf("MCP server credentials projection is malformed")
-	}
-	return types.StringValue(upstreamResource), nil
+	return types.StringNull(), nil
 }
 
 func mcpDataSourceTransportValid(transport string) bool {

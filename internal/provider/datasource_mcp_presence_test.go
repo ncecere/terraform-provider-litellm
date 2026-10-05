@@ -124,6 +124,10 @@ func TestProjectMCPServerDataSourceRejectsMalformedShapes(t *testing.T) {
 		"wrong upstream resource type":   {"server_id": "presence-mcp", "transport": "http", "credentials": map[string]interface{}{"upstream_resource": false}},
 		"unexpected credential member":   {"server_id": "presence-mcp", "transport": "http", "credentials": map[string]interface{}{"upstream_resource": "safe", "client_secret": secret}},
 		"only unexpected credential key": {"server_id": "presence-mcp", "transport": "http", "credentials": map[string]interface{}{"client_secret": secret}},
+		"empty scopes list":              {"server_id": "presence-mcp", "transport": "http", "credentials": map[string]interface{}{"scopes": []interface{}{}}},
+		"non-string scope":               {"server_id": "presence-mcp", "transport": "http", "credentials": map[string]interface{}{"scopes": []interface{}{"read", false}}},
+		"scopes as string":               {"server_id": "presence-mcp", "transport": "http", "credentials": map[string]interface{}{"scopes": "read"}},
+		"empty upstream token header":    {"server_id": "presence-mcp", "transport": "http", "credentials": map[string]interface{}{"upstream_token_header": ""}},
 	}
 	for name, response := range tests {
 		t.Run(name, func(t *testing.T) {

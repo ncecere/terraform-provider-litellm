@@ -514,7 +514,7 @@ func (r *MCPServerResource) Schema(ctx context.Context, req resource.SchemaReque
 				Optional:           true,
 			},
 			"oauth_scopes": schema.ListAttribute{
-				Description: "Sensitive write-only OAuth scopes stored natively at credentials.scopes. LiteLLM v1.98 management reads never expose this value.",
+				Description: "Sensitive OAuth scopes stored natively at credentials.scopes. LiteLLM 1.104.0 returns them to full proxy admins and the provider verifies them after each write; older releases and restricted roles never expose them, so configured values are retained through redaction.",
 				Optional:    true,
 				Sensitive:   true,
 				ElementType: types.StringType,
@@ -2377,12 +2377,18 @@ func validateMCPServerResponse(result map[string]interface{}, expectedServerID s
 	if err := validateMCPEnvVarsAPI(result); err != nil {
 		return fmt.Errorf("MCP server response contains a malformed environment-variable collection")
 	}
+	// credentials is a string map except for LiteLLM 1.104.0's native scopes
+	// list. Unknown string members stay tolerated for the resource, which only
+	// reads members it owns.
+	if _, err := decodeMCPCredentialProjection(result, false); err != nil {
+		return fmt.Errorf("MCP server response contains a malformed credentials projection")
+	}
 	return validateMCPServerOptionalResponseFields(
 		result,
 		[]string{"server_name", "url", "spec_path", "alias", "description", "command", "issuer", "authorization_url", "token_url", "registration_url", "token_exchange_endpoint", "audience", "subject_token_type", "token_exchange_profile", "auth_type", "oauth2_flow", "instructions", "byok_api_key_help_url", "source_url", "created_at", "created_by", "updated_at", "updated_by"},
 		[]string{"allow_all_keys", "available_on_public_internet", "delegate_auth_to_upstream", "oauth_passthrough", "dcr_bridge", "is_byok"},
 		[]string{"mcp_access_groups", "args", "allowed_tools", "extra_headers", "byok_description"},
-		[]string{"env", "static_headers", "credentials", "tool_name_to_display_name", "tool_name_to_description"},
+		[]string{"env", "static_headers", "tool_name_to_display_name", "tool_name_to_description"},
 		[]string{"timeout"},
 		[]string{"max_concurrent_requests"},
 	)
@@ -2757,9 +2763,11 @@ func (r *MCPServerResource) readMCPServerResultProjection(ctx context.Context, d
 				priorCredentials[name], changed = remote, true
 			}
 		}
-		if _, configured := priorCredentials["upstream_resource"]; configured {
-			if remote, visible := mcpObservedCredentialString(result, "upstream_resource"); visible {
-				priorCredentials["upstream_resource"], changed = remote, true
+		for name := range mcpCredentialProjectionStringKeys {
+			if _, configured := priorCredentials[name]; configured {
+				if remote, visible := mcpObservedCredentialString(result, name); visible {
+					priorCredentials[name], changed = remote, true
+				}
 			}
 		}
 		if changed {
