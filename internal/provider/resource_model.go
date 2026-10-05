@@ -1471,7 +1471,9 @@ func (r *ModelResource) readModelWithOwnership(ctx context.Context, data *ModelR
 			modelInfo = map[string]interface{}{}
 		}
 		if err := verifyModelClears(litellmParams, modelInfo, ownership.clearedFields); err != nil {
-			return err
+			// A worker that has not reloaded the model yet still returns the
+			// previous value; post-update reads retry this within their bound.
+			return fmt.Errorf("%w: %w", errModelClearNotYetVisible, err)
 		}
 	}
 
@@ -2107,8 +2109,13 @@ func (r *ModelResource) readModelWithRetry(ctx context.Context, data *ModelResou
 	})
 }
 
+// maxTransientModelReadRetries bounds how many HTTP 400 answers a model read
+// retries while workers load a newly written model.
+const maxTransientModelReadRetries = 3
+
 func (r *ModelResource) readModelWithRetryOwnership(ctx context.Context, data *ModelResourceModel, maxRetries int, ownership modelReadOwnership) error {
 	var err error
+	transientModelReadRetries := 0
 	delay := 1 * time.Second
 	maxDelay := 10 * time.Second
 
@@ -2118,7 +2125,14 @@ func (r *ModelResource) readModelWithRetryOwnership(ctx context.Context, data *M
 			return nil
 		}
 
-		if !IsNotFoundError(err) {
+		// /model/info reads each worker's in-memory router and answers 400
+		// "not found on litellm proxy" until that worker loads a newly written
+		// model (about two seconds on a multi-worker proxy). LiteLLM uses the
+		// same 400 for a deleted model, so tolerate it only briefly and never
+		// treat it as absence.
+		if IsAPIErrorStatus(err, 400) && transientModelReadRetries < maxTransientModelReadRetries {
+			transientModelReadRetries++
+		} else if !IsNotFoundError(err) {
 			return err
 		}
 
@@ -2169,7 +2183,11 @@ func (r *ModelResource) readModelAfterUpdateWithOwnership(ctx context.Context, d
 			} else {
 				consecutiveMatches = 0
 			}
-		} else if !IsNotFoundError(lastErr) {
+		} else if !IsNotFoundError(lastErr) && !errors.Is(lastErr, errModelClearNotYetVisible) && !IsAPIErrorStatus(lastErr, 400) {
+			// /model/info answers 400 "not found on litellm proxy" from a worker
+			// whose in-memory router is reloading the just-updated model. The
+			// update succeeded, so 400 is retried here within the bound; ordinary
+			// reads still treat it as an error, never as absence.
 			return lastErr
 		} else {
 			consecutiveMatches = 0
@@ -2374,6 +2392,12 @@ func verifyModelPatchClears(result map[string]interface{}, cleared map[string]st
 	return verifyModelClears(litellmParams, modelInfo, cleared)
 }
 
+// errModelClearNotYetVisible marks a read in which a cleared field still has
+// its previous value. Multi-worker proxies reload models from the database on
+// an interval, so this is retried within the post-update consistency bound
+// and only fails once that bound is exhausted.
+var errModelClearNotYetVisible = errors.New("a cleared model field is not yet visible as cleared")
+
 func verifyModelClears(litellmParams, modelInfo map[string]interface{}, cleared map[string]struct{}) error {
 	for field := range cleared {
 		switch field {
@@ -2438,6 +2462,18 @@ func setModelPatchString(target map[string]interface{}, key string, planned, pri
 	}
 	if planned.IsNull() && !prior.IsNull() && !prior.IsUnknown() {
 		target[key] = ""
+	}
+}
+
+// setModelPatchNullableString sends a planned value, or an explicit JSON null
+// when a previously set value is removed.
+func setModelPatchNullableString(target map[string]interface{}, key string, planned, prior types.String) {
+	if !planned.IsNull() && !planned.IsUnknown() {
+		target[key] = planned.ValueString()
+		return
+	}
+	if planned.IsNull() && !prior.IsNull() && !prior.IsUnknown() {
+		target[key] = nil
 	}
 }
 
@@ -2541,7 +2577,9 @@ func (r *ModelResource) patchModel(ctx context.Context, data, prior *ModelResour
 	setModelPatchString(litellmParams, "vertex_project", data.VertexProject, prior.VertexProject)
 	setModelPatchString(litellmParams, "vertex_location", data.VertexLocation, prior.VertexLocation)
 	setModelPatchString(litellmParams, "vertex_credentials", data.VertexCredentials, prior.VertexCredentials)
-	setModelPatchString(litellmParams, "litellm_credential_name", data.LiteLLMCredentialName, prior.LiteLLMCredentialName)
+	// LiteLLM 1.104.0 rejects "" with HTTP 400 and detaches the stored
+	// credential only for an explicit JSON null.
+	setModelPatchNullableString(litellmParams, "litellm_credential_name", data.LiteLLMCredentialName, prior.LiteLLMCredentialName)
 
 	setModelPatchCost(litellmParams, "input_cost_per_pixel", data.InputCostPerPixel, prior.InputCostPerPixel, 1.0, false)
 	setModelPatchCost(litellmParams, "output_cost_per_pixel", data.OutputCostPerPixel, prior.OutputCostPerPixel, 1.0, false)

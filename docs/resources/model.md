@@ -223,7 +223,7 @@ The following arguments are supported:
 
 * `vertex_credentials` - (Optional) string. Vertex credentials (JSON string or path depending on your setup).
 
-* `litellm_credential_name` - (Optional) string. Name of a credential created via `litellm_credential` resource. This allows you to reference stored credentials instead of providing API keys directly in the model configuration.
+* `litellm_credential_name` - (Optional) string. Name of a credential created via `litellm_credential` resource. This allows you to reference stored credentials instead of providing API keys directly in the model configuration. Removing it detaches the credential in place; the provider sends an explicit `null`, which LiteLLM 1.104.0 requires (it rejects an empty string).
 
 * `additional_litellm_params` - (Optional) map(string). A map of arbitrary additional parameters that will be merged into the `litellm_params` object sent to the LiteLLM API. This is intended for provider-specific or experimental options not exposed as dedicated arguments.
 
