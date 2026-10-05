@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -236,6 +237,7 @@ func (r *BudgetResource) Update(ctx context.Context, req resource.UpdateRequest,
 		// unchanged historical configuration by omitting it from unrelated writes.
 		delete(budgetReq, "model_max_budget")
 	}
+	applyBudgetClears(budgetReq, data, state)
 	budgetReq["budget_id"] = data.BudgetID.ValueString()
 
 	if err := r.client.DoRequestWithResponse(ctx, "POST", "/budget/update", budgetReq, nil); err != nil {
@@ -277,6 +279,30 @@ func (r *BudgetResource) ImportState(ctx context.Context, req resource.ImportSta
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("budget_id"), req.ID)...)
 	if resp.Private != nil {
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, []byte("true"))...)
+	}
+}
+
+// applyBudgetClears sends explicit nulls for removed scalar budget fields.
+// LiteLLM 1.104.0 writes every explicitly sent /budget/update field, so null
+// clears the column (and clearing budget_duration also resets
+// budget_reset_at); omission leaves the old value in place.
+func applyBudgetClears(request map[string]interface{}, planned, prior BudgetResourceModel) {
+	if planned.BudgetDuration.IsNull() && knownString(prior.BudgetDuration) && prior.BudgetDuration.ValueString() != "" {
+		request["budget_duration"] = nil
+	}
+	for _, field := range []struct {
+		name           string
+		planned, prior attr.Value
+	}{
+		{"max_budget", planned.MaxBudget, prior.MaxBudget},
+		{"soft_budget", planned.SoftBudget, prior.SoftBudget},
+		{"max_parallel_requests", planned.MaxParallelRequests, prior.MaxParallelRequests},
+		{"tpm_limit", planned.TPMLimit, prior.TPMLimit},
+		{"rpm_limit", planned.RPMLimit, prior.RPMLimit},
+	} {
+		if field.planned.IsNull() && !field.prior.IsNull() && !field.prior.IsUnknown() {
+			request[field.name] = nil
+		}
 	}
 }
 

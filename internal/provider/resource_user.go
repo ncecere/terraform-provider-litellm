@@ -296,9 +296,10 @@ func (r *UserResource) Update(ctx context.Context, req resource.UpdateRequest, r
 		return
 	}
 	userReq["user_id"] = data.UserID.ValueString()
-	// LiteLLM v1.98 accepts teams on /user/update but does not reconcile team
+	// LiteLLM accepts teams on /user/update but does not reconcile team
 	// membership there. Manage membership through the dedicated team endpoints.
 	delete(userReq, "teams")
+	applyUserBudgetClears(userReq, data, state)
 
 	if err := r.client.DoRequestWithResponse(ctx, "POST", "/user/update", userReq, nil); err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to update user: %s", err))
@@ -563,6 +564,20 @@ func (r *UserResource) buildUserRequest(ctx context.Context, data *UserResourceM
 	}
 
 	return userReq, nil
+}
+
+// applyUserBudgetClears sends explicit nulls for removed budget fields.
+// LiteLLM 1.104.0 persists null for max_budget and budget_duration (also
+// resetting budget_reset_at); omitting them leaves the old values in place.
+// tpm_limit and rpm_limit nulls are still dropped upstream, so they are not
+// sent.
+func applyUserBudgetClears(request map[string]interface{}, planned, prior UserResourceModel) {
+	if planned.MaxBudget.IsNull() && !prior.MaxBudget.IsNull() && !prior.MaxBudget.IsUnknown() {
+		request["max_budget"] = nil
+	}
+	if planned.BudgetDuration.IsNull() && !prior.BudgetDuration.IsNull() && !prior.BudgetDuration.IsUnknown() && prior.BudgetDuration.ValueString() != "" {
+		request["budget_duration"] = nil
+	}
 }
 
 // readUser is reserved for operation-coupled Create/Update/adoption

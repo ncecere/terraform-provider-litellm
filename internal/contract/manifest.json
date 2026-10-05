@@ -16,7 +16,7 @@
   "provider_golden": {
     "operation_count": 108,
     "path": "internal/contractapi/testdata/provider-operations.golden.json",
-    "sha256": "47afd6555edae448212b989f4722604533b55834bf0bbe67971def55604e3250"
+    "sha256": "f99d1463896c50e7e9015947b3690f77bceb31a82fe97b08c12811770269f286"
   },
   "provider_operations": [
     {
@@ -97,7 +97,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_budget.go",
-          "line": 267
+          "line": 269
         }
       ],
       "method": "POST",
@@ -113,7 +113,7 @@
         },
         {
           "file": "internal/provider/resource_budget.go",
-          "line": 337
+          "line": 363
         }
       ],
       "method": "POST",
@@ -137,7 +137,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_budget.go",
-          "line": 156
+          "line": 157
         }
       ],
       "method": "POST",
@@ -149,7 +149,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_budget.go",
-          "line": 241
+          "line": 243
         },
         {
           "file": "internal/provider/resource_project.go",
@@ -1240,7 +1240,7 @@
         },
         {
           "file": "internal/provider/resource_user.go",
-          "line": 862
+          "line": 877
         }
       ],
       "method": "POST",
@@ -1264,7 +1264,7 @@
         },
         {
           "file": "internal/provider/resource_user.go",
-          "line": 868
+          "line": 883
         }
       ],
       "method": "POST",
@@ -1366,7 +1366,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_user.go",
-          "line": 337
+          "line": 338
         }
       ],
       "method": "POST",
@@ -1386,11 +1386,11 @@
         },
         {
           "file": "internal/provider/resource_user.go",
-          "line": 594
+          "line": 609
         },
         {
           "file": "internal/provider/resource_user.go",
-          "line": 596
+          "line": 611
         }
       ],
       "method": "GET",
@@ -1416,7 +1416,7 @@
         },
         {
           "file": "internal/provider/resource_user.go",
-          "line": 376
+          "line": 377
         }
       ],
       "method": "GET",
@@ -1447,11 +1447,11 @@
       "evidence": [
         {
           "file": "internal/provider/resource_user.go",
-          "line": 303
+          "line": 304
         },
         {
           "file": "internal/provider/resource_user.go",
-          "line": 474
+          "line": 475
         }
       ],
       "method": "POST",
