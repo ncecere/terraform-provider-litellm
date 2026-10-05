@@ -2110,13 +2110,21 @@ func (r *ModelResource) readModelWithRetry(ctx context.Context, data *ModelResou
 }
 
 // maxTransientModelReadRetries bounds how many HTTP 400 answers a model read
-// retries while workers load a newly written model.
-const maxTransientModelReadRetries = 3
+// retries while workers load a newly written model. With the 1s doubling
+// backoff capped at 10s this tolerates about 25 seconds: a busy multi-worker
+// proxy reloading several models (for example a model plus a credential it
+// references) was observed answering 400 for longer than 7 seconds. A
+// persistent 400 is still returned as an error, never treated as absence.
+const maxTransientModelReadRetries = 5
+
+// modelReadRetryInitialDelay is the first backoff between model reads; tests
+// shorten it.
+var modelReadRetryInitialDelay = time.Second
 
 func (r *ModelResource) readModelWithRetryOwnership(ctx context.Context, data *ModelResourceModel, maxRetries int, ownership modelReadOwnership) error {
 	var err error
 	transientModelReadRetries := 0
-	delay := 1 * time.Second
+	delay := modelReadRetryInitialDelay
 	maxDelay := 10 * time.Second
 
 	for i := 0; i < maxRetries; i++ {
@@ -2137,7 +2145,13 @@ func (r *ModelResource) readModelWithRetryOwnership(ctx context.Context, data *M
 		}
 
 		if i < maxRetries-1 {
-			time.Sleep(delay)
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			case <-timer.C:
+			}
 			delay *= 2
 			if delay > maxDelay {
 				delay = maxDelay

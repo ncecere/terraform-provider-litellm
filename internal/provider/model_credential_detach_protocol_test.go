@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
 	"github.com/hashicorp/terraform-plugin-go/tftypes"
@@ -104,6 +105,9 @@ func TestModelCredentialDetachSendsNullAndWaitsForWorkers(t *testing.T) {
 }
 
 func TestModelReadToleratesBriefWorkerReload400(t *testing.T) {
+	previousDelay := modelReadRetryInitialDelay
+	modelReadRetryInitialDelay = time.Millisecond
+	t.Cleanup(func() { modelReadRetryInitialDelay = previousDelay })
 	for _, test := range []struct {
 		name      string
 		bad       int

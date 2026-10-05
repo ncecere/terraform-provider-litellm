@@ -16,7 +16,7 @@
   "provider_golden": {
     "operation_count": 108,
     "path": "internal/contractapi/testdata/provider-operations.golden.json",
-    "sha256": "dfd5bfae88a5e5567df7d7de3d211c6e541ca7af665e4dc3f160511590062c5d"
+    "sha256": "77faaac2ad7e256114b7ad5a4041f062f579a672359318479652221410eeb131"
   },
   "provider_operations": [
     {
@@ -678,7 +678,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_model.go",
-          "line": 2649
+          "line": 2663
         }
       ],
       "method": "PATCH",
@@ -1599,7 +1599,7 @@
         },
         {
           "file": "internal/provider/datasource_agent.go",
-          "line": 207
+          "line": 211
         },
         {
           "file": "internal/provider/resource_agent.go",

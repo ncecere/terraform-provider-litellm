@@ -241,7 +241,7 @@ func parseModelInfoResult(rawResult map[string]interface{}) map[string]interface
 
 func readModelDataSourceWithRetry(ctx context.Context, client *Client, endpoint string, result *map[string]interface{}, maxRetries int) error {
 	var err error
-	delay := time.Second
+	delay := modelReadRetryInitialDelay
 	maxDelay := 10 * time.Second
 	transientModelReadRetries := 0
 	for i := 0; i < maxRetries; i++ {
