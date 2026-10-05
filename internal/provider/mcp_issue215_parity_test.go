@@ -113,10 +113,19 @@ func TestProjectMCPServerManagerListRole(t *testing.T) {
 		t.Fatalf("empty mcp_info projection = %q", projected.MCPInfoJSON.ValueString())
 	}
 
+	// LiteLLM 1.104.0 returns proxy admins the redacted admin-config
+	// projection in the list. It is accepted but never exposed.
+	response["credentials"] = map[string]interface{}{"upstream_resource": "https://resource.invalid", "scopes": []interface{}{"mcp.read"}}
+	if projected, err := projectMCPServerManagerListDataSource(response, "manager-list"); err != nil {
+		t.Fatalf("manager list rejected the redacted credential projection: %v", err)
+	} else if !projected.UpstreamResource.IsNull() {
+		t.Fatal("manager list exposed the credential projection")
+	}
+
 	const secret = "credential-secret-response"
-	response["credentials"] = map[string]interface{}{"upstream_resource": secret}
+	response["credentials"] = map[string]interface{}{"auth_value": secret}
 	if _, err := projectMCPServerManagerListDataSource(response, "manager-list"); err == nil {
-		t.Fatal("manager list accepted non-null credentials")
+		t.Fatal("manager list accepted a secret credential member")
 	} else if strings.Contains(err.Error(), secret) {
 		t.Fatal("manager-list credential error exposed response content")
 	}

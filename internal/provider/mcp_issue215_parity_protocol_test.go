@@ -281,13 +281,13 @@ func assertMCPProtocolString(t *testing.T, value tftypes.Value, want string) {
 	}
 }
 
-func TestMCPManagerListRejectsAnyCredentialsProtocol(t *testing.T) {
+func TestMCPManagerListRejectsSecretCredentialsProtocol(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	const secret = "list-credential-response-secret"
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
-		_, _ = writer.Write([]byte(`[{"server_id":"credential-list","transport":"http","credentials":{"upstream_resource":"` + secret + `"}}]`))
+		_, _ = writer.Write([]byte(`[{"server_id":"credential-list","transport":"http","credentials":{"upstream_resource":"https://resource.invalid","auth_value":"` + secret + `"}}]`))
 	}))
 	defer server.Close()
 	protocolServer, schemas := configuredImportProtocolServer(t, ctx, server.URL)

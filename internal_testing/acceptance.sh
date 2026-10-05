@@ -5,6 +5,10 @@ set -eu
 
 ASSEMBLY_ONLY=${LITELLM_ACCEPTANCE_ASSEMBLY_ONLY:-0}
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
+# smoke.sh writes logs under SMOKE_PRIVATE_ROOT; mirror its default so the
+# key_write_only log paths below resolve when this script runs directly.
+SMOKE_PRIVATE_ROOT=${SMOKE_PRIVATE_ROOT:-$REPO_ROOT/internal_testing}
+export SMOKE_PRIVATE_ROOT
 API_BASE=http://localhost:4000
 CLI_VERSION=$(terraform version 2>/dev/null | sed -n '1{s/^[^0-9]*//;s/[^0-9.].*$//;p;}')
 CLI_SUPPORTS_111=$(python3 -c 'import sys; p=tuple(int(v) for v in sys.argv[1].split(".")); print(1 if p >= (1, 11, 0) else 0)' "${CLI_VERSION:-0.0.0}")

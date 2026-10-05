@@ -466,7 +466,11 @@ func projectMCPServerDataSourceForRole(result map[string]interface{}, expectedSe
 	}
 
 	if role == mcpServerManagerListProjection {
-		if credentials, present := result["credentials"]; present && credentials != nil {
+		// LiteLLM 1.98.0 omitted credentials from the list. LiteLLM 1.104.0
+		// returns proxy admins the same redacted projection as the singular
+		// route (non-secret admin-config strings and the scopes list). Accept
+		// only that strict projection; it is not exposed by list items.
+		if _, err := decodeMCPCredentialProjection(result, true); err != nil {
 			return MCPServerDataSourceModel{}, fmt.Errorf("MCP server list response contains credentials")
 		}
 		data.UpstreamResource = types.StringNull()
