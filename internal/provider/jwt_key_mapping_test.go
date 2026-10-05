@@ -37,7 +37,7 @@ func TestJWTKeyMappingSchemaParityAndSensitivity(t *testing.T) {
 	if resourceResp.Diagnostics.HasError() {
 		t.Fatal(resourceResp.Diagnostics.Errors())
 	}
-	want := []string{"id", "jwt_issuer", "jwt_claim_name", "jwt_claim_value", "key_wo", "key_wo_version", "description", "is_active", "created_at", "updated_at", "created_by", "updated_by"}
+	want := []string{"id", "jwt_issuer", "jwt_claim_name", "jwt_claim_value", "key_wo", "key_wo_version", "key_hash", "description", "is_active", "created_at", "updated_at", "created_by", "updated_by"}
 	if len(resourceResp.Schema.Attributes) != len(want) {
 		t.Fatalf("resource attributes=%d want=%d", len(resourceResp.Schema.Attributes), len(want))
 	}

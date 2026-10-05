@@ -375,7 +375,7 @@
     "evidence": [
       {
         "file": "internal/provider/resource_jwt_key_mapping.go",
-        "line": 599
+        "line": 628
       }
     ]
   },
@@ -420,7 +420,7 @@
     "evidence": [
       {
         "file": "internal/provider/resource_jwt_key_mapping.go",
-        "line": 300
+        "line": 328
       }
     ]
   },
@@ -432,11 +432,11 @@
     "evidence": [
       {
         "file": "internal/provider/resource_jwt_key_mapping.go",
-        "line": 329
+        "line": 357
       },
       {
         "file": "internal/provider/resource_jwt_key_mapping.go",
-        "line": 527
+        "line": 556
       }
     ]
   },

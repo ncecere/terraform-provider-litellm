@@ -16,7 +16,7 @@
   "provider_golden": {
     "operation_count": 108,
     "path": "internal/contractapi/testdata/provider-operations.golden.json",
-    "sha256": "a519643c92800d71d7f4b0f15477c00936914fa18b222b8aa0e0f23d94a9b64e"
+    "sha256": "401f02c50ac8755cb11a29ed3cd07f1d72cf486e194d734711b9d7ccec0127cf"
   },
   "provider_operations": [
     {
@@ -391,7 +391,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_jwt_key_mapping.go",
-          "line": 599
+          "line": 628
         }
       ],
       "method": "POST",
@@ -436,7 +436,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_jwt_key_mapping.go",
-          "line": 300
+          "line": 328
         }
       ],
       "method": "POST",
@@ -448,11 +448,11 @@
       "evidence": [
         {
           "file": "internal/provider/resource_jwt_key_mapping.go",
-          "line": 329
+          "line": 357
         },
         {
           "file": "internal/provider/resource_jwt_key_mapping.go",
-          "line": 527
+          "line": 556
         }
       ],
       "method": "POST",

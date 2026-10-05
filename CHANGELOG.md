@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - No security-sensitive provider behavior changes in this release beyond those listed under Fixed.
 
 ### Added
+- **`litellm_jwt_key_mapping` `key_hash`**: Map a key by its SHA-256 management identifier (for example `litellm_key.example.id`) instead of the write-only raw `key_wo`, using LiteLLM 1.104.0's `token` field. The raw key never appears in configuration, and Terraform 1.11 write-only support is not required for this path. Changing the hash replaces the mapping; it conflicts with `key_wo`/`key_wo_version`.
 - **`tpd_limit` (tokens per day)**: Add optional `tpd_limit` to `litellm_key`, `litellm_team`, `litellm_budget`, and `litellm_project`, and computed `tpd_limit` to their singular and list data sources. LiteLLM 1.104.0 stores it with the entity's other rate limits; removing it sends an explicit `null` that clears the limit. Existing state reads the new attribute as null, so no migration is needed.
 - **`litellm_jwt_key_mapping` issuer scope**: Add optional `jwt_issuer` to the resource and computed `jwt_issuer` to both data sources. LiteLLM 1.104.0 scopes mappings by issuer plus claim pair; changing a configured issuer replaces the mapping with the same `key_wo` safeguards as a claim change, an omitted issuer preserves the existing scope, and the global scope is null.
 

@@ -18,7 +18,17 @@ resource "litellm_jwt_key_mapping" "application" {
 }
 ```
 
-Create and identity replacement require Terraform or compatible OpenTofu write-only attribute support (version 1.11 or later). Import, refresh, same-identity planning with a null key/version, destroy, and reads remain usable by older supported clients. The mapping points at an existing virtual key; it does not create a key or expose a generated token.
+To keep the raw key out of configuration entirely, reference the key by its management identifier instead (LiteLLM 1.104.0 or later):
+
+```hcl
+resource "litellm_jwt_key_mapping" "by_hash" {
+  jwt_claim_name  = "sub"
+  jwt_claim_value = var.oidc_subject
+  key_hash        = litellm_key.application.id
+}
+```
+
+When using `key_wo`, create and identity replacement require Terraform or compatible OpenTofu write-only attribute support (version 1.11 or later). Import, refresh, same-identity planning with a null key/version, destroy, and reads remain usable by older supported clients. The mapping points at an existing virtual key; it does not create a key or expose a generated token.
 
 ## Arguments
 
@@ -27,6 +37,7 @@ Create and identity replacement require Terraform or compatible OpenTofu write-o
 * `jwt_claim_value` - (Required on create, ForceNew, Sensitive) String claim value. LiteLLM accepts the empty string. The provider never includes the configured value in diagnostics.
 * `key_wo` - (Required on create and identity replacement, Sensitive, Write-only) Raw existing LiteLLM virtual key. It is sent only to create the new mapping and is never persisted by this resource.
 * `key_wo_version` - (Required with `key_wo` on create and identity replacement) Persisted create-time version marker. An unchanged historical marker remains plannable. Adding or changing the marker while preserving the same claim pair fails before mutation with `Unsupported JWT Key Rotation`. A known claim-pair replacement may use an unchanged or changed marker only when both `key_wo` and `key_wo_version` are known, non-null, and non-empty before Terraform schedules replacement.
+* `key_hash` - (Optional, ForceNew) SHA-256 management identifier (`sha256:<64-hex>`, for example `litellm_key.application.id`) of the existing virtual key, as an alternative to `key_wo` that never puts the raw key in configuration, plans, or state. The provider sends the bare lowercase hash as LiteLLM's `token` field (LiteLLM 1.104.0 and later). LiteLLM never returns it, so it is stored as configured; changing or adding it replaces the mapping, which is how a mapping is pointed at a different key. Conflicts with `key_wo` and `key_wo_version`. Identity replacements accept `key_hash` in place of `key_wo`/`key_wo_version`.
 * `description` - (Optional) Nullable description. For a provider-created or previously configured description, assigning `null` sends an explicit JSON null clear. An imported omitted description remains API-owned; configure a non-null value to transfer ownership before a later null clear.
 * `is_active` - (Optional) Active state. `false` is sent explicitly. Omitted imported state remains API-owned.
 
