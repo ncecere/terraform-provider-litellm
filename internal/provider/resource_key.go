@@ -91,6 +91,12 @@ func writeOnlyKeyCreateError(err error) string {
 }
 
 func keyResourceReadError(err error) string {
+	switch {
+	case errors.Is(err, errKeyInfoArchived):
+		return "LiteLLM reports this key as deleted (it may have been deleted or regenerated outside Terraform). Response details were omitted because they may contain key dictionary values or the lookup token."
+	case errors.Is(err, errKeyInfoStatusInvalid):
+		return "LiteLLM returned an unrecognized key status, so the key could not be classified as live or deleted. Prior state was retained; response details were omitted."
+	}
 	var apiErr *APIError
 	if errors.As(err, &apiErr) {
 		return fmt.Sprintf("LiteLLM returned HTTP %d while reading the key. Response details were omitted because they may contain key dictionary values or the lookup token.", apiErr.StatusCode)
@@ -765,7 +771,7 @@ func (r *KeyResource) Read(ctx context.Context, req resource.ReadRequest, resp *
 	}
 
 	if err := r.refreshKeyWithOwnership(ctx, &data, imported, ownership); err != nil {
-		if IsAPIErrorStatus(err, http.StatusNotFound) {
+		if isKeyInfoAbsence(err) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
@@ -1420,6 +1426,9 @@ func (r *KeyResource) getKeyInfo(ctx context.Context, data *KeyResourceModel) (m
 	if nested, ok := result["info"].(map[string]interface{}); ok {
 		info = nested
 	}
+	if err := classifyKeyInfoStatus(info); err != nil {
+		return nil, nil, err
+	}
 	return result, info, nil
 }
 
@@ -1438,6 +1447,9 @@ func (r *KeyResource) getSafeExactKeyInfo(ctx context.Context, data *KeyResource
 		return nil, nil, errSemanticDictionaryTraversal
 	}
 	if err := validateExactKeyInfoIdentity(result, info, keyIdentifier); err != nil {
+		return nil, nil, err
+	}
+	if err := classifyKeyInfoStatus(info); err != nil {
 		return nil, nil, err
 	}
 	if err := validateOrdinaryKeyInfoScalars(info); err != nil {
@@ -1483,6 +1495,9 @@ func (r *KeyResource) getFreshExactKeyInfo(ctx context.Context, data *KeyResourc
 		return nil, nil, errSemanticDictionaryTraversal
 	}
 	if err := validateExactKeyInfoIdentity(result, info, keyIdentifier); err != nil {
+		return nil, nil, err
+	}
+	if err := classifyKeyInfoStatus(info); err != nil {
 		return nil, nil, err
 	}
 	return result, info, nil

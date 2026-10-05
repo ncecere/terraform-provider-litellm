@@ -928,6 +928,9 @@ type unifiedAccessGroupKeyInfoResponse struct {
 	Key  json.RawMessage `json:"key"`
 	Info *struct {
 		AccessGroupIDs json.RawMessage `json:"access_group_ids"`
+		Status         interface{}     `json:"status"`
+		DeletedAt      interface{}     `json:"deleted_at"`
+		DeletedBy      interface{}     `json:"deleted_by"`
 	} `json:"info"`
 }
 
@@ -949,6 +952,21 @@ func (r *UnifiedAccessGroupResource) readUnifiedAccessGroupKeyMembership(ctx con
 	echoedHash, err := unifiedAccessGroupKeyHash(echoedKey)
 	if err != nil || echoedHash != bareHash {
 		return nil, errUnifiedAccessGroupKeyInfoContract
+	}
+	// An archived deleted-key row still carries its old access_group_ids; it
+	// can never prove current membership.
+	status := map[string]interface{}{}
+	if response.Info.Status != nil {
+		status["status"] = response.Info.Status
+	}
+	if response.Info.DeletedAt != nil {
+		status["deleted_at"] = response.Info.DeletedAt
+	}
+	if response.Info.DeletedBy != nil {
+		status["deleted_by"] = response.Info.DeletedBy
+	}
+	if err := classifyKeyInfoStatus(status); err != nil {
+		return nil, err
 	}
 	if string(response.Info.AccessGroupIDs) == "null" {
 		return []string{}, nil

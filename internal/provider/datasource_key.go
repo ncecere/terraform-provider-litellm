@@ -217,6 +217,10 @@ func (d *KeyDataSource) Read(ctx context.Context, req datasource.ReadRequest, re
 	}
 
 	complete, err := projectKeyDataSourceAPIObject(data, result, lookupValue, managementID)
+	if errors.Is(err, errKeyInfoArchived) {
+		resp.Diagnostics.AddError("Key Not Found", "LiteLLM reports this key as deleted. Deleted and regenerated keys are not readable through this data source. Request details were omitted.")
+		return
+	}
 	if err != nil {
 		resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned a malformed or identity-mismatched key response. Response and request details were omitted.")
 		return
@@ -235,6 +239,9 @@ func projectKeyDataSourceAPIObject(data KeyDataSourceModel, result map[string]in
 	}
 	if err := validateExactKeyInfoIdentity(result, info, lookupValue); err != nil {
 		return KeyDataSourceModel{}, fmt.Errorf("invalid key response identity")
+	}
+	if err := classifyKeyInfoStatus(info); err != nil {
+		return KeyDataSourceModel{}, err
 	}
 
 	complete := KeyDataSourceModel{ID: types.StringValue(managementID), Key: data.Key, KeyHash: data.KeyHash}

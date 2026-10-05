@@ -58,4 +58,4 @@ Exactly one lookup argument is required:
 
 - The `key` argument is marked as sensitive and will not appear in plan output. It is still an input stored in data-source state; use `key_hash` for write-only keys.
 - Use this data source to check key status and budget information.
-- Ordinary reads retry bounded transient transport, HTTP 408, 429, and 5xx failures. A 404 remains an error for the data source, and malformed or identity-mismatched responses do not publish partial state.
+- Ordinary reads retry bounded transient transport, HTTP 408, 429, and 5xx failures. A 404, or LiteLLM 1.104's archived `status = "deleted"` response for a deleted or regenerated key, is a `Key Not Found` error for the data source, and malformed or identity-mismatched responses do not publish partial state.
