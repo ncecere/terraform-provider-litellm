@@ -77,7 +77,7 @@ func projectTeamInfoResponseWithSemantic(ctx context.Context, prior TeamResource
 		"prompts", "rpm_limit_type", "tags", "tpm_limit_type",
 	} {
 		if _, exists := teamInfo[field]; exists {
-			return prior, fmt.Errorf("invalid team response field %q: value is outside its authoritative v1.98 relation", field)
+			return prior, fmt.Errorf("invalid team response field %q: value is outside its authoritative LiteLLM relation", field)
 		}
 	}
 

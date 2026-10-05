@@ -135,7 +135,7 @@ func (r *BudgetResource) ModifyPlan(ctx context.Context, req resource.ModifyPlan
 		return
 	}
 	if state.ModelMaxBudget.IsNull() || state.ModelMaxBudget.IsUnknown() || !modelBudgetSemanticallyEqual(config.ModelMaxBudget.ValueString(), state.ModelMaxBudget.ValueString()) {
-		resp.Diagnostics.AddAttributeError(path.Root("model_max_budget"), "Unsupported Legacy Scalar Budget Update", "Finite scalar model budgets remain readable for compatibility, but LiteLLM v1.98 requires BudgetConfig objects for new or changed values. Keep the existing scalar unchanged or migrate every model value to an object.")
+		resp.Diagnostics.AddAttributeError(path.Root("model_max_budget"), "Unsupported Legacy Scalar Budget Update", "Finite scalar model budgets remain readable for compatibility, but LiteLLM requires BudgetConfig objects for new or changed values. Keep the existing scalar unchanged or migrate every model value to an object.")
 	}
 }
 

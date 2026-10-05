@@ -2,7 +2,7 @@
 
 Manages the blocked state of a LiteLLM API key. Creating this resource blocks the key; destroying it unblocks the key.
 
-The resource ID is always a non-sensitive `sha256:<64-hex>` management identifier. LiteLLM v1.98 accepts the corresponding bare hash for block, read, and unblock operations, so this resource hashes raw inputs locally and sends only the bare hash to LiteLLM.
+The resource ID is always a non-sensitive `sha256:<64-hex>` management identifier. LiteLLM accepts the corresponding bare hash for block, read, and unblock operations, so this resource hashes raw inputs locally and sends only the bare hash to LiteLLM.
 
 ## Recommended: hash-only identity
 

@@ -85,7 +85,7 @@ func (r *UserResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 				Optional:    true,
 			},
 			"user_role": schema.StringAttribute{
-				Description: "The user's role. LiteLLM v1.98 user create/update accepts proxy_admin, proxy_admin_viewer, internal_user, or internal_user_viewer.",
+				Description: "The user's role. LiteLLM user create/update accepts proxy_admin, proxy_admin_viewer, internal_user, or internal_user_viewer.",
 				Optional:    true,
 				Validators: []validator.String{
 					stringvalidator.OneOf(

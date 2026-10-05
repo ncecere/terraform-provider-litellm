@@ -87,7 +87,7 @@ Guardrails can be imported using their guardrail ID:
 terraform import litellm_guardrail.example <guardrail-id>
 ```
 
-LiteLLM v1.98 masks credential-bearing `litellm_params` on information reads. Terraform cannot recover plaintext that was never in prior state, so import fails safely when the remote object contains masked parameters. Recreate the guardrail under Terraform ownership or remove/rotate the sensitive remote parameter before importing; a redaction marker is never stored as if it were the credential.
+LiteLLM masks credential-bearing `litellm_params` on information reads. Terraform cannot recover plaintext that was never in prior state, so import fails safely when the remote object contains masked parameters. Recreate the guardrail under Terraform ownership or remove/rotate the sensitive remote parameter before importing; a redaction marker is never stored as if it were the credential.
 
 Ordinary refreshes retry bounded transient transport, HTTP 408, 429, and 5xx failures. Successful refresh requires an identity-matched, complete response whose `guardrail_definition_location` is `db`. If LiteLLM falls back to a same-ID config-defined guardrail after database deletion, Terraform retains the managed resource state and fails closed rather than adopting the config object. Only an exact HTTP 404 removes state. Create/update confirmation, lists, and mutations remain single-attempt.
 
@@ -121,6 +121,6 @@ Validates complete responses. Use for:
 - The `guardrail`, `mode`, and `default_on` fields are top-level attributes, not nested inside `litellm_params`.
 - The `litellm_params` field is for provider-specific configuration only (for example, Bedrock identifiers and API keys).
 - `Sensitive` hides values from ordinary Terraform output, but configured plaintext remains in Terraform state and plan files. Protect those artifacts and mark any enclosing outputs sensitive.
-- LiteLLM v1.98 masks sensitive keys on GET/list responses as `*****` or a two-character-prefix, four-asterisk, two-character-suffix value. The provider recognizes only these exact markers; ordinary strings containing asterisks remain visible as drift.
-- Guardrail reads and writes require authentication. LiteLLM v1.98 restricts create, update, and delete to `PROXY_ADMIN`; v2 list visibility is role/team filtered by LiteLLM. Guardrail CRUD itself is not Enterprise-license gated, but database-backed management requires LiteLLM database support.
+- LiteLLM masks sensitive keys on GET/list responses as `*****` or a two-character-prefix, four-asterisk, two-character-suffix value. The provider recognizes only these exact markers; ordinary strings containing asterisks remain visible as drift.
+- Guardrail reads and writes require authentication. LiteLLM restricts create, update, and delete to `PROXY_ADMIN`; v2 list visibility is role/team filtered by LiteLLM. Guardrail CRUD itself is not Enterprise-license gated, but database-backed management requires LiteLLM database support.
 - Multiple guardrails can be combined for defense in depth. Test guardrails thoroughly before enabling them in production.

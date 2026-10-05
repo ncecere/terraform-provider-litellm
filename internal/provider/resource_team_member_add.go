@@ -37,8 +37,8 @@ const (
 	teamMemberAddReadInitialDelay  = 50 * time.Millisecond
 	teamMemberAddReadMaximumDelay  = 400 * time.Millisecond
 	teamMemberAddOrphanPrivateKey  = "team_member_add_owned_orphans_v1"
-	teamMemberAddDeprecationNotice = "Prefer for_each with litellm_team_member for new configurations. This batch resource remains supported for compatibility and owns only the member blocks explicitly recorded in its state. LiteLLM v1.98 cannot repair or delete a membership-only orphan through its team-member API; that partial condition requires manual upstream remediation."
-	teamMemberAddOrphanRemediation = "LiteLLM v1.98 returned an owned team_memberships row without a matching members_with_roles entry. In this partial condition, /team/member_delete first requires the missing roster entry. A direct user_id /team/member_update can return success and even mutate budget data, but it does not append the missing roster entry, so it is not a repair. The provider will not send either mutation after detecting the orphan and retained explicit Terraform ownership. Manually remove the inconsistent upstream membership row with LiteLLM administrator/support guidance (or upgrade to a version with corrected endpoints), then refresh. That refresh clears only the remediated orphan ownership, after which apply can recreate it or a pending removal/destroy can finish. Prefer for_each with litellm_team_member for new configurations."
+	teamMemberAddDeprecationNotice = "Prefer for_each with litellm_team_member for new configurations. This batch resource remains supported for compatibility and owns only the member blocks explicitly recorded in its state. The provider does not repair or delete a membership-only orphan, which LiteLLM 1.98 partial operations can leave behind, through LiteLLM's team-member API; that partial condition requires manual upstream remediation."
+	teamMemberAddOrphanRemediation = "LiteLLM returned an owned team_memberships row without a matching members_with_roles entry. In this partial condition, LiteLLM 1.98 /team/member_delete first requires the missing roster entry, and LiteLLM 1.104.0 removes the row only when the user's teams list still names the team. A direct user_id /team/member_update can return success and even mutate budget data, but it does not append the missing roster entry, so it is not a repair. The provider will not send either mutation after detecting the orphan and retained explicit Terraform ownership. Manually remove the inconsistent upstream membership row with LiteLLM administrator/support guidance, then refresh. That refresh clears only the remediated orphan ownership, after which apply can recreate it or a pending removal/destroy can finish. Prefer for_each with litellm_team_member for new configurations."
 )
 
 func NewTeamMemberAddResource() resource.Resource {
@@ -311,7 +311,7 @@ func (r *TeamMemberAddResource) Create(ctx context.Context, req resource.CreateR
 		return
 	}
 	if err := ensureMembersAbsent(snapshot, members); err != nil {
-		resp.Diagnostics.AddError("Batch Member Already Exists", err.Error()+" Do not retry member_add. Import an existing roster-backed identity instead of adopting it; a membership-only v1.98 row requires manual upstream remediation because member_update and member_delete cannot repair or remove it.")
+		resp.Diagnostics.AddError("Batch Member Already Exists", err.Error()+" Do not retry member_add. Import an existing roster-backed identity instead of adopting it; a membership-only row requires manual upstream remediation because member_update cannot repair it and the provider does not send member_delete for it.")
 		return
 	}
 
@@ -353,7 +353,7 @@ func (r *TeamMemberAddResource) Create(ctx context.Context, req resource.CreateR
 				if recovered.RoleKnown {
 					resp.Diagnostics.AddError("Partial Batch Member Creation", fmt.Sprintf("The add request failed after LiteLLM created the member's team_memberships row. The confirmed identity and roster role were retained for retry: %s", teamMemberAddDiagnosticError(err)))
 				} else {
-					resp.Diagnostics.AddError("Unrepairable v1.98 Membership-Only Partial Add", teamMemberAddOrphanRemediation+" Original add result: "+teamMemberAddDiagnosticError(err)+".")
+					resp.Diagnostics.AddError("Unrepairable Membership-Only Partial Add", teamMemberAddOrphanRemediation+" Original add result: "+teamMemberAddDiagnosticError(err)+".")
 				}
 			} else if readErr != nil {
 				resp.Diagnostics.AddError("Batch Member Create Error", fmt.Sprintf("Unable to add a team member, and post-failure ownership could not be confirmed: %s", teamMemberAddDiagnosticError(err)))
@@ -387,7 +387,7 @@ func (r *TeamMemberAddResource) Create(ctx context.Context, req resource.CreateR
 			setCreatePartialState(ctx, resp, &state, confirmed, recoverySnapshot)
 			setCreateTeamMemberAddOrphanMarkers(ctx, resp, orphanMarkers)
 			if recoveredFromMembership && !recovered.RoleKnown {
-				resp.Diagnostics.AddError("Unrepairable v1.98 Membership-Only Partial Add", teamMemberAddOrphanRemediation+" The add was accepted, but its roster write was not observed.")
+				resp.Diagnostics.AddError("Unrepairable Membership-Only Partial Add", teamMemberAddOrphanRemediation+" The add was accepted, but its roster write was not observed.")
 			} else {
 				resp.Diagnostics.AddError("Batch Member Read-Back Error", fmt.Sprintf("LiteLLM accepted a member add but the authoritative roster did not confirm it within five reads: %s", teamMemberAddDiagnosticError(waitErr)))
 			}
@@ -428,7 +428,7 @@ func (r *TeamMemberAddResource) Create(ctx context.Context, req resource.CreateR
 		}
 		setCreatePartialState(ctx, resp, &state, observed.Members, finalSnapshot)
 		setCreateTeamMemberAddOrphanMarkers(ctx, resp, orphanMarkers)
-		resp.Diagnostics.AddError("Unrepairable v1.98 Membership-Only Partial Add", teamMemberAddOrphanRemediation)
+		resp.Diagnostics.AddError("Unrepairable Membership-Only Partial Add", teamMemberAddOrphanRemediation)
 		return
 	}
 	if len(observed.Members) != len(members) {
@@ -538,7 +538,7 @@ func (r *TeamMemberAddResource) Read(ctx context.Context, req resource.ReadReque
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 	setReadTeamMemberAddOrphanMarkers(ctx, resp, orphanMarkers)
 	if len(observed.Orphans) != 0 {
-		resp.Diagnostics.AddError("Unrepairable v1.98 Membership-Only State", teamMemberAddOrphanRemediation)
+		resp.Diagnostics.AddError("Unrepairable Membership-Only State", teamMemberAddOrphanRemediation)
 		return
 	}
 }
@@ -633,7 +633,7 @@ func (r *TeamMemberAddResource) Update(ctx context.Context, req resource.UpdateR
 				return
 			}
 		}
-		resp.Diagnostics.AddError("Unrepairable v1.98 Membership-Only State", teamMemberAddOrphanRemediation)
+		resp.Diagnostics.AddError("Unrepairable Membership-Only State", teamMemberAddOrphanRemediation)
 		return
 	}
 
@@ -679,7 +679,7 @@ func (r *TeamMemberAddResource) Update(ctx context.Context, req resource.UpdateR
 			setUpdateRecoveredState(ctx, resp, &prior, ownedNow, postFailure)
 			setUpdateTeamMemberAddOrphanMarkers(ctx, resp, orphanMarkers)
 			if recoveredOwnership && !recovered.RoleKnown {
-				resp.Diagnostics.AddError("Unrepairable v1.98 Membership-Only Partial Add", teamMemberAddOrphanRemediation+" No planned removals were attempted. Original add result: "+teamMemberAddDiagnosticError(err)+".")
+				resp.Diagnostics.AddError("Unrepairable Membership-Only Partial Add", teamMemberAddOrphanRemediation+" No planned removals were attempted. Original add result: "+teamMemberAddDiagnosticError(err)+".")
 			} else {
 				resp.Diagnostics.AddError("Batch Member Add Error", fmt.Sprintf("Unable to add a destination member before removals; no planned removals were attempted: %s", teamMemberAddDiagnosticError(err)))
 			}
@@ -706,7 +706,7 @@ func (r *TeamMemberAddResource) Update(ctx context.Context, req resource.UpdateR
 			setUpdateRecoveredState(ctx, resp, &prior, ownedNow, recoverySnapshot)
 			setUpdateTeamMemberAddOrphanMarkers(ctx, resp, orphanMarkers)
 			if recoveredFromMembership && !recovered.RoleKnown {
-				resp.Diagnostics.AddError("Unrepairable v1.98 Membership-Only Partial Add", teamMemberAddOrphanRemediation+" No planned removals were attempted. The add was accepted, but its roster write was not observed.")
+				resp.Diagnostics.AddError("Unrepairable Membership-Only Partial Add", teamMemberAddOrphanRemediation+" No planned removals were attempted. The add was accepted, but its roster write was not observed.")
 			} else {
 				resp.Diagnostics.AddError("Batch Member Add Read-Back Error", fmt.Sprintf("LiteLLM accepted an addition before removals, but /team/info did not confirm its roster role within five reads: %s", teamMemberAddDiagnosticError(waitErr)))
 			}
@@ -827,7 +827,7 @@ func (r *TeamMemberAddResource) Update(ctx context.Context, req resource.UpdateR
 			}
 			if membershipIndex >= 0 {
 				setUpdateRecoveredState(ctx, resp, &prior, ownedNow, snapshot)
-				resp.Diagnostics.AddError("Unrepairable v1.98 Membership-Only State", teamMemberAddOrphanRemediation+" The planned removal remains owned.")
+				resp.Diagnostics.AddError("Unrepairable Membership-Only State", teamMemberAddOrphanRemediation+" The planned removal remains owned.")
 				return
 			}
 			ownedNow = removeBatchMember(ownedNow, removal)
@@ -859,7 +859,7 @@ func (r *TeamMemberAddResource) Update(ctx context.Context, req resource.UpdateR
 			if membershipOnlyErr == nil && membershipOnly {
 				addTeamMemberAddOrphanMarker(orphanMarkers, verificationMember)
 				setUpdateTeamMemberAddOrphanMarkers(ctx, resp, orphanMarkers)
-				resp.Diagnostics.AddError("Unrepairable v1.98 Membership-Only Partial Delete", teamMemberAddOrphanRemediation+" The planned removal remains owned. Original delete result: "+teamMemberAddDiagnosticError(err)+".")
+				resp.Diagnostics.AddError("Unrepairable Membership-Only Partial Delete", teamMemberAddOrphanRemediation+" The planned removal remains owned. Original delete result: "+teamMemberAddDiagnosticError(err)+".")
 				return
 			}
 			resp.Diagnostics.AddError("Batch Member Removal Error", fmt.Sprintf("LiteLLM rejected a member removal. The resource retained the confirmed remote roster for a safe retry: %s", teamMemberAddDiagnosticError(err)))
@@ -888,7 +888,7 @@ func (r *TeamMemberAddResource) Update(ctx context.Context, req resource.UpdateR
 			if membershipOnlyErr == nil && membershipOnly {
 				addTeamMemberAddOrphanMarker(orphanMarkers, verificationMember)
 				setUpdateTeamMemberAddOrphanMarkers(ctx, resp, orphanMarkers)
-				resp.Diagnostics.AddError("Unrepairable v1.98 Membership-Only Partial Delete", teamMemberAddOrphanRemediation+" The planned removal remains owned.")
+				resp.Diagnostics.AddError("Unrepairable Membership-Only Partial Delete", teamMemberAddOrphanRemediation+" The planned removal remains owned.")
 				return
 			}
 			resp.Diagnostics.AddError("Batch Member Removal Read-Back Error", fmt.Sprintf("LiteLLM accepted a removal, but /team/info did not confirm it within five reads: %s", teamMemberAddDiagnosticError(waitErr)))
@@ -1001,7 +1001,7 @@ func (r *TeamMemberAddResource) Delete(ctx context.Context, req resource.DeleteR
 				return
 			}
 		}
-		resp.Diagnostics.AddError("Unrepairable v1.98 Membership-Only State", teamMemberAddOrphanRemediation+" Destroy cannot complete until the upstream partial state is manually remediated.")
+		resp.Diagnostics.AddError("Unrepairable Membership-Only State", teamMemberAddOrphanRemediation+" Destroy cannot complete until the upstream partial state is manually remediated.")
 		return
 	}
 	ownedNow := current.Members
@@ -1026,7 +1026,7 @@ func (r *TeamMemberAddResource) Delete(ctx context.Context, req resource.DeleteR
 
 		if remoteIndex < 0 {
 			setDeleteRecoveredState(ctx, resp, &state, ownedNow, snapshot)
-			resp.Diagnostics.AddError("Unrepairable v1.98 Membership-Only State", teamMemberAddOrphanRemediation+" Destroy cannot complete until the upstream partial state is manually remediated.")
+			resp.Diagnostics.AddError("Unrepairable Membership-Only State", teamMemberAddOrphanRemediation+" Destroy cannot complete until the upstream partial state is manually remediated.")
 			return
 		}
 		deleteBody := map[string]interface{}{"team_id": teamID}
@@ -1052,7 +1052,7 @@ func (r *TeamMemberAddResource) Delete(ctx context.Context, req resource.DeleteR
 			if membershipOnlyErr == nil && membershipOnly {
 				addTeamMemberAddOrphanMarker(orphanMarkers, verificationMember)
 				setDeleteTeamMemberAddOrphanMarkers(ctx, resp, orphanMarkers)
-				resp.Diagnostics.AddError("Unrepairable v1.98 Membership-Only Partial Delete", teamMemberAddOrphanRemediation+" Destroy cannot complete until the upstream partial state is manually remediated. Original delete result: "+teamMemberAddDiagnosticError(deleteErr)+".")
+				resp.Diagnostics.AddError("Unrepairable Membership-Only Partial Delete", teamMemberAddOrphanRemediation+" Destroy cannot complete until the upstream partial state is manually remediated. Original delete result: "+teamMemberAddDiagnosticError(deleteErr)+".")
 				return
 			}
 			resp.Diagnostics.AddError("Batch Member Destroy Error", fmt.Sprintf("LiteLLM rejected a member deletion. Confirmed remote members remain in state for retry: %s", teamMemberAddDiagnosticError(deleteErr)))
@@ -1080,7 +1080,7 @@ func (r *TeamMemberAddResource) Delete(ctx context.Context, req resource.DeleteR
 			if membershipOnlyErr == nil && membershipOnly {
 				addTeamMemberAddOrphanMarker(orphanMarkers, verificationMember)
 				setDeleteTeamMemberAddOrphanMarkers(ctx, resp, orphanMarkers)
-				resp.Diagnostics.AddError("Unrepairable v1.98 Membership-Only Partial Delete", teamMemberAddOrphanRemediation+" Destroy cannot complete until the upstream partial state is manually remediated.")
+				resp.Diagnostics.AddError("Unrepairable Membership-Only Partial Delete", teamMemberAddOrphanRemediation+" Destroy cannot complete until the upstream partial state is manually remediated.")
 				return
 			}
 			resp.Diagnostics.AddError("Batch Member Destroy Read-Back Error", fmt.Sprintf("LiteLLM accepted a deletion, but /team/info did not confirm it within five reads: %s", teamMemberAddDiagnosticError(waitErr)))
@@ -1765,7 +1765,7 @@ func classifyBatchUpdate(snapshot *teamMemberAddSnapshot, current *observedBatch
 		if remoteIndex < 0 {
 			if membershipIndex >= 0 {
 				if _, ownedOrphan := current.Orphans[key]; !ownedOrphan {
-					return nil, nil, nil, fmt.Errorf("a desired addition already has an unowned team_memberships row without a roster entry; do not retry member_add because LiteLLM v1.98 cannot repair or delete this condition through its team-member API; manually remediate it upstream (import only if Terraform must record ownership during remediation)")
+					return nil, nil, nil, fmt.Errorf("a desired addition already has an unowned team_memberships row without a roster entry; do not retry member_add because the provider does not repair or delete this condition through LiteLLM's team-member API; manually remediate it upstream (import only if Terraform must record ownership during remediation)")
 				}
 			}
 			additions = append(additions, member)

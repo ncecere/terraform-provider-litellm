@@ -567,7 +567,7 @@ func (r *UnifiedAccessGroupResource) Update(ctx context.Context, req resource.Up
 			}, nil)
 			observedGroups, verifyErr := r.readUnifiedAccessGroupKeyMembershipWithRetry(ctx, hash)
 			if verifyErr != nil || !stringMembershipEqual(observedGroups, remaining) {
-				detail := "LiteLLM v1.98 did not confirm an exact hash-identified /key/update detach while preserving every unrelated key access group. Terraform did not temporarily add the access-group side or broaden authorization; repair the one-sided key row and retry."
+				detail := "LiteLLM did not confirm an exact hash-identified /key/update detach while preserving every unrelated key access group. Terraform did not temporarily add the access-group side or broaden authorization; repair the one-sided key row and retry."
 				if keyUpdateErr == nil {
 					detail = "LiteLLM accepted the exact key-side detach but did not confirm that every unrelated key access group was preserved. Terraform did not attempt a broader recovery mutation."
 				}
@@ -1681,7 +1681,7 @@ func addUnifiedAccessGroupCacheWarning(diagnostics interface {
 }) {
 	diagnostics.AddWarning(
 		"Peer Worker Authorization Caches May Remain Stale",
-		"Terraform verified durable database membership on both the /v1/access_group row and the /key/info key row. LiteLLM v1.98 provides no API that invalidates every worker's in-memory key cache: after an attach or security-sensitive detach, peer workers may retain their prior authorization decision until their configured cache TTL expires. This warning does not promise cross-worker runtime authorization convergence or a fixed wait time.",
+		"Terraform verified durable database membership on both the /v1/access_group row and the /key/info key row. LiteLLM's access-group endpoints update only the handling worker's in-memory key cache, and LiteLLM 1.104.0 /key/update broadcasts a key-cache eviction to other workers only when the proxy has a Redis cache configured: after an attach or security-sensitive detach, peer workers may retain their prior authorization decision until their configured cache TTL expires. This warning does not promise cross-worker runtime authorization convergence or a fixed wait time.",
 	)
 }
 

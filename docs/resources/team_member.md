@@ -34,14 +34,14 @@ resource "litellm_team_member" "lead" {
 }
 ```
 
-`user_id` and `user_email` are an at-least-one pair, not an exclusive pair. Existing configurations that set both remain valid. When both are set, the provider verifies the canonical identity before create and correlates the exact ID/email pair in the authoritative team roster; it does not rely on endpoint precedence to choose one silently. LiteLLM v1.98 may return a null account email in `updated_users`, including for a new user selected by ID. That account field is not required for membership correlation.
+`user_id` and `user_email` are an at-least-one pair, not an exclusive pair. Existing configurations that set both remain valid. When both are set, the provider verifies the canonical identity before create and correlates the exact ID/email pair in the authoritative team roster; it does not rely on endpoint precedence to choose one silently. LiteLLM may return a null account email in `updated_users`, including for a new user selected by ID. That account field is not required for membership correlation.
 
 ## Argument reference
 
 - `team_id` - (Required, Forces replacement) Team ID.
 - `user_id` - (Optional, Computed, Forces replacement when a configured canonical value changes) User ID. At least one of `user_id` or `user_email` must be set. An email-only create records the canonical ID in state.
 - `user_email` - (Optional) Email representation used to resolve and correlate team-roster identity. At least one identity must be set. Matching is case-insensitive. This resource does not manage or update the user's account email; an account response can disprove a conflicting identity during preflight, but it is not copied into this argument.
-- `role` - (Required) Team role. LiteLLM v1.98 accepts exactly `admin` or `user`.
+- `role` - (Required) Team role. LiteLLM accepts exactly `admin` or `user`.
 - `max_budget_in_team` - (Optional) Maximum member budget. Removing a previously configured value sends explicit JSON `null` to the native update endpoint.
 - `budget_duration` - (Optional) Recurring member-budget reset interval. Use a positive integer followed by `s`, `m`, `h`, `d`, or `w`; one of `hourly`, `daily`, `weekly`, or `monthly`; or exactly `1mo`. Removing a configured duration sends explicit JSON `null`.
 
@@ -55,31 +55,31 @@ Refresh, update, delete, and partial recovery always use `team_id` and canonical
 
 ## Read, drift, and budgets
 
-The resource reads the exact LiteLLM v1.98 `/team/info` roster and membership collections:
+The resource reads LiteLLM's exact `/team/info` roster and membership collections:
 
 - `members_with_roles` is authoritative for membership role and email-to-ID correlation.
 - `team_memberships` and its nested budget relation are authoritative when a member budget exists.
-- A v1.98 member with no configured maximum or duration and no `team_info.metadata["team_member_budget_id"]` default is intentionally roster-only. In that exact budgetless shape, an empty `updated_team_memberships` add response and no later membership row are healthy complete state. Create, refresh, import, and role changes converge from the roster alone.
+- LiteLLM 1.98 stores a member with no configured maximum or duration and no `team_info.metadata["team_member_budget_id"]` default only in the roster. In that exact budgetless shape, an empty `updated_team_memberships` add response and no later membership row are healthy complete state. Create, refresh, import, and role changes converge from the roster alone. LiteLLM 1.104.0 also writes a membership row without a budget for such a member; that shape is also complete.
 - A requested maximum or duration, or a non-null team member-budget default, requires a membership row. If that row is missing, the provider retains the roster identity but reports a partial error.
 - A budget can be added later to a healthy roster-only member. The resulting membership and nested budget must then appear during read-back.
 - Omitted optional budget arguments remain unmanaged and are not adopted during refresh.
 - Configured values, including explicit clears, must be confirmed by authoritative read-back.
 - Duplicate IDs, duplicate case-folded email matches, or an ID/email pair that points at different roster entries stop reconciliation instead of selecting one row.
 
-LiteLLM v1.98 can update a historical budget row in place. Role-only updates omit every unchanged budget field, including `budget_duration`; they therefore do not touch a shared historical row or its reset schedule. Budget fields are sent only when their owned Terraform value changes, with explicit JSON `null` reserved for a clear. Whenever either budget field is transmitted, the provider runs shared-row safety first and refuses a non-current row shared by another membership. The current shared member-budget row is identified only by `team_info.metadata["team_member_budget_id"]`; it is never inferred from the team ID. v1.98 safely clones the selected member away from that current default.
+LiteLLM can update a historical budget row in place. Role-only updates omit every unchanged budget field, including `budget_duration`; they therefore do not touch a shared historical row or its reset schedule. Budget fields are sent only when their owned Terraform value changes, with explicit JSON `null` reserved for a clear. Whenever either budget field is transmitted, the provider runs shared-row safety first and refuses a non-current row shared by another membership. The current shared member-budget row is identified only by `team_info.metadata["team_member_budget_id"]`; it is never inferred from the team ID. LiteLLM safely clones the selected member away from that current default.
 
 An exact HTTP 404 from `/team/info` means the team is gone and removes the resource from state. Error text that merely contains `404` is not deletion evidence.
 
-## Partial failures and LiteLLM v1.98 limits
+## Partial failures and LiteLLM limits
 
-When a budget membership is required, LiteLLM writes `team_memberships` and optional budget data before appending `members_with_roles`. The provider retains a uniquely recoverable canonical ID after an accepted add even if verification fails. It never writes a requested role into state as confirmed when the roster write is absent.
+When a budget membership is required, LiteLLM 1.98 writes `team_memberships` and optional budget data before appending `members_with_roles`; LiteLLM 1.104.0 makes these writes in one database transaction. The provider retains a uniquely recoverable canonical ID after an accepted add even if verification fails. It never writes a requested role into state as confirmed when the roster write is absent.
 
 If a malformed or truncated 2xx add response is followed by a propagation-delayed read that still shows the pre-create roster, state retains only the team identity, any proven canonical user ID, and the configured email representation. Role and budget attributes remain unknown rather than copying requested plan values. A provider-private uncertain-ownership marker makes later absent reads retain that recovery state with a hard diagnostic and blocks update or destroy from guessing at an unconfirmed operation. The first authoritative roster or membership observation reconciles the real values and clears the marker. A definitively non-2xx operation does not establish this ownership marker or retain planned state.
 
-A membership-only v1.98 row cannot be repaired safely through the team-member API:
+A membership-only row, which LiteLLM 1.98 partial operations can leave behind, cannot be repaired safely through the team-member API:
 
 - `/team/member_update` can return 2xx and mutate budget data without restoring `members_with_roles`.
-- `/team/member_delete` first requires the missing roster identity and cannot remove the orphan.
+- LiteLLM 1.98 `/team/member_delete` first requires the missing roster identity and cannot remove the orphan. LiteLLM 1.104.0 removes the orphan row only when the user's `teams` list still names the team; the provider does not rely on that.
 - retrying `/team/member_add` can create another budget row.
 
 Read, update, and destroy therefore retain ownership and return an administrator-remediation error without sending an unsafe repair or delete. Remove the inconsistent upstream row using LiteLLM administrator/support guidance, or upgrade to a corrected LiteLLM release, then refresh. A roster-only partial is also retained and blocks update; destroy may use the roster-backed delete path but succeeds only after both authoritative rows are absent.

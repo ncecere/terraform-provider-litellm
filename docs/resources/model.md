@@ -169,13 +169,13 @@ The following arguments are supported:
 
 * `base_model` - (Required) string. The actual model identifier from the provider (e.g., "gpt-4", "claude-2").
 
-* `tier` - (Optional) string. The usage tier for this model. LiteLLM v1.98 accepts exactly `"free"` or `"paid"`; the provider validates the value during planning. Default: `"free"`.
+* `tier` - (Optional) string. The usage tier for this model. LiteLLM accepts exactly `"free"` or `"paid"`; the provider validates the value during planning. Default: `"free"`.
 
-* `team_id` - (Optional) string. Associate the model with a specific team. Changing or removing an owned team association replaces the model because LiteLLM v1.98 does not provide a reliable in-place detach operation.
+* `team_id` - (Optional) string. Associate the model with a specific team. Changing or removing an owned team association replaces the model because LiteLLM does not provide a reliable in-place detach operation.
 
 * `access_groups` - (Optional) list(string). List of access groups this model belongs to. Teams and keys with access to these groups can use this model. See [LiteLLM Access Groups](https://docs.litellm.ai/docs/proxy/model_access_groups) for more details.
 
-* `mode` - (Optional) string. The intended use of the model. Removing an owned mode replaces the model because LiteLLM may infer and retain a mode during updates. LiteLLM v1.98 keeps this request field extensible rather than declaring an endpoint enum; common values include:
+* `mode` - (Optional) string. The intended use of the model. Removing an owned mode replaces the model because LiteLLM may infer and retain a mode during updates. LiteLLM keeps this request field extensible rather than declaring an endpoint enum; common values include:
   * `chat`
   * `completion`
   * `embedding`
@@ -268,7 +268,7 @@ The following arguments are supported:
 
 * `additional_litellm_params_json` - (Optional, Computed, Sensitive) a lossless JSON-object sibling for heterogeneous custom `litellm_params` values. Use it when the legacy `additional_litellm_params` `map(string)` cannot preserve native types.
 
-  * The root must be one non-null JSON object with unique members. Native strings, booleans, nested objects and arrays, and arbitrary-size integers remain distinct. JSON null is rejected at every depth because LiteLLM v1.98's `/model/info` masking layer stringifies it, so its persisted type cannot be confirmed. Direct numeric, boolean, or null values beneath sensitive-named map keys are also rejected because that layer converts them to masked strings; native numbers and booleans inside sensitive lists remain supported. The exact string `"None"` and an empty string directly beneath a sensitive-named map key are rejected because they are indistinguishable from that lossy null conversion. Decimal and exponent values must round-trip exactly through LiteLLM's Python-float behavior; lossy values such as `1.0000000000000001` are rejected before any request.
+  * The root must be one non-null JSON object with unique members. Native strings, booleans, nested objects and arrays, and arbitrary-size integers remain distinct. JSON null is rejected at every depth because LiteLLM's `/model/info` masking layer stringifies it, so its persisted type cannot be confirmed. Direct numeric, boolean, or null values beneath sensitive-named map keys are also rejected because that layer converts them to masked strings; native numbers and booleans inside sensitive lists remain supported. The exact string `"None"` and an empty string directly beneath a sensitive-named map key are rejected because they are indistinguishable from that lossy null conversion. Decimal and exponent values must round-trip exactly through LiteLLM's Python-float behavior; lossy values such as `1.0000000000000001` are rejected before any request.
   * Top-level keys must be disjoint from `additional_litellm_params` and every dedicated `litellm_model` parameter surface, including provider/model routing, limits, API settings, thinking/reasoning, AWS and Vertex settings, credential references, and costs. Credential fields removed by `/model/info` (`client_secret` and `vertex_ai_credentials`) are also unavailable. `max_budget` and `budget_duration` are reserved for the separate issue #223 model-budget lifecycle. Overlap is rejected before any request without including keys or values in diagnostics.
   * Terraform owns only the recursively configured JSON paths. API-only parameters are never adopted into this attribute or duplicated into the legacy map under a JSON-owned top-level key. Imports and states upgraded from an earlier provider keep the attribute null and unmanaged. `{}` is an explicitly managed empty view.
   * Any takeover, semantic or shape change, nested removal, clear, or attribute removal replaces the model. An unresolved value on an existing model also plans replacement. Formatting-only equality sends no PATCH and semantically equal reads preserve the configured spelling.
@@ -324,7 +324,7 @@ The following arguments are supported:
 
 * `additional_model_info_json` - (Optional, Computed, Sensitive) a lossless JSON-object sibling for heterogeneous custom `model_info` values. Use this attribute when string coercion in `additional_model_info` cannot preserve the intended type.
 
-  * The root must be one non-null JSON object with unique members. Nested objects, arrays, strings, booleans, numbers, and nested JSON null values are preserved without provider-side `float64` or string coercion. LiteLLM v1.98 omits arbitrary top-level null members when serializing `ModelInfo`, so the provider rejects them before any request; place a null inside a nested object or array when its presence is significant. Integers remain exact. Decimal/exponent values must survive LiteLLM v1.98's Python-float request/persistence round trip exactly; lossy values such as `1.0000000000000001` are rejected before any request instead of causing perpetual drift.
+  * The root must be one non-null JSON object with unique members. Nested objects, arrays, strings, booleans, numbers, and nested JSON null values are preserved without provider-side `float64` or string coercion. LiteLLM omits arbitrary top-level null members when serializing `ModelInfo`, so the provider rejects them before any request; place a null inside a nested object or array when its presence is significant. Integers remain exact. Decimal/exponent values must survive LiteLLM's Python-float request/persistence round trip exactly; lossy values such as `1.0000000000000001` are rejected before any request instead of causing perpetual drift.
   * Top-level keys must be disjoint from `additional_model_info` and from fields managed by dedicated model attributes, including LiteLLM's mirrored `input_cost_per_token` and `output_cost_per_token` fields. Overlap is rejected before any request, without including keys or values in diagnostics.
   * Top-level pricing keys are rejected before any request, as for `additional_model_info`; see [Custom pricing](#custom-pricing).
   * Terraform manages only recursively owned JSON paths. Cost-map-derived and other API-only `model_info` fields are not adopted on read or import.
@@ -424,7 +424,7 @@ resource "litellm_model" "gpt" {
 
 ## Clear and Replacement Behavior
 
-LiteLLM v1.98 merges model updates, so Terraform distinguishes fields with a verified clear representation from fields that cannot be removed safely.
+LiteLLM merges model updates, so Terraform distinguishes fields with a verified clear representation from fields that cannot be removed safely.
 
 The required `model_name`, `custom_llm_provider`, and `base_model` arguments can be changed in place but cannot be omitted. Setting `tier` back to its default (`"free"`) and setting a new non-empty `mode` are also in-place updates.
 

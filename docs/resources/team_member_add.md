@@ -2,7 +2,7 @@
 
 Manages an explicitly owned batch of members in a LiteLLM team.
 
-> **Deprecated for new configurations:** prefer `for_each` with [`litellm_team_member`](team_member.md). The batch resource remains supported for existing state and HCL. It is useful when every member shares one `max_budget_in_team`, but the single-member resource has a simpler failure and import boundary. In the exact LiteLLM v1.98 membership-only partial condition described below, neither `/team/member_update` nor `/team/member_delete` can repair or delete the orphan; manual upstream remediation is required.
+> **Deprecated for new configurations:** prefer `for_each` with [`litellm_team_member`](team_member.md). The batch resource remains supported for existing state and HCL. It is useful when every member shares one `max_budget_in_team`, but the single-member resource has a simpler failure and import boundary. In the exact membership-only partial condition described below, which LiteLLM 1.98 partial operations can leave behind, `/team/member_update` cannot repair the orphan and the provider does not send `/team/member_delete` to remove it; manual upstream remediation is required.
 
 ## Minimal Example
 
@@ -94,7 +94,7 @@ One or more `member` blocks are required:
 - `user_email` - (Optional) User email. At least one identity field must be non-empty.
 - `role` - (Required) Team role: `admin` or `user`.
 
-Identity values must be unique within the batch. Email identity follows LiteLLM v1.98's case-insensitive matching, so case-only email duplicates are rejected before any mutation and an existing unowned case alias is not adopted. The configured email spelling is preserved when it still resolves safely. If an ID-only block and an email-only block resolve to the same LiteLLM user, reconciliation stops with an error rather than silently merging or adopting the duplicate.
+Identity values must be unique within the batch. Email identity follows LiteLLM's case-insensitive matching, so case-only email duplicates are rejected before any mutation and an existing unowned case alias is not adopted. The configured email spelling is preserved when it still resolves safely. If an ID-only block and an email-only block resolve to the same LiteLLM user, reconciliation stops with an error rather than silently merging or adopting the duplicate.
 
 ### Email-only lifecycle
 
@@ -116,7 +116,7 @@ The resource owns only the member identities already recorded in its `member` st
 - Create and update refuse to adopt a matching member that is present remotely but is not already owned. Import that member explicitly instead.
 - Additions complete before removals. A failed destination addition therefore does not revoke an existing membership.
 - Role and configured budget changes use LiteLLM's native `/team/member_update` endpoint.
-- LiteLLM v1.98 updates a non-current membership budget row in place. The current shared team-member budget ID is the exact string in `team_info.metadata["team_member_budget_id"]`; it is never inferred from `team_id`. Before a budget write, the provider groups every `team_memberships.budget_id` reference, including membership-only and unrelated rows. It refuses a historical row shared with an unrelated member, updates a compatible all-owned historical group once in deterministic order, and rejects a shared group whose retained desired state is incompatible. Updating the current metadata-identified default is safe because v1.98 clones only the selected member to a private budget row.
+- LiteLLM updates a non-current membership budget row in place. The current shared team-member budget ID is the exact string in `team_info.metadata["team_member_budget_id"]`; it is never inferred from `team_id`. Before a budget write, the provider groups every `team_memberships.budget_id` reference, including membership-only and unrelated rows. It refuses a historical row shared with an unrelated member, updates a compatible all-owned historical group once in deterministic order, and rejects a shared group whose retained desired state is incompatible. Updating the current metadata-identified default is safe because LiteLLM clones only the selected member to a private budget row.
 
 A malformed or partial `/team/info` response is not treated as an empty roster. Every membership row must include `budget_id` and must serialize `litellm_budget_table` as either an object or explicit JSON `null`; omission is a malformed partial response and never clears prior budget state. The provider returns an error and retains prior state. Exact HTTP 404 responses mean the team is absent; other failures, including a 500 response containing the text `404`, retain state and return a safe diagnostic.
 
@@ -124,9 +124,9 @@ After a successful write, authoritative reads are bounded to five attempts. Retr
 
 ## Partial Failures
 
-LiteLLM performs member operations individually. LiteLLM v1.98 can create the `team_memberships` row and member budget before writing `members_with_roles`. If an add then fails, a newly matching membership row proves the operation's retained ownership even when the roster entry is absent. The provider stores the recoverable configured identity and budget, leaves the unconfirmed role unknown, and returns an error instead of orphaning or claiming success.
+LiteLLM performs member operations individually. LiteLLM 1.98 can create the `team_memberships` row and member budget before writing `members_with_roles`; LiteLLM 1.104.0 makes these writes in one database transaction. If an add then fails, a newly matching membership row proves the operation's retained ownership even when the roster entry is absent. The provider stores the recoverable configured identity and budget, leaves the unconfirmed role unknown, and returns an error instead of orphaning or claiming success.
 
-LiteLLM v1.98 has no safe native operation that inserts only the missing roster entry. Retrying `/team/member_add` can create another budget. A direct user-ID `/team/member_update` can return 2xx and may mutate the membership budget, but it does **not** append `members_with_roles`; the provider therefore never uses that apparent success as a repair. `/team/member_delete` requires the identity in `members_with_roles` before it removes `team_memberships`, so only delete returns 400 for the membership-only orphan. While the row remains, refresh, apply, and destroy retain explicit ownership with an unknown role and a permanent actionable error, without sending either repair attempt.
+LiteLLM has no safe native operation that inserts only the missing roster entry. Retrying `/team/member_add` can create another budget. A direct user-ID `/team/member_update` can return 2xx and may mutate the membership budget, but it does **not** append `members_with_roles`; the provider therefore never uses that apparent success as a repair. LiteLLM 1.98 `/team/member_delete` requires the identity in `members_with_roles` before it removes `team_memberships`, so only delete returns 400 for the membership-only orphan. LiteLLM 1.104.0 removes the orphan row only when the user's `teams` list still names the team. While the row remains, refresh, apply, and destroy retain explicit ownership with an unknown role and a permanent actionable error, without sending either repair attempt.
 
 Provider-retained partial ownership is tracked privately by canonical user ID; this does not change the public schema beyond the documented computed `user_id`, the resource ID, or import syntax. It is distinct from a composite import's initially unknown role. An unresolved composite import remains unchanged and errors until its identity appears in the authoritative roster; an unmatched membership row is not enough to adopt it.
 

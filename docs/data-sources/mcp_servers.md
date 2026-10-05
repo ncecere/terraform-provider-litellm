@@ -65,7 +65,7 @@ The following attributes are exported:
   * `url` - (Sensitive) Server URL, when configured.
   * `spec_path` - (Sensitive) LiteLLM-local path or HTTP(S) URL of an OpenAPI specification, when configured.
   * `transport` - Transport type (http, sse, stdio).
-  * `spec_version` - Deprecated compatibility field; LiteLLM v1.98 does not return an MCP specification version.
+  * `spec_version` - Deprecated compatibility field; LiteLLM does not return an MCP specification version.
   * `auth_type` - Authentication type.
   * `mcp_access_groups` - Access groups associated with the server.
   * `mcp_info_json` - Sensitive canonical complete MCP info JSON object, or null when the parent is omitted or masked. Present non-object values reject the read.

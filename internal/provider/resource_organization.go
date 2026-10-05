@@ -55,26 +55,26 @@ func (r *OrganizationResource) Metadata(_ context.Context, req resource.Metadata
 
 func (r *OrganizationResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "Manages a LiteLLM organization. Budget controls are read authoritatively from LiteLLM v1.98's nested litellm_budget_table relation.",
+		Description: "Manages a LiteLLM organization. Budget controls are read authoritatively from LiteLLM's nested litellm_budget_table relation.",
 		Version:     1,
 		Attributes: map[string]schema.Attribute{
 			"id":                    schema.StringAttribute{Description: "The unique identifier for this organization (same as organization_id).", Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
 			"organization_id":       schema.StringAttribute{Description: "The organization ID. If not specified, one will be generated.", Optional: true, Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown(), stringplanmodifier.RequiresReplace()}},
 			"organization_alias":    schema.StringAttribute{Description: "The name/alias of the organization.", Required: true},
 			"models":                schema.ListAttribute{Description: "The models the organization has access to.", Optional: true, Computed: true, ElementType: types.StringType},
-			"budget_id":             schema.StringAttribute{Description: "The ID for the organization's budget. Reassociating an existing organization is not supported safely by LiteLLM v1.98.", Optional: true, Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
+			"budget_id":             schema.StringAttribute{Description: "The ID for the organization's budget. Reassociating an existing organization is not supported safely by LiteLLM.", Optional: true, Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
 			"max_budget":            schema.Float64Attribute{Description: "Maximum hard budget for the organization. From LiteLLM 1.103.0, 0 means zero allowance (all spend is blocked); omit the attribute for an unlimited budget.", Optional: true},
 			"soft_budget":           schema.Float64Attribute{Description: "Soft budget alert threshold for the organization.", Optional: true},
 			"tpm_limit":             schema.Int64Attribute{Description: "Maximum tokens per minute for the organization.", Optional: true},
 			"rpm_limit":             schema.Int64Attribute{Description: "Maximum requests per minute for the organization.", Optional: true},
 			"max_parallel_requests": schema.Int64Attribute{Description: "Maximum parallel requests for the organization budget.", Optional: true},
-			"model_rpm_limit":       schema.MapAttribute{Description: "The RPM limit per model. Updated through v1.98's transactional complete-metadata replacement so owned keys can clear safely.", Optional: true, Computed: true, ElementType: types.Int64Type, Validators: []validator.Map{mapvalidator.NoNullValues()}},
-			"model_tpm_limit":       schema.MapAttribute{Description: "The TPM limit per model. Updated through v1.98's transactional complete-metadata replacement so owned keys can clear safely.", Optional: true, Computed: true, ElementType: types.Int64Type, Validators: []validator.Map{mapvalidator.NoNullValues()}},
+			"model_rpm_limit":       schema.MapAttribute{Description: "The RPM limit per model. Updated through LiteLLM's transactional complete-metadata replacement so owned keys can clear safely.", Optional: true, Computed: true, ElementType: types.Int64Type, Validators: []validator.Map{mapvalidator.NoNullValues()}},
+			"model_tpm_limit":       schema.MapAttribute{Description: "The TPM limit per model. Updated through LiteLLM's transactional complete-metadata replacement so owned keys can clear safely.", Optional: true, Computed: true, ElementType: types.Int64Type, Validators: []validator.Map{mapvalidator.NoNullValues()}},
 			"budget_duration":       schema.StringAttribute{Description: "Budget reset duration (for example, '30d' or '1h').", Optional: true},
 			"metadata":              schema.MapAttribute{Description: "Metadata for the organization.", Optional: true, Computed: true, ElementType: types.StringType},
 			"metadata_json":         schema.StringAttribute{Description: "Additional organization metadata as a semantic JSON object.", Optional: true, Computed: true, Sensitive: true, Validators: []validator.String{keySemanticDictionaryValidator{}}},
-			"blocked":               schema.BoolAttribute{Description: "Deprecated compatibility field. LiteLLM v1.98 has no persistent organization blocked column; false is accepted as a no-op and true is rejected.", Optional: true, Computed: true, DeprecationMessage: "LiteLLM v1.98 does not persist organization blocked state. Remove this argument; use supported team/project controls instead."},
-			"tags":                  schema.ListAttribute{Description: "Deprecated compatibility field. LiteLLM v1.98 has no persistent organization tags column; an empty list is accepted as a no-op and non-empty values are rejected.", Optional: true, Computed: true, ElementType: types.StringType, DeprecationMessage: "LiteLLM v1.98 does not persist organization tags. Remove this argument or store labels in metadata."},
+			"blocked":               schema.BoolAttribute{Description: "Deprecated compatibility field. LiteLLM has no persistent organization blocked column; false is accepted as a no-op and true is rejected.", Optional: true, Computed: true, DeprecationMessage: "LiteLLM does not persist organization blocked state. Remove this argument; use supported team/project controls instead."},
+			"tags":                  schema.ListAttribute{Description: "Deprecated compatibility field. LiteLLM has no persistent organization tags column; an empty list is accepted as a no-op and non-empty values are rejected.", Optional: true, Computed: true, ElementType: types.StringType, DeprecationMessage: "LiteLLM does not persist organization tags. Remove this argument or store labels in metadata."},
 			"created_at":            schema.StringAttribute{Description: "Timestamp when the organization was created.", Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
 		},
 	}
@@ -108,7 +108,7 @@ func (r *OrganizationResource) ModifyPlan(ctx context.Context, req resource.Modi
 	hasState := !req.State.Raw.IsNull()
 	importedBudget := false
 	if !hasState && !config.BudgetID.IsNull() && organizationBudgetControlsPresentInConfig(&config) {
-		resp.Diagnostics.AddAttributeError(path.Root("budget_id"), "Unsafe Shared Organization Budget Controls", "budget_id cannot be combined with organization budget controls during creation because LiteLLM v1.98 ignores or strips those controls for an existing shared budget.")
+		resp.Diagnostics.AddAttributeError(path.Root("budget_id"), "Unsafe Shared Organization Budget Controls", "budget_id cannot be combined with organization budget controls during creation because LiteLLM ignores or strips those controls for an existing shared budget.")
 	}
 	if hasState {
 		resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
@@ -169,17 +169,17 @@ func (r *OrganizationResource) ModifyPlan(ctx context.Context, req resource.Modi
 	if !config.Blocked.IsNull() && !config.Blocked.IsUnknown() {
 		legacyUnchanged := hasState && !state.Blocked.IsNull() && !state.Blocked.IsUnknown() && state.Blocked.Equal(plan.Blocked)
 		if config.Blocked.ValueBool() && !legacyUnchanged {
-			resp.Diagnostics.AddAttributeError(path.Root("blocked"), "Unsupported Organization Blocked Setting", "LiteLLM v1.98 has no persistent organization blocked field. Setting blocked=true would report false success, so the provider refuses this plan.")
+			resp.Diagnostics.AddAttributeError(path.Root("blocked"), "Unsupported Organization Blocked Setting", "LiteLLM has no persistent organization blocked field. Setting blocked=true would report false success, so the provider refuses this plan.")
 		} else {
-			resp.Diagnostics.AddAttributeWarning(path.Root("blocked"), "Deprecated Organization Compatibility Field", "LiteLLM v1.98 does not persist organization blocked state. This value is retained only for compatibility and is never sent to LiteLLM.")
+			resp.Diagnostics.AddAttributeWarning(path.Root("blocked"), "Deprecated Organization Compatibility Field", "LiteLLM does not persist organization blocked state. This value is retained only for compatibility and is never sent to LiteLLM.")
 		}
 	}
 	if !config.Tags.IsNull() && !config.Tags.IsUnknown() {
 		legacyUnchanged := hasState && !state.Tags.IsNull() && !state.Tags.IsUnknown() && state.Tags.Equal(plan.Tags)
 		if len(config.Tags.Elements()) > 0 && !legacyUnchanged {
-			resp.Diagnostics.AddAttributeError(path.Root("tags"), "Unsupported Organization Tags", "LiteLLM v1.98 has no persistent organization tags field. Non-empty tags would report false success, so the provider refuses this plan. Store labels in metadata instead.")
+			resp.Diagnostics.AddAttributeError(path.Root("tags"), "Unsupported Organization Tags", "LiteLLM has no persistent organization tags field. Non-empty tags would report false success, so the provider refuses this plan. Store labels in metadata instead.")
 		} else {
-			resp.Diagnostics.AddAttributeWarning(path.Root("tags"), "Deprecated Organization Compatibility Field", "LiteLLM v1.98 does not persist organization tags. This value is retained only for compatibility and is never sent to LiteLLM.")
+			resp.Diagnostics.AddAttributeWarning(path.Root("tags"), "Deprecated Organization Compatibility Field", "LiteLLM does not persist organization tags. This value is retained only for compatibility and is never sent to LiteLLM.")
 		}
 	}
 	if hasState && !resp.Diagnostics.HasError() {
@@ -483,11 +483,11 @@ func (r *OrganizationResource) Update(ctx context.Context, req resource.UpdateRe
 		return
 	}
 	if !plan.Blocked.IsNull() && !plan.Blocked.IsUnknown() && plan.Blocked.ValueBool() && !plan.Blocked.Equal(state.Blocked) {
-		resp.Diagnostics.AddError("Unsupported Organization Blocked Setting", "blocked=true is not persisted by LiteLLM v1.98; no API call was made.")
+		resp.Diagnostics.AddError("Unsupported Organization Blocked Setting", "blocked=true is not persisted by LiteLLM; no API call was made.")
 		return
 	}
 	if !plan.Tags.IsNull() && !plan.Tags.IsUnknown() && len(plan.Tags.Elements()) > 0 && !plan.Tags.Equal(state.Tags) {
-		resp.Diagnostics.AddError("Unsupported Organization Tags", "Non-empty organization tags are not persisted by LiteLLM v1.98; no API call was made.")
+		resp.Diagnostics.AddError("Unsupported Organization Tags", "Non-empty organization tags are not persisted by LiteLLM; no API call was made.")
 		return
 	}
 	updateRequest, err := buildOrganizationUpdateRequest(ctx, &plan, &state)
@@ -675,13 +675,13 @@ func (r *OrganizationResource) buildOrganizationRequest(ctx context.Context, dat
 
 func (r *OrganizationResource) buildOrganizationCreateRequest(ctx context.Context, data *OrganizationResourceModel) (map[string]interface{}, error) {
 	if knownString(data.BudgetID) && organizationBudgetControlsConfigured(data) {
-		return nil, fmt.Errorf("budget_id cannot be combined with organization budget controls during creation because LiteLLM v1.98 ignores or strips those controls for an existing shared budget")
+		return nil, fmt.Errorf("budget_id cannot be combined with organization budget controls during creation because LiteLLM ignores or strips those controls for an existing shared budget")
 	}
 	if !data.Blocked.IsNull() && !data.Blocked.IsUnknown() && data.Blocked.ValueBool() {
-		return nil, fmt.Errorf("blocked=true is unsupported because LiteLLM v1.98 has no persistent organization blocked field")
+		return nil, fmt.Errorf("blocked=true is unsupported because LiteLLM has no persistent organization blocked field")
 	}
 	if !data.Tags.IsNull() && !data.Tags.IsUnknown() && len(data.Tags.Elements()) > 0 {
-		return nil, fmt.Errorf("non-empty tags are unsupported because LiteLLM v1.98 has no persistent organization tags field")
+		return nil, fmt.Errorf("non-empty tags are unsupported because LiteLLM has no persistent organization tags field")
 	}
 	request := map[string]interface{}{"organization_alias": data.OrganizationAlias.ValueString()}
 	if knownString(data.OrganizationID) {
@@ -722,7 +722,7 @@ func buildOrganizationUpdateRequest(ctx context.Context, plan, state *Organizati
 	}
 	if !plan.Models.IsUnknown() && !plan.Models.Equal(state.Models) {
 		if plan.Models.IsNull() {
-			return nil, fmt.Errorf("models cannot be cleared with null on LiteLLM v1.98; configure an empty list instead")
+			return nil, fmt.Errorf("models cannot be cleared with null on LiteLLM; configure an empty list instead")
 		}
 		models, err := stringListRequest(ctx, plan.Models, "models")
 		if err != nil {

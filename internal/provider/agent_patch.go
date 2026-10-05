@@ -141,18 +141,18 @@ func validateAgentCardV198RoundTrip(card map[string]interface{}) error {
 	}
 	for key := range card {
 		if !allowed[key] {
-			return fmt.Errorf("authoritative agent card contains a path LiteLLM v1.98 cannot round-trip")
+			return fmt.Errorf("authoritative agent card contains a path LiteLLM cannot round-trip")
 		}
 	}
 	if raw, present := card["capabilities"]; present {
 		capabilities, ok := raw.(map[string]interface{})
 		if !ok {
-			return fmt.Errorf("authoritative agent card contains a path LiteLLM v1.98 cannot round-trip")
+			return fmt.Errorf("authoritative agent card contains a path LiteLLM cannot round-trip")
 		}
 		for key, value := range capabilities {
 			streaming, isBool := value.(bool)
 			if key != "streaming" || !isBool || !streaming {
-				return fmt.Errorf("authoritative agent card contains a path LiteLLM v1.98 cannot round-trip")
+				return fmt.Errorf("authoritative agent card contains a path LiteLLM cannot round-trip")
 			}
 		}
 	}

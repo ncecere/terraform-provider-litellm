@@ -293,7 +293,7 @@ rm provider.tf variables.tf terraform.tfvars
   `-var='clear_project_budget=true'` to verify explicit budget and reset clears.
 - `organization_compatibility_defaults.tf` proves only the deprecated harmless
   `blocked = false` and `tags = []` compatibility values. Non-default values are
-  intentionally rejected because LiteLLM v1.98 cannot persist them.
+  intentionally rejected because LiteLLM cannot persist them.
 - Provider credentials can also be set via environment variables instead of
   tfvars:
   ```bash
