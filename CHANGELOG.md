@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - stdio MCP servers are disabled unless the proxy process sets `LITELLM_ENABLE_MCP_STDIO=true`; creating or switching a `litellm_mcp_server` to stdio otherwise fails.
   - Team-admin (non proxy-admin) keys can no longer update teams or projects unless `general_settings.team_admin_editable_team_fields` allows it. Manage `litellm_team` and `litellm_project` with a proxy-admin or org-admin key.
   - Pricing in `model_info` is ignored from LiteLLM 1.102.0. `litellm_model` now rejects pricing keys in `additional_model_info` and `additional_model_info_json` at plan time. Prices already stored in `model_info` keep applying after the LiteLLM upgrade, but move them to the dedicated cost attributes or `additional_litellm_params` (see the `litellm_model` "Custom pricing" documentation) before changing them. Dedicated cost attributes are unaffected.
+  - Deleting a model now removes its name from unified access groups when no other deployment serves it, and renaming a model rewrites the name in access groups and in key, team, organization, project, and user `models` allowlists. Add `lifecycle { create_before_destroy = true }` to models referenced by access groups so replacements keep the name served; the `litellm_model` documentation describes the effects.
   - When `config.yaml` declares a setting, runtime writes to that setting are refused, so manage router fallbacks either in the file or through `litellm_fallback`, not both.
 
 ### Security

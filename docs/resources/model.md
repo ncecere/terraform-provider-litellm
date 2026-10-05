@@ -401,6 +401,27 @@ Models created on LiteLLM 1.101 or earlier may store prices in `model_info`. Aft
 2. Add `lifecycle { create_before_destroy = true }` to the model. Removing a key from `additional_model_info` replaces the model, and creating the replacement first keeps a deployment serving the model name, so LiteLLM 1.104.0 does not remove the name from access groups when the old deployment is deleted.
 3. Run `terraform apply`. The replacement stores the price in `litellm_params`, which `/model/info` lists in `model_info.pricing_overrides`.
 
+## Effects on access groups and allowlists
+
+LiteLLM 1.104.0 keeps other records in sync with model deployments:
+
+* Deleting a model removes its `model_name` from unified access groups (`litellm_unified_access_group.access_model_names`) when no other deployment, from the database or `config.yaml`, still serves that name.
+* Renaming a model (changing `model_name`, an in-place update) rewrites that name in access groups and in the `models` allowlists of keys, teams, organizations, projects, and users.
+
+Terraform does not see these server-side edits until the affected resources are refreshed, which then shows drift. Because many `litellm_model` changes force replacement, and the default destroy-then-create order deletes the only deployment serving the name, add `lifecycle { create_before_destroy = true }` to models that access groups reference:
+
+```hcl
+resource "litellm_model" "gpt" {
+  model_name          = "gpt-4o-internal"
+  custom_llm_provider = "openai"
+  base_model          = "gpt-4o"
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+```
+
 ## Clear and Replacement Behavior
 
 LiteLLM v1.98 merges model updates, so Terraform distinguishes fields with a verified clear representation from fields that cannot be removed safely.
