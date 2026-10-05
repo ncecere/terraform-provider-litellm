@@ -105,15 +105,15 @@ internal_testing/
     team_member_add_full.tf
     user_minimal.tf
     user_full.tf
-    organization_minimal.tf
-    organization_full.tf
-    organization_compatibility_defaults.tf
+    organization_minimal.tf         # Enterprise-only from LiteLLM 1.102.0
+    organization_full.tf            # Enterprise-only from LiteLLM 1.102.0
+    organization_compatibility_defaults.tf # Enterprise-only from LiteLLM 1.102.0
     project_minimal.tf              # Enterprise-only
     project_full.tf                 # Enterprise-only nested-budget coverage
     project_semantic_json.tf        # Enterprise-only heterogeneous metadata
     project_budget_clear.tf         # two-apply set-to-clear fixture
-    organization_member_minimal.tf
-    organization_member_full.tf
+    organization_member_minimal.tf  # Enterprise-only from LiteLLM 1.102.0
+    organization_member_full.tf     # Enterprise-only from LiteLLM 1.102.0
     budget_minimal.tf
     budget_full.tf
     credential_minimal.tf        # non-empty values-only create
@@ -145,7 +145,7 @@ internal_testing/
     model.tf
     key.tf
     team.tf
-    organization.tf
+    organization.tf                 # Enterprise-only from LiteLLM 1.102.0
     project.tf                      # Enterprise-only
     user.tf
     budget.tf
@@ -162,7 +162,7 @@ internal_testing/
     models_list.tf
     keys_list.tf
     teams_list.tf
-    organizations_list.tf
+    organizations_list.tf           # Enterprise-only from LiteLLM 1.102.0
     projects_list.tf                # Enterprise-only
     users_list.tf
     budgets_list.tf
@@ -194,8 +194,18 @@ make smoke resources=model_minimal.tf
 make smoke resources=agent_minimal.tf datasources=agent.tf,agents_list.tf
 ```
 
-The explicit acceptance matrix covers 23 of 24 resources; `litellm_project` is
-excluded because its endpoint requires LiteLLM Enterprise. Credential coverage
+The explicit acceptance matrix runs lifecycle cases for 21 of 24 resources on
+the unlicensed disposable stack. `litellm_project` is excluded because its
+endpoints require a LiteLLM Enterprise license. From LiteLLM 1.102.0 every
+organization endpoint, including reads, also requires one, so by default
+`litellm_organization` and `litellm_organization_member` are replaced by a
+single license-gate probe: applying `organization_minimal.tf` must fail with
+only `Error: LiteLLM Enterprise License Required`, and the organization
+scenarios are recorded as `enterprise-license-required` skips. If the probe
+succeeds the backend is licensed and the run fails; against a licensed
+disposable backend set `LITELLM_ENTERPRISE_CONFIRM=licensed-disposable` to run
+the organization cases normally (23 of 24 resources). Assembly-only mode always
+assembles the organization fixtures. Credential coverage
 includes non-empty values-only, heterogeneous legacy/JSON, true model-only,
 full/by-name and by-model data sources, a two-apply nested update/removal case,
 and a real source-free metadata-only import using a slash/percent/Unicode
@@ -288,7 +298,9 @@ rm provider.tf variables.tf terraform.tfvars
   both the resource file and data source file must be in the same working
   directory.
 - Project resource/data-source fixtures require LiteLLM Enterprise and are not
-  part of the default 23-resource acceptance matrix. `project_budget_clear.tf`
+  part of the acceptance matrix. Organization resource/data-source fixtures
+  require LiteLLM Enterprise from LiteLLM 1.102.0 and run only with
+  `LITELLM_ENTERPRISE_CONFIRM=licensed-disposable`. `project_budget_clear.tf`
   is a two-apply fixture: apply its default first, then apply with
   `-var='clear_project_budget=true'` to verify explicit budget and reset clears.
 - `organization_compatibility_defaults.tf` proves only the deprecated harmless
