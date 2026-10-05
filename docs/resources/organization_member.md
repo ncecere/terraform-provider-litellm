@@ -2,6 +2,8 @@
 
 Manages one user membership in a LiteLLM organization. Removing this resource removes the membership but does not delete the LiteLLM user.
 
+Organization endpoints require a LiteLLM Enterprise license from LiteLLM 1.102.0, including reads. On an unlicensed proxy every operation fails with `LiteLLM Enterprise License Required` and Terraform state is left unchanged.
+
 LiteLLM's organization member API also creates an internal user when neither the supplied `user_id` nor `user_email` identifies an existing user. The provider uses that API behavior; it does not make a separate user-creation request.
 
 ## Example Usage

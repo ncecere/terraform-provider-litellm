@@ -556,7 +556,7 @@ func (r *OrganizationMemberResource) Create(ctx context.Context, req resource.Cr
 			)
 			return
 		}
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to add organization member: %s", organizationMemberDiagnosticError(addErr)))
+		addLicenseAwareError(&resp.Diagnostics, addErr, "Client Error", fmt.Sprintf("Unable to add organization member: %s", organizationMemberDiagnosticError(addErr)))
 		return
 	}
 
@@ -713,7 +713,7 @@ func (r *OrganizationMemberResource) Read(ctx context.Context, req resource.Read
 			resp.State.RemoveResource(ctx)
 			return
 		}
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read organization member: %s", organizationMemberDiagnosticError(err)))
+		addLicenseAwareError(&resp.Diagnostics, err, "Client Error", fmt.Sprintf("Unable to read organization member: %s", organizationMemberDiagnosticError(err)))
 		return
 	}
 	if !exists {
@@ -859,7 +859,7 @@ func (r *OrganizationMemberResource) Delete(ctx context.Context, req resource.De
 	}
 	if err := r.client.DoRequestWithResponse(ctx, http.MethodDelete, "/organization/member_delete", deleteRequest, nil); err != nil {
 		if !IsAPIErrorStatus(err, http.StatusNotFound) {
-			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to remove organization member: %s", organizationMemberDiagnosticError(err)))
+			addLicenseAwareError(&resp.Diagnostics, err, "Client Error", fmt.Sprintf("Unable to remove organization member: %s", organizationMemberDiagnosticError(err)))
 		}
 	}
 }

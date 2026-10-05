@@ -2,6 +2,8 @@
 
 Manages a LiteLLM organization. Organizations group teams and users under shared model access and budget controls.
 
+Organization endpoints require a LiteLLM Enterprise license from LiteLLM 1.102.0, including reads. On an unlicensed proxy every operation fails with `LiteLLM Enterprise License Required` and Terraform state is left unchanged.
+
 ## Example Usage
 
 ### Minimal Configuration
@@ -99,7 +101,7 @@ Do not configure `blocked = true` or non-empty `tags`. LiteLLM v1.98 has no orga
 - `organization_id` - (String, ForceNew) Caller-selected ID. LiteLLM generates one when omitted.
 - `models` - (List of String) Models the organization may use. Configure `[]` to clear the list.
 - `budget_id` - (String) Existing budget to use during creation. Reassociating an existing organization is blocked because v1.98 has no safe convergent reassociation lifecycle.
-- `max_budget` - (Float64) Hard budget limit.
+- `max_budget` - (Float64) Hard budget limit. From LiteLLM 1.103.0, 0 means zero allowance (all spend is blocked); omit the attribute for an unlimited budget.
 - `soft_budget` - (Float64) Budget alert threshold.
 - `tpm_limit` - (Int64) Tokens-per-minute limit.
 - `rpm_limit` - (Int64) Requests-per-minute limit.

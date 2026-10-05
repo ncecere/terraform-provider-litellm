@@ -2,6 +2,8 @@
 
 Manages a LiteLLM Project. Projects sit between teams and keys, providing fine-grained model, budget, rate, and blocking controls.
 
+Projects require a LiteLLM Enterprise license; on an unlicensed proxy operations fail with `LiteLLM Enterprise License Required`. From LiteLLM 1.104.0, team-admin keys cannot create or update projects unless `general_settings.team_admin_editable_team_fields` includes `projects`; manage projects with a proxy-admin or organization-admin key.
+
 ## Example Usage
 
 ### Minimal Project
@@ -91,7 +93,7 @@ Imports and upgraded states leave `metadata_json` null and unmanaged. Explicit c
 - `metadata` - (Optional Map of String) Legacy metadata map; use `jsonencode()` for historically supported object and array values.
 - `metadata_json` - (Optional, Sensitive String) Non-null JSON object for lossless heterogeneous metadata. Its top-level keys cannot overlap `metadata`, `tags`, `model_rpm_limit`, or `model_tpm_limit`.
 - `tags` - (Optional List of String) Tags. LiteLLM v1.98 stores them in project metadata, and the provider reads that location authoritatively.
-- `max_budget` - (Optional Float64) Hard budget limit.
+- `max_budget` - (Optional Float64) Hard budget limit. From LiteLLM 1.103.0, 0 means zero allowance (all spend is blocked); omit the attribute for an unlimited budget.
 - `soft_budget` - (Optional Float64) Alert threshold.
 - `budget_duration` - (Optional String) Reset duration such as `"30d"` or `"1h"`.
 - `budget_id` - (Optional String) Existing budget to associate during creation. Reassociation after creation is blocked because v1.98 cannot converge it safely.

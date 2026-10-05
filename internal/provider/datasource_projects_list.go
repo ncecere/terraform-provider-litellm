@@ -91,7 +91,7 @@ func (d *ProjectsListDataSource) Read(ctx context.Context, req datasource.ReadRe
 	var data ProjectsListDataSourceModel
 	result, err := fetchTopLevelListObjects(ctx, d.client, "/project/list", "project item")
 	if err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to list projects: %s", err))
+		addLicenseAwareError(&resp.Diagnostics, err, "Client Error", fmt.Sprintf("Unable to list projects: %s", err))
 		return
 	}
 	projects := make([]ProjectListItemModel, 0, len(result))

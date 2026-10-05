@@ -94,7 +94,7 @@ func (d *OrganizationsListDataSource) Read(ctx context.Context, req datasource.R
 	endpoint := endpointWithQuery("/organization/list", filters)
 	var rawResult json.RawMessage
 	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &rawResult); err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to list organizations: %s", safeListDiagnostic(err, filters)))
+		addLicenseAwareError(&resp.Diagnostics, err, "Client Error", fmt.Sprintf("Unable to list organizations: %s", safeListDiagnostic(err, filters)))
 		return
 	}
 	items, err := decodeTopLevelList(rawResult, "/organization/list")

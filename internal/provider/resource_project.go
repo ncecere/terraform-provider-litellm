@@ -84,7 +84,7 @@ func (r *ProjectResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 			"metadata":              schema.MapAttribute{Description: "Metadata for the project. Values are strings; use jsonencode() for complex values.", Optional: true, Computed: true, ElementType: types.StringType},
 			"metadata_json":         schema.StringAttribute{Description: "Additional project metadata as a semantic JSON object.", Optional: true, Computed: true, Sensitive: true, Validators: []validator.String{keySemanticDictionaryValidator{}}},
 			"tags":                  schema.ListAttribute{Description: "Tags associated with the project. LiteLLM v1.98 stores these in project metadata.", Optional: true, Computed: true, ElementType: types.StringType},
-			"max_budget":            schema.Float64Attribute{Description: "Maximum budget for this project.", Optional: true},
+			"max_budget":            schema.Float64Attribute{Description: "Maximum budget for this project. From LiteLLM 1.103.0, 0 means zero allowance (all spend is blocked); omit the attribute for an unlimited budget.", Optional: true},
 			"soft_budget":           schema.Float64Attribute{Description: "Soft budget limit for warnings.", Optional: true},
 			"budget_duration":       schema.StringAttribute{Description: "Budget reset duration (for example, '30d' or '1h').", Optional: true},
 			"budget_id":             schema.StringAttribute{Description: "Budget ID associated with this project. Reassociation is not safely supported by LiteLLM v1.98.", Optional: true, Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
@@ -313,7 +313,7 @@ func (r *ProjectResource) Create(ctx context.Context, req resource.CreateRequest
 				retainRecovery("Project Creation Outcome Uncertain", "The project create was dispatched, but its outcome could not be confirmed. Only the generated identity was retained for authoritative recovery.")
 			}
 		} else {
-			resp.Diagnostics.AddError("Project Creation Failed", "LiteLLM did not confirm the project create. Response, identity, URL, and transport details were omitted.")
+			addLicenseAwareError(&resp.Diagnostics, createErr, "Project Creation Failed", "LiteLLM did not confirm the project create. Response, identity, URL, and transport details were omitted.")
 		}
 		return
 	}
@@ -410,7 +410,7 @@ func (r *ProjectResource) Read(ctx context.Context, req resource.ReadRequest, re
 			resp.State.RemoveResource(ctx)
 			return
 		}
-		resp.Diagnostics.AddError("Project Read Failed", "The authoritative project response could not be validated or projected safely. Response, identity, metadata, and transport details were omitted.")
+		addLicenseAwareError(&resp.Diagnostics, err, "Project Read Failed", "The authoritative project response could not be validated or projected safely. Response, identity, metadata, and transport details were omitted.")
 		return
 	}
 	if reconcile.Present && reconcile.Committed {
@@ -737,7 +737,7 @@ func (r *ProjectResource) Delete(ctx context.Context, req resource.DeleteRequest
 		return
 	}
 	if err := r.client.DoRequestWithResponse(ctx, http.MethodDelete, "/project/delete", map[string]interface{}{"project_ids": []string{data.ID.ValueString()}}, nil); err != nil && !IsNotFoundError(err) {
-		resp.Diagnostics.AddError("Project Delete Failed", "The project deletion failed. Response, identity, URL, and transport details were omitted.")
+		addLicenseAwareError(&resp.Diagnostics, err, "Project Delete Failed", "The project deletion failed. Response, identity, URL, and transport details were omitted.")
 	}
 }
 

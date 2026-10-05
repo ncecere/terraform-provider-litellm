@@ -4,6 +4,8 @@ Manages a team in LiteLLM. Teams allow you to group users and apply shared budge
 
 Team members are managed separately via the `litellm_team_member` resource.
 
+From LiteLLM 1.104.0, a team-admin key (not proxy admin or organization admin) can no longer update teams unless `general_settings.team_admin_editable_team_fields` allows it, and even then only `tpm_limit`, `rpm_limit`, and `max_budget`. Manage `litellm_team` with a proxy-admin or organization-admin key; updates made with a team-admin key fail with HTTP 403 and leave Terraform state unchanged.
+
 ## Example Usage
 
 ### Minimal

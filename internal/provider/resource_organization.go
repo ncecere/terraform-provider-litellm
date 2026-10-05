@@ -63,7 +63,7 @@ func (r *OrganizationResource) Schema(_ context.Context, _ resource.SchemaReques
 			"organization_alias":    schema.StringAttribute{Description: "The name/alias of the organization.", Required: true},
 			"models":                schema.ListAttribute{Description: "The models the organization has access to.", Optional: true, Computed: true, ElementType: types.StringType},
 			"budget_id":             schema.StringAttribute{Description: "The ID for the organization's budget. Reassociating an existing organization is not supported safely by LiteLLM v1.98.", Optional: true, Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
-			"max_budget":            schema.Float64Attribute{Description: "Maximum hard budget for the organization.", Optional: true},
+			"max_budget":            schema.Float64Attribute{Description: "Maximum hard budget for the organization. From LiteLLM 1.103.0, 0 means zero allowance (all spend is blocked); omit the attribute for an unlimited budget.", Optional: true},
 			"soft_budget":           schema.Float64Attribute{Description: "Soft budget alert threshold for the organization.", Optional: true},
 			"tpm_limit":             schema.Int64Attribute{Description: "Maximum tokens per minute for the organization.", Optional: true},
 			"rpm_limit":             schema.Int64Attribute{Description: "Maximum requests per minute for the organization.", Optional: true},
@@ -257,9 +257,9 @@ func (r *OrganizationResource) Create(ctx context.Context, req resource.CreateRe
 				retainAcceptedCreate("Organization Creation Outcome Uncertain", "The organization create was dispatched, but response loss prevented the provider from determining whether it committed. Only the caller-selected identity was retained for authoritative recovery.")
 			}
 		} else if prepared.provenance.Configured {
-			resp.Diagnostics.AddError("Organization Creation Failed", "LiteLLM did not confirm acceptance of the organization create. Response and transport details were omitted.")
+			addLicenseAwareError(&resp.Diagnostics, createErr, "Organization Creation Failed", "LiteLLM did not confirm acceptance of the organization create. Response and transport details were omitted.")
 		} else {
-			resp.Diagnostics.AddError("Organization Creation Failed", "The organization create request failed. Response, identity, URL, and transport details were omitted.")
+			addLicenseAwareError(&resp.Diagnostics, createErr, "Organization Creation Failed", "The organization create request failed. Response, identity, URL, and transport details were omitted.")
 		}
 		return
 	}
@@ -368,7 +368,7 @@ func (r *OrganizationResource) Read(ctx context.Context, req resource.ReadReques
 			resp.State.RemoveResource(ctx)
 			return
 		}
-		resp.Diagnostics.AddError("Organization Read Failed", "The authoritative organization response could not be validated or projected safely. Response, identity, metadata, and transport details were omitted.")
+		addLicenseAwareError(&resp.Diagnostics, err, "Organization Read Failed", "The authoritative organization response could not be validated or projected safely. Response, identity, metadata, and transport details were omitted.")
 		return
 	}
 	if reconcile.Present && reconcile.Committed {
@@ -546,7 +546,7 @@ func (r *OrganizationResource) Update(ctx context.Context, req resource.UpdateRe
 				retainPrior(context.WithoutCancel(ctx))
 				resp.Diagnostics.AddError("Organization Update Not Confirmed", "The metadata-bearing update may have been dispatched, but its outcome was not confirmed. Prior public and private state were retained.")
 			} else {
-				resp.Diagnostics.AddError("Organization Update Failed", "The organization update failed. Response, identity, URL, and transport details were omitted.")
+				addLicenseAwareError(&resp.Diagnostics, err, "Organization Update Failed", "The organization update failed. Response, identity, URL, and transport details were omitted.")
 			}
 			return
 		}
@@ -623,7 +623,7 @@ func (r *OrganizationResource) Delete(ctx context.Context, req resource.DeleteRe
 		return
 	}
 	if err := r.client.DoRequestWithResponse(ctx, http.MethodDelete, "/organization/delete", map[string]interface{}{"organization_ids": []string{data.OrganizationID.ValueString()}}, nil); err != nil && !IsNotFoundError(err) {
-		resp.Diagnostics.AddError("Organization Delete Failed", "The organization deletion failed. Response, identity, URL, and transport details were omitted.")
+		addLicenseAwareError(&resp.Diagnostics, err, "Organization Delete Failed", "The organization deletion failed. Response, identity, URL, and transport details were omitted.")
 	}
 }
 
