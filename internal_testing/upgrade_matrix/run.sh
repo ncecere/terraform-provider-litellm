@@ -538,12 +538,18 @@ assert_authoritative_not_found() {
 
 assert_post_destroy_import_rejected() {
   evidence=$1 resource_type=$2
+  PROMPT_IMPORT_INCONCLUSIVE=0
   if [ "$resource_type" = litellm_prompt ]; then
-    # LiteLLM v1.98 cannot distinguish Prisma-backed Prompt absence from its
-    # process-local registry fallback. Require the exact value-free fail-closed
-    # diagnostic without claiming authoritative remote absence.
+    # LiteLLM 1.104.0's scoped versions route reads only the database, so the
+    # provider reports authoritative Prompt absence. The exact value-free
+    # fail-closed diagnostic remains acceptable (an older backend or a
+    # restricted role) and is recorded as inconclusive absence, never as proof.
+    if python3 "$SCRIPT_DIR/absence_diagnostic.py" "$evidence" "$resource_type" >/dev/null 2>&1; then
+      return
+    fi
     python3 "$SCRIPT_DIR/prompt_import_diagnostic.py" "$evidence" || \
-      fail 'post-destroy Prompt import was not the exact fail-closed diagnostic'
+      fail 'post-destroy Prompt import was neither authoritative absence nor the exact fail-closed diagnostic'
+    PROMPT_IMPORT_INCONCLUSIVE=1
     return
   fi
   assert_authoritative_not_found "$evidence" "$resource_type"
@@ -839,7 +845,7 @@ PY
   IMPORT_RESOURCE_TYPE=
   IMPORT_ID_FILE=
   SCENARIO_EVIDENCE=$SCRATCH/import-absence.out
-  if [ "$resource_type" = litellm_prompt ]; then
+  if [ "$resource_type" = litellm_prompt ] && [ "${PROMPT_IMPORT_INCONCLUSIVE:-0}" = 1 ]; then
     SCENARIO_ASSERTION_OVERRIDE=import-fail-closed-inconclusive-absence
   fi
   record "import:$resource_type" import passed ''

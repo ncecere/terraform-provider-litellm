@@ -16,7 +16,7 @@
   "provider_golden": {
     "operation_count": 108,
     "path": "internal/contractapi/testdata/provider-operations.golden.json",
-    "sha256": "401f02c50ac8755cb11a29ed3cd07f1d72cf486e194d734711b9d7ccec0127cf"
+    "sha256": "dfd5bfae88a5e5567df7d7de3d211c6e541ca7af665e4dc3f160511590062c5d"
   },
   "provider_operations": [
     {
@@ -908,11 +908,11 @@
       "evidence": [
         {
           "file": "internal/provider/resource_prompt.go",
-          "line": 304
+          "line": 316
         },
         {
           "file": "internal/provider/resource_prompt.go",
-          "line": 319
+          "line": 331
         }
       ],
       "method": "DELETE",
@@ -940,23 +940,23 @@
         },
         {
           "file": "internal/provider/resource_prompt.go",
-          "line": 259
+          "line": 271
         },
         {
           "file": "internal/provider/resource_prompt.go",
-          "line": 310
+          "line": 322
         },
         {
           "file": "internal/provider/resource_prompt.go",
-          "line": 321
+          "line": 333
         },
         {
           "file": "internal/provider/resource_prompt.go",
-          "line": 526
+          "line": 550
         },
         {
           "file": "internal/provider/resource_prompt.go",
-          "line": 528
+          "line": 552
         }
       ],
       "method": "GET",
@@ -972,7 +972,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_prompt.go",
-          "line": 318
+          "line": 330
         }
       ],
       "method": "PATCH",
@@ -988,7 +988,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_prompt.go",
-          "line": 282
+          "line": 294
         }
       ],
       "method": "PUT",
@@ -1002,7 +1002,11 @@
       "evidence": [
         {
           "file": "internal/provider/prompt_helpers.go",
-          "line": 84
+          "line": 94
+        },
+        {
+          "file": "internal/provider/prompt_helpers.go",
+          "line": 109
         }
       ],
       "method": "GET",

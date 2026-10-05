@@ -143,13 +143,31 @@ func TestPromptResourceSafeReadProtocolSequences(t *testing.T) {
 		}
 	})
 
-	for _, failureMode := range []string{"exhaustion", "terminal-403", "malformed", "mismatch", "malformed-late", "absence-400", "absence-404", "versions-nonempty", "versions-empty", "versions-error"} {
+	// LiteLLM 1.104.0's scoped versions route reads only the database, so an
+	// info 400/404 followed by an empty or 404 history is authoritative absence.
+	for _, absentMode := range []string{"absence-400", "absence-404", "versions-empty"} {
+		absentMode := absentMode
+		t.Run(absentMode+" removes state after database confirmation", func(t *testing.T) {
+			response, infoCalls, versionCalls := read(absentMode)
+			if accessGroupProtocolDiagnosticsHaveError(response.Diagnostics) || infoCalls != 1 || versionCalls != 1 {
+				t.Fatalf("info=%d versions=%d diagnostics=%s", infoCalls, versionCalls, agentProtocolDiagnosticsText(response.Diagnostics))
+			}
+			if value, err := response.NewState.Unmarshal(schema.ValueType()); err != nil || !value.IsNull() {
+				t.Fatalf("absent prompt stayed in state: %v err=%v", value, err)
+			}
+		})
+	}
+
+	for _, failureMode := range []string{"exhaustion", "terminal-403", "malformed", "mismatch", "malformed-late", "versions-nonempty", "versions-error"} {
 		failureMode := failureMode
 		t.Run(failureMode+" retains exact state", func(t *testing.T) {
 			response, infoCalls, versionCalls := read(failureMode)
 			wantInfo, wantVersions := 1, 0
 			if failureMode == "exhaustion" {
 				wantInfo = defaultSafeReadRetryPolicy.maxAttempts
+			}
+			if failureMode == "versions-nonempty" || failureMode == "versions-error" {
+				wantVersions = 1
 			}
 			text := agentProtocolDiagnosticsText(response.Diagnostics)
 			if !accessGroupProtocolDiagnosticsHaveError(response.Diagnostics) || infoCalls != wantInfo || versionCalls != wantVersions {

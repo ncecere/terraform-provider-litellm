@@ -214,9 +214,21 @@ func (r *PromptResource) Read(ctx context.Context, req resource.ReadRequest, res
 	}
 	imported := string(importedMarker) == "true"
 	if err := r.refreshPrompt(ctx, &data, imported); err != nil {
-		// LiteLLM v1.98 does not expose whether a singular 400/404 or a
-		// versions-route 404 came from Prisma or its process-local registry.
-		// No current response can therefore prove durable absence safely.
+		// The info route answers 400/404 both for absence and for registry or
+		// visibility failures, so it never proves absence alone. LiteLLM 1.104.0's
+		// scoped versions route reads only the database (admin only); an empty or
+		// 404 history after an info 400/404 is authoritative absence. Any other
+		// outcome, including 403, retains state.
+		if isPromptAbsentError(err) {
+			promptID := data.PromptID.ValueString()
+			if promptID == "" {
+				promptID = data.ID.ValueString()
+			}
+			if absent, historyErr := promptScopedHistoryAbsent(ctx, r.client, promptID, data.Environment.ValueString()); historyErr == nil && absent {
+				resp.State.RemoveResource(ctx)
+				return
+			}
+		}
 		resp.Diagnostics.AddError("Prompt Read Error", "Unable to read and validate the scoped prompt. Response and request details were omitted.")
 		return
 	}
@@ -320,6 +332,18 @@ func (r *PromptResource) Delete(ctx context.Context, req resource.DeleteRequest,
 				probe = nil
 				probeErr = r.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &probe)
 			}
+		}
+	}
+	// The scoped versions route reads only the database, so it is consistent
+	// across workers, while the singular read also falls back to each worker's
+	// in-memory registry, which another worker can still hold for a moment
+	// after a successful delete on a multi-worker proxy. Once the final DELETE
+	// succeeded, an empty or 404 version history proves absence. A failed
+	// DELETE (config prompts, a lost registry key) keeps the fail-closed checks
+	// below, because a missing history alone is not proof.
+	if deleteErr == nil && !isPromptAbsentError(probeErr) {
+		if absent, err := promptScopedHistoryAbsent(ctx, r.client, data.PromptID.ValueString(), data.Environment.ValueString()); err == nil && absent {
+			return
 		}
 	}
 	if isPromptAbsentError(probeErr) {

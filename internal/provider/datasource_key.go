@@ -349,12 +349,8 @@ func keyDataSourceCollections(info map[string]interface{}) (types.List, types.Ma
 		metadata, mapErr := dataSourceNullableStringMapAt(info, "metadata")
 		return tags, metadata, mapErr
 	}
-	projected := make(map[string]interface{}, len(metadataObject))
-	for key, value := range metadataObject {
-		if key != "tags" {
-			projected[key] = value
-		}
-	}
+	projected := withoutStructuredMetadata(metadataObject, keyMetadataStructuredFields)
+	delete(projected, "tags")
 	wrapper := map[string]interface{}{"metadata": projected}
 	metadata, err := dataSourceNullableStringMapAt(wrapper, "metadata")
 	if err != nil {

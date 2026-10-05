@@ -73,6 +73,16 @@ func promptScopedExists(ctx context.Context, client *Client, promptID, environme
 	var info map[string]interface{}
 	err := client.DoRequestWithResponse(ctx, http.MethodGet, promptEndpoint(promptID, environment, nil), nil, &info)
 	if err == nil {
+		// On a multi-worker proxy another worker's in-memory registry can still
+		// serve a prompt that was just deleted from the database. For a
+		// database-backed prompt, confirm with the database-only version history;
+		// a config prompt exists only in the registry and always counts.
+		observed, decodeErr := promptObject(info, true, promptID, promptEnvironment(environment))
+		if decodeErr == nil && observed.Info != nil && observed.Info["prompt_type"] == "db" {
+			if absent, historyErr := promptScopedHistoryAbsent(ctx, client, promptID, environment); historyErr == nil && absent {
+				return false, nil
+			}
+		}
 		return true, nil
 	}
 	if !IsAPIErrorStatus(err, http.StatusBadRequest) && !IsAPIErrorStatus(err, http.StatusNotFound) {
@@ -91,6 +101,19 @@ func promptScopedExists(ctx context.Context, client *Client, promptID, environme
 		return false, versionsErr
 	}
 	return len(versions) > 0, nil
+}
+
+// promptScopedHistoryAbsent reports authoritative database absence of a prompt
+// environment through the versions route: an exact 404 or an empty history.
+func promptScopedHistoryAbsent(ctx context.Context, client *Client, promptID, environment string) (bool, error) {
+	versions, err := fetchEnvelopeListObjects(ctx, client, promptVersionsEndpoint(promptID, environment), "prompts", "prompt version item")
+	if err != nil {
+		if IsAPIErrorStatus(err, http.StatusNotFound) {
+			return true, nil
+		}
+		return false, err
+	}
+	return len(versions) == 0, nil
 }
 
 func promptEnvironment(value string) string {
