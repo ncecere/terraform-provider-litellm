@@ -105,8 +105,15 @@ func TestComposeTeamMetadataReplacementCiphertextAndMemberBudgetID(t *testing.T)
 	}
 
 	remoteID := mustParseSemanticDictionary(t, `{"team_member_budget_id":"server-id","api":true}`)
-	if _, _, err := composeTeamMetadataReplacement(ctx, remoteID, plan, prior, priorPrepared.provenance, priorPrepared, map[string]interface{}{"team_member_budget": nil}); err == nil {
-		t.Fatal("metadata plus all-null member defaults accepted")
+	// LiteLLM 1.104.0 merges the stored team_member_budget_id into every
+	// metadata update, so a metadata change after member defaults are cleared
+	// is safe: the ID is never sent and read-back must still show it.
+	cleared, clearedReinsert, err := composeTeamMetadataReplacement(ctx, remoteID, plan, prior, priorPrepared.provenance, priorPrepared, map[string]interface{}{"team_member_budget": nil})
+	if err != nil || !clearedReinsert {
+		t.Fatalf("metadata after cleared member defaults: err=%v expectReinsert=%v", err, clearedReinsert)
+	}
+	if _, sent := cleared["team_member_budget_id"]; sent {
+		t.Fatal("server-owned team_member_budget_id was sent")
 	}
 	replacement, reinsert, err = composeTeamMetadataReplacement(ctx, remoteID, plan, prior, priorPrepared.provenance, priorPrepared, request)
 	if err != nil || !reinsert {

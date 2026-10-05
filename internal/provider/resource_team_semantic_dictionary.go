@@ -417,16 +417,10 @@ func composeTeamMetadataReplacement(ctx context.Context, remote map[string]inter
 		if !validMemberBudgetID || memberBudgetText == "" {
 			return nil, false, errSemanticDictionaryTraversal
 		}
-		willRestore := false
-		for name := range teamPendingMemberDefaultAllowedFields {
-			if value, present := request[name]; present && value != nil {
-				willRestore = true
-				break
-			}
-		}
-		if !willRestore {
-			return nil, false, errSemanticDictionaryTraversal
-		}
+		// The relation is server-owned. LiteLLM 1.104.0 merges its stored
+		// team_member_budget_id back into every metadata update
+		// (TeamMemberBudgetHandler.SYSTEM_MANAGED_METADATA_KEYS), so it is
+		// never sent; read-back must still show it.
 		delete(result, "team_member_budget_id")
 	}
 	if knownMap(prior.Metadata) {
