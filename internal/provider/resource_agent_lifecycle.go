@@ -577,7 +577,7 @@ func (r *AgentResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanR
 			path.Root("litellm_params"),
 			"Agent Secret Parameter Cannot Be Removed In Place",
 			"LiteLLM 1.104.0 and later keep a secret agent parameter when an update omits it, so removing it from configuration would never take effect. Removed secret keys: "+strings.Join(removed, ", ")+
-				". Set the key to an empty string to overwrite the stored secret, or replace the agent (for example with terraform apply -replace). No request was sent.",
+				". Set the key to an empty string to overwrite the stored secret, or replace the agent: run terraform taint on its address, then apply (terraform apply -replace is not enough, because this check runs against the existing agent first). No request was sent.",
 		)
 	}()
 	if !bundle.versioned {

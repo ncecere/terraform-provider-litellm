@@ -28,7 +28,10 @@ var keyInfoLiveStatuses = map[string]struct{}{"active": {}, "expired": {}, "revo
 // errKeyInfoStatusInvalid for anything else.
 //
 // LiteLLM 1.98.0 returned no status; a status-less row without deletion
-// markers is accepted as live so older servers keep working.
+// markers is accepted as live so older servers keep working. Only an explicit
+// status "deleted" proves absence: LiteLLM 1.104.0 always derives a status for
+// its archived rows, so a status-less row with deletion markers is not a shape
+// any release returns and is rejected rather than treated as absence.
 func classifyKeyInfoStatus(info map[string]interface{}) error {
 	deletionMarked := false
 	for _, field := range []string{"deleted_at", "deleted_by"} {
@@ -39,7 +42,7 @@ func classifyKeyInfoStatus(info map[string]interface{}) error {
 	raw, present := info["status"]
 	if !present || raw == nil {
 		if deletionMarked {
-			return errKeyInfoArchived
+			return errKeyInfoStatusInvalid
 		}
 		return nil
 	}

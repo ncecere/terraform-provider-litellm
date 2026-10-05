@@ -22,8 +22,9 @@ func TestPromptDeleteUsesVersionHistoryAcrossWorkers(t *testing.T) {
 		versionsCode  int
 		wantDestroyed bool
 	}{
-		{"history gone", `{"detail":"not found"}`, http.StatusNotFound, true},
-		{"history empty", `{"prompts":[]}`, http.StatusOK, true},
+		{"history gone", `{"detail":"No versions found for prompt ID managed"}`, http.StatusNotFound, true},
+		{"generic 404 is not proof", `{"detail":"not found"}`, http.StatusNotFound, false},
+		{"empty history is not proof", `{"prompts":[]}`, http.StatusOK, false},
 		{"history remains", `{"prompts":[{"prompt_id":"managed","version":1}]}`, http.StatusOK, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -86,7 +87,7 @@ func TestPromptDeleteRecoveryThenStaleWorkerUsesVersionHistory(t *testing.T) {
 			_, _ = fmt.Fprint(writer, `{}`)
 		case request.Method == http.MethodGet && request.URL.Path == "/prompts/managed/versions":
 			if deletes >= 2 {
-				http.Error(writer, `{"detail":"not found"}`, http.StatusNotFound)
+				http.Error(writer, `{"detail":"No versions found for prompt ID managed"}`, http.StatusNotFound)
 				return
 			}
 			_, _ = fmt.Fprint(writer, `{"prompts":[{"prompt_id":"managed","version":1}]}`)
@@ -131,7 +132,7 @@ func TestPromptScopedExistsIgnoresStaleRegistryForDatabasePrompts(t *testing.T) 
 					if test.versionsCode == http.StatusOK {
 						_, _ = fmt.Fprint(writer, `{"prompts":[{"prompt_id":"managed","version":1}]}`)
 					} else {
-						_, _ = fmt.Fprint(writer, `{"detail":"not found"}`)
+						_, _ = fmt.Fprint(writer, `{"detail":"No versions found for prompt ID managed"}`)
 					}
 					return
 				}

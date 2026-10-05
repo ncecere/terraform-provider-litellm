@@ -338,7 +338,7 @@ func (r *PromptResource) Delete(ctx context.Context, req resource.DeleteRequest,
 	// across workers, while the singular read also falls back to each worker's
 	// in-memory registry, which another worker can still hold for a moment
 	// after a successful delete on a multi-worker proxy. Once the final DELETE
-	// succeeded, an empty or 404 version history proves absence. A failed
+	// succeeded, LiteLLM's "No versions found" 404 proves absence. A failed
 	// DELETE (config prompts, a lost registry key) keeps the fail-closed checks
 	// below, because a missing history alone is not proof.
 	if deleteErr == nil && !isPromptAbsentError(probeErr) {

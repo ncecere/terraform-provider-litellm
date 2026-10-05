@@ -1,8 +1,10 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -103,17 +105,35 @@ func promptScopedExists(ctx context.Context, client *Client, promptID, environme
 	return len(versions) > 0, nil
 }
 
+// liteLLMPromptVersionsNotFoundMarker is the detail LiteLLM's scoped versions
+// route returns with HTTP 404 when no database version exists (1.98.0 and
+// 1.104.0: "No versions found for prompt ID <id>").
+var liteLLMPromptVersionsNotFoundMarker = []byte("No versions found for prompt ID")
+
+// classifyPromptVersionsNotFoundBody inspects a 404 body once, at the client
+// boundary, so callers never need the raw body.
+func classifyPromptVersionsNotFoundBody(body []byte) bool {
+	return bytes.Contains(body, liteLLMPromptVersionsNotFoundMarker)
+}
+
+func isPromptVersionsNotFoundError(err error) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound && apiErr.promptVersionsNotFound
+}
+
 // promptScopedHistoryAbsent reports authoritative database absence of a prompt
-// environment through the versions route: an exact 404 or an empty history.
+// environment through the versions route. Only LiteLLM's own "No versions
+// found" 404 proves absence: LiteLLM never answers 200 with an empty list, so
+// an empty list, a generic 404, or any other outcome is not proof.
 func promptScopedHistoryAbsent(ctx context.Context, client *Client, promptID, environment string) (bool, error) {
-	versions, err := fetchEnvelopeListObjects(ctx, client, promptVersionsEndpoint(promptID, environment), "prompts", "prompt version item")
+	_, err := fetchEnvelopeListObjects(ctx, client, promptVersionsEndpoint(promptID, environment), "prompts", "prompt version item")
 	if err != nil {
-		if IsAPIErrorStatus(err, http.StatusNotFound) {
+		if isPromptVersionsNotFoundError(err) {
 			return true, nil
 		}
 		return false, err
 	}
-	return len(versions) == 0, nil
+	return false, nil
 }
 
 func promptEnvironment(value string) string {

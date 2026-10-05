@@ -48,7 +48,7 @@ func TestClassifyKeyInfoStatus(t *testing.T) {
 		{"null deletion markers", map[string]interface{}{"status": "active", "deleted_at": nil, "deleted_by": nil}, nil},
 		{"deleted", map[string]interface{}{"status": "deleted", "deleted_at": "2026-10-05T12:00:00Z"}, errKeyInfoArchived},
 		{"deleted without markers", map[string]interface{}{"status": "deleted"}, errKeyInfoArchived},
-		{"status-less archived row", map[string]interface{}{"deleted_at": "2026-10-05T12:00:00Z"}, errKeyInfoArchived},
+		{"status-less row with deletion marker is not proof", map[string]interface{}{"deleted_at": "2026-10-05T12:00:00Z"}, errKeyInfoStatusInvalid},
 		{"live status with deletion marker", map[string]interface{}{"status": "active", "deleted_by": "someone"}, errKeyInfoStatusInvalid},
 		{"unknown status", map[string]interface{}{"status": "suspended"}, errKeyInfoStatusInvalid},
 		{"non-string status", map[string]interface{}{"status": true}, errKeyInfoStatusInvalid},

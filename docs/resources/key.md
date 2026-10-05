@@ -251,7 +251,7 @@ The following arguments are supported:
 
 * `organization_id` - (Optional) Organization ID associated with this key.
 
-* `project_id` - (Optional) Project ID associated with this key. When set, models and budget are validated against the project's limits. LiteLLM 1.104.0 and later cannot assign a project to an existing key or move it between projects, so the provider rejects that change at plan time; create a replacement key instead. Removing the attribute detaches the key (an explicit `null` is sent).
+* `project_id` - (Optional) Project ID associated with this key. When set, models and budget are validated against the project's limits. LiteLLM 1.104.0 and later cannot assign a project to an existing key or move it between projects, so the provider rejects that change at plan time. To move a key, replace it with `terraform taint litellm_key.example` followed by `terraform apply` (this issues a new key secret); `terraform apply -replace` is not sufficient on its own, because the provider checks the change against the existing key first. Removing the attribute detaches the key (an explicit `null` is sent).
 
 * `budget_id` - (Optional) Budget ID to associate with this key.
 

@@ -473,7 +473,7 @@ func (r *KeyResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanReq
 		// LiteLLM 1.104.0 rejects every non-null project_id that differs from
 		// the stored one, including a first assignment; only null detaches.
 		resp.Diagnostics.AddAttributeError(path.Root("project_id"), "Key Project Cannot Change In Place",
-			"LiteLLM 1.104.0 and later cannot move an existing key into a project or between projects; it only allows detaching with null. Remove project_id to detach the key, or create a replacement key in the new project (for example with terraform apply -replace). No request was sent.")
+			"LiteLLM 1.104.0 and later cannot move an existing key into a project or between projects; it only allows detaching with null. Remove project_id to detach the key, or create a replacement key in the new project: run terraform taint on its address, then apply (terraform apply -replace is not enough, because this check runs against the existing key first). Replacement issues a new key secret. No request was sent.")
 		return
 	}
 	if !config.BudgetID.IsNull() && !config.SoftBudget.IsNull() && !config.SoftBudget.IsUnknown() && !config.SoftBudget.Equal(state.SoftBudget) {

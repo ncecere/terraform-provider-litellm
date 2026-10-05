@@ -29,6 +29,10 @@ type APIError struct {
 	// LiteLLM 1.102.0 and later return for every organization endpoint (and
 	// earlier for project endpoints) on an unlicensed proxy.
 	enterpriseLicenseRequired bool
+	// promptVersionsNotFound marks LiteLLM's own 404 from the scoped prompt
+	// versions route ("No versions found for prompt ID ..."), as opposed to a
+	// generic 404 from a different route or an intermediary.
+	promptVersionsNotFound bool
 }
 
 func (e *APIError) Error() string {
@@ -338,6 +342,7 @@ func (c *Client) doRequestWithResponseOptions(ctx context.Context, method, reque
 	if !accepted {
 		fallbackNotReady := classifyFallbackNotReadyBody(bodyBytes)
 		enterpriseLicenseRequired := response.StatusCode == http.StatusForbidden && classifyEnterpriseLicenseRequiredBody(bodyBytes)
+		promptVersionsNotFound := response.StatusCode == http.StatusNotFound && classifyPromptVersionsNotFoundBody(bodyBytes)
 		detail, detailOmitted := "", true
 		if !truncated && (response.StatusCode < http.StatusMultipleChoices || response.StatusCode >= http.StatusBadRequest) {
 			detail, detailOmitted = safeResponseDetail(bodyBytes, response.Header.Get("Content-Type"), safety)
@@ -351,6 +356,7 @@ func (c *Client) doRequestWithResponseOptions(ctx context.Context, method, reque
 			BodyTruncated:             truncated,
 			fallbackNotReady:          fallbackNotReady,
 			enterpriseLicenseRequired: enterpriseLicenseRequired,
+			promptVersionsNotFound:    promptVersionsNotFound,
 		}, retryAfter, hasRetryAfter)
 	}
 
