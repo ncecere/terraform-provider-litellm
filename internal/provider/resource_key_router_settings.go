@@ -15,7 +15,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
-// LiteLLM v1.98.0 accepts these fields in UpdateRouterConfig. Complex values
+// LiteLLM v1.104.0 accepts these fields in UpdateRouterConfig. Complex values
 // remain JSON strings in Terraform so heterogeneous objects and ordered arrays
 // can round-trip without lossy schema coercion.
 var keyRetryPolicyAttrTypes = map[string]attr.Type{
@@ -25,6 +25,9 @@ var keyRetryPolicyAttrTypes = map[string]attr.Type{
 	"rate_limit_error_retries":               types.Int64Type,
 	"content_policy_violation_error_retries": types.Int64Type,
 	"internal_server_error_retries":          types.Int64Type,
+	"service_unavailable_error_retries":      types.Int64Type,
+	"not_found_error_retries":                types.Int64Type,
+	"default_retries":                        types.Int64Type,
 }
 
 var keyRouterSettingsAttrTypes = map[string]attr.Type{
@@ -45,11 +48,13 @@ var keyRouterSettingsAttrTypes = map[string]attr.Type{
 	"model_group_alias":           types.StringType,
 	"enable_tag_filtering":        types.BoolType,
 	"tag_routing_prefix":          types.StringType,
+	"weights":                     types.StringType,
+	"optional_pre_call_checks":    types.StringType,
 }
 
 func keyRouterSettingsDataSourceAttribute() datasourceschema.SingleNestedAttribute {
 	return datasourceschema.SingleNestedAttribute{
-		Description: "The complete key-specific LiteLLM v1.98.0 router-settings document. Complex heterogeneous fields are canonical JSON strings.",
+		Description: "The complete key-specific LiteLLM router-settings document. Complex heterogeneous fields are canonical JSON strings.",
 		Computed:    true,
 		Attributes: map[string]datasourceschema.Attribute{
 			"routing_strategy_args": datasourceschema.StringAttribute{Computed: true},
@@ -64,6 +69,9 @@ func keyRouterSettingsDataSourceAttribute() datasourceschema.SingleNestedAttribu
 					"rate_limit_error_retries":               datasourceschema.Int64Attribute{Computed: true},
 					"content_policy_violation_error_retries": datasourceschema.Int64Attribute{Computed: true},
 					"internal_server_error_retries":          datasourceschema.Int64Attribute{Computed: true},
+					"service_unavailable_error_retries":      datasourceschema.Int64Attribute{Computed: true},
+					"not_found_error_retries":                datasourceschema.Int64Attribute{Computed: true},
+					"default_retries":                        datasourceschema.Int64Attribute{Computed: true},
 				},
 			},
 			"model_group_retry_policy":    datasourceschema.StringAttribute{Computed: true},
@@ -79,6 +87,8 @@ func keyRouterSettingsDataSourceAttribute() datasourceschema.SingleNestedAttribu
 			"model_group_alias":           datasourceschema.StringAttribute{Computed: true},
 			"enable_tag_filtering":        datasourceschema.BoolAttribute{Computed: true},
 			"tag_routing_prefix":          datasourceschema.StringAttribute{Computed: true},
+			"weights":                     datasourceschema.StringAttribute{Computed: true},
+			"optional_pre_call_checks":    datasourceschema.StringAttribute{Computed: true},
 		},
 	}
 }
@@ -87,7 +97,7 @@ func keyRouterSettingsResourceAttribute() resourceschema.SingleNestedAttribute {
 	jsonObject := []validator.String{jsonShapeStringValidator{shape: '{'}}
 	jsonArray := []validator.String{jsonShapeStringValidator{shape: '['}}
 	return resourceschema.SingleNestedAttribute{
-		Description: "Key-specific LiteLLM v1.98.0 router settings. When configured, Terraform owns and replaces the complete router-settings document. Complex heterogeneous fields are JSON strings.",
+		Description: "Key-specific LiteLLM router settings. When configured, Terraform owns and replaces the complete router-settings document. Complex heterogeneous fields are JSON strings.",
 		Optional:    true,
 		Attributes: map[string]resourceschema.Attribute{
 			"routing_strategy_args": resourceschema.StringAttribute{Description: "JSON object passed to the routing strategy.", Optional: true, Validators: jsonObject},
@@ -103,6 +113,9 @@ func keyRouterSettingsResourceAttribute() resourceschema.SingleNestedAttribute {
 					"rate_limit_error_retries":               resourceschema.Int64Attribute{Optional: true},
 					"content_policy_violation_error_retries": resourceschema.Int64Attribute{Optional: true},
 					"internal_server_error_retries":          resourceschema.Int64Attribute{Optional: true},
+					"service_unavailable_error_retries":      resourceschema.Int64Attribute{Optional: true, Description: "Requires LiteLLM 1.104.0 or later."},
+					"not_found_error_retries":                resourceschema.Int64Attribute{Optional: true, Description: "Requires LiteLLM 1.104.0 or later."},
+					"default_retries":                        resourceschema.Int64Attribute{Optional: true, Description: "Retries for exception types without a specific count. Requires LiteLLM 1.104.0 or later."},
 				},
 			},
 			"model_group_retry_policy":    resourceschema.StringAttribute{Description: "JSON object mapping model groups to retry-policy objects. Retry-policy keys use LiteLLM's PascalCase wire names.", Optional: true, Validators: jsonObject},
@@ -118,6 +131,8 @@ func keyRouterSettingsResourceAttribute() resourceschema.SingleNestedAttribute {
 			"model_group_alias":           resourceschema.StringAttribute{Description: "JSON object mapping aliases to model groups or alias configuration objects.", Optional: true, Validators: jsonObject},
 			"enable_tag_filtering":        resourceschema.BoolAttribute{Description: "Enable routing by request tags.", Optional: true},
 			"tag_routing_prefix":          resourceschema.StringAttribute{Description: "Prefix used for tag-based routing.", Optional: true},
+			"weights":                     resourceschema.StringAttribute{Description: "JSON object of router weights. Requires LiteLLM 1.104.0 or later; LiteLLM validates referenced deployments.", Optional: true, Validators: jsonObject},
+			"optional_pre_call_checks":    resourceschema.StringAttribute{Description: "Ordered JSON array of LiteLLM optional pre-call check names (for example [\"prompt_caching\"]). Requires LiteLLM 1.104.0 or later.", Optional: true, Validators: jsonArray},
 		},
 	}
 }
@@ -129,6 +144,9 @@ var keyRetryPolicyWireNames = map[string]string{
 	"rate_limit_error_retries":               "RateLimitErrorRetries",
 	"content_policy_violation_error_retries": "ContentPolicyViolationErrorRetries",
 	"internal_server_error_retries":          "InternalServerErrorRetries",
+	"service_unavailable_error_retries":      "ServiceUnavailableErrorRetries",
+	"not_found_error_retries":                "NotFoundErrorRetries",
+	"default_retries":                        "DefaultRetries",
 }
 
 type jsonShapeStringValidator struct {
@@ -222,6 +240,8 @@ func keyRouterSettingsPayload(obj types.Object) (map[string]interface{}, error) 
 		"fallbacks",
 		"context_window_fallbacks",
 		"model_group_alias",
+		"weights",
+		"optional_pre_call_checks",
 	} {
 		value := attrs[name].(types.String)
 		if value.IsNull() || value.IsUnknown() {
@@ -401,7 +421,7 @@ func retryPolicyFromAPI(raw interface{}) (types.Object, error) {
 	}
 	for wireName := range policy {
 		if _, known := knownWireNames[wireName]; !known {
-			return types.ObjectNull(keyRetryPolicyAttrTypes), fmt.Errorf("retry_policy contains unsupported LiteLLM v1.98.0 field %q", wireName)
+			return types.ObjectNull(keyRetryPolicyAttrTypes), fmt.Errorf("retry_policy contains unsupported LiteLLM field %q", wireName)
 		}
 	}
 	values := make(map[string]attr.Value, len(keyRetryPolicyAttrTypes))
@@ -429,13 +449,13 @@ func keyRouterSettingsFromAPI(raw interface{}, current types.Object) (types.Obje
 	}
 	for name := range settings {
 		if _, known := keyRouterSettingsAttrTypes[name]; !known {
-			return types.ObjectNull(keyRouterSettingsAttrTypes), true, fmt.Errorf("router_settings contains unsupported LiteLLM v1.98.0 field %q", name)
+			return types.ObjectNull(keyRouterSettingsAttrTypes), true, fmt.Errorf("router_settings contains unsupported LiteLLM field %q", name)
 		}
 	}
 
 	values := make(map[string]attr.Value, len(keyRouterSettingsAttrTypes))
-	// Initialize the finite v1.98.0 schema explicitly with typed nulls.
-	for _, name := range []string{"routing_strategy_args", "routing_strategy", "routing_groups", "model_group_retry_policy", "model_group_affinity_config", "fallbacks", "context_window_fallbacks", "model_group_alias", "tag_routing_prefix"} {
+	// Initialize the finite pinned schema explicitly with typed nulls.
+	for _, name := range []string{"routing_strategy_args", "routing_strategy", "routing_groups", "model_group_retry_policy", "model_group_affinity_config", "fallbacks", "context_window_fallbacks", "model_group_alias", "tag_routing_prefix", "weights", "optional_pre_call_checks"} {
 		values[name] = types.StringNull()
 	}
 	values["retry_policy"] = types.ObjectNull(keyRetryPolicyAttrTypes)
@@ -451,7 +471,7 @@ func keyRouterSettingsFromAPI(raw interface{}, current types.Object) (types.Obje
 	if !current.IsNull() && !current.IsUnknown() {
 		currentAttrs = current.Attributes()
 	}
-	for _, name := range []string{"routing_strategy_args", "routing_groups", "model_group_retry_policy", "model_group_affinity_config", "fallbacks", "context_window_fallbacks", "model_group_alias"} {
+	for _, name := range []string{"routing_strategy_args", "routing_groups", "model_group_retry_policy", "model_group_affinity_config", "fallbacks", "context_window_fallbacks", "model_group_alias", "weights", "optional_pre_call_checks"} {
 		if rawValue, exists := settings[name]; exists && rawValue != nil {
 			value, err := jsonStringFromRouterSettingsAPI(rawValue, currentAttrs[name])
 			if err != nil {

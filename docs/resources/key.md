@@ -251,7 +251,7 @@ The following arguments are supported:
 
 * `organization_id` - (Optional) Organization ID associated with this key.
 
-* `project_id` - (Optional) Project ID associated with this key. When set, models and budget are validated against the project's limits.
+* `project_id` - (Optional) Project ID associated with this key. When set, models and budget are validated against the project's limits. LiteLLM 1.104.0 and later cannot assign a project to an existing key or move it between projects, so the provider rejects that change at plan time; create a replacement key instead. Removing the attribute detaches the key (an explicit `null` is sent).
 
 * `budget_id` - (Optional) Budget ID to associate with this key.
 
@@ -279,7 +279,7 @@ The following arguments are supported:
 
 * `allowed_cache_controls` - (Optional) List of allowed cache control directives.
 
-* `soft_budget` - (Optional) Soft budget warning threshold.
+* `soft_budget` - (Optional) Soft budget warning threshold. LiteLLM 1.104.0 applies it on update by writing the key's budget row; when `budget_id` is set that row may be shared with other keys, so the provider sends `soft_budget` only when it changes and warns at plan time.
 
 * `duration` - (Optional) Duration for which this key is valid (e.g., `"30d"`, `"90d"`).
 
@@ -313,7 +313,7 @@ The following arguments are supported:
   * `routing_strategy_args` - (Optional) JSON object passed to the routing strategy.
   * `routing_strategy` - (Optional) Routing strategy name.
   * `routing_groups` - (Optional) JSON array of routing groups.
-  * `retry_policy` - (Optional) Typed retry counts: `bad_request_error_retries`, `authentication_error_retries`, `timeout_error_retries`, `rate_limit_error_retries`, `content_policy_violation_error_retries`, and `internal_server_error_retries`.
+  * `retry_policy` - (Optional) Typed retry counts: `bad_request_error_retries`, `authentication_error_retries`, `timeout_error_retries`, `rate_limit_error_retries`, `content_policy_violation_error_retries`, `internal_server_error_retries`, and, on LiteLLM 1.104.0 and later, `service_unavailable_error_retries`, `not_found_error_retries`, and `default_retries`.
   * `model_group_retry_policy` - (Optional) JSON object mapping model groups to retry policies. Nested retry keys use LiteLLM's PascalCase names, such as `RateLimitErrorRetries`.
   * `model_group_affinity_config` - (Optional) JSON object mapping affinity groups to lists of model groups.
   * `allowed_fails` - (Optional) Failures allowed before cooldown.
@@ -327,8 +327,10 @@ The following arguments are supported:
   * `model_group_alias` - (Optional) JSON object mapping aliases to model groups or alias configuration objects.
   * `enable_tag_filtering` - (Optional) Enables request-tag routing.
   * `tag_routing_prefix` - (Optional) Prefix for tag-based routing.
+  * `weights` - (Optional) JSON object of router weights (LiteLLM 1.104.0 and later; LiteLLM rejects weights for unknown deployments).
+  * `optional_pre_call_checks` - (Optional) Ordered JSON array of optional pre-call check names such as `prompt_caching` (LiteLLM 1.104.0 and later).
 
-  LiteLLM v1.98.0 accepts and stores all fields above, but its per-key request path currently applies only `fallbacks`, `context_window_fallbacks`, `num_retries`, `timeout`, `model_group_retry_policy`, `routing_strategy`, `enable_tag_filtering`, and `model_group_alias`. Other accepted fields are exposed for API fidelity and future LiteLLM behavior.
+  LiteLLM accepts and stores all fields above, but its per-key request path does not apply every field in every release. Fields are exposed for API fidelity.
 
 ## Attribute Reference
 

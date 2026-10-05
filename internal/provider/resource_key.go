@@ -257,7 +257,7 @@ func (r *KeyResource) Schema(ctx context.Context, req resource.SchemaRequest, re
 				Optional:    true,
 			},
 			"project_id": schema.StringAttribute{
-				Description: "Project ID associated with this key. When set, models and budget are validated against the project's limits.",
+				Description: "Project ID associated with this key. When set, models and budget are validated against the project's limits. LiteLLM 1.104.0 and later cannot assign or change the project of an existing key (plan-time error); removing the attribute detaches the key.",
 				Optional:    true,
 			},
 			"budget_id": schema.StringAttribute{
@@ -327,7 +327,7 @@ func (r *KeyResource) Schema(ctx context.Context, req resource.SchemaRequest, re
 				ElementType: types.StringType,
 			},
 			"soft_budget": schema.Float64Attribute{
-				Description: "Soft budget limit for warnings.",
+				Description: "Soft budget limit for warnings. On update it is sent only when it changes; LiteLLM writes it to the key's budget row, which other keys may share through budget_id.",
 				Optional:    true,
 				Computed:    true,
 			},
@@ -461,6 +461,17 @@ func (r *KeyResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanReq
 	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
 	if resp.Diagnostics.HasError() {
 		return
+	}
+	if keyProjectAssignmentChanges(config.ProjectID, state.ProjectID) {
+		// LiteLLM 1.104.0 rejects every non-null project_id that differs from
+		// the stored one, including a first assignment; only null detaches.
+		resp.Diagnostics.AddAttributeError(path.Root("project_id"), "Key Project Cannot Change In Place",
+			"LiteLLM 1.104.0 and later cannot move an existing key into a project or between projects; it only allows detaching with null. Remove project_id to detach the key, or create a replacement key in the new project (for example with terraform apply -replace). No request was sent.")
+		return
+	}
+	if !config.BudgetID.IsNull() && !config.SoftBudget.IsNull() && !config.SoftBudget.IsUnknown() && !config.SoftBudget.Equal(state.SoftBudget) {
+		resp.Diagnostics.AddAttributeWarning(path.Root("soft_budget"), "Soft Budget Updates a Shared Budget",
+			"LiteLLM 1.104.0 writes soft_budget to the key's budget row. Because budget_id is set, the change applies to every key that uses that budget.")
 	}
 
 	semanticChanged := false
@@ -938,6 +949,7 @@ func (r *KeyResource) Update(ctx context.Context, req resource.UpdateRequest, re
 		return
 	}
 	applyKeyRouterSettingsUpdateSemantics(updateReq, data.RouterSettings, state.RouterSettings)
+	applyKeyProjectAndSoftBudgetUpdateSemantics(updateReq, data, state)
 
 	if semanticInvolved {
 		// service_account_id is the only current dedicated provider field that
@@ -1403,6 +1415,29 @@ func stringMapMatchesAttrValues(current types.Map, observed map[string]attr.Valu
 	return true
 }
 
+// keyProjectAssignmentChanges reports a configured project_id that differs
+// from the stored assignment, which LiteLLM 1.104.0 rejects on /key/update.
+func keyProjectAssignmentChanges(configured, prior types.String) bool {
+	if configured.IsNull() || configured.IsUnknown() || prior.IsUnknown() {
+		return false
+	}
+	return prior.IsNull() || configured.ValueString() != prior.ValueString()
+}
+
+// applyKeyProjectAndSoftBudgetUpdateSemantics adapts /key/update to LiteLLM
+// 1.104.0, which now honors project_id and soft_budget on update:
+//   - removing project_id sends an explicit null, the only accepted detach;
+//   - soft_budget is sent only when it changes, because LiteLLM writes it to
+//     the key's budget row, which other keys may share through budget_id.
+func applyKeyProjectAndSoftBudgetUpdateSemantics(updateReq map[string]interface{}, planned, prior KeyResourceModel) {
+	if planned.ProjectID.IsNull() && !prior.ProjectID.IsNull() && !prior.ProjectID.IsUnknown() {
+		updateReq["project_id"] = nil
+	}
+	if !planned.SoftBudget.IsNull() && !planned.SoftBudget.IsUnknown() && planned.SoftBudget.Equal(prior.SoftBudget) {
+		delete(updateReq, "soft_budget")
+	}
+}
+
 func keyInfoEndpoint(keyIdentifier string) string {
 	// Canonical url.Values encoding ensures special characters in a plaintext
 	// key (e.g. '#') are not interpreted as a URL fragment. LiteLLM also accepts
@@ -1666,6 +1701,10 @@ func (r *KeyResource) readKeyWithTransport(ctx context.Context, data *KeyResourc
 	}
 	if projectID, ok := info["project_id"].(string); ok && projectID != "" {
 		data.ProjectID = types.StringValue(projectID)
+	} else if !data.ProjectID.IsNull() && !data.ProjectID.IsUnknown() {
+		// The key was detached (by Terraform or out of band); record it so a
+		// detach is verified and drift is visible.
+		data.ProjectID = types.StringNull()
 	}
 	// Only set budget_id if the user explicitly configured it or if the
 	// current value is unknown (needs resolving). The API auto-creates budgets

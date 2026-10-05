@@ -141,7 +141,7 @@ func TestRouterSettingsReadStatusClassification(t *testing.T) {
 func keyRouterSettingsTestValue(t *testing.T, overrides map[string]attr.Value) types.Object {
 	t.Helper()
 	values := map[string]attr.Value{}
-	for _, name := range []string{"routing_strategy_args", "routing_strategy", "routing_groups", "model_group_retry_policy", "model_group_affinity_config", "fallbacks", "context_window_fallbacks", "model_group_alias", "tag_routing_prefix"} {
+	for _, name := range []string{"routing_strategy_args", "routing_strategy", "routing_groups", "model_group_retry_policy", "model_group_affinity_config", "fallbacks", "context_window_fallbacks", "model_group_alias", "tag_routing_prefix", "weights", "optional_pre_call_checks"} {
 		values[name] = types.StringNull()
 	}
 	values["retry_policy"] = types.ObjectNull(keyRetryPolicyAttrTypes)
@@ -171,6 +171,9 @@ func retryPolicyTestValue(t *testing.T) types.Object {
 		"rate_limit_error_retries":               types.Int64Value(4),
 		"content_policy_violation_error_retries": types.Int64Value(5),
 		"internal_server_error_retries":          types.Int64Value(6),
+		"service_unavailable_error_retries":      types.Int64Value(7),
+		"not_found_error_retries":                types.Int64Value(8),
+		"default_retries":                        types.Int64Value(9),
 	}
 	object, diagnostics := types.ObjectValue(keyRetryPolicyAttrTypes, values)
 	if diagnostics.HasError() {
@@ -200,20 +203,25 @@ func TestKeyRouterSettingsPayloadMatchesLiteLLMV198Schema(t *testing.T) {
 		"model_group_alias":           types.StringValue(`{"fast":"gpt-4o-mini","hidden":{"model":"gpt-4o","hidden":true}}`),
 		"enable_tag_filtering":        types.BoolValue(true),
 		"tag_routing_prefix":          types.StringValue("tenant:"),
+		"weights":                     types.StringValue(`{"gpt-4o":2}`),
+		"optional_pre_call_checks":    types.StringValue(`["prompt_caching","router_budget_limiting"]`),
 	})
 
 	payload, err := keyRouterSettingsPayload(settings)
 	if err != nil {
 		t.Fatalf("keyRouterSettingsPayload: %v", err)
 	}
-	if len(payload) != 17 {
-		t.Fatalf("payload has %d fields, want 17: %#v", len(payload), payload)
+	if len(payload) != 19 {
+		t.Fatalf("payload has %d fields, want 19: %#v", len(payload), payload)
+	}
+	if checks, ok := payload["optional_pre_call_checks"].([]interface{}); !ok || len(checks) != 2 || checks[0] != "prompt_caching" {
+		t.Fatalf("optional_pre_call_checks order or shape lost: %#v", payload["optional_pre_call_checks"])
 	}
 	if payload["retry_after"] != 0.25 {
 		t.Fatalf("retry_after = %#v, want decimal 0.25", payload["retry_after"])
 	}
 	policy, ok := payload["retry_policy"].(map[string]interface{})
-	if !ok || policy["RateLimitErrorRetries"] != int64(4) || len(policy) != 6 {
+	if !ok || policy["RateLimitErrorRetries"] != int64(4) || policy["DefaultRetries"] != int64(9) || len(policy) != 9 {
 		t.Fatalf("retry_policy does not use exact LiteLLM wire names: %#v", payload["retry_policy"])
 	}
 	fallbacks := payload["fallbacks"].([]interface{})
@@ -281,6 +289,9 @@ func TestKeyRouterSettingsFromAPIPreservesEquivalentConfiguredJSON(t *testing.T)
 			"RateLimitErrorRetries":              float64(4),
 			"ContentPolicyViolationErrorRetries": float64(5),
 			"InternalServerErrorRetries":         float64(6),
+			"ServiceUnavailableErrorRetries":     float64(7),
+			"NotFoundErrorRetries":               float64(8),
+			"DefaultRetries":                     float64(9),
 		},
 	}
 
@@ -347,6 +358,8 @@ func TestKeyRouterSettingsComplexJSONPreservesIntegersAboveTwoToFiftyThree(t *te
 		"model_group_alias":           types.StringNull(),
 		"enable_tag_filtering":        types.BoolNull(),
 		"tag_routing_prefix":          types.StringNull(),
+		"weights":                     types.StringNull(),
+		"optional_pre_call_checks":    types.StringNull(),
 	})
 	payload, err := keyRouterSettingsPayload(object)
 	if err != nil {
@@ -397,6 +410,27 @@ func TestKeyRouterSettingsCompleteDocumentComparison(t *testing.T) {
 				t.Fatalf("cleared document = %t, %v", matches, err)
 			}
 		})
+	}
+}
+
+func TestKeyRouterSettingsReadsLiteLLMV1104Fields(t *testing.T) {
+	t.Parallel()
+
+	object, present, err := keyRouterSettingsFromAPI(map[string]interface{}{
+		"weights":                  map[string]interface{}{"gpt-4o": 2.0},
+		"optional_pre_call_checks": []interface{}{"prompt_caching"},
+		"retry_policy":             map[string]interface{}{"DefaultRetries": 3.0, "NotFoundErrorRetries": 1.0, "ServiceUnavailableErrorRetries": 2.0},
+	}, types.ObjectNull(keyRouterSettingsAttrTypes))
+	if err != nil || !present {
+		t.Fatalf("v1.104 router settings rejected: present=%t err=%v", present, err)
+	}
+	attrs := object.Attributes()
+	if attrs["optional_pre_call_checks"].(types.String).ValueString() != `["prompt_caching"]` {
+		t.Fatalf("optional_pre_call_checks=%s", attrs["optional_pre_call_checks"])
+	}
+	policy := attrs["retry_policy"].(types.Object).Attributes()
+	if policy["default_retries"].(types.Int64).ValueInt64() != 3 || policy["service_unavailable_error_retries"].(types.Int64).ValueInt64() != 2 {
+		t.Fatalf("retry_policy=%v", policy)
 	}
 }
 

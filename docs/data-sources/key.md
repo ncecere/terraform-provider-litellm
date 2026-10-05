@@ -52,7 +52,7 @@ Exactly one lookup argument is required:
 * `metadata` - (Sensitive) Map of metadata for the key. Terraform redacts it from normal CLI output because metadata can contain credentials.
 * `tags` - List of tags for the key.
 * `blocked` - Whether the key is blocked.
-* `router_settings` - Complete key-specific LiteLLM v1.98.0 router-settings document. Scalar fields are typed; heterogeneous objects and ordered arrays are returned as canonical JSON strings. See the `litellm_key` resource documentation for the nested fields.
+* `router_settings` - Complete key-specific LiteLLM router-settings document. Scalar fields are typed; heterogeneous objects and ordered arrays are returned as canonical JSON strings. See the `litellm_key` resource documentation for the nested fields.
 
 ## Notes
 
