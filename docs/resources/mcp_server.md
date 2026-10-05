@@ -2,6 +2,8 @@
 
 Manages MCP (Model Context Protocol) server configurations in LiteLLM. MCP servers allow LLM models to access external tools and data sources through a standardized protocol.
 
+On LiteLLM 1.104.0 and later, stdio servers (`transport = "stdio"`) are disabled unless the proxy process sets `LITELLM_ENABLE_MCP_STDIO=true` in its environment. Without it, creating a stdio server or switching a server to stdio fails with `stdio MCP Servers Disabled`, and existing stdio servers stay listed but do not start.
+
 > **Note:** Server names and canonical aliases use 1–128 ASCII letters, digits, underscores, or periods. They cannot contain LiteLLM v1.98's default tool-prefix separator (`-`). Non-empty aliases may contain ASCII spaces in configuration; the provider sends LiteLLM's space-to-underscore normalization while preserving the configured spelling in Terraform state.
 >
 > Ordinary refresh can fall back to LiteLLM's MCP server collection endpoint if the individual read returns an unexpected error. Create and Update verification use only the direct singular endpoint as mutation authority. A committed create without confirmed readback retains only the server identity; a failed Update or readback retains the complete prior state.

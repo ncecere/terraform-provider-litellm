@@ -1329,7 +1329,7 @@ func (r *MCPServerResource) Update(ctx context.Context, req resource.UpdateReque
 		accepted, putErr := r.putMCPServer(ctx, delta, &updateResult)
 		if putErr != nil && !accepted {
 			resp.State, resp.Private = req.State, req.Private
-			resp.Diagnostics.AddError("Client Error", "LiteLLM did not confirm the MCP server update. Prior public and private state was retained.")
+			addMCPMutationError(&resp.Diagnostics, putErr, delta, "Client Error", "LiteLLM did not confirm the MCP server update. Prior public and private state was retained.")
 			return
 		}
 		// Accepted response-body failures and malformed success bodies are

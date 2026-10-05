@@ -1417,7 +1417,7 @@ func (r *MCPServerResource) Create(ctx context.Context, req resource.CreateReque
 	var result map[string]interface{}
 	accepted, createErr := r.client.doRequestWithResponse(ctx, "POST", "/v1/mcp/server", mcpReq, &result)
 	if createErr != nil && !accepted {
-		resp.Diagnostics.AddError("Client Error", "Unable to create MCP server because LiteLLM did not accept the request.")
+		addMCPMutationError(&resp.Diagnostics, createErr, mcpReq, "Client Error", "Unable to create MCP server because LiteLLM did not accept the request.")
 		return
 	}
 	data.ServerID = types.StringValue(serverID)
@@ -1670,7 +1670,7 @@ func (r *MCPServerResource) updateLegacyIssue213(ctx context.Context, req resour
 		if putErr != nil && !accepted {
 			resp.State = req.State
 			resp.Private = req.Private
-			resp.Diagnostics.AddError("Client Error", "LiteLLM did not confirm the MCP server update. Prior public and private state was retained.")
+			addMCPMutationError(&resp.Diagnostics, putErr, mcpReq, "Client Error", "LiteLLM did not confirm the MCP server update. Prior public and private state was retained.")
 			return
 		}
 		// Accepted response-body failures and malformed success bodies are
