@@ -565,6 +565,21 @@ func (r *AgentResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanR
 		return
 	}
 	imported := bundle.committed
+	defer func() {
+		if resp.Diagnostics.HasError() || !agentParamsConfigKnown(config) {
+			return
+		}
+		removed, err := removedAgentSecretParamKeys(state, config, imported)
+		if err != nil || len(removed) == 0 {
+			return
+		}
+		resp.Diagnostics.AddAttributeError(
+			path.Root("litellm_params"),
+			"Agent Secret Parameter Cannot Be Removed In Place",
+			"LiteLLM 1.104.0 and later keep a secret agent parameter when an update omits it, so removing it from configuration would never take effect. Removed secret keys: "+strings.Join(removed, ", ")+
+				". Set the key to an empty string to overwrite the stored secret, or replace the agent (for example with terraform apply -replace). No request was sent.",
+		)
+	}()
 	if !bundle.versioned {
 		// Older state has no ownership provenance. Conservatively classify every
 		// known optional value as API-owned until explicit HCL transfers ownership
@@ -1788,6 +1803,9 @@ func (r *AgentResource) confirmAgentMutationWithPreservation(ctx context.Context
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		observed := emptyKnownAgentResourceModel()
 		observed.ID = planned.ID
+		if err := seedAgentSecretParams(ctx, &observed, planned); err != nil {
+			return AgentResourceModel{}, err
+		}
 		var raw map[string]interface{}
 		err := r.readAgentWithOwnershipTransportCapture(ctx, &observed, true, nil, true, &raw)
 		if err == nil {
