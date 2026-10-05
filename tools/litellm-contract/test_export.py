@@ -95,5 +95,56 @@ class LazyExporterAdversarialTests(unittest.TestCase):
                 exporter.direct_register_features(FastAPI(), [item], importer=lambda _: SimpleNamespace(app=SimpleNamespace()))
 
 
+class OpenAPIVisibilityTests(unittest.TestCase):
+    def test_plain_starlette_routes_are_not_openapi_operations(self):
+        from starlette.routing import Route
+
+        app = FastAPI()
+
+        @app.get("/documented")
+        def documented():
+            return {}
+
+        app.router.routes.append(Route("/transport", endpoint=lambda request: None, methods=["GET"]))
+        visible = exporter.route_operations(app.routes, include_hidden=False)
+        live = exporter.route_operations(app.routes)
+        self.assertIn(("GET", "/documented"), visible)
+        self.assertNotIn(("GET", "/transport"), visible)
+        self.assertIn(("GET", "/transport"), live)
+
+
+class OrganizationUpdateRouteTests(unittest.TestCase):
+    def write_source(self, root, decorator, parameters="organization_id: str"):
+        source = root / exporter.ORGANIZATION_UPDATE_ROUTE_SOURCE
+        source.parent.mkdir(parents=True)
+        source.write_text(
+            f"@router.patch(\"/v2/organization/{{organization_id}}\"{decorator})\n"
+            f"async def update_organization({parameters}):\n    pass\n",
+            encoding="utf-8",
+        )
+
+    def run_check(self, decorator, parameters="organization_id: str"):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_source(root, decorator, parameters)
+            exporter.verify_public_organization_update_route(root)
+
+    def test_public_route_passes(self):
+        self.run_check(", tags=[\"organization management\"]")
+
+    def test_explicitly_public_route_passes(self):
+        self.run_check(", include_in_schema=True")
+
+    def test_hidden_route_fails(self):
+        with self.assertRaisesRegex(RuntimeError, "hidden from OpenAPI"):
+            self.run_check(", include_in_schema=False")
+
+    def test_changed_path_parameter_fails(self):
+        with self.assertRaisesRegex(RuntimeError, "path parameter changed"):
+            self.run_check("", parameters="org_id: str")
+
+
 if __name__ == "__main__":
     unittest.main()

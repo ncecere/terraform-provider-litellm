@@ -26,13 +26,27 @@ import (
 
 const (
 	pinnedRepository        = "https://github.com/BerriAI/litellm"
-	pinnedTag               = "v1.98.0"
-	pinnedCommit            = "d8f71d7bdbd7c9873d98293f83d64c6db72847e6"
+	pinnedTag               = "v1.104.0"
+	pinnedVersion           = "1.104.0"
+	pinnedCommit            = "79645770fedc7ec2627e6468d31062f20f82aecc"
 	pinnedPython            = "3.12.14"
 	pinnedUV                = "0.12.6"
-	pinnedUVLockSHA256      = "a7cc57875c67de85bbae0f82b834f31fc9d0c029073ef29e0883787a31a985e8"
-	pinnedLazyFeatureSHA256 = "a937cdd378769502f22840c501cb992a1fab7d4609c1deb402e81095fa9837ff"
+	pinnedUVLockSHA256      = "4d02833751421f29facee660c303f6b02cf0282c2709e93c7ad5898bbc1c38de"
+	pinnedLazyFeatureSHA256 = "1997fb47519ff5bc3adbbf6e5c3eff6edb88e999184855218a436ca899baba7d"
 )
+
+// pinnedLazyFeatureCount is the exact LAZY_FEATURES length at pinnedCommit.
+const pinnedLazyFeatureCount = 35
+
+// hiddenOnlyLazyFeatures register live routes that upstream deliberately marks
+// include_in_schema=False, so they contribute zero generated OpenAPI operations.
+// mcp_byok_oauth serves BYOK OAuth flows; claude_code_gateway (new in v1.104.0)
+// serves the Claude Code device-authorization, managed-settings, and OTLP ingest
+// routes. Neither is provider-managed configuration.
+var hiddenOnlyLazyFeatures = map[string]bool{
+	"mcp_byok_oauth":      true,
+	"claude_code_gateway": true,
+}
 
 var httpMethods = map[string]string{
 	"MethodGet": "GET", "MethodPost": "POST", "MethodPut": "PUT", "MethodPatch": "PATCH",
@@ -5602,8 +5616,8 @@ func Verify(repoRoot string) error {
 			Version string `json:"version"`
 		} `json:"info"`
 	}
-	if err := readJSONFile(openapiPath, &versionDocument); err != nil || versionDocument.Info.Version != "1.98.0" {
-		return errors.New("OpenAPI info.version differs from the reviewed 1.98.0 pin")
+	if err := readJSONFile(openapiPath, &versionDocument); err != nil || versionDocument.Info.Version != pinnedVersion {
+		return errors.New("OpenAPI info.version differs from the reviewed " + pinnedVersion + " pin")
 	}
 	contracts, pathCount, operationCount, err := LoadContracts(openapiPath, suppPath)
 	if err != nil {
@@ -5705,7 +5719,7 @@ func safeManifestPath(path string) bool {
 }
 
 func validateLazyFeatureEvidence(supplemental, manifest []LazyFeatureEvidence, reviewed []LazyFeatureContract) error {
-	if len(reviewed) != 33 || len(supplemental) != len(reviewed) || !reflect.DeepEqual(supplemental, manifest) {
+	if len(reviewed) != pinnedLazyFeatureCount || len(supplemental) != len(reviewed) || !reflect.DeepEqual(supplemental, manifest) {
 		return errors.New("complete lazy feature evidence differs between reviewed and generated artifacts")
 	}
 	encoded, err := json.Marshal(reviewed)
@@ -5728,11 +5742,12 @@ func validateLazyFeatureEvidence(supplemental, manifest []LazyFeatureEvidence, r
 		if evidence.LiveOperationCount < 1 {
 			return fmt.Errorf("lazy feature %q has zero live routes", evidence.Name)
 		}
-		if evidence.OpenAPIOperationCount < 1 && evidence.Name != "mcp_byok_oauth" {
+		hiddenOnly := hiddenOnlyLazyFeatures[evidence.Name]
+		if evidence.OpenAPIOperationCount < 1 && !hiddenOnly {
 			return fmt.Errorf("lazy feature %q has zero generated OpenAPI routes", evidence.Name)
 		}
-		if evidence.Name == "mcp_byok_oauth" && evidence.OpenAPIOperationCount != 0 {
-			return errors.New("reviewed hidden-only mcp_byok_oauth exception changed")
+		if hiddenOnly && evidence.OpenAPIOperationCount != 0 {
+			return fmt.Errorf("reviewed hidden-only %s exception changed", evidence.Name)
 		}
 	}
 	return nil

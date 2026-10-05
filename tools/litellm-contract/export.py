@@ -15,12 +15,16 @@ from pathlib import Path
 from typing import Any
 
 UPSTREAM_REPOSITORY = "https://github.com/BerriAI/litellm"
-UPSTREAM_TAG = "v1.98.0"
-UPSTREAM_COMMIT = "d8f71d7bdbd7c9873d98293f83d64c6db72847e6"
+UPSTREAM_TAG = "v1.104.0"
+UPSTREAM_COMMIT = "79645770fedc7ec2627e6468d31062f20f82aecc"
 PYTHON_VERSION = "3.12.14"
-UV_LOCK_SHA256 = "a7cc57875c67de85bbae0f82b834f31fc9d0c029073ef29e0883787a31a985e8"
-HIDDEN_ROUTE_SOURCE = Path("litellm/proxy/management_endpoints/organization_endpoints.py")
-HIDDEN_ROUTE = ("PATCH", "/v2/organization/{organization_id}")
+UV_LOCK_SHA256 = "4d02833751421f29facee660c303f6b02cf0282c2709e93c7ad5898bbc1c38de"
+# v1.98.0 registered this organization update route with include_in_schema=False,
+# so it had to be carried as a supplemental route. From v1.104.0 it is a normal
+# public route; the exporter now requires it to be present in generated OpenAPI
+# with its exact path-parameter contract instead of parsing it as hidden.
+ORGANIZATION_UPDATE_ROUTE_SOURCE = Path("litellm/proxy/management_endpoints/organization_endpoints.py")
+ORGANIZATION_UPDATE_ROUTE = ("PATCH", "/v2/organization/{organization_id}")
 HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "TRACE"}
 
 
@@ -38,7 +42,8 @@ def feature(name: str, module: str, prefixes: tuple[str, ...], *, suffixes: tupl
 
 
 # Exact source-reviewed LAZY_FEATURES order and mounting contract at UPSTREAM_COMMIT.
-# The pinned source contains 33 definitions (not 32).
+# The pinned source contains 35 definitions. v1.104.0 added llm_passthrough and
+# claude_code_gateway and extended mcp_discoverable's prefixes.
 EXPECTED_LAZY_FEATURES = (
     feature("guardrails", "litellm.proxy.guardrails.guardrail_endpoints", ("/guardrails", "/v2/guardrails", "/apply_guardrail", "/policies/usage")),
     feature("policies", "litellm.proxy.management_endpoints.policy_endpoints", ("/policy/", "/utils/test_policies_and_guardrails")),
@@ -55,13 +60,15 @@ EXPECTED_LAZY_FEATURES = (
     feature("search_tools", "litellm.proxy.search_endpoints.search_tool_management", ("/search_tools",)),
     feature("mcp_management", "litellm.proxy.management_endpoints.mcp_management_endpoints", ("/v1/mcp/",)),
     feature("mcp_byok_oauth", "litellm.proxy._experimental.mcp_server.byok_oauth_endpoints", ("/v1/mcp/oauth", "/.well-known/oauth-")),
-    feature("mcp_discoverable", "litellm.proxy._experimental.mcp_server.discoverable_endpoints", ("/.well-known/oauth-", "/.well-known/openid-configuration", "/.well-known/jwks.json", "/authorize", "/token", "/callback", "/register"), suffixes=("/authorize", "/token", "/register")),
+    feature("mcp_discoverable", "litellm.proxy._experimental.mcp_server.discoverable_endpoints", ("/.well-known/oauth-", "/.well-known/openid-configuration", "/.well-known/jwks.json", "/.well-known/litellm-cli-auth", "/authorize", "/token", "/callback", "/register", "/revoke", "/introspect"), suffixes=("/authorize", "/token", "/register")),
     feature("mcp_rest", "litellm.proxy._experimental.mcp_server.rest_endpoints", ("/mcp-rest",)),
     feature("mcp_app", "litellm.proxy._experimental.mcp_server.server", ("/mcp",), registration="mount_app", attribute="app", mount_prefix="/mcp", persistent_stub=True),
     feature("config_overrides", "litellm.proxy.management_endpoints.config_override_endpoints", ("/config_overrides",)),
+    feature("llm_passthrough", "litellm.proxy.pass_through_endpoints.llm_passthrough_endpoints", ("/anthropic/", "/assemblyai/", "/azure/", "/azure_ai/", "/azure_speech/", "/bedrock/", "/cohere/", "/comprehendmedical", "/cursor/", "/deepgram/", "/eu.assemblyai/", "/fal_ai/", "/gemini/", "/gigachat/", "/milvus/", "/mistral/", "/nvidia_nim/", "/openai/", "/openai_passthrough/", "/tinyfish/", "/transcribe", "/typesafe/", "/openrouter/", "/vertex-ai/", "/vertex_ai/", "/vllm/", "/watsonx/")),
     feature("realtime", "litellm.proxy.realtime_endpoints.endpoints", ("/openai/v1/realtime", "/v1/realtime", "/realtime")),
     feature("anthropic_passthrough", "litellm.proxy.anthropic_endpoints.endpoints", ("/v1/messages", "/anthropic", "/api/event_logging")),
     feature("anthropic_skills", "litellm.proxy.anthropic_endpoints.skills_endpoints", ("/v1/skills", "/skills")),
+    feature("claude_code_gateway", "litellm.proxy.anthropic_endpoints.gateway_endpoints", ("/claude_code_gateway",)),
     feature("langfuse_passthrough", "litellm.proxy.vertex_ai_endpoints.langfuse_endpoints", ("/langfuse",)),
     feature("evals", "litellm.proxy.openai_evals_endpoints.endpoints", ("/v1/evals", "/evals")),
     feature("claude_code_marketplace", "litellm.proxy.anthropic_endpoints.claude_code_endpoints", ("/claude-code",), attribute="claude_code_marketplace_router"),
@@ -154,9 +161,16 @@ def parameter_contract(route: Any) -> dict[str, list[str]]:
 
 
 def route_operations(routes: Any, prefix: str = "", *, include_hidden: bool = True) -> dict[tuple[str, str], dict[str, list[str]]]:
+    from fastapi.routing import APIRoute
+
     operations: dict[tuple[str, str], dict[str, list[str]]] = {}
     for route in routes:
         if not include_hidden and not getattr(route, "include_in_schema", True):
+            continue
+        # FastAPI only documents APIRoute instances. Plain Starlette routes (for
+        # example v1.104.0's legacy MCP SSE transport routes appended to the
+        # mounted MCP app) are runtime transports, never OpenAPI operations.
+        if not include_hidden and not isinstance(route, APIRoute):
             continue
         route_path = getattr(route, "path_format", None) or getattr(route, "path", None)
         for method in sorted(getattr(route, "methods", ()) or ()):
@@ -272,10 +286,15 @@ def direct_register_features(app: Any, features: Any, importer: Any = importlib.
     return evidence, mounted_fragments, feature_operations
 
 
-def parse_hidden_route(root: Path) -> dict[str, Any]:
-    source_path = root / HIDDEN_ROUTE_SOURCE
-    tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(HIDDEN_ROUTE_SOURCE))
-    matches: list[dict[str, Any]] = []
+def verify_public_organization_update_route(root: Path) -> None:
+    """Require the organization update route to be a single public decorator.
+
+    An upstream regression back to include_in_schema=False would silently drop
+    the route from generated OpenAPI, so fail instead of exporting without it.
+    """
+    source_path = root / ORGANIZATION_UPDATE_ROUTE_SOURCE
+    tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(ORGANIZATION_UPDATE_ROUTE_SOURCE))
+    matches = 0
     for node in tree.body:
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
@@ -283,20 +302,16 @@ def parse_hidden_route(root: Path) -> dict[str, Any]:
             if not isinstance(decorator, ast.Call) or not isinstance(decorator.func, ast.Attribute) or not decorator.args:
                 continue
             method, path_arg = decorator.func.attr.upper(), decorator.args[0]
-            if method != HIDDEN_ROUTE[0] or not isinstance(path_arg, ast.Constant) or path_arg.value != HIDDEN_ROUTE[1]:
+            if method != ORGANIZATION_UPDATE_ROUTE[0] or not isinstance(path_arg, ast.Constant) or path_arg.value != ORGANIZATION_UPDATE_ROUTE[1]:
                 continue
             include = next((kw.value for kw in decorator.keywords if kw.arg == "include_in_schema"), None)
-            if not isinstance(include, ast.Constant) or include.value is not False:
-                raise RuntimeError("reviewed hidden organization route is no longer hidden")
+            if include is not None and not (isinstance(include, ast.Constant) and include.value is True):
+                raise RuntimeError("reviewed organization update route is hidden from OpenAPI")
             if "organization_id" not in {arg.arg for arg in node.args.args}:
-                raise RuntimeError("reviewed hidden organization route path parameter changed")
-            matches.append({
-                "method": method, "path": HIDDEN_ROUTE[1], "path_parameters": ["organization_id"], "query_parameters": [],
-                "evidence": str(HIDDEN_ROUTE_SOURCE), "reason": "include_in_schema=false upstream route used by organization updates",
-            })
-    if len(matches) != 1:
-        raise RuntimeError(f"expected exactly one reviewed hidden route, found {len(matches)}")
-    return matches[0]
+                raise RuntimeError("reviewed organization update route path parameter changed")
+            matches += 1
+    if matches != 1:
+        raise RuntimeError(f"expected exactly one reviewed organization update route, found {matches}")
 
 
 def canonical_write(path: Path, value: Any) -> None:
@@ -318,7 +333,7 @@ def export(root: Path, openapi_output: Path, supplemental_output: Path) -> None:
 
     # All feature routers are live. Disable the committed lazy snapshot injector
     # explicitly so it cannot supply or mask any exported path.
-    lazy.inject_lazy_stubs = lambda schema: schema
+    lazy.inject_lazy_stubs = lambda schema, *args, **kwargs: schema
     app.openapi_schema = None
     schema = app.openapi()
     for fragment in mounted_fragments:
@@ -329,12 +344,10 @@ def export(root: Path, openapi_output: Path, supplemental_output: Path) -> None:
         missing = sorted(operations - generated)
         if missing:
             raise RuntimeError(f"lazy feature {name!r} routes are absent from final generated OpenAPI: {missing}")
-    hidden = parse_hidden_route(root)
-    hidden_routes = [route for route in app.routes if (getattr(route, "path_format", None) or getattr(route, "path", None)) == HIDDEN_ROUTE[1] and HIDDEN_ROUTE[0] in (getattr(route, "methods", ()) or ())]
-    registered_hidden = route_operations(hidden_routes)
-    expected_hidden = {"path_parameters": hidden["path_parameters"], "query_parameters": hidden["query_parameters"]}
-    if registered_hidden.get(HIDDEN_ROUTE) != expected_hidden:
-        raise RuntimeError("registered hidden organization route disagrees with bounded AST evidence")
+    verify_public_organization_update_route(root)
+    expected_org_update = {"path_parameters": ["organization_id"], "query_parameters": []}
+    if schema_route_operations(schema).get(ORGANIZATION_UPDATE_ROUTE) != expected_org_update:
+        raise RuntimeError("organization update route is absent from generated OpenAPI or its parameters changed")
 
     # Recreate visible feature keys from direct route evidence by requiring the
     # final schema operation total to include every per-feature generated key.
@@ -347,7 +360,7 @@ def export(root: Path, openapi_output: Path, supplemental_output: Path) -> None:
         "schema_version": 2,
         "upstream_commit": UPSTREAM_COMMIT,
         "lazy_features": evidence,
-        "routes": [hidden],
+        "routes": [],
     })
 
 

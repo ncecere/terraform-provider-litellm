@@ -13,10 +13,10 @@ fi
   go build -o "$work/provider" .
 )
 for marker in \
-  d8f71d7bdbd7c9873d98293f83d64c6db72847e6 \
-  a7cc57875c67de85bbae0f82b834f31fc9d0c029073ef29e0883787a31a985e8 \
+  79645770fedc7ec2627e6468d31062f20f82aecc \
+  4d02833751421f29facee660c303f6b02cf0282c2709e93c7ad5898bbc1c38de \
   '/v1/mcp/server/{server_id}/oauth-user-credential/status' \
-  'include_in_schema=false upstream route used by organization updates' \
+  '/management/v1/users/bulk_delete' \
   'Credential collection inventory is durable' \
   'required lazy feature metadata missing'
 do

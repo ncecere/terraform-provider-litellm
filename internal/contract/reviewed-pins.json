@@ -1,21 +1,21 @@
 {
   "artifacts": {
     "classification": {
-      "excluded_non_durable_count": 504,
-      "operation_count": 693,
+      "excluded_non_durable_count": 589,
+      "operation_count": 798,
       "path": "internal/contract/reviewed-operation-classification.json",
-      "sha256": "c1fa3c7f88f6d738cc30dfc94c402f0eddce0a5663f45890692714cadef3c393",
-      "unsupported_durable_count": 189
+      "sha256": "944e60b48507d9870e9ed588297283d9022a76da7a7ab09a4fe42acff7f34792",
+      "unsupported_durable_count": 209
     },
     "manifest": {
       "path": "internal/contract/manifest.json",
-      "sha256": "7738abd950f1ebb6b5be1ebadb626a9370e8ec7fd0adda3719239f97f16cb1c1"
+      "sha256": "2661125eb91e94c73651efd051c72ff12cddf623461cae938b600d6cb958b6f9"
     },
     "openapi": {
-      "operation_count": 800,
+      "operation_count": 906,
       "path": "openapi.json",
-      "path_count": 586,
-      "sha256": "ab876dc970a8cc835e30cbdf65ece45a7bfd90bad0c7585bd4557d27c4a7615a"
+      "path_count": 654,
+      "sha256": "bb7aa4cf229cabb2fa1633a176c2eba26ee62d095b3d55910b392c268fb2f0b2"
     },
     "provider_golden": {
       "operation_count": 108,
@@ -23,9 +23,9 @@
       "sha256": "a1a5114f93cc432a97f4da76def86ce238d712fba471dbb2d703768e7cecfe51"
     },
     "supplemental": {
-      "operation_count": 1,
+      "operation_count": 0,
       "path": "internal/contract/supplemental-routes.json",
-      "sha256": "351791e3bc2985d25874b911778068fb08dda83da7f3cb58a26b8fa6d90c845a"
+      "sha256": "5cf3cf125be7574657a7f7161a1dcc1cc40be6cfdc351837e5076ff8e1ce37f0"
     }
   },
   "categories": [
@@ -405,10 +405,13 @@
         "/.well-known/oauth-",
         "/.well-known/openid-configuration",
         "/.well-known/jwks.json",
+        "/.well-known/litellm-cli-auth",
         "/authorize",
         "/token",
         "/callback",
-        "/register"
+        "/register",
+        "/revoke",
+        "/introspect"
       ],
       "path_suffixes": [
         "/authorize",
@@ -456,6 +459,44 @@
     },
     {
       "attribute": "router",
+      "module": "litellm.proxy.pass_through_endpoints.llm_passthrough_endpoints",
+      "mount_prefix": "",
+      "name": "llm_passthrough",
+      "path_prefixes": [
+        "/anthropic/",
+        "/assemblyai/",
+        "/azure/",
+        "/azure_ai/",
+        "/azure_speech/",
+        "/bedrock/",
+        "/cohere/",
+        "/comprehendmedical",
+        "/cursor/",
+        "/deepgram/",
+        "/eu.assemblyai/",
+        "/fal_ai/",
+        "/gemini/",
+        "/gigachat/",
+        "/milvus/",
+        "/mistral/",
+        "/nvidia_nim/",
+        "/openai/",
+        "/openai_passthrough/",
+        "/tinyfish/",
+        "/transcribe",
+        "/typesafe/",
+        "/openrouter/",
+        "/vertex-ai/",
+        "/vertex_ai/",
+        "/vllm/",
+        "/watsonx/"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
       "module": "litellm.proxy.realtime_endpoints.endpoints",
       "mount_prefix": "",
       "name": "realtime",
@@ -490,6 +531,18 @@
       "path_prefixes": [
         "/v1/skills",
         "/skills"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "module": "litellm.proxy.anthropic_endpoints.gateway_endpoints",
+      "mount_prefix": "",
+      "name": "claude_code_gateway",
+      "path_prefixes": [
+        "/claude_code_gateway"
       ],
       "path_suffixes": [],
       "persistent_swagger_stub": false,
@@ -634,11 +687,11 @@
   ],
   "schema_version": 1,
   "upstream": {
-    "commit": "d8f71d7bdbd7c9873d98293f83d64c6db72847e6",
+    "commit": "79645770fedc7ec2627e6468d31062f20f82aecc",
     "python": "3.12.14",
     "repository": "https://github.com/BerriAI/litellm",
-    "tag": "v1.98.0",
+    "tag": "v1.104.0",
     "uv": "0.12.6",
-    "uv_lock_sha256": "a7cc57875c67de85bbae0f82b834f31fc9d0c029073ef29e0883787a31a985e8"
+    "uv_lock_sha256": "4d02833751421f29facee660c303f6b02cf0282c2709e93c7ad5898bbc1c38de"
   }
 }
