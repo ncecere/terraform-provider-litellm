@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [2.2.0]
+## [2.2.0] - 2026-10-05
 
 ### Upgrade Notes
 - The tested backend moves from LiteLLM 1.98.0 to exactly LiteLLM 1.104.0. The published provider source remains `registry.terraform.io/ncecere/litellm`; Terraform >= 1.1.0, OpenTofu >= 1.6.0, and Go >= 1.24.0 for provider development are unchanged, and only optional write-only attributes require Terraform or OpenTofu >= 1.11.0. Published examples continue to constrain the provider to `>= 2.0.1, < 3.0.0`. No provider attribute is removed or retyped, and existing HCL, state, IDs, and imports remain valid, except for the new plan-time rejections listed in the next item.
