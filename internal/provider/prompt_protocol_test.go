@@ -24,7 +24,7 @@ func TestPromptCreateAcceptsAuthoritativeAbsentScopedIdentityProtocol(t *testing
 		case request.URL.RequestURI() == "/prompts/new-prompt?environment=production" && posts.Load() == 0:
 			http.Error(writer, "prompt absent", http.StatusBadRequest)
 		case request.URL.RequestURI() == "/prompts/new-prompt/versions?environment=production":
-			http.Error(writer, "no versions", http.StatusNotFound)
+			http.Error(writer, `{"detail":"No versions found for prompt ID new-prompt"}`, http.StatusNotFound)
 		case request.URL.RequestURI() == "/prompts/new-prompt?environment=production":
 			_, _ = fmt.Fprint(writer, `{"prompt_spec":{"prompt_id":"new-prompt","environment":"production","version":1,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z","litellm_params":{"prompt_integration":"dotprompt"},"prompt_info":{"prompt_type":"db","environment":"production"}}}`)
 		default:

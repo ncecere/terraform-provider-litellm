@@ -34,13 +34,13 @@ func organizationProjectPlanIsDestroy(req resource.ModifyPlanRequest) bool {
 // an explicit configured-ownership transition and is rejected.
 func preserveOrganizationProjectBudgetID(ctx context.Context, resourceName string, state, config, plan types.String, imported bool, resp *resource.ModifyPlanResponse) {
 	if state.IsUnknown() {
-		resp.Diagnostics.AddAttributeError(path.Root("budget_id"), fmt.Sprintf("Unknown %s Budget Association", resourceName), "The prior budget_id is unknown, so the provider cannot prove that this plan preserves the existing LiteLLM v1.98 budget association. Refresh state and plan again.")
+		resp.Diagnostics.AddAttributeError(path.Root("budget_id"), fmt.Sprintf("Unknown %s Budget Association", resourceName), "The prior budget_id is unknown, so the provider cannot prove that this plan preserves the existing LiteLLM budget association. Refresh state and plan again.")
 		return
 	}
 
 	if config.IsNull() {
 		if knownString(state) && !imported {
-			resp.Diagnostics.AddAttributeError(path.Root("budget_id"), fmt.Sprintf("Unsafe %s Budget Removal", resourceName), fmt.Sprintf("Removing a configured budget_id from an existing %s cannot converge safely on LiteLLM v1.98. Keep the existing value configured; only an association adopted with the resource import marker can remain omitted as Optional+Computed state.", resourceName))
+			resp.Diagnostics.AddAttributeError(path.Root("budget_id"), fmt.Sprintf("Unsafe %s Budget Removal", resourceName), fmt.Sprintf("Removing a configured budget_id from an existing %s cannot converge safely on LiteLLM. Keep the existing value configured; only an association adopted with the resource import marker can remain omitted as Optional+Computed state.", resourceName))
 			return
 		}
 		// Imported Optional+Computed omission preserves a known association. A
@@ -51,12 +51,12 @@ func preserveOrganizationProjectBudgetID(ctx context.Context, resourceName strin
 	}
 
 	if config.IsUnknown() || plan.IsUnknown() {
-		resp.Diagnostics.AddAttributeError(path.Root("budget_id"), fmt.Sprintf("Unknown %s Budget Association", resourceName), "budget_id must be known while planning an existing resource because LiteLLM v1.98 cannot safely reassociate its budget after creation.")
+		resp.Diagnostics.AddAttributeError(path.Root("budget_id"), fmt.Sprintf("Unknown %s Budget Association", resourceName), "budget_id must be known while planning an existing resource because LiteLLM cannot safely reassociate its budget after creation.")
 		return
 	}
 
 	if !state.Equal(config) || !state.Equal(plan) {
-		resp.Diagnostics.AddAttributeError(path.Root("budget_id"), fmt.Sprintf("Unsafe %s Budget Reassociation", resourceName), fmt.Sprintf("LiteLLM v1.98 does not provide a safe %s budget reassociation lifecycle. Keep the existing budget_id; an imported Optional+Computed budget_id may remain omitted but cannot be changed.", resourceName))
+		resp.Diagnostics.AddAttributeError(path.Root("budget_id"), fmt.Sprintf("Unsafe %s Budget Reassociation", resourceName), fmt.Sprintf("LiteLLM does not provide a safe %s budget reassociation lifecycle. Keep the existing budget_id; an imported Optional+Computed budget_id may remain omitted but cannot be changed.", resourceName))
 	}
 }
 

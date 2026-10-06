@@ -1,7 +1,7 @@
 HOSTNAME ?= registry.terraform.io
 NAMESPACE ?= ncecere
 NAME ?= litellm
-VERSION ?= 2.1.0
+VERSION ?= 2.2.0
 OS_ARCH ?= $(shell go env GOOS)_$(shell go env GOARCH)
 
 default: install
@@ -74,7 +74,7 @@ smoke: build
 	@sh internal_testing/smoke.sh "$(CURDIR)" resources $(strip $(subst ,, ,$(resources))) datasources $(strip $(subst ,, ,$(datasources)))
 
 # Destructive local acceptance matrix. Start the pinned disposable Compose stack first.
-# Usage: TF_ACC=1 LITELLM_ACCEPTANCE_CONFIRM=local-v1.98.0 make testacc
+# Usage: TF_ACC=1 LITELLM_ACCEPTANCE_CONFIRM=local-v1.104.0 make testacc
 testacc: build
 	@sh internal_testing/acceptance.sh
 

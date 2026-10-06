@@ -565,6 +565,21 @@ func (r *AgentResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanR
 		return
 	}
 	imported := bundle.committed
+	defer func() {
+		if resp.Diagnostics.HasError() || !agentParamsConfigKnown(config) {
+			return
+		}
+		removed, err := removedAgentSecretParamKeys(state, config, imported)
+		if err != nil || len(removed) == 0 {
+			return
+		}
+		resp.Diagnostics.AddAttributeError(
+			path.Root("litellm_params"),
+			"Agent Secret Parameter Cannot Be Removed In Place",
+			"LiteLLM 1.104.0 and later keep a secret agent parameter when an update omits it, so removing it from configuration would never take effect. Removed secret keys: "+strings.Join(removed, ", ")+
+				". Set the key to an empty string to overwrite the stored secret, or replace the agent: run terraform taint on its address, then apply (terraform apply -replace is not enough, because this check runs against the existing agent first). No request was sent.",
+		)
+	}()
 	if !bundle.versioned {
 		// Older state has no ownership provenance. Conservatively classify every
 		// known optional value as API-owned until explicit HCL transfers ownership
@@ -1330,28 +1345,28 @@ func validateAgentUpdateClears(ctx context.Context, plan, state, config AgentRes
 	}
 	if structuredEmptyClear || (!state.LiteLLMParams.IsNull() && !state.LiteLLMParams.IsUnknown() && knownNullMap(plan.LiteLLMParams) && !agentFieldSetHasPrefix(imported, agentFieldParams+"[")) ||
 		(!config.LiteLLMParams.IsNull() && !config.LiteLLMParams.IsUnknown() && len(config.LiteLLMParams.Elements()) == 0 && !plan.LiteLLMParams.IsNull() && !plan.LiteLLMParams.IsUnknown() && len(plan.LiteLLMParams.Elements()) == 0 && !state.LiteLLMParams.IsNull() && len(state.LiteLLMParams.Elements()) > 0) {
-		return fmt.Errorf("LiteLLM v1.98 ignores an empty litellm_params object. Keep at least one parameter, or retain the existing map; complete map clearing is not API-safe.")
+		return fmt.Errorf("LiteLLM ignores an empty litellm_params object. Keep at least one parameter, or retain the existing map; complete map clearing is not API-safe.")
 	}
 	if state.AgentCard != nil && plan.AgentCard == nil {
 		if agentFieldSetHasPrefix(imported, "agent_card.") {
 			return fmt.Errorf("the complete agent_card cannot be removed while it contains API-owned leaves; configure or transfer every leaf first")
 		}
-		return fmt.Errorf("LiteLLM v1.98 PATCH cannot remove the complete agent_card block. Keep the block configured.")
+		return fmt.Errorf("LiteLLM PATCH cannot remove the complete agent_card block. Keep the block configured.")
 	}
 	if state.AgentCard == nil || plan.AgentCard == nil || config.AgentCard == nil {
 		return nil
 	}
 	if managedStringRemoval(agentFieldCardVersion, state.AgentCard.Version, plan.AgentCard.Version) {
-		return fmt.Errorf("LiteLLM v1.98 injects a default agent-card version, so version cannot be cleared safely.")
+		return fmt.Errorf("LiteLLM injects a default agent-card version, so version cannot be cleared safely.")
 	}
 	if managedStringRemoval(agentFieldCardProtocol, state.AgentCard.ProtocolVersion, plan.AgentCard.ProtocolVersion) {
-		return fmt.Errorf("LiteLLM v1.98 injects a default agent-card protocol version, so protocol_version cannot be cleared safely.")
+		return fmt.Errorf("LiteLLM injects a default agent-card protocol version, so protocol_version cannot be cleared safely.")
 	}
 	if stateFields[agentFieldCardInputModes] && knownEmptyList(plan.AgentCard.DefaultInputModes) && !imported[agentFieldCardInputModes] && !state.AgentCard.DefaultInputModes.Equal(plan.AgentCard.DefaultInputModes) {
-		return fmt.Errorf("LiteLLM v1.98 replaces empty default_input_modes with its own default, so this collection cannot be cleared safely.")
+		return fmt.Errorf("LiteLLM replaces empty default_input_modes with its own default, so this collection cannot be cleared safely.")
 	}
 	if stateFields[agentFieldCardOutputModes] && knownEmptyList(plan.AgentCard.DefaultOutputModes) && !imported[agentFieldCardOutputModes] && !state.AgentCard.DefaultOutputModes.Equal(plan.AgentCard.DefaultOutputModes) {
-		return fmt.Errorf("LiteLLM v1.98 replaces empty default_output_modes with its own default, so this collection cannot be cleared safely.")
+		return fmt.Errorf("LiteLLM replaces empty default_output_modes with its own default, so this collection cannot be cleared safely.")
 	}
 	if state.AgentCard.Capabilities != nil && plan.AgentCard.Capabilities == nil && (imported[agentFieldCardCapStreaming] || imported[agentFieldCardCapPush] || imported[agentFieldCardCapHistory]) {
 		return fmt.Errorf("the complete capabilities block cannot be removed while it contains API-owned leaves")
@@ -1379,7 +1394,7 @@ func validateAgentUpdateClears(ctx context.Context, plan, state, config AgentRes
 			return fmt.Errorf("the complete provider block cannot be removed while it contains API-owned leaves")
 		}
 		if stateFields[agentFieldCardProviderOrg] || stateFields[agentFieldCardProviderURL] {
-			return fmt.Errorf("LiteLLM v1.98 replaces an empty agent-card provider with proxy-owned provider metadata, so the complete provider block cannot be cleared safely.")
+			return fmt.Errorf("LiteLLM replaces an empty agent-card provider with proxy-owned provider metadata, so the complete provider block cannot be cleared safely.")
 		}
 	}
 	if state.AgentCard.Provider != nil && plan.AgentCard.Provider != nil {
@@ -1390,7 +1405,7 @@ func validateAgentUpdateClears(ctx context.Context, plan, state, config AgentRes
 			if imported[agentFieldCardProviderOrg] || imported[agentFieldCardProviderURL] {
 				return fmt.Errorf("the complete provider block cannot be cleared while it contains API-owned leaves")
 			}
-			return fmt.Errorf("LiteLLM v1.98 replaces an empty agent-card provider with proxy-owned provider metadata, so the complete provider block cannot be cleared safely.")
+			return fmt.Errorf("LiteLLM replaces an empty agent-card provider with proxy-owned provider metadata, so the complete provider block cannot be cleared safely.")
 		}
 	}
 	return ctx.Err()
@@ -1788,6 +1803,9 @@ func (r *AgentResource) confirmAgentMutationWithPreservation(ctx context.Context
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		observed := emptyKnownAgentResourceModel()
 		observed.ID = planned.ID
+		if err := seedAgentSecretParams(ctx, &observed, planned); err != nil {
+			return AgentResourceModel{}, err
+		}
 		var raw map[string]interface{}
 		err := r.readAgentWithOwnershipTransportCapture(ctx, &observed, true, nil, true, &raw)
 		if err == nil {

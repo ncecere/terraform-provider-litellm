@@ -17,6 +17,7 @@ type JWTKeyMappingDataSource struct{ client *Client }
 
 type JWTKeyMappingDataSourceModel struct {
 	ID          types.String `tfsdk:"id"`
+	Issuer      types.String `tfsdk:"jwt_issuer"`
 	ClaimName   types.String `tfsdk:"jwt_claim_name"`
 	ClaimValue  types.String `tfsdk:"jwt_claim_value"`
 	Description types.String `tfsdk:"description"`
@@ -33,6 +34,7 @@ func (d *JWTKeyMappingDataSource) Metadata(_ context.Context, req datasource.Met
 
 func jwtKeyMappingReadOnlyAttributes() map[string]schema.Attribute {
 	return map[string]schema.Attribute{
+		"jwt_issuer":      schema.StringAttribute{Description: "JWT issuer scope, or null for the global scope.", Computed: true},
 		"jwt_claim_name":  schema.StringAttribute{Description: "JWT claim name.", Computed: true},
 		"jwt_claim_value": schema.StringAttribute{Description: "Sensitive JWT claim value.", Computed: true, Sensitive: true},
 		"description":     schema.StringAttribute{Description: "Mapping description, or null when absent.", Computed: true},
@@ -84,6 +86,7 @@ func (d *JWTKeyMappingDataSource) Read(ctx context.Context, req datasource.ReadR
 
 func setJWTKeyMappingDataSourceState(data *JWTKeyMappingDataSourceModel, mapping jwtKeyMappingObject) {
 	data.ID, data.ClaimName, data.ClaimValue = types.StringValue(mapping.ID), types.StringValue(mapping.ClaimName), types.StringValue(mapping.ClaimValue)
+	data.Issuer = types.StringPointerValue(mapping.Issuer)
 	if mapping.Description == nil {
 		data.Description = types.StringNull()
 	} else {

@@ -93,3 +93,7 @@ coverage.txt
 *.env.*
 !.env.example
 !*.env.example
+
+# Python bytecode from the upgrade-matrix harness and its tests
+__pycache__/
+*.pyc

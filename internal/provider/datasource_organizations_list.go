@@ -59,7 +59,7 @@ func (d *OrganizationsListDataSource) Schema(_ context.Context, _ datasource.Sch
 		"model_rpm_limit":       schema.MapAttribute{Description: "Per-model RPM limits stored in metadata.", Computed: true, ElementType: types.Int64Type},
 		"model_tpm_limit":       schema.MapAttribute{Description: "Per-model TPM limits stored in metadata.", Computed: true, ElementType: types.Int64Type},
 		"budget_duration":       schema.StringAttribute{Description: "Budget reset duration.", Computed: true},
-		"blocked":               schema.BoolAttribute{Description: "Compatibility field; always false because v1.98 has no organization blocked column.", Computed: true},
+		"blocked":               schema.BoolAttribute{Description: "Compatibility field; always false because LiteLLM has no organization blocked column.", Computed: true},
 	}
 	resp.Schema = schema.Schema{Description: "Retrieves LiteLLM organizations with authoritative nested budget inventories.", Attributes: map[string]schema.Attribute{
 		"id":            schema.StringAttribute{Description: "Stable historical identifier.", Computed: true},
@@ -94,7 +94,7 @@ func (d *OrganizationsListDataSource) Read(ctx context.Context, req datasource.R
 	endpoint := endpointWithQuery("/organization/list", filters)
 	var rawResult json.RawMessage
 	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &rawResult); err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to list organizations: %s", safeListDiagnostic(err, filters)))
+		addLicenseAwareError(&resp.Diagnostics, err, "Client Error", fmt.Sprintf("Unable to list organizations: %s", safeListDiagnostic(err, filters)))
 		return
 	}
 	items, err := decodeTopLevelList(rawResult, "/organization/list")

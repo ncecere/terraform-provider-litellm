@@ -110,8 +110,8 @@ func (d *MCPServerDataSource) Schema(ctx context.Context, req datasource.SchemaR
 				Computed:    true,
 			},
 			"spec_version": schema.StringAttribute{
-				Description:        "Deprecated compatibility field. LiteLLM v1.98 does not return an MCP specification version.",
-				DeprecationMessage: "spec_version is retained only for state compatibility and is not returned by LiteLLM v1.98.",
+				Description:        "Deprecated compatibility field. LiteLLM does not return an MCP specification version.",
+				DeprecationMessage: "spec_version is retained only for state compatibility and is not returned by LiteLLM.",
 				Computed:           true,
 			},
 			"auth_type": schema.StringAttribute{
@@ -466,7 +466,11 @@ func projectMCPServerDataSourceForRole(result map[string]interface{}, expectedSe
 	}
 
 	if role == mcpServerManagerListProjection {
-		if credentials, present := result["credentials"]; present && credentials != nil {
+		// LiteLLM 1.98.0 omitted credentials from the list. LiteLLM 1.104.0
+		// returns proxy admins the same redacted projection as the singular
+		// route (non-secret admin-config strings and the scopes list). Accept
+		// only that strict projection; it is not exposed by list items.
+		if _, err := decodeMCPCredentialProjection(result, true); err != nil {
 			return MCPServerDataSourceModel{}, fmt.Errorf("MCP server list response contains credentials")
 		}
 		data.UpstreamResource = types.StringNull()
@@ -550,31 +554,17 @@ func mcpInfoDataSourceValue(result map[string]interface{}) (types.String, error)
 }
 
 func mcpUpstreamResourceDataSourceValue(result map[string]interface{}) (types.String, error) {
-	raw, present := result["credentials"]
-	if !present || raw == nil {
-		return types.StringNull(), nil
-	}
-
-	var credentials map[string]interface{}
-	switch value := raw.(type) {
-	case map[string]interface{}:
-		credentials = value
-	case map[string]string:
-		credentials = make(map[string]interface{}, len(value))
-		for name, member := range value {
-			credentials[name] = member
-		}
-	default:
+	// LiteLLM 1.104.0 may also project upstream_token_header and the native
+	// scopes list; 1.98.0 projected only upstream_resource. Any other member is
+	// malformed.
+	projection, err := decodeMCPCredentialProjection(result, true)
+	if err != nil {
 		return types.StringNull(), fmt.Errorf("MCP server credentials projection is malformed")
 	}
-	if len(credentials) != 1 {
-		return types.StringNull(), fmt.Errorf("MCP server credentials projection is malformed")
+	if upstreamResource, ok := projection.Strings["upstream_resource"]; ok {
+		return types.StringValue(upstreamResource), nil
 	}
-	upstreamResource, ok := credentials["upstream_resource"].(string)
-	if !ok || upstreamResource == "" {
-		return types.StringNull(), fmt.Errorf("MCP server credentials projection is malformed")
-	}
-	return types.StringValue(upstreamResource), nil
+	return types.StringNull(), nil
 }
 
 func mcpDataSourceTransportValid(transport string) bool {

@@ -213,7 +213,7 @@ output "compliance_report" {
 
 * Vector store IDs are unique identifiers assigned by the LiteLLM system.
 * The data source will fail if the specified vector store ID does not exist.
-* The data source strictly reads LiteLLM v1.98's nested `vector_store` response and rejects missing or mismatched identity.
+* The data source strictly reads LiteLLM's nested `vector_store` response and rejects missing or mismatched identity.
 * Vector-store management is protected by LiteLLM's `vector_stores` feature gate and may require an applicable license and role.
 * Sensitive values remain redacted by LiteLLM and the `litellm_params` attribute is marked sensitive in Terraform.
 * Use this data source to integrate with existing vector stores or to reference stores created outside of Terraform.

@@ -28,12 +28,13 @@ output "project_budget" {
 - `project_alias` / `description` / `team_id`
 - `models`
 - `metadata` - Metadata excluding dedicated tags and per-model rate maps.
-- `tags` - Tags read from v1.98 project metadata.
+- `tags` - Tags read from LiteLLM project metadata.
 - `blocked` / `spend`
 - `budget_id`
 - `max_budget` / `soft_budget`
 - `budget_duration`
 - `tpm_limit` / `rpm_limit`
+- `tpd_limit` (LiteLLM 1.104.0 and later)
 - `max_parallel_requests`
 - `model_rpm_limit` / `model_tpm_limit`
 - `created_at` / `updated_at`

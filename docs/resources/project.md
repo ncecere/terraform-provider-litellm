@@ -2,6 +2,8 @@
 
 Manages a LiteLLM Project. Projects sit between teams and keys, providing fine-grained model, budget, rate, and blocking controls.
 
+Projects require a LiteLLM Enterprise license; on an unlicensed proxy operations fail with `LiteLLM Enterprise License Required`. From LiteLLM 1.104.0, team-admin keys cannot create or update projects unless `general_settings.team_admin_editable_team_fields` includes `projects`; manage projects with a proxy-admin or organization-admin key.
+
 ## Example Usage
 
 ### Minimal Project
@@ -78,7 +80,7 @@ Before a metadata update, the provider performs one fresh exact-identity read, r
 
 The provider generates and sends the project ID during create, so accepted-create recovery does not require an additional HCL identity argument. The public `id` attribute remains computed-only. Recovery requires the exact project, configured team, and configured shared-budget association before it publishes state.
 
-LiteLLM v1.98 exposes no ETag, revision, or compare-and-swap field for project metadata. A concurrent writer can therefore win or be overwritten between hydration and update. Post-write verification detects divergence but cannot eliminate that bounded last-writer-wins window.
+LiteLLM exposes no ETag, revision, or compare-and-swap field for project metadata. A concurrent writer can therefore win or be overwritten between hydration and update. Post-write verification detects divergence but cannot eliminate that bounded last-writer-wins window.
 
 Imports and upgraded states leave `metadata_json` null and unmanaged. Explicit configuration performs takeover on a later apply. Project data sources do not expose a semantic sibling because doing so would persist arbitrary API-owned metadata into Terraform state.
 
@@ -90,15 +92,16 @@ Imports and upgraded states leave `metadata_json` null and unmanaged. Explicit c
 - `models` - (Optional List of String) Accessible models. Configure `[]` to clear.
 - `metadata` - (Optional Map of String) Legacy metadata map; use `jsonencode()` for historically supported object and array values.
 - `metadata_json` - (Optional, Sensitive String) Non-null JSON object for lossless heterogeneous metadata. Its top-level keys cannot overlap `metadata`, `tags`, `model_rpm_limit`, or `model_tpm_limit`.
-- `tags` - (Optional List of String) Tags. LiteLLM v1.98 stores them in project metadata, and the provider reads that location authoritatively.
-- `max_budget` - (Optional Float64) Hard budget limit.
+- `tags` - (Optional List of String) Tags. LiteLLM stores them in project metadata, and the provider reads that location authoritatively.
+- `max_budget` - (Optional Float64) Hard budget limit. From LiteLLM 1.103.0, 0 means zero allowance (all spend is blocked); omit the attribute for an unlimited budget.
 - `soft_budget` - (Optional Float64) Alert threshold.
 - `budget_duration` - (Optional String) Reset duration such as `"30d"` or `"1h"`.
-- `budget_id` - (Optional String) Existing budget to associate during creation. Reassociation after creation is blocked because v1.98 cannot converge it safely.
+- `budget_id` - (Optional String) Existing budget to associate during creation. Reassociation after creation is blocked because LiteLLM cannot converge it safely.
 - `tpm_limit` - (Optional Int64) Tokens-per-minute limit.
+- `tpd_limit` - (Optional Int64) Tokens-per-day limit. Requires LiteLLM 1.104.0 or later, which stores it but does not enforce it for projects (it enforces `tpd_limit` only for batch submissions, at key and team scope). Removing it clears the limit.
 - `rpm_limit` - (Optional Int64) Requests-per-minute limit.
 - `max_parallel_requests` - (Optional Int64) Concurrent request limit.
-- `model_max_budget` - (Optional Map of Float64) Legacy schema-compatible shape. Existing scalar-map state remains readable and can be cleared, but new non-empty additions and changes are rejected because LiteLLM v1.98 requires structured GenericBudgetConfig objects.
+- `model_max_budget` - (Optional Map of Float64) Legacy schema-compatible shape. Existing scalar-map state remains readable and can be cleared, but new non-empty additions and changes are rejected because LiteLLM requires structured GenericBudgetConfig objects.
 - `model_rpm_limit` - (Optional Map of Int64) Per-model RPM limits stored in metadata.
 - `model_tpm_limit` - (Optional Map of Int64) Per-model TPM limits stored in metadata.
 - `blocked` - (Optional Bool) Whether the project is blocked.
@@ -115,16 +118,16 @@ Imports and upgraded states leave `metadata_json` null and unmanaged. Explicit c
 terraform import litellm_project.example <project-id>
 ```
 
-The first authoritative import read adopts visible nested budget values, including `budget_id`, remote aliases/descriptions, and exact integer limits above `2^53`. Imported `budget_id`, `project_alias`, and `description` values may remain omitted without producing a plan. Each omission permission is independent: after an imported field is explicitly configured and applied, even to the same value, later omission is treated as removal and is rejected where v1.98 cannot converge it. Normal reads do not adopt unconfigured API defaults. Imports never adopt remote values into `metadata_json`; it remains null until explicitly configured.
+The first authoritative import read adopts visible nested budget values, including `budget_id`, remote aliases/descriptions, and exact integer limits above `2^53`. Imported `budget_id`, `project_alias`, and `description` values may remain omitted without producing a plan. Each omission permission is independent: after an imported field is explicitly configured and applied, even to the same value, later omission is treated as removal and is rejected where LiteLLM cannot converge it. Normal reads do not adopt unconfigured API defaults. Imports never adopt remote values into `metadata_json`; it remains null until explicitly configured.
 
 ## Budget, Clear, and Partial-Failure Semantics
 
-- LiteLLM v1.98 returns project budget controls through `litellm_budget_table`; similarly named top-level fields are ignored. Unconfigured structured `model_max_budget` values are not exposed through the legacy `map(float64)` attribute.
+- LiteLLM returns project budget controls through `litellm_budget_table`; similarly named top-level fields are ignored. Unconfigured structured `model_max_budget` values are not exposed through the legacy `map(float64)` attribute.
 - Configured/imported values detect out-of-band drift. Removing or changing a configured `budget_id` is rejected; import provenance permits omission only for an imported association.
-- An existing `budget_id` cannot be combined with budget limits, duration, or `model_max_budget` during create because v1.98 strips or ignores those controls against the shared budget. A null or absent relation clears owned state; malformed relations and mismatched budget identities fail without publishing partial state.
-- LiteLLM v1.98's `/project/update` calls `_check_team_project_limits` before updating the related budget row, enforcing parent-team model, hard-budget, TPM, and RPM constraints. Every non-null budget change is sent through that route; the provider never uses `/budget/update` as an unchecked shortcut for a positive change.
-- The exact `/project/update` implementation serializes with `exclude_none=True`, while `/budget/update` uses `exclude_unset=True`. Explicit budget removals therefore run after any project update through `/budget/update`; clearing `budget_duration` also clears the server-managed reset timestamp. Mixed set-and-clear updates validate and apply non-null values first, then apply explicit nulls, and retain prior Terraform state if either phase or read-back fails.
-- `budget_reset_at` is not exposed by the v1.98 project response model, and `/project/update` does not recompute it. The provider initializes it after create and, after validating a non-null duration through `/project/update`, replays only that duration through `/budget/update` to update the reset schedule. Duration clears send both `budget_duration = null` and `budget_reset_at = null`.
+- An existing `budget_id` cannot be combined with budget limits, duration, or `model_max_budget` during create because LiteLLM strips or ignores those controls against the shared budget. A null or absent relation clears owned state; malformed relations and mismatched budget identities fail without publishing partial state.
+- LiteLLM's `/project/update` calls `_check_team_project_limits` before updating the related budget row, enforcing parent-team model, hard-budget, TPM, and RPM constraints. Every non-null budget change is sent through that route; the provider never uses `/budget/update` as an unchecked shortcut for a positive change.
+- The exact `/project/update` implementation serializes with `exclude_none=True` (LiteLLM 1.104.0 additionally clears `max_budget` when it is sent as an explicit null), while `/budget/update` uses `exclude_unset=True`. Explicit budget removals therefore run after any project update through `/budget/update`; clearing `budget_duration` also clears the server-managed reset timestamp. Mixed set-and-clear updates validate and apply non-null values first, then apply explicit nulls, and retain prior Terraform state if either phase or read-back fails.
+- `budget_reset_at` is not exposed by the LiteLLM project response model, and `/project/update` does not recompute it. The provider initializes it after create and, after validating a non-null duration through `/project/update`, replays only that duration through `/budget/update` to update the reset schedule. Duration clears send both `budget_duration = null` and `budget_reset_at = null`.
 - Legacy metadata, semantic metadata, tags, and per-model RPM/TPM limits are composed into one authoritative metadata document. Complete-root hydration preserves unowned API siblings while allowing owned keys to be removed safely.
-- v1.98 ignores null clears for `project_alias` and `description`; the provider rejects explicit configured removals instead of claiming success. Import provenance allows remotely adopted values to remain omitted. Replace configured values with a non-null value.
+- LiteLLM ignores null clears for `project_alias` and `description`; the provider rejects explicit configured removals instead of claiming success. Import provenance allows remotely adopted values to remain omitted. Replace configured values with a non-null value.
 - If LiteLLM accepts a validated project update but a subsequent reset/clear budget update fails or returns the wrong budget identity, Terraform retains prior state and reports the partial failure. A later apply safely retries the idempotent desired values in the same order.

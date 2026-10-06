@@ -153,7 +153,7 @@ jobs:
       - name: Start exact disposable local backend
         run: |
           internal_testing/compose.sh up -d
-          for attempt in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             if curl --fail --silent --connect-timeout 3 --max-time 10 \
               http://localhost:4000/health/liveliness >/dev/null; then exit 0; fi
             sleep 2
@@ -162,7 +162,7 @@ jobs:
       - name: Execute repository-owned scenario matrix
         env:
           TF_ACC: '1'
-          LITELLM_ACCEPTANCE_CONFIRM: local-v1.98.0
+          LITELLM_ACCEPTANCE_CONFIRM: local-v1.104.0
           MATRIX_CLI: ${{ runner.temp }}/tools/${{ matrix.product }}/${{ matrix.version }}/linux_amd64/${{ matrix.executable }}
           MATRIX_PROVIDER_BINARY: ${{ runner.temp }}/provider/terraform-provider-litellm
           MATRIX_CACHE: ${{ runner.temp }}/matrix-cache
@@ -214,7 +214,7 @@ jobs:
       - name: Start exact isolated local stack
         run: |
           internal_testing/compose.sh up -d
-          for attempt in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             if curl --fail --silent --connect-timeout 3 --max-time 10 http://localhost:4000/health/liveliness >/dev/null; then exit 0; fi
             sleep 2
           done
@@ -222,7 +222,7 @@ jobs:
       - name: Run explicitly confirmed lane
         env:
           TF_ACC: '1'
-          LITELLM_ACCEPTANCE_CONFIRM: local-v1.98.0
+          LITELLM_ACCEPTANCE_CONFIRM: local-v1.104.0
           LITELLM_API_BASE: http://localhost:4000
           LITELLM_API_KEY: sk-testing-key
           MATRIX_CLI: ${{ steps.cli.outputs.path }}

@@ -43,6 +43,6 @@ output "admin_emails" {
 
 ## Notes
 
-- The Terraform argument remains `user_role` for compatibility; the provider sends LiteLLM v1.98's canonical `role` query parameter.
+- The Terraform argument remains `user_role` for compatibility; the provider sends LiteLLM's canonical `role` query parameter.
 - All `/user/list` pages are retrieved at LiteLLM's maximum page size and sorted deterministically by user ID.
 - Concurrent count/page shifts restart the bounded listing at page 1. Persistent inconsistency, repeated pages/items, malformed data, truncation, and over-limit pagination fail rather than returning a partial inventory.

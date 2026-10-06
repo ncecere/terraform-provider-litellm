@@ -404,7 +404,7 @@ func (r *AgentResource) Create(ctx context.Context, req resource.CreateRequest, 
 	}
 	agentReq, err := r.buildAgentRequest(ctx, &planned)
 	if err != nil {
-		resp.Diagnostics.AddError("Invalid Agent Request", "The agent request could not be converted to the LiteLLM v1.98 wire shape.")
+		resp.Diagnostics.AddError("Invalid Agent Request", "The agent request could not be converted to the LiteLLM wire shape.")
 		return
 	}
 
@@ -651,7 +651,7 @@ func (r *AgentResource) Update(ctx context.Context, req resource.UpdateRequest, 
 	if err != nil {
 		resp.Private = req.Private
 		resp.State = req.State
-		resp.Diagnostics.AddError("Invalid Agent Request", "The agent update could not be converted to the LiteLLM v1.98 wire shape. The agent was not changed.")
+		resp.Diagnostics.AddError("Invalid Agent Request", "The agent update could not be converted to the LiteLLM wire shape. The agent was not changed.")
 		return
 	}
 	if paramsTouched {

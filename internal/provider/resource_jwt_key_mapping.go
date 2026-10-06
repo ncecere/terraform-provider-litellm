@@ -34,10 +34,12 @@ type JWTKeyMappingResource struct{ client *Client }
 
 type JWTKeyMappingResourceModel struct {
 	ID           types.String `tfsdk:"id"`
+	Issuer       types.String `tfsdk:"jwt_issuer"`
 	ClaimName    types.String `tfsdk:"jwt_claim_name"`
 	ClaimValue   types.String `tfsdk:"jwt_claim_value"`
 	KeyWO        types.String `tfsdk:"key_wo"`
 	KeyWOVersion types.String `tfsdk:"key_wo_version"`
+	KeyHash      types.String `tfsdk:"key_hash"`
 	Description  types.String `tfsdk:"description"`
 	IsActive     types.Bool   `tfsdk:"is_active"`
 	CreatedAt    types.String `tfsdk:"created_at"`
@@ -51,18 +53,24 @@ func (r *JWTKeyMappingResource) Metadata(_ context.Context, req resource.Metadat
 }
 
 func (r *JWTKeyMappingResource) ConfigValidators(context.Context) []resource.ConfigValidator {
-	return []resource.ConfigValidator{resourcevalidator.RequiredTogether(path.MatchRoot("key_wo"), path.MatchRoot("key_wo_version"))}
+	return []resource.ConfigValidator{
+		resourcevalidator.RequiredTogether(path.MatchRoot("key_wo"), path.MatchRoot("key_wo_version")),
+		resourcevalidator.Conflicting(path.MatchRoot("key_hash"), path.MatchRoot("key_wo")),
+		resourcevalidator.Conflicting(path.MatchRoot("key_hash"), path.MatchRoot("key_wo_version")),
+	}
 }
 
 func (r *JWTKeyMappingResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "Manages a LiteLLM JWT claim-to-virtual-key mapping. The raw virtual key is write-only and requires Terraform 1.11 or compatible OpenTofu support for create and claim-pair replacement. LiteLLM v1.98 does not expose evidence that could verify in-place key rotation.",
+		Description: "Manages a LiteLLM JWT claim-to-virtual-key mapping. A mapping is identified by its optional issuer scope plus its claim pair. The raw virtual key is write-only and requires Terraform 1.11 or compatible OpenTofu support for create and identity replacement. LiteLLM does not expose evidence that could verify in-place key rotation.",
 		Attributes: map[string]schema.Attribute{
 			"id":              schema.StringAttribute{Description: "Authoritative LiteLLM mapping UUID and import identifier.", Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
+			"jwt_issuer":      schema.StringAttribute{Description: "JWT issuer (`iss`) that scopes this mapping. Null means LiteLLM's global scope, which matches tokens from any issuer that has no issuer-specific mapping for the same claim. Immutable after creation: changing a configured value replaces the mapping and requires key_wo. When omitted, the existing scope is preserved. Requires LiteLLM 1.104.0 or later.", Optional: true, Computed: true, Validators: []validator.String{stringvalidator.LengthAtLeast(1)}, PlanModifiers: []planmodifier.String{jwtKeyMappingImmutableIssuerModifier{}}},
 			"jwt_claim_name":  schema.StringAttribute{Description: "JWT claim name. Immutable after creation; LiteLLM accepts the empty string.", Optional: true, Computed: true, PlanModifiers: []planmodifier.String{jwtKeyMappingImmutableClaimModifier{}}},
 			"jwt_claim_value": schema.StringAttribute{Description: "Sensitive JWT claim value to match. Immutable after creation; LiteLLM accepts the empty string.", Optional: true, Computed: true, Sensitive: true, PlanModifiers: []planmodifier.String{jwtKeyMappingImmutableClaimModifier{}}},
-			"key_wo":          schema.StringAttribute{Description: "Raw existing LiteLLM virtual key. Sent only on create or immutable claim-pair replacement and never stored in plan or state. In-place rotation is rejected because LiteLLM v1.98 returns no verifiable token identity.", Optional: true, Sensitive: true, WriteOnly: true, Validators: []validator.String{stringvalidator.LengthAtLeast(1)}},
+			"key_wo":          schema.StringAttribute{Description: "Raw existing LiteLLM virtual key. Sent only on create or immutable claim-pair replacement and never stored in plan or state. In-place rotation is rejected because LiteLLM returns no verifiable token identity.", Optional: true, Sensitive: true, WriteOnly: true, Validators: []validator.String{stringvalidator.LengthAtLeast(1)}},
 			"key_wo_version":  schema.StringAttribute{Description: "Persisted create-time version marker for key_wo. Same-identity post-create changes are rejected; a known immutable claim-pair replacement permits a known non-empty marker with a known non-empty key. Unchanged historical values remain plannable.", Optional: true, Validators: []validator.String{stringvalidator.LengthAtLeast(1)}},
+			"key_hash":        schema.StringAttribute{Description: "SHA-256 management identifier (sha256:<64-hex>, for example litellm_key.example.id) of the existing virtual key to map, as an alternative to key_wo that keeps the raw key out of configuration. Sent as LiteLLM's token field on create; LiteLLM never returns it, so it is stored as configured. Changing it replaces the mapping. Requires LiteLLM 1.104.0 or later; conflicts with key_wo and key_wo_version.", Optional: true, Validators: []validator.String{redactingKeyHashValidator{}}, PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplaceIfConfigured()}},
 			"description":     schema.StringAttribute{Description: "Optional mapping description. Once configured on a provider-created or previously managed mapping, assigning null clears it. An imported omitted description remains API-owned until a non-null value is configured.", Optional: true, Computed: true, PlanModifiers: []planmodifier.String{jwtKeyMappingOwnedNullableModifier{}}},
 			"is_active":       schema.BoolAttribute{Description: "Whether LiteLLM uses the mapping. Omitted imported values remain API-owned; false is sent explicitly.", Optional: true, Computed: true},
 			"created_at":      schema.StringAttribute{Description: "Creation timestamp returned by LiteLLM.", Computed: true},
@@ -98,6 +106,38 @@ func (jwtKeyMappingImmutableClaimModifier) PlanModifyString(_ context.Context, r
 	if !req.PlanValue.Equal(req.StateValue) {
 		resp.RequiresReplace = true
 	}
+}
+
+// jwtKeyMappingImmutableIssuerModifier differs from the claim modifier because
+// a null issuer is a known value (the global scope), not an unknown one.
+type jwtKeyMappingImmutableIssuerModifier struct{}
+
+func (jwtKeyMappingImmutableIssuerModifier) Description(context.Context) string {
+	return "Preserves an omitted issuer scope and requires replacement for an explicitly configured change, including from the global (null) scope."
+}
+func (m jwtKeyMappingImmutableIssuerModifier) MarkdownDescription(ctx context.Context) string {
+	return m.Description(ctx)
+}
+func (jwtKeyMappingImmutableIssuerModifier) PlanModifyString(_ context.Context, req planmodifier.StringRequest, resp *planmodifier.StringResponse) {
+	if req.ConfigValue.IsNull() {
+		if req.State.Raw.IsNull() {
+			// A create without an issuer is always the global scope.
+			resp.PlanValue = types.StringNull()
+		} else {
+			resp.PlanValue = req.StateValue
+		}
+		return
+	}
+	if req.State.Raw.IsNull() || req.ConfigValue.IsUnknown() || req.StateValue.IsUnknown() {
+		return
+	}
+	if !req.ConfigValue.Equal(req.StateValue) {
+		resp.RequiresReplace = true
+	}
+}
+
+func jwtKeyMappingKnownIssuerChange(config, state types.String) bool {
+	return !config.IsNull() && !config.IsUnknown() && !state.IsUnknown() && !config.Equal(state)
 }
 
 type jwtKeyMappingOwnedNullableModifier struct{}
@@ -151,7 +191,7 @@ func (r *JWTKeyMappingResource) ModifyPlan(ctx context.Context, req resource.Mod
 
 	knownClaimNameChange := !config.ClaimName.IsNull() && !config.ClaimName.IsUnknown() && !state.ClaimName.IsNull() && !state.ClaimName.IsUnknown() && !config.ClaimName.Equal(state.ClaimName)
 	knownClaimValueChange := !config.ClaimValue.IsNull() && !config.ClaimValue.IsUnknown() && !state.ClaimValue.IsNull() && !state.ClaimValue.IsUnknown() && !config.ClaimValue.Equal(state.ClaimValue)
-	claimReplacement := knownClaimNameChange || knownClaimValueChange
+	claimReplacement := knownClaimNameChange || knownClaimValueChange || jwtKeyMappingKnownIssuerChange(config.Issuer, state.Issuer)
 	if claimReplacement {
 		// A known change to either immutable claim already carries RequiresReplace
 		// from its attribute modifier. Do not permit that destructive plan unless
@@ -162,8 +202,10 @@ func (r *JWTKeyMappingResource) ModifyPlan(ctx context.Context, req resource.Mod
 			resp.Diagnostics.AddError("Uncertain JWT Claim Replacement", "The complete prior and planned JWT claim pairs must be known before Terraform can safely replace this mapping. No mutation was sent.")
 			return
 		}
-		if config.KeyWO.IsNull() || config.KeyWO.IsUnknown() || config.KeyWO.ValueString() == "" || config.KeyWOVersion.IsNull() || config.KeyWOVersion.IsUnknown() || config.KeyWOVersion.ValueString() == "" {
-			resp.Diagnostics.AddError("Unsafe JWT Key Mapping Replacement", "Changing jwt_claim_name or jwt_claim_value replaces the mapping. key_wo and key_wo_version must both be known and non-empty so the replacement can be created after the existing mapping is destroyed. No mutation was sent.")
+		hashKnown := !config.KeyHash.IsNull() && !config.KeyHash.IsUnknown() && config.KeyHash.ValueString() != ""
+		keyKnown := !config.KeyWO.IsNull() && !config.KeyWO.IsUnknown() && config.KeyWO.ValueString() != "" && !config.KeyWOVersion.IsNull() && !config.KeyWOVersion.IsUnknown() && config.KeyWOVersion.ValueString() != ""
+		if !hashKnown && !keyKnown {
+			resp.Diagnostics.AddError("Unsafe JWT Key Mapping Replacement", "Changing jwt_issuer, jwt_claim_name, or jwt_claim_value replaces the mapping. Either key_hash, or key_wo and key_wo_version, must be known and non-empty so the replacement can be created after the existing mapping is destroyed. No mutation was sent.")
 			return
 		}
 	}
@@ -175,10 +217,16 @@ func (r *JWTKeyMappingResource) ModifyPlan(ctx context.Context, req resource.Mod
 	// replacement above, where Terraform will call Delete and then Create.
 	switch {
 	case claimReplacement:
+	case !config.KeyHash.IsNull():
+		// key_hash identifies the key; a change replaces the mapping through
+		// its plan modifier, and key_wo_version is not used with it.
+		if !state.KeyWOVersion.IsNull() {
+			resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("key_wo_version"), types.StringNull())...)
+		}
 	case config.KeyWOVersion.IsNull() && !state.KeyWOVersion.IsNull():
 		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("key_wo_version"), state.KeyWOVersion)...)
 	case config.KeyWOVersion.IsUnknown() || !config.KeyWOVersion.Equal(state.KeyWOVersion):
-		resp.Diagnostics.AddAttributeError(path.Root("key_wo_version"), "Unsupported JWT Key Rotation", "LiteLLM v1.98 returns no token, hash, or fingerprint that can verify an in-place key change. No mutation was sent. Change the immutable claim pair with known replacement credentials, or manage the rotation outside this resource and import the resulting canonical UUID.")
+		resp.Diagnostics.AddAttributeError(path.Root("key_wo_version"), "Unsupported JWT Key Rotation", "LiteLLM returns no token, hash, or fingerprint that can verify an in-place key change. No mutation was sent. Change the immutable issuer or claim pair with known replacement credentials, or manage the rotation outside this resource and import the resulting canonical UUID.")
 		return
 	}
 
@@ -245,11 +293,34 @@ func (r *JWTKeyMappingResource) Create(ctx context.Context, req resource.CreateR
 		resp.Diagnostics.AddError("Invalid JWT Key Mapping", "jwt_claim_name and jwt_claim_value must be known when creating a mapping; each may be the empty string.")
 		return
 	}
-	if key.IsNull() || key.IsUnknown() || key.ValueString() == "" || data.KeyWOVersion.IsNull() || data.KeyWOVersion.IsUnknown() || data.KeyWOVersion.ValueString() == "" {
-		resp.Diagnostics.AddError("Invalid JWT Key Mapping Key", "key_wo and key_wo_version must be known and non-empty when creating a mapping.")
+	useHash := !data.KeyHash.IsNull() && !data.KeyHash.IsUnknown() && data.KeyHash.ValueString() != ""
+	var bareHash string
+	if useHash {
+		identity, err := keyBlockIdentityFromHashID(data.KeyHash.ValueString())
+		if err != nil {
+			resp.Diagnostics.AddAttributeError(path.Root("key_hash"), "Invalid Key Hash", "key_hash must use the sha256:<64-hex> management identifier format. No mutation was sent.")
+			return
+		}
+		bareHash = identity.apiValue
+	} else if key.IsNull() || key.IsUnknown() || key.ValueString() == "" || data.KeyWOVersion.IsNull() || data.KeyWOVersion.IsUnknown() || data.KeyWOVersion.ValueString() == "" {
+		resp.Diagnostics.AddError("Invalid JWT Key Mapping Key", "Either key_hash, or key_wo and key_wo_version, must be known and non-empty when creating a mapping.")
 		return
 	}
-	body := map[string]interface{}{"jwt_claim_name": data.ClaimName.ValueString(), "jwt_claim_value": data.ClaimValue.ValueString(), "key": key.ValueString()}
+	if data.Issuer.IsUnknown() {
+		resp.Diagnostics.AddError("Invalid JWT Key Mapping", "jwt_issuer must be known when creating a mapping. No mutation was sent.")
+		return
+	}
+	body := map[string]interface{}{"jwt_claim_name": data.ClaimName.ValueString(), "jwt_claim_value": data.ClaimValue.ValueString()}
+	if useHash {
+		body["token"] = bareHash
+	} else {
+		body["key"] = key.ValueString()
+	}
+	if !data.Issuer.IsNull() {
+		// Omitted for the global scope so that pre-1.104 servers, which reject
+		// the unknown field, keep accepting issuer-less mappings.
+		body["jwt_issuer"] = data.Issuer.ValueString()
+	}
 	if !data.Description.IsNull() && !data.Description.IsUnknown() {
 		body["description"] = data.Description.ValueString()
 	}
@@ -319,15 +390,33 @@ func (r *JWTKeyMappingResource) Create(ctx context.Context, req resource.CreateR
 	}
 }
 
+// jwtKeyMappingIssuerMatches compares an observed issuer scope with a known
+// Terraform value, where null is the global scope.
+func jwtKeyMappingIssuerMatches(mapping jwtKeyMappingObject, issuer types.String) bool {
+	if issuer.IsUnknown() {
+		return false
+	}
+	if issuer.IsNull() {
+		return mapping.Issuer == nil
+	}
+	return mapping.Issuer != nil && *mapping.Issuer == issuer.ValueString()
+}
+
+// jwtKeyMappingSameIdentity reports whether an observed mapping still has the
+// complete immutable identity recorded in state.
+func jwtKeyMappingSameIdentity(mapping jwtKeyMappingObject, state JWTKeyMappingResourceModel) bool {
+	return mapping.ClaimName == state.ClaimName.ValueString() && mapping.ClaimValue == state.ClaimValue.ValueString() && jwtKeyMappingIssuerMatches(mapping, state.Issuer)
+}
+
 func jwtKeyMappingCreateMatchesRequest(mapping jwtKeyMappingObject, data JWTKeyMappingResourceModel) bool {
-	if mapping.ClaimName != data.ClaimName.ValueString() || mapping.ClaimValue != data.ClaimValue.ValueString() || !mapping.IsActive {
+	if !jwtKeyMappingSameIdentity(mapping, data) || !mapping.IsActive {
 		return false
 	}
 	return jwtKeyMappingDescriptionMatches(mapping, data)
 }
 
 func jwtKeyMappingFinalMatchesPlan(mapping jwtKeyMappingObject, data JWTKeyMappingResourceModel) bool {
-	if mapping.ClaimName != data.ClaimName.ValueString() || mapping.ClaimValue != data.ClaimValue.ValueString() {
+	if !jwtKeyMappingSameIdentity(mapping, data) {
 		return false
 	}
 	if !data.IsActive.IsNull() && !data.IsActive.IsUnknown() && mapping.IsActive != data.IsActive.ValueBool() {
@@ -346,10 +435,12 @@ func jwtKeyMappingDescriptionMatches(mapping jwtKeyMappingObject, data JWTKeyMap
 func setJWTKeyMappingIdentityOnly(data *JWTKeyMappingResourceModel, id string) {
 	*data = JWTKeyMappingResourceModel{
 		ID:           types.StringValue(id),
+		Issuer:       types.StringNull(),
 		ClaimName:    types.StringNull(),
 		ClaimValue:   types.StringNull(),
 		KeyWO:        types.StringNull(),
 		KeyWOVersion: types.StringNull(),
+		KeyHash:      types.StringNull(),
 		Description:  types.StringNull(),
 		IsActive:     types.BoolNull(),
 		CreatedAt:    types.StringNull(),
@@ -412,7 +503,7 @@ func (r *JWTKeyMappingResource) Update(ctx context.Context, req resource.UpdateR
 		return
 	}
 	if !plan.KeyWOVersion.Equal(state.KeyWOVersion) {
-		resp.Diagnostics.AddError("Unsupported JWT Key Rotation", "LiteLLM v1.98 returns no token, hash, or fingerprint that can verify an in-place key change. No mutation was sent.")
+		resp.Diagnostics.AddError("Unsupported JWT Key Rotation", "LiteLLM returns no token, hash, or fingerprint that can verify an in-place key change. No mutation was sent.")
 		return
 	}
 	pendingDescriptionOwnership := false
@@ -448,7 +539,7 @@ func (r *JWTKeyMappingResource) Update(ctx context.Context, req resource.UpdateR
 			return
 		}
 		observed, err := readFreshJWTKeyMapping(ctx, r.client, state.ID.ValueString())
-		if err != nil || observed.ClaimName != state.ClaimName.ValueString() || observed.ClaimValue != state.ClaimValue.ValueString() || configDescription.IsNull() || configDescription.IsUnknown() || observed.Description == nil || *observed.Description != configDescription.ValueString() || (!configIsActive.IsNull() && !configIsActive.IsUnknown() && observed.IsActive != configIsActive.ValueBool()) {
+		if err != nil || !jwtKeyMappingSameIdentity(observed, state) || configDescription.IsNull() || configDescription.IsUnknown() || observed.Description == nil || *observed.Description != configDescription.ValueString() || (!configIsActive.IsNull() && !configIsActive.IsUnknown() && observed.IsActive != configIsActive.ValueBool()) {
 			resp.Diagnostics.AddError("JWT Key Mapping Description Ownership Not Confirmed", "Fresh authoritative read-back did not confirm the explicitly configured description. Prior state and API ownership were retained; no mutation was sent.")
 			return
 		}
@@ -468,12 +559,12 @@ func (r *JWTKeyMappingResource) Update(ctx context.Context, req resource.UpdateR
 		return
 	}
 	updated, err := decodeJWTKeyMappingObject(raw)
-	if err != nil || updated.ID != state.ID.ValueString() || updated.ClaimName != state.ClaimName.ValueString() || updated.ClaimValue != state.ClaimValue.ValueString() || !jwtKeyMappingUpdateMatchesPlan(updated, plan, body) {
+	if err != nil || updated.ID != state.ID.ValueString() || !jwtKeyMappingSameIdentity(updated, state) || !jwtKeyMappingUpdateMatchesPlan(updated, plan, body) {
 		resp.Diagnostics.AddError("Invalid API Response", "LiteLLM accepted the update but did not return the same mapping identity and requested observable state. Prior state and private ownership were retained.")
 		return
 	}
 	observed, err := readFreshJWTKeyMapping(ctx, r.client, state.ID.ValueString())
-	if err != nil || observed.ClaimName != state.ClaimName.ValueString() || observed.ClaimValue != state.ClaimValue.ValueString() {
+	if err != nil || !jwtKeyMappingSameIdentity(observed, state) {
 		resp.Diagnostics.AddError("JWT Key Mapping Update Not Confirmed", "LiteLLM accepted the update, but authoritative read-back did not confirm the same mapping identity. Prior state and private ownership were retained.")
 		return
 	}
@@ -579,6 +670,7 @@ func (r *JWTKeyMappingResource) ImportState(ctx context.Context, req resource.Im
 
 func setJWTKeyMappingResourceState(data *JWTKeyMappingResourceModel, mapping jwtKeyMappingObject) {
 	data.ID = types.StringValue(mapping.ID)
+	data.Issuer = types.StringPointerValue(mapping.Issuer)
 	data.ClaimName = types.StringValue(mapping.ClaimName)
 	data.ClaimValue = types.StringValue(mapping.ClaimValue)
 	if mapping.Description == nil {

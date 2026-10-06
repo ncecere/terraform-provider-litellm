@@ -59,11 +59,15 @@ func TestPromptScopedExistenceRequiresAuthoritativeVersionResult(t *testing.T) {
 	t.Parallel()
 	for name, versionsStatus := range map[string]struct {
 		status int
+		body   string
 		exists bool
 		err    bool
 	}{
-		"absent 404":    {http.StatusNotFound, false, false},
-		"ambiguous 400": {http.StatusBadRequest, false, true},
+		"LiteLLM absence 404": {http.StatusNotFound, `{"detail":"No versions found for prompt ID prompt"}`, false, false},
+		"generic 404":         {http.StatusNotFound, "versions result", false, true},
+		"empty history":       {http.StatusOK, `{"prompts":[]}`, false, true},
+		"existing history":    {http.StatusOK, `{"prompts":[{"prompt_id":"prompt","version":1}]}`, true, false},
+		"ambiguous 400":       {http.StatusBadRequest, "versions result", false, true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -74,7 +78,8 @@ func TestPromptScopedExistenceRequiresAuthoritativeVersionResult(t *testing.T) {
 					return
 				}
 				if request.URL.Path == "/prompts/prompt/versions" {
-					http.Error(writer, "versions result", versionsStatus.status)
+					writer.WriteHeader(versionsStatus.status)
+					_, _ = writer.Write([]byte(versionsStatus.body))
 					return
 				}
 				http.NotFound(writer, request)

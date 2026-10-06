@@ -37,6 +37,7 @@ This data source has no required arguments.
   * `soft_budget` - Soft budget limit.
   * `max_parallel_requests` - Maximum parallel requests allowed.
   * `tpm_limit` - Tokens per minute limit.
+  * `tpd_limit` - Tokens per day limit (LiteLLM 1.104.0 and later).
   * `rpm_limit` - Requests per minute limit.
   * `budget_duration` - Budget reset duration.
   * `model_max_budget` - Canonical JSON object string of per-model `BudgetConfig` values. Empty `{}` remains distinct from null; malformed or wrong-shaped API values fail the list read.

@@ -62,7 +62,7 @@ jobs:
         timeout-minutes: 5
         run: |
           internal_testing/compose.sh up -d
-          for attempt in $(seq 1 60); do
+          for _ in $(seq 1 60); do
             if curl --fail --silent --connect-timeout 3 --max-time 10 \
               http://localhost:4000/health/liveliness >/dev/null; then exit 0; fi
             sleep 2
@@ -71,7 +71,7 @@ jobs:
       - name: Execute full exact-tag lane
         env:
           TF_ACC: '1'
-          LITELLM_ACCEPTANCE_CONFIRM: local-v1.98.0
+          LITELLM_ACCEPTANCE_CONFIRM: local-v1.104.0
           MATRIX_CLI: ${{ runner.temp }}/tools/${{ matrix.product }}/${{ matrix.version }}/linux_amd64/${{ matrix.executable }}
           MATRIX_PROVIDER_BINARY: ${{ runner.temp }}/provider/terraform-provider-litellm
           MATRIX_CACHE: ${{ runner.temp }}/matrix-cache

@@ -31,6 +31,7 @@ type BudgetListItemModel struct {
 	SoftBudget          types.Float64 `tfsdk:"soft_budget"`
 	MaxParallelRequests types.Int64   `tfsdk:"max_parallel_requests"`
 	TPMLimit            types.Int64   `tfsdk:"tpm_limit"`
+	TPDLimit            types.Int64   `tfsdk:"tpd_limit"`
 	RPMLimit            types.Int64   `tfsdk:"rpm_limit"`
 	BudgetDuration      types.String  `tfsdk:"budget_duration"`
 	ModelMaxBudget      types.String  `tfsdk:"model_max_budget"`
@@ -76,6 +77,7 @@ func (d *BudgetsListDataSource) Schema(ctx context.Context, req datasource.Schem
 							Description: "Max tokens per minute.",
 							Computed:    true,
 						},
+						"tpd_limit": schema.Int64Attribute{Description: "Max tokens per day (LiteLLM 1.104.0 and later).", Computed: true},
 						"rpm_limit": schema.Int64Attribute{
 							Description: "Max requests per minute.",
 							Computed:    true,
@@ -167,6 +169,7 @@ func (d *BudgetsListDataSource) Read(ctx context.Context, req datasource.ReadReq
 		}{
 			{"max_parallel_requests", &budget.MaxParallelRequests},
 			{"tpm_limit", &budget.TPMLimit},
+			{"tpd_limit", &budget.TPDLimit},
 			{"rpm_limit", &budget.RPMLimit},
 		} {
 			value, fieldErr := dataSourceNullableInt64At(result, field.name)

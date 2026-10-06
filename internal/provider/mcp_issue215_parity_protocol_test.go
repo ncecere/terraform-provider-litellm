@@ -36,6 +36,29 @@ func TestMCPSingularSafeCredentialProjectionProtocol(t *testing.T) {
 		t.Fatalf("upstream_resource=%q err=%v", upstream, err)
 	}
 
+	// LiteLLM 1.104.0 also projects upstream_token_header and native scopes.
+	for name, valid := range map[string]struct{ payload, upstream string }{
+		"v1.104 full projection": {`{"server_id":"credential","transport":"http","credentials":{"upstream_resource":"https://resource.invalid","upstream_token_header":"X-Upstream-Token","scopes":["read","write"]}}`, "https://resource.invalid"},
+		"v1.104 scopes only":     {`{"server_id":"credential","transport":"http","credentials":{"scopes":["read"]}}`, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			payload.Store(valid.payload)
+			ok, err := protocolServer.ReadDataSource(ctx, &tfprotov6.ReadDataSourceRequest{TypeName: "litellm_mcp_server", Config: config})
+			if err != nil || accessGroupProtocolDiagnosticsHaveError(ok.Diagnostics) {
+				t.Fatalf("v1.104 credential projection rejected: err=%v diagnostics=%v", err, ok.Diagnostics)
+			}
+			attribute := protocolAttributeMap(t, schema, ok.State)["upstream_resource"]
+			var upstream string
+			if valid.upstream == "" {
+				if !attribute.IsNull() {
+					t.Fatalf("upstream_resource=%s, want null", attribute)
+				}
+			} else if err := attribute.As(&upstream); err != nil || upstream != valid.upstream {
+				t.Fatalf("upstream_resource=%q err=%v", upstream, err)
+			}
+		})
+	}
+
 	for name, malformed := range map[string]string{
 		"wrong root":        `{"server_id":"credential","transport":"http","credentials":"` + secret + `"}`,
 		"empty object":      `{"server_id":"credential","transport":"http","credentials":{}}`,
@@ -258,13 +281,13 @@ func assertMCPProtocolString(t *testing.T, value tftypes.Value, want string) {
 	}
 }
 
-func TestMCPManagerListRejectsAnyCredentialsProtocol(t *testing.T) {
+func TestMCPManagerListRejectsSecretCredentialsProtocol(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	const secret = "list-credential-response-secret"
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
-		_, _ = writer.Write([]byte(`[{"server_id":"credential-list","transport":"http","credentials":{"upstream_resource":"` + secret + `"}}]`))
+		_, _ = writer.Write([]byte(`[{"server_id":"credential-list","transport":"http","credentials":{"upstream_resource":"https://resource.invalid","auth_value":"` + secret + `"}}]`))
 	}))
 	defer server.Close()
 	protocolServer, schemas := configuredImportProtocolServer(t, ctx, server.URL)

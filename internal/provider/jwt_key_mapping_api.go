@@ -24,7 +24,10 @@ const (
 )
 
 type jwtKeyMappingObject struct {
-	ID          string
+	ID string
+	// Issuer is the JWT issuer scope. nil is LiteLLM's global scope: v1.104.0
+	// returns null (stored as ""), and v1.98.0 omitted the field entirely.
+	Issuer      *string
 	ClaimName   string
 	ClaimValue  string
 	Description *string
@@ -62,7 +65,7 @@ func decodeJWTKeyMappingObject(raw json.RawMessage) (jwtKeyMappingObject, error)
 		return result, fmt.Errorf("JWT key mapping response must be a valid JSON object")
 	}
 	allowed := map[string]struct{}{
-		"id": {}, "jwt_claim_name": {}, "jwt_claim_value": {}, "description": {}, "is_active": {},
+		"id": {}, "jwt_issuer": {}, "jwt_claim_name": {}, "jwt_claim_value": {}, "description": {}, "is_active": {},
 		"created_at": {}, "updated_at": {}, "created_by": {}, "updated_by": {},
 	}
 	for key := range object {
@@ -76,6 +79,9 @@ func decodeJWTKeyMappingObject(raw json.RawMessage) (jwtKeyMappingObject, error)
 	}
 	if _, err = canonicalJWTKeyMappingID(result.ID); err != nil {
 		return result, fmt.Errorf("JWT key mapping response returned an invalid id")
+	}
+	if result.Issuer, err = optionalJWTIssuer(object); err != nil {
+		return result, err
 	}
 	if result.ClaimName, err = requiredJSONString(object, "jwt_claim_name"); err != nil {
 		return result, fmt.Errorf("JWT key mapping response omitted jwt_claim_name")
@@ -108,6 +114,23 @@ func decodeJWTKeyMappingObject(raw json.RawMessage) (jwtKeyMappingObject, error)
 		return result, err
 	}
 	return result, nil
+}
+
+// optionalJWTIssuer decodes the issuer scope. Absent (v1.98.0), null, and the
+// empty string all denote LiteLLM's global scope and decode to nil.
+func optionalJWTIssuer(object map[string]json.RawMessage) (*string, error) {
+	raw, ok := object["jwt_issuer"]
+	if !ok || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return nil, nil
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil, fmt.Errorf("JWT key mapping response returned invalid jwt_issuer")
+	}
+	if value == "" {
+		return nil, nil
+	}
+	return &value, nil
 }
 
 func requiredJSONString(object map[string]json.RawMessage, field string) (string, error) {
@@ -306,7 +329,7 @@ func jwtKeyMappingScansEqual(first, second []jwtKeyMappingObject) bool {
 		return false
 	}
 	for i := range first {
-		if first[i].ID != second[i].ID || first[i].ClaimName != second[i].ClaimName || first[i].ClaimValue != second[i].ClaimValue || first[i].IsActive != second[i].IsActive || first[i].CreatedAt != second[i].CreatedAt || first[i].UpdatedAt != second[i].UpdatedAt || !equalNullableString(first[i].Description, second[i].Description) || !equalNullableString(first[i].CreatedBy, second[i].CreatedBy) || !equalNullableString(first[i].UpdatedBy, second[i].UpdatedBy) {
+		if first[i].ID != second[i].ID || !equalNullableString(first[i].Issuer, second[i].Issuer) || first[i].ClaimName != second[i].ClaimName || first[i].ClaimValue != second[i].ClaimValue || first[i].IsActive != second[i].IsActive || first[i].CreatedAt != second[i].CreatedAt || first[i].UpdatedAt != second[i].UpdatedAt || !equalNullableString(first[i].Description, second[i].Description) || !equalNullableString(first[i].CreatedBy, second[i].CreatedBy) || !equalNullableString(first[i].UpdatedBy, second[i].UpdatedBy) {
 			return false
 		}
 	}
@@ -329,7 +352,7 @@ func jwtKeyMappingCreateRecoveryDiagnostic(err error) string {
 	status := "The create request failed or its committed outcome could not be confirmed."
 	var apiErr *APIError
 	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusConflict {
-		status = "LiteLLM returned HTTP 409; this can represent an existing mapping or a prior create whose response was lost."
+		status = "LiteLLM returned HTTP 409; this can represent an existing mapping in the same issuer scope or a prior create whose response was lost."
 	}
-	return status + " Terraform did not guess or adopt a UUID. An administrator must list JWT key mappings, locate the exact claim-name/claim-value pair, obtain its canonical UUID, and import that UUID. Response details and configured values were omitted."
+	return status + " Terraform did not guess or adopt a UUID. An administrator must list JWT key mappings, locate the exact issuer, claim-name, and claim-value combination, obtain its canonical UUID, and import that UUID. Response details and configured values were omitted."
 }

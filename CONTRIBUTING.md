@@ -13,7 +13,7 @@ For security vulnerabilities, follow [SECURITY.md](SECURITY.md) instead of openi
 
 ## Development setup
 
-Development requires Go 1.24 or newer. Terraform 1.1 or newer and OpenTofu 1.6 or newer are supported clients. The tested backend is LiteLLM 1.98.0.
+Development requires Go 1.24 or newer. Terraform 1.1 or newer and OpenTofu 1.6 or newer are supported clients. The tested backend is LiteLLM 1.104.0.
 
 ```bash
 git clone https://github.com/ncecere/terraform-provider-litellm.git

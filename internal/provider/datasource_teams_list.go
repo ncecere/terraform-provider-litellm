@@ -28,6 +28,7 @@ type TeamListItem struct {
 	MaxBudget      types.Float64 `tfsdk:"max_budget"`
 	Spend          types.Float64 `tfsdk:"spend"`
 	TPMLimit       types.Int64   `tfsdk:"tpm_limit"`
+	TPDLimit       types.Int64   `tfsdk:"tpd_limit"`
 	RPMLimit       types.Int64   `tfsdk:"rpm_limit"`
 	Blocked        types.Bool    `tfsdk:"blocked"`
 }
@@ -83,6 +84,7 @@ func (d *TeamsListDataSource) Schema(ctx context.Context, req datasource.SchemaR
 							Description: "Tokens per minute limit for the team.",
 							Computed:    true,
 						},
+						"tpd_limit": schema.Int64Attribute{Description: "Tokens per day limit (LiteLLM 1.104.0 and later).", Computed: true},
 						"rpm_limit": schema.Int64Attribute{
 							Description: "Requests per minute limit for the team.",
 							Computed:    true,
@@ -163,6 +165,7 @@ func projectTeamsListDataSource(results []map[string]interface{}) ([]TeamListIte
 			MaxBudget:      types.Float64Null(),
 			Spend:          types.Float64Null(),
 			TPMLimit:       types.Int64Null(),
+			TPDLimit:       types.Int64Null(),
 			RPMLimit:       types.Int64Null(),
 			Blocked:        types.BoolNull(),
 		}
@@ -206,6 +209,7 @@ func projectTeamsListDataSource(results []map[string]interface{}) ([]TeamListIte
 			target *types.Int64
 		}{
 			{"tpm_limit", &item.TPMLimit},
+			{"tpd_limit", &item.TPDLimit},
 			{"rpm_limit", &item.RPMLimit},
 		} {
 			value, fieldErr := dataSourceNullableInt64At(result, field.name)

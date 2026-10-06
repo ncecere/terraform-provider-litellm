@@ -54,5 +54,5 @@ data "litellm_models" "team_models" {
 
 ## Notes
 
-- The Terraform argument remains `team_id`; the provider sends LiteLLM v1.98's exact `teamId` query parameter.
+- The Terraform argument remains `team_id`; the provider sends LiteLLM's exact `teamId` query parameter.
 - Results are decoded from the canonical `data` envelope and sorted deterministically by model identity. `data` may be an array or, in LiteLLM's `user_model` mode, one model object normalized to a one-item list.

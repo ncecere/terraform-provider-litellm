@@ -88,6 +88,7 @@ func isMaskedMetadataAPIString(value string) bool {
 	trimmed := strings.TrimSpace(value)
 	upper := strings.ToUpper(trimmed)
 	return strings.HasPrefix(trimmed, "litellm_enc::") ||
+		trimmed == liteLLMRedactedMarker ||
 		upper == "***REDACTED***" ||
 		upper == "<REDACTED>" ||
 		upper == "[REDACTED]"

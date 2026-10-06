@@ -218,9 +218,9 @@ export TF_IN_AUTOMATION=1 TF_INPUT=0 TF_CLI_ARGS=-no-color
 if [ "$MODE" = local ]; then
   [ "${LITELLM_API_BASE:-http://localhost:4000}" = 'http://localhost:4000' ] || fail 'local target must be loopback port 4000'
   [ "${LITELLM_API_KEY:-sk-testing-key}" = 'sk-testing-key' ] || fail 'local target must use the disposable stack credential'
-  grep -q 'docker.litellm.ai/berriai/litellm:v1.98.0' "$REPO_ROOT/internal_testing/docker-compose.yml" || fail 'local image is not the exact pinned release'
+  grep -q 'docker.litellm.ai/berriai/litellm:v1.104.0' "$REPO_ROOT/internal_testing/docker-compose.yml" || fail 'local image is not the exact pinned release'
   version=$(curl --fail --silent --show-error --connect-timeout 3 --max-time 15 'http://localhost:4000/openapi.json' 2>>"$LOG" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("info",{}).get("version",""))')
-  [ "$version" = '1.98.0' ] || fail 'local LiteLLM version check failed'
+  [ "$version" = '1.104.0' ] || fail 'local LiteLLM version check failed'
   export TF_VAR_litellm_api_base='http://localhost:4000'
   export TF_VAR_litellm_api_key='sk-testing-key'
 else
@@ -538,12 +538,18 @@ assert_authoritative_not_found() {
 
 assert_post_destroy_import_rejected() {
   evidence=$1 resource_type=$2
+  PROMPT_IMPORT_INCONCLUSIVE=0
   if [ "$resource_type" = litellm_prompt ]; then
-    # LiteLLM v1.98 cannot distinguish Prisma-backed Prompt absence from its
-    # process-local registry fallback. Require the exact value-free fail-closed
-    # diagnostic without claiming authoritative remote absence.
+    # LiteLLM 1.104.0's scoped versions route reads only the database, so the
+    # provider reports authoritative Prompt absence. The exact value-free
+    # fail-closed diagnostic remains acceptable (an older backend or a
+    # restricted role) and is recorded as inconclusive absence, never as proof.
+    if python3 "$SCRIPT_DIR/absence_diagnostic.py" "$evidence" "$resource_type" >/dev/null 2>&1; then
+      return
+    fi
     python3 "$SCRIPT_DIR/prompt_import_diagnostic.py" "$evidence" || \
-      fail 'post-destroy Prompt import was not the exact fail-closed diagnostic'
+      fail 'post-destroy Prompt import was neither authoritative absence nor the exact fail-closed diagnostic'
+    PROMPT_IMPORT_INCONCLUSIVE=1
     return
   fi
   assert_authoritative_not_found "$evidence" "$resource_type"
@@ -839,7 +845,7 @@ PY
   IMPORT_RESOURCE_TYPE=
   IMPORT_ID_FILE=
   SCENARIO_EVIDENCE=$SCRATCH/import-absence.out
-  if [ "$resource_type" = litellm_prompt ]; then
+  if [ "$resource_type" = litellm_prompt ] && [ "${PROMPT_IMPORT_INCONCLUSIVE:-0}" = 1 ]; then
     SCENARIO_ASSERTION_OVERRIDE=import-fail-closed-inconclusive-absence
   fi
   record "import:$resource_type" import passed ''
@@ -1155,8 +1161,24 @@ LITELLM_ACCEPTANCE_ASSEMBLY_ONLY=0 sh "$REPO_ROOT/internal_testing/acceptance.sh
 # the selected executable to prevent nested supervisors from emitting duplicate
 # command receipts for one diagnostic.
 CLI=$selected_cli
-# Project is the only registered resource and pair of data sources unavailable
-# in the pinned OSS edition. These are explicit execution records, never passes.
+# Project, and from LiteLLM 1.102.0 every organization endpoint, require an
+# Enterprise license that the pinned disposable stack does not have. These are
+# explicit execution records, never passes. Without the licensed confirmation,
+# acceptance.sh runs only a bounded organization license-gate probe (which must
+# fail with exactly the provider's license diagnostic) and has already recorded
+# the organization skips with that evidence; these records are then no-ops.
+# With LITELLM_ENTERPRISE_CONFIRM=licensed-disposable acceptance exercises the
+# organization cases normally, so no organization skip is recorded here.
+if [ "${LITELLM_ENTERPRISE_CONFIRM:-}" != licensed-disposable ]; then
+  record 'resource_coverage:litellm_organization' resource_coverage skipped enterprise-license-required
+  record 'resource_coverage:litellm_organization_member' resource_coverage skipped enterprise-license-required
+  record 'lifecycle:litellm_organization' lifecycle skipped enterprise-license-required
+  record 'lifecycle:litellm_organization_member' lifecycle skipped enterprise-license-required
+  record 'drift:litellm_organization' drift skipped enterprise-license-required
+  record 'drift:litellm_organization_member' drift skipped enterprise-license-required
+  record 'data_source:litellm_organization' data_source skipped enterprise-license-required
+  record 'data_source:litellm_organizations' data_source skipped enterprise-license-required
+fi
 record 'resource_coverage:litellm_project' resource_coverage skipped enterprise-license-required
 record 'lifecycle:litellm_project' lifecycle skipped enterprise-license-required
 record 'drift:litellm_project' drift skipped enterprise-license-required

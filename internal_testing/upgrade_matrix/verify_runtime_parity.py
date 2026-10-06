@@ -714,6 +714,97 @@ REVIEWED_V198_RELEASE_RUNTIME_DIFF_SHA256 = (
 )
 
 
+# v2.2.0 (LiteLLM 1.104.0) release candidate, reviewed against v2.1.0.
+REVIEWED_V1104_RELEASE_BASE = "f4f369df2180805961d475866296a06c64f3a1c5"
+REVIEWED_V1104_RELEASE_PATHS = (
+    'internal/provider/agent_patch.go',
+    'internal/provider/agent_secret_params.go',
+    'internal/provider/agent_secret_params_test.go',
+    'internal/provider/agent_structured.go',
+    'internal/provider/budget_clears_test.go',
+    'internal/provider/client.go',
+    'internal/provider/datasource_agent.go',
+    'internal/provider/datasource_agent_masked_test.go',
+    'internal/provider/datasource_budget.go',
+    'internal/provider/datasource_budgets_list.go',
+    'internal/provider/datasource_credential.go',
+    'internal/provider/datasource_jwt_key_mapping.go',
+    'internal/provider/datasource_jwt_key_mappings_list.go',
+    'internal/provider/datasource_key.go',
+    'internal/provider/datasource_mcp_presence_test.go',
+    'internal/provider/datasource_mcp_server.go',
+    'internal/provider/datasource_mcp_servers_list.go',
+    'internal/provider/datasource_model.go',
+    'internal/provider/datasource_organization.go',
+    'internal/provider/datasource_organizations_list.go',
+    'internal/provider/datasource_presence.go',
+    'internal/provider/datasource_project.go',
+    'internal/provider/datasource_projects_list.go',
+    'internal/provider/datasource_structured_metadata_test.go',
+    'internal/provider/datasource_team.go',
+    'internal/provider/datasource_teams_list.go',
+    'internal/provider/enterprise_license.go',
+    'internal/provider/enterprise_license_test.go',
+    'internal/provider/jwt_key_mapping_api.go',
+    'internal/provider/jwt_key_mapping_issuer_protocol_test.go',
+    'internal/provider/jwt_key_mapping_key_hash_protocol_test.go',
+    'internal/provider/jwt_key_mapping_test.go',
+    'internal/provider/key_info_status.go',
+    'internal/provider/key_info_status_test.go',
+    'internal/provider/key_project_update_test.go',
+    'internal/provider/key_tpd_plan_test.go',
+    'internal/provider/mcp_credentials_v1104_test.go',
+    'internal/provider/mcp_field_lifecycle.go',
+    'internal/provider/mcp_issue215_parity_protocol_test.go',
+    'internal/provider/mcp_issue215_parity_test.go',
+    'internal/provider/mcp_stdio.go',
+    'internal/provider/mcp_stdio_test.go',
+    'internal/provider/metadata_helpers.go',
+    'internal/provider/model_credential_detach_protocol_test.go',
+    'internal/provider/model_pricing_keys.go',
+    'internal/provider/model_pricing_keys_test.go',
+    'internal/provider/organization_project_budget_plan.go',
+    'internal/provider/prompt_contract_test.go',
+    'internal/provider/prompt_delete_multiworker_test.go',
+    'internal/provider/prompt_helpers.go',
+    'internal/provider/prompt_protocol_test.go',
+    'internal/provider/prompt_safe_read_protocol_test.go',
+    'internal/provider/resource_agent.go',
+    'internal/provider/resource_agent_lifecycle.go',
+    'internal/provider/resource_budget.go',
+    'internal/provider/resource_credential.go',
+    'internal/provider/resource_jwt_key_mapping.go',
+    'internal/provider/resource_key.go',
+    'internal/provider/resource_key_block.go',
+    'internal/provider/resource_key_router_settings.go',
+    'internal/provider/resource_key_router_settings_test.go',
+    'internal/provider/resource_key_semantic_dictionary.go',
+    'internal/provider/resource_mcp_server.go',
+    'internal/provider/resource_model.go',
+    'internal/provider/resource_model_clear_test.go',
+    'internal/provider/resource_model_info_validator.go',
+    'internal/provider/resource_organization.go',
+    'internal/provider/resource_organization_member.go',
+    'internal/provider/resource_project.go',
+    'internal/provider/resource_project_semantic_dictionary.go',
+    'internal/provider/resource_prompt.go',
+    'internal/provider/resource_tag.go',
+    'internal/provider/resource_team.go',
+    'internal/provider/resource_team_member.go',
+    'internal/provider/resource_team_member_add.go',
+    'internal/provider/resource_team_semantic_dictionary.go',
+    'internal/provider/resource_team_semantic_dictionary_test.go',
+    'internal/provider/resource_unified_access_group.go',
+    'internal/provider/resource_user.go',
+    'internal/provider/resource_vector_store.go',
+    'internal/provider/tag_budget_helpers.go',
+    'internal/provider/team_response.go',
+)
+REVIEWED_V1104_RELEASE_RUNTIME_DIFF_SHA256 = (
+    "1d5bd593c6f35c2e01cca5ebd31328e8fd33409592cacca70206ee7c5b035bf8"
+)
+
+
 def git(*args: str) -> str:
     proc = subprocess.run(
         ["git", *args], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -921,6 +1012,12 @@ def main() -> int:
             and digest == REVIEWED_V198_RELEASE_RUNTIME_DIFF_SHA256
         ):
             reviewed = "v1.98-release"
+        elif (
+            comparison == REVIEWED_V1104_RELEASE_BASE
+            and changed_paths == REVIEWED_V1104_RELEASE_PATHS
+            and digest == REVIEWED_V1104_RELEASE_RUNTIME_DIFF_SHA256
+        ):
+            reviewed = "v1.104-release"
         if reviewed is not None:
             print(
                 f"Provider runtime parity verified: reviewed={reviewed} "

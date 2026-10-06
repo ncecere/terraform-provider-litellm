@@ -3177,10 +3177,12 @@ func TestManifestPinnedMetadataCountsAndReviewInventory(t *testing.T) {
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		t.Fatal(err)
 	}
-	if manifest.Upstream.Tag != "v1.98.0" || manifest.Upstream.Commit != "d8f71d7bdbd7c9873d98293f83d64c6db72847e6" || manifest.Upstream.Python != "3.12.14" || manifest.Upstream.UV != "0.12.6" {
+	if manifest.Upstream.Tag != "v1.104.0" || manifest.Upstream.Commit != "79645770fedc7ec2627e6468d31062f20f82aecc" || manifest.Upstream.Python != "3.12.14" || manifest.Upstream.UV != "0.12.6" {
 		t.Fatalf("upstream provenance is not pinned: %+v", manifest.Upstream)
 	}
-	if manifest.OpenAPI.PathCount != 586 || manifest.OpenAPI.OperationCount != 800 || manifest.Supplemental.RouteCount != 1 || len(manifest.RequiredLazyFeatures) != 33 {
+	// v1.104.0 publishes PATCH /v2/organization/{organization_id} in OpenAPI, so
+	// the reviewed supplemental (hidden) route inventory is now empty.
+	if manifest.OpenAPI.PathCount != 654 || manifest.OpenAPI.OperationCount != 906 || manifest.Supplemental.RouteCount != 0 || len(manifest.RequiredLazyFeatures) != 35 {
 		t.Fatalf("artifact or complete lazy-feature review counts changed: %+v %+v lazy=%d", manifest.OpenAPI, manifest.Supplemental, len(manifest.RequiredLazyFeatures))
 	}
 	var pins ReviewedPins
@@ -3188,7 +3190,7 @@ func TestManifestPinnedMetadataCountsAndReviewInventory(t *testing.T) {
 	if err != nil || json.Unmarshal(pinsData, &pins) != nil {
 		t.Fatalf("load reviewed pins: %v", err)
 	}
-	if pins.Upstream.UV != "0.12.6" || pins.Artifacts.ProviderGolden.OperationCount != 108 || pins.Artifacts.Classification.OperationCount != 693 || len(pins.LazyFeatures) != 33 {
+	if pins.Upstream.UV != "0.12.6" || pins.Artifacts.ProviderGolden.OperationCount != 108 || pins.Artifacts.Classification.OperationCount != 798 || len(pins.LazyFeatures) != 35 {
 		t.Fatalf("reviewed pins changed unexpectedly: artifacts=%+v lazy=%d", pins.Artifacts, len(pins.LazyFeatures))
 	}
 }
@@ -3377,7 +3379,7 @@ func TestLazyExpansionHasExactReviewedClassification(t *testing.T) {
 			}
 		}
 	}
-	if counts["mcp"] != 33 || counts["prompt"] != 10 || counts["integration"] != 16 {
+	if counts["mcp"] != 37 || counts["prompt"] != 10 || counts["integration"] != 20 {
 		t.Fatalf("lazy expansion counts changed: %v", counts)
 	}
 	for key, category := range map[string]string{
@@ -3388,6 +3390,12 @@ func TestLazyExpansionHasExactReviewedClassification(t *testing.T) {
 		"POST /cloudzero/init":                            "global_proxy_configuration",
 		"POST /vantage/export":                            "operational_action",
 		"POST /config_overrides/hashicorp_vault":          "global_proxy_configuration",
+		"POST /config_overrides/cyberark":                 "global_proxy_configuration",
+		"POST /config_overrides/cyberark/test_connection": "testing_validation",
+		"POST /v1/mcp/server/import":                      "mcp_server_management",
+		"GET /v1/mcp/server/{server_id}/user-credentials": "mcp_credential_configuration",
+		"GET /v1/mcp/sessions":                            "health",
+		"DELETE /v1/mcp/sessions":                         "operational_action",
 	} {
 		if classified[key] != category {
 			t.Errorf("%s category = %q, want %q", key, classified[key], category)

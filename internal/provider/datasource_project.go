@@ -31,6 +31,7 @@ type ProjectDataSourceModel struct {
 	SoftBudget          types.Float64 `tfsdk:"soft_budget"`
 	BudgetDuration      types.String  `tfsdk:"budget_duration"`
 	TPMLimit            types.Int64   `tfsdk:"tpm_limit"`
+	TPDLimit            types.Int64   `tfsdk:"tpd_limit"`
 	RPMLimit            types.Int64   `tfsdk:"rpm_limit"`
 	MaxParallelRequests types.Int64   `tfsdk:"max_parallel_requests"`
 	ModelRPMLimit       types.Map     `tfsdk:"model_rpm_limit"`
@@ -63,6 +64,7 @@ func (d *ProjectDataSource) Schema(_ context.Context, _ datasource.SchemaRequest
 			"soft_budget":           schema.Float64Attribute{Description: "Soft budget alert threshold.", Computed: true},
 			"budget_duration":       schema.StringAttribute{Description: "Budget reset duration.", Computed: true},
 			"tpm_limit":             schema.Int64Attribute{Description: "Tokens per minute limit.", Computed: true},
+			"tpd_limit":             schema.Int64Attribute{Description: "Tokens per day limit (LiteLLM 1.104.0 and later).", Computed: true},
 			"rpm_limit":             schema.Int64Attribute{Description: "Requests per minute limit.", Computed: true},
 			"max_parallel_requests": schema.Int64Attribute{Description: "Maximum parallel requests.", Computed: true},
 			"model_rpm_limit":       schema.MapAttribute{Description: "Per-model RPM limits.", Computed: true, ElementType: types.Int64Type},
@@ -98,7 +100,7 @@ func (d *ProjectDataSource) Read(ctx context.Context, req datasource.ReadRequest
 	query := url.Values{"project_id": []string{projectID}}
 	endpoint := endpointWithQuery("/project/info", query)
 	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read project: %s", err))
+		addLicenseAwareError(&resp.Diagnostics, err, "Client Error", fmt.Sprintf("Unable to read project: %s", err))
 		return
 	}
 	object, err := unwrapObjectEnvelope(result, "project_info", "data")
@@ -178,7 +180,7 @@ func (d *ProjectDataSource) Read(ctx context.Context, req datasource.ReadRequest
 		name   string
 		target *types.Int64
 	}{
-		{"tpm_limit", &data.TPMLimit}, {"rpm_limit", &data.RPMLimit}, {"max_parallel_requests", &data.MaxParallelRequests},
+		{"tpm_limit", &data.TPMLimit}, {"tpd_limit", &data.TPDLimit}, {"rpm_limit", &data.RPMLimit}, {"max_parallel_requests", &data.MaxParallelRequests},
 	} {
 		if err := updateBudgetInt64(field.target, table, true, true, field.name); err != nil {
 			resp.Diagnostics.AddError("Invalid API Response", err.Error())

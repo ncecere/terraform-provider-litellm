@@ -33,13 +33,13 @@ var mcpCredentialStringKeysV198 = map[string]bool{
 func validateMCPCredentialStringMapV198(credentials map[string]string) error {
 	for name, value := range credentials {
 		if !mcpCredentialStringKeysV198[name] {
-			return fmt.Errorf("credentials contain a key that LiteLLM v1.98 cannot represent through this schema")
+			return fmt.Errorf("credentials contain a key that LiteLLM cannot represent through this schema")
 		}
 		if name == "token_endpoint_auth_method" && value != "client_secret_basic" && value != "client_secret_post" {
 			return fmt.Errorf("credentials contain an unsupported token endpoint authentication method")
 		}
 		if name == "upstream_resource" && value == "" {
-			return fmt.Errorf("credentials contain an empty observable upstream resource that LiteLLM v1.98 cannot return")
+			return fmt.Errorf("credentials contain an empty observable upstream resource that LiteLLM cannot return")
 		}
 	}
 	return nil
@@ -354,6 +354,17 @@ func mergeMCPScopesCredentialIntent(request map[string]interface{}, scopes []str
 	return nil
 }
 
+// mcpDeltaSentScopes reports whether an update delta carried native scopes.
+func mcpDeltaSentScopes(delta map[string]interface{}) bool {
+	switch credentials := delta["credentials"].(type) {
+	case map[string]interface{}:
+		_, sent := credentials["scopes"]
+		return sent
+	default:
+		return false
+	}
+}
+
 func mcpObservedCredentialString(observed map[string]interface{}, name string) (string, bool) {
 	raw, present := observed["credentials"]
 	if !present || raw == nil {
@@ -371,6 +382,95 @@ func mcpObservedCredentialString(observed map[string]interface{}, name string) (
 	return value, value != ""
 }
 
+// mcpCredentialProjection is LiteLLM's admin-visible credentials projection.
+// LiteLLM 1.104.0 returns only non-secret configuration: upstream_resource,
+// upstream_token_header, and the native scopes list. LiteLLM 1.98.0 returned
+// only upstream_resource. Secrets are never returned.
+type mcpCredentialProjection struct {
+	Strings       map[string]string
+	Scopes        []string
+	ScopesVisible bool
+}
+
+// mcpCredentialProjectionStringKeys are the string members LiteLLM may return.
+var mcpCredentialProjectionStringKeys = map[string]struct{}{"upstream_resource": {}, "upstream_token_header": {}}
+
+// decodeMCPCredentialProjection validates the credentials response member.
+// strict rejects members outside LiteLLM's documented projection.
+func decodeMCPCredentialProjection(observed map[string]interface{}, strict bool) (mcpCredentialProjection, error) {
+	projection := mcpCredentialProjection{Strings: map[string]string{}}
+	raw, present := observed["credentials"]
+	if !present || raw == nil {
+		return projection, nil
+	}
+	credentials, ok := raw.(map[string]interface{})
+	if !ok {
+		if typed, typedOK := raw.(map[string]string); typedOK {
+			credentials = make(map[string]interface{}, len(typed))
+			for name, value := range typed {
+				credentials[name] = value
+			}
+		} else {
+			return projection, fmt.Errorf("MCP server credentials projection is malformed")
+		}
+	}
+	if strict && len(credentials) == 0 {
+		// LiteLLM returns null, never an empty object, when nothing is visible.
+		return projection, fmt.Errorf("MCP server credentials projection is malformed")
+	}
+	for name, value := range credentials {
+		if name == "scopes" {
+			items, ok := value.([]interface{})
+			if !ok || len(items) == 0 {
+				return projection, fmt.Errorf("MCP server credentials projection is malformed")
+			}
+			scopes := make([]string, 0, len(items))
+			for _, item := range items {
+				scope, ok := item.(string)
+				if !ok || scope == "" {
+					return projection, fmt.Errorf("MCP server credentials projection is malformed")
+				}
+				scopes = append(scopes, scope)
+			}
+			projection.Scopes, projection.ScopesVisible = scopes, true
+			continue
+		}
+		text, ok := value.(string)
+		if !ok {
+			return projection, fmt.Errorf("MCP server credentials projection is malformed")
+		}
+		if _, known := mcpCredentialProjectionStringKeys[name]; strict && (!known || text == "") {
+			return projection, fmt.Errorf("MCP server credentials projection is malformed")
+		}
+		projection.Strings[name] = text
+	}
+	return projection, nil
+}
+
+// verifyMCPObservableScopes confirms configured OAuth scopes when LiteLLM
+// exposes credentials.scopes (1.104.0 and later, full proxy admin). When the
+// projection omits scopes (older servers or restricted roles) the successful
+// mutation remains the strongest available confirmation.
+func verifyMCPObservableScopes(ctx context.Context, desired types.List, observed map[string]interface{}) error {
+	projection, err := decodeMCPCredentialProjection(observed, false)
+	if err != nil {
+		return err
+	}
+	if !projection.ScopesVisible {
+		return nil
+	}
+	want, err := mcpFieldStringList(ctx, desired)
+	if err != nil || len(want) != len(projection.Scopes) {
+		return fmt.Errorf("observable OAuth scopes did not converge")
+	}
+	for index := range want {
+		if want[index] != projection.Scopes[index] {
+			return fmt.Errorf("observable OAuth scopes did not converge")
+		}
+	}
+	return nil
+}
+
 func verifyMCPObservableCredentialReadback(ctx context.Context, desired types.Map, observed map[string]interface{}) error {
 	credentials, err := mcpFieldStringMap(ctx, desired)
 	if err != nil {
@@ -386,10 +486,12 @@ func verifyMCPObservableCredentialReadback(ctx context.Context, desired types.Ma
 			return fmt.Errorf("an observable credential column did not converge")
 		}
 	}
-	if want, configured := credentials["upstream_resource"]; configured {
-		got, present := mcpObservedCredentialString(observed, "upstream_resource")
-		if !present || want != got {
-			return fmt.Errorf("observable credential configuration did not converge")
+	for name := range mcpCredentialProjectionStringKeys {
+		if want, configured := credentials[name]; configured {
+			got, present := mcpObservedCredentialString(observed, name)
+			if !present || want != got {
+				return fmt.Errorf("observable credential configuration did not converge")
+			}
 		}
 	}
 	return nil
@@ -398,9 +500,12 @@ func verifyMCPObservableCredentialReadback(ctx context.Context, desired types.Ma
 func verifyMCPFieldCreateReadback(ctx context.Context, config MCPServerResourceModel, observed map[string]interface{}, ownership mcpFieldOwnership) error {
 	for fieldPath := range ownership.Owned {
 		if fieldPath == mcpFieldOAuthScopesPath {
-			// v1.98 redacts credentials.scopes from every management response.
-			// Successful mutation plus a complete identity-valid direct response is
-			// the strongest available confirmation; scopes are never observable.
+			// LiteLLM 1.104.0 exposes credentials.scopes to full proxy admins;
+			// 1.98.0 redacted it. Verify when visible, otherwise rely on the
+			// successful mutation and identity-valid direct response.
+			if err := verifyMCPObservableScopes(ctx, config.OAuthScopes, observed); err != nil {
+				return err
+			}
 			continue
 		}
 		if fieldPath == mcpFieldEnvVarsPath {
@@ -580,7 +685,7 @@ func validateMCPFieldCredentialMerge(ctx context.Context, plan, state, config MC
 			// deletion is representable in one PUT.
 			continue
 		}
-		return fmt.Errorf("LiteLLM v1.98 merges credential maps; clear credentials first, apply, then re-add the replacement map")
+		return fmt.Errorf("LiteLLM merges credential maps; clear credentials first, apply, then re-add the replacement map")
 	}
 	return nil
 }
@@ -997,7 +1102,13 @@ func verifyMCPFieldUpdateReadback(ctx context.Context, plan, config MCPServerRes
 	for _, fieldPath := range mcpFieldPaths {
 		name := mcpFieldWireName(fieldPath)
 		if fieldPath == mcpFieldOAuthScopesPath {
-			// credentials.scopes is deliberately not projected by LiteLLM v1.98.
+			// Verify a configured scopes change only when LiteLLM projects
+			// credentials.scopes (1.104.0 and later); 1.98.0 redacted it.
+			if candidate.Owned[fieldPath] && !candidate.Removals[fieldPath] && mcpDeltaSentScopes(delta) {
+				if err := verifyMCPObservableScopes(ctx, config.OAuthScopes, observed); err != nil {
+					return err
+				}
+			}
 			continue
 		}
 		if fieldPath == mcpFieldEnvVarsPath {
@@ -1196,7 +1307,7 @@ func (r *MCPServerResource) Update(ctx context.Context, req resource.UpdateReque
 	}
 	if err := validateMCPImplicitClearSafety(config, state, plannedFields, hydration, delta, urlChanged, authClassChanged, issuerChanged); err != nil {
 		resp.State, resp.Private = req.State, req.Private
-		resp.Diagnostics.AddError("Unsafe MCP URL or Authentication Update", "LiteLLM v1.98 would implicitly clear an unowned, unknown, or unchanged OAuth/credential value ("+err.Error()+"). Configure every affected value with a genuinely changed or cleared complete intent in one apply. No PUT was attempted; restorative PUTs are never used.")
+		resp.Diagnostics.AddError("Unsafe MCP URL or Authentication Update", "LiteLLM would implicitly clear an unowned, unknown, or unchanged OAuth/credential value ("+err.Error()+"). Configure every affected value with a genuinely changed or cleared complete intent in one apply. No PUT was attempted; restorative PUTs are never used.")
 		return
 	}
 	if config.Alias.IsNull() {
@@ -1218,7 +1329,7 @@ func (r *MCPServerResource) Update(ctx context.Context, req resource.UpdateReque
 		accepted, putErr := r.putMCPServer(ctx, delta, &updateResult)
 		if putErr != nil && !accepted {
 			resp.State, resp.Private = req.State, req.Private
-			resp.Diagnostics.AddError("Client Error", "LiteLLM did not confirm the MCP server update. Prior public and private state was retained.")
+			addMCPMutationError(&resp.Diagnostics, putErr, delta, "Client Error", "LiteLLM did not confirm the MCP server update. Prior public and private state was retained.")
 			return
 		}
 		// Accepted response-body failures and malformed success bodies are
