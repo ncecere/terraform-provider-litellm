@@ -55,5 +55,10 @@ release:
     - glob: 'terraform-registry-manifest.json'
       name_template: '{{ .ProjectName }}_{{ .Version }}_manifest.json'
 
+# The release workflow always passes --release-notes with the exact-tag
+# CHANGELOG section (internal/cmd/release-notes). GoReleaser loads that file in
+# its changelog pipe, so the pipe must stay enabled; with --release-notes it
+# never generates a git-log changelog. Disabling it left the v2.1.0 and v2.2.0
+# GitHub release bodies empty.
 changelog:
-  disable: true
+  disable: false

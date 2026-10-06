@@ -39,7 +39,7 @@ resource "litellm_organization_member" "viewer" {
 }
 ```
 
-~> **LiteLLM limitation:** LiteLLM's member-add endpoint (verified on 1.98.0 and 1.104.0) returns HTTP 500 whenever `user_email` is sent and `user_id` does not identify an existing user: it looks the email up with a unique-field query on a column that is not unique. Email-only requests therefore always fail, as does adding a new user by `user_id` together with `user_email`. Configure `user_id` alone to let LiteLLM create a new user, or create the user first (for example with `litellm_user`) and pass its `user_id`; `user_email` is accepted alongside an existing `user_id`. The provider reports the failure without exposing the response body and retains any structurally confirmed membership identity for recovery.
+~> **LiteLLM limitation ([LiteLLM #44766](https://github.com/BerriAI/litellm/issues/44766)):** LiteLLM's member-add endpoint (verified on 1.98.0 and 1.104.0) returns HTTP 500 whenever `user_email` is sent and `user_id` does not identify an existing user: it looks the email up with a unique-field query on a column that is not unique. Email-only requests therefore always fail, as does adding a new user by `user_id` together with `user_email`. Configure `user_id` alone to let LiteLLM create a new user, or create the user first (for example with `litellm_user`) and pass its `user_id`; `user_email` is accepted alongside an existing `user_id`. The provider reports the failure without exposing the response body and retains any structurally confirmed membership identity for recovery.
 
 ## Argument Reference
 
