@@ -35,6 +35,9 @@ jobs:
           LITELLM_SOURCE: ../litellm
           UV: uv
         run: make contract-diff
+      - name: Download Go modules for the offline verifier
+        working-directory: provider
+        run: go mod download
       - name: Run offline verifier
         working-directory: provider
         run: make contract-check
