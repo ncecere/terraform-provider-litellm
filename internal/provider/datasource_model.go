@@ -241,14 +241,19 @@ func parseModelInfoResult(rawResult map[string]interface{}) map[string]interface
 
 func readModelDataSourceWithRetry(ctx context.Context, client *Client, endpoint string, result *map[string]interface{}, maxRetries int) error {
 	var err error
-	delay := time.Second
+	delay := modelReadRetryInitialDelay
 	maxDelay := 10 * time.Second
+	transientModelReadRetries := 0
 	for i := 0; i < maxRetries; i++ {
 		err = client.DoRequestWithResponse(ctx, "GET", endpoint, nil, result)
 		if err == nil {
 			return nil
 		}
-		if !IsNotFoundError(err) {
+		// See readModelWithRetryOwnership: a worker still loading a newly
+		// written model answers 400 for a few seconds.
+		if IsAPIErrorStatus(err, 400) && transientModelReadRetries < maxTransientModelReadRetries {
+			transientModelReadRetries++
+		} else if !IsNotFoundError(err) {
 			return err
 		}
 		if i < maxRetries-1 {

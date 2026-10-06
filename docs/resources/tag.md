@@ -44,7 +44,7 @@ resource "litellm_tag" "full" {
 }
 ```
 
-> **License note:** LiteLLM v1.98 requires Enterprise for nonempty `model_max_budget` updates. Its create path does not apply the same gate, so validate create and later update behavior against your licensed deployment before adopting this field.
+> **License note:** LiteLLM requires Enterprise for nonempty `model_max_budget` updates. Its create path does not apply the same gate, so validate create and later update behavior against your licensed deployment before adopting this field.
 
 ### Multiple Environment Tags
 
@@ -83,7 +83,7 @@ The following arguments are supported:
 
 * `description` - (Optional) Description of the tag's purpose.
 * `models` - (Optional, Computed) List of model names associated with this tag.
-* `budget_id` - (Optional, Computed) Budget ID associated with this tag. Inline controls create a generated association. An existing association cannot be detached or reassigned safely in LiteLLM v1.98.
+* `budget_id` - (Optional, Computed) Budget ID associated with this tag. Inline controls create a generated association. An existing association cannot be detached or reassigned safely in LiteLLM.
 * `max_budget` - (Optional, Computed) Maximum budget (in USD) allowed for this tag.
 * `soft_budget` - (Optional, Computed) Soft budget threshold (in USD). Triggers alerts but does not block requests.
 * `max_parallel_requests` - (Optional, Computed) Maximum number of parallel requests allowed.
@@ -112,17 +112,17 @@ Existing schema-v0 state has the same attribute types, ID, and import grammar. O
 
 ## Budget Ownership and Clears
 
-LiteLLM v1.98 returns tag budget values only through `litellm_budget_table`. Terraform reads that relation authoritatively and treats missing relations, null fields, and malformed values distinctly. Configured fields expose out-of-band drift. Fields omitted from an imported resource remain API-owned. Configure one explicitly and apply to transfer that field; owned numeric and duration fields can then be cleared, while the model-budget limitation below still applies.
+LiteLLM returns tag budget values only through `litellm_budget_table`. Terraform reads that relation authoritatively and treats missing relations, null fields, and malformed values distinctly. Configured fields expose out-of-band drift. Fields omitted from an imported resource remain API-owned. Configure one explicitly and apply to transfer that field; owned numeric and duration fields can then be cleared, while the model-budget limitation below still applies.
 
-Earlier provider documentation showed scalar per-model values. Finite numeric scalars remain readable, and unchanged configurations receive a compatibility warning. LiteLLM v1.98 rejects new or changed scalar values through budget update, so the provider blocks those transitions; migrate each scalar to a `GenericBudgetConfig` object. Do not combine `max_budget` with its `budget_limit` alias, or `budget_duration` with `time_period`, in the same model object.
+Earlier provider documentation showed scalar per-model values. Finite numeric scalars remain readable, and unchanged configurations receive a compatibility warning. LiteLLM rejects new or changed scalar values through budget update, so the provider blocks those transitions; migrate each scalar to a `GenericBudgetConfig` object. Do not combine `max_budget` with its `budget_limit` alias, or `budget_duration` with `time_period`, in the same model object.
 
 Removing an owned numeric limit sends an explicit null through `/budget/update`. Removing `budget_duration` also clears `budget_reset_at`; configure numeric zero when zero is the intended limit.
 
-LiteLLM v1.98 rejects both null and an empty object for `model_max_budget` through its tag and budget management APIs. The provider therefore rejects empty objects and removal of a known model budget before making an API call. Keep the existing value configured; clearing it requires direct database administration outside this API-only provider. Nonempty model-budget updates require LiteLLM Enterprise.
+LiteLLM does not persist null for `model_max_budget` through its tag and budget management APIs. LiteLLM 1.98 also rejects an empty object; LiteLLM 1.104.0 serializes and stores an empty object sent through `/budget/update` or `/tag/update`. The provider still rejects empty objects and removal of a known model budget before making an API call. Keep the existing value configured; clearing it requires direct database administration outside this API-only provider. Nonempty model-budget updates require LiteLLM Enterprise.
 
-Do not combine `budget_id` with inline controls. A supplied budget can be shared by tags, keys, projects, or organizations; manage it with `litellm_budget` instead. Omitting an established `budget_id` preserves the association because v1.98 cannot safely detach it.
+Do not combine `budget_id` with inline controls. A supplied budget can be shared by tags, keys, projects, or organizations; manage it with `litellm_budget` instead. Omitting an established `budget_id` preserves the association because LiteLLM cannot safely detach it.
 
-Inline controls can create a dedicated budget only during tag creation. LiteLLM v1.98 offers no atomic create-and-attach operation for an existing tag, so adding the first inline control later is rejected before mutation. Create a `litellm_budget` separately and attach only its `budget_id`. Once a tag has a verified association, configured sets and supported clears address that exact budget ID through `/budget/update`, preventing a concurrent reassociation from redirecting the mutation.
+Inline controls can create a dedicated budget only during tag creation. LiteLLM offers no atomic create-and-attach operation for an existing tag, so adding the first inline control later is rejected before mutation. Create a `litellm_budget` separately and attach only its `budget_id`. Once a tag has a verified association, configured sets and supported clears address that exact budget ID through `/budget/update`, preventing a concurrent reassociation from redirecting the mutation.
 
 ## Notes
 

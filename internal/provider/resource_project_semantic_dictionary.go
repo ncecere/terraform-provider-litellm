@@ -31,7 +31,7 @@ type projectPendingBudgetWire struct {
 
 var projectPendingBudgetAllowedFields = map[string]bool{
 	"max_budget": true, "soft_budget": true, "budget_duration": true,
-	"tpm_limit": true, "rpm_limit": true, "max_parallel_requests": true,
+	"tpm_limit": true, "tpd_limit": true, "rpm_limit": true, "max_parallel_requests": true,
 	"model_max_budget": true,
 }
 

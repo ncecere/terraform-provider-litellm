@@ -39,7 +39,7 @@ func (v tagModelBudgetValidator) ValidateString(ctx context.Context, req validat
 		return
 	}
 	if len(object) == 0 {
-		resp.Diagnostics.AddAttributeError(req.Path, "Unsupported Empty Tag Model Budget", "LiteLLM v1.98 cannot persist an empty model_max_budget object through either tag or budget management APIs. Keep an existing value configured; clearing it requires database administration outside this API-only provider.")
+		resp.Diagnostics.AddAttributeError(req.Path, "Unsupported Empty Tag Model Budget", "LiteLLM 1.98 cannot persist an empty model_max_budget object through its tag or budget management APIs, and the provider does not send one to any LiteLLM version. Keep an existing value configured; clearing it requires database administration outside this API-only provider.")
 		return
 	}
 	legacy, err := validateTagModelBudgetObject(object)
@@ -48,7 +48,7 @@ func (v tagModelBudgetValidator) ValidateString(ctx context.Context, req validat
 		return
 	}
 	if legacy {
-		resp.Diagnostics.AddAttributeWarning(req.Path, "Legacy Scalar Tag Model Budget", "Scalar model_max_budget values remain accepted only for backward compatibility with earlier provider documentation and v1.98's unvalidated tag-create path. LiteLLM v1.98 requires GenericBudgetConfig objects for subsequent nonempty updates; migrate each model value to an object.")
+		resp.Diagnostics.AddAttributeWarning(req.Path, "Legacy Scalar Tag Model Budget", "Scalar model_max_budget values remain accepted only for backward compatibility with earlier provider documentation and LiteLLM's unvalidated tag-create path. LiteLLM requires GenericBudgetConfig objects for subsequent nonempty updates; migrate each model value to an object.")
 	}
 }
 
@@ -80,7 +80,7 @@ func (v budgetModelBudgetValidator) ValidateString(ctx context.Context, req vali
 		return
 	}
 	if legacy {
-		resp.Diagnostics.AddAttributeWarning(req.Path, "Legacy Scalar Budget Model", "Finite scalar model budgets are accepted only for unchanged historical configuration. LiteLLM v1.98 requires BudgetConfig objects for new or changed values.")
+		resp.Diagnostics.AddAttributeWarning(req.Path, "Legacy Scalar Budget Model", "Finite scalar model budgets are accepted only for unchanged historical configuration. LiteLLM requires BudgetConfig objects for new or changed values.")
 	}
 }
 
@@ -123,7 +123,7 @@ func validateTagModelBudgetObject(object map[string]interface{}) (bool, error) {
 					return false, fmt.Errorf("model_max_budget rate limits must be exact integers or null")
 				}
 			default:
-				return false, fmt.Errorf("model_max_budget contains an unsupported BudgetConfig field; LiteLLM v1.98 silently ignores unknown fields")
+				return false, fmt.Errorf("model_max_budget contains an unsupported BudgetConfig field; LiteLLM silently ignores unknown fields")
 			}
 		}
 	}

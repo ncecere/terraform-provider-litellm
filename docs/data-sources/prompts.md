@@ -56,6 +56,6 @@ This data source has no required arguments.
 
 ## Environment Filtering
 
-LiteLLM v1.98's process-local prompt registry can collapse equal base IDs and version numbers across environments. When `environment` is configured, the provider discovers visible base IDs and resolves each through the authoritative environment-scoped single-info endpoint, bounded to 200 candidates. This restores deterministic latest-version inventory for same-name cross-environment prompts. Without a filter, the data source preserves LiteLLM's unscoped registry view and may reflect that upstream collision behavior.
+LiteLLM 1.98's process-local prompt registry can collapse equal base IDs and version numbers across environments; LiteLLM 1.104.0 keys the registry and its latest-version list by environment. When `environment` is configured, the provider discovers visible base IDs and resolves each through the authoritative environment-scoped single-info endpoint, bounded to 200 candidates. This restores deterministic latest-version inventory for same-name cross-environment prompts on LiteLLM 1.98. Without a filter, the data source preserves LiteLLM's unscoped registry view, which on LiteLLM 1.98 may reflect that upstream collision behavior.
 
-The v1.98 list route is unpaginated. Reads require an admin-view role; unauthorized LiteLLM callers may receive an empty list.
+The LiteLLM list route is unpaginated. Reads require an admin-view role; unauthorized LiteLLM callers may receive an empty list.

@@ -399,6 +399,10 @@ func keyHasNonSemanticConfigurationChange(config, state KeyResourceModel) bool {
 			return true
 		}
 	}
+	// tpd_limit is Optional-only, so removing it is also a change.
+	if config.TPDLimit.IsUnknown() || !config.TPDLimit.Equal(state.TPDLimit) {
+		return true
+	}
 	if config.Blocked.IsUnknown() || (!config.Blocked.IsNull() && !config.Blocked.Equal(state.Blocked)) {
 		return true
 	}

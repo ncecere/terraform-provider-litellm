@@ -453,3 +453,32 @@ func dataSourceCanonicalJSONObjectValue(raw interface{}, path []string) (types.S
 	}
 	return types.StringValue(string(encoded)), nil
 }
+
+// keyMetadataStructuredFields and teamMetadataStructuredFields are dedicated
+// settings LiteLLM stores inside metadata with non-string values (from 1.104.0
+// for example per-model limits as objects, even when empty). The resources
+// manage them through their own attributes; the data-source metadata map is
+// map(string), so these structured members are left out of it.
+var keyMetadataStructuredFields = map[string]bool{
+	"model_rpm_limit": true, "model_tpm_limit": true, "guardrails": true, "prompts": true,
+	"enforced_params": true, "allowed_passthrough_routes": true,
+}
+
+var teamMetadataStructuredFields = map[string]bool{
+	"model_rpm_limit": true, "model_tpm_limit": true, "model_aliases": true, "guardrails": true,
+	"prompts": true, "tags": true,
+}
+
+// withoutStructuredMetadata returns a copy of a metadata object without the
+// listed dedicated members whose values are not strings. Every other member,
+// and any listed member that is a plain string, is kept unchanged.
+func withoutStructuredMetadata(metadata map[string]interface{}, structured map[string]bool) map[string]interface{} {
+	projected := make(map[string]interface{}, len(metadata))
+	for key, value := range metadata {
+		if _, isString := value.(string); structured[key] && !isString {
+			continue
+		}
+		projected[key] = value
+	}
+	return projected
+}

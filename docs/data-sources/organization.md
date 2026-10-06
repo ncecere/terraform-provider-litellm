@@ -38,7 +38,7 @@ output "organization_budget" {
 - `metadata` - Metadata excluding dedicated per-model rate maps.
 - `spend` - Organization spend.
 - `created_at` / `updated_at` - Timestamps.
-- `blocked` - Compatibility value `false`; v1.98 has no organization blocked column.
-- `tags` - Compatibility empty list; v1.98 has no organization tags column.
+- `blocked` - Compatibility value `false`; LiteLLM has no organization blocked column.
+- `tags` - Compatibility empty list; LiteLLM has no organization tags column.
 
-Representable budget values come only from `litellm_budget_table`. Structured `model_max_budget` is intentionally deferred because v1.98's GenericBudgetConfig values cannot be represented accurately as `map(float64)`. A missing or null relation produces null budget attributes, while malformed relations and inconsistent budget IDs fail the read.
+Representable budget values come only from `litellm_budget_table`. Structured `model_max_budget` is intentionally deferred because LiteLLM's GenericBudgetConfig values cannot be represented accurately as `map(float64)`. A missing or null relation produces null budget attributes, while malformed relations and inconsistent budget IDs fail the read.

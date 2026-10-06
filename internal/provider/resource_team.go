@@ -53,6 +53,7 @@ type TeamResourceModel struct {
 	Metadata              types.Map     `tfsdk:"metadata"`
 	MetadataJSON          types.String  `tfsdk:"metadata_json"`
 	TPMLimit              types.Int64   `tfsdk:"tpm_limit"`
+	TPDLimit              types.Int64   `tfsdk:"tpd_limit"`
 	RPMLimit              types.Int64   `tfsdk:"rpm_limit"`
 	TPMLimitType          types.String  `tfsdk:"tpm_limit_type"`
 	RPMLimitType          types.String  `tfsdk:"rpm_limit_type"`
@@ -85,6 +86,7 @@ func teamChangedFieldMismatch(desired, prior, actual TeamResourceModel) (string,
 		{"metadata", desired.Metadata, prior.Metadata, actual.Metadata},
 		{"metadata_json", desired.MetadataJSON, prior.MetadataJSON, actual.MetadataJSON},
 		{"tpm_limit", desired.TPMLimit, prior.TPMLimit, actual.TPMLimit},
+		{"tpd_limit", desired.TPDLimit, prior.TPDLimit, actual.TPDLimit},
 		{"rpm_limit", desired.RPMLimit, prior.RPMLimit, actual.RPMLimit},
 		{"max_budget", desired.MaxBudget, prior.MaxBudget, actual.MaxBudget},
 		{"budget_duration", desired.BudgetDuration, prior.BudgetDuration, actual.BudgetDuration},
@@ -274,12 +276,16 @@ func (r *TeamResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 				Description: "Tokens per minute limit for the team.",
 				Optional:    true,
 			},
+			"tpd_limit": schema.Int64Attribute{
+				Description: "Tokens per day limit for the team. Requires LiteLLM 1.104.0 or later, which enforces it only for batch submissions. Removing it clears the limit.",
+				Optional:    true,
+			},
 			"rpm_limit": schema.Int64Attribute{
 				Description: "Requests per minute limit for the team.",
 				Optional:    true,
 			},
 			"tpm_limit_type": schema.StringAttribute{
-				Description: "Create-only TPM limit enforcement type. LiteLLM v1.98 accepts guaranteed_throughput or best_effort_throughput for new teams. Changing this value replaces the team.",
+				Description: "Create-only TPM limit enforcement type. LiteLLM accepts guaranteed_throughput or best_effort_throughput for new teams. Changing this value replaces the team.",
 				Optional:    true,
 				Validators: []validator.String{
 					stringvalidator.OneOf("guaranteed_throughput", "best_effort_throughput"),
@@ -289,7 +295,7 @@ func (r *TeamResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 				},
 			},
 			"rpm_limit_type": schema.StringAttribute{
-				Description: "Create-only RPM limit enforcement type. LiteLLM v1.98 accepts guaranteed_throughput or best_effort_throughput for new teams. Changing this value replaces the team.",
+				Description: "Create-only RPM limit enforcement type. LiteLLM accepts guaranteed_throughput or best_effort_throughput for new teams. Changing this value replaces the team.",
 				Optional:    true,
 				Validators: []validator.String{
 					stringvalidator.OneOf("guaranteed_throughput", "best_effort_throughput"),
@@ -815,7 +821,7 @@ func (r *TeamResource) Update(ctx context.Context, req resource.UpdateRequest, r
 			resp.Diagnostics.AddError("Team Metadata Hydration Failed", "The complete metadata document was malformed or not persistable exactly. No update request was sent.")
 			return
 		}
-		replacement, reinsert, compositionErr := composeTeamMetadataReplacement(ctx, remote, data, state, priorProvenance, prepared, teamReq)
+		replacement, reinsert, compositionErr := composeTeamMetadataReplacement(ctx, remote, data, state, priorProvenance, prepared, teamReq, serverMergesMemberBudgetID(teamInfo))
 		if compositionErr != nil {
 			resp.Diagnostics.AddError("Team Metadata Composition Failed", "The complete metadata replacement could not be composed safely. No update request was sent.")
 			return
@@ -1017,6 +1023,9 @@ func (r *TeamResource) buildTeamRequest(ctx context.Context, data *TeamResourceM
 	if !data.TPMLimit.IsNull() && !data.TPMLimit.IsUnknown() {
 		teamReq["tpm_limit"] = data.TPMLimit.ValueInt64()
 	}
+	if !data.TPDLimit.IsNull() && !data.TPDLimit.IsUnknown() {
+		teamReq["tpd_limit"] = data.TPDLimit.ValueInt64()
+	}
 	if !data.RPMLimit.IsNull() && !data.RPMLimit.IsUnknown() {
 		teamReq["rpm_limit"] = data.RPMLimit.ValueInt64()
 	}
@@ -1175,6 +1184,9 @@ func applyTeamNullableClears(teamReq map[string]interface{}, state, plan *TeamRe
 	}
 	if !state.TPMLimit.IsNull() && plan.TPMLimit.IsNull() {
 		teamReq["tpm_limit"] = nil
+	}
+	if !state.TPDLimit.IsNull() && plan.TPDLimit.IsNull() {
+		teamReq["tpd_limit"] = nil
 	}
 	if !state.RPMLimit.IsNull() && plan.RPMLimit.IsNull() {
 		teamReq["rpm_limit"] = nil

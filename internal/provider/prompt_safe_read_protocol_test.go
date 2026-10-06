@@ -62,6 +62,8 @@ func TestPromptResourceSafeReadProtocolSequences(t *testing.T) {
 		if isVersions {
 			switch currentMode {
 			case "absence-400", "absence-404":
+				http.Error(writer, `{"detail":"No versions found for prompt ID prompt-protocol"}`, http.StatusNotFound)
+			case "versions-generic-404":
 				http.Error(writer, `{"detail":"version-missing-body-secret"}`, http.StatusNotFound)
 			case "versions-nonempty":
 				_, _ = writer.Write([]byte(`{"prompts":[{"prompt_id":"prompt-protocol"}]}`))
@@ -97,7 +99,7 @@ func TestPromptResourceSafeReadProtocolSequences(t *testing.T) {
 			_, _ = writer.Write(promptSafeReadBody(t, "other-prompt-secret", environment))
 		case "malformed-late":
 			_, _ = fmt.Fprintf(writer, `{"prompt_spec":{"prompt_id":%q,"environment":%q,"version":3,"created_at":"new-time","litellm_params":{"prompt_integration":"dotprompt","api_base":"new-base","ignore_prompt_manager_model":true},"prompt_info":{"prompt_type":7,"environment":%q}}}`, id, environment, environment)
-		case "absence-400", "versions-nonempty", "versions-empty", "versions-error":
+		case "absence-400", "versions-nonempty", "versions-empty", "versions-error", "versions-generic-404":
 			http.Error(writer, `{"detail":"ambiguous-absence-body-secret"}`, http.StatusBadRequest)
 		case "absence-404":
 			http.Error(writer, `{"detail":"route-absence-body-secret"}`, http.StatusNotFound)
@@ -143,13 +145,52 @@ func TestPromptResourceSafeReadProtocolSequences(t *testing.T) {
 		}
 	})
 
-	for _, failureMode := range []string{"exhaustion", "terminal-403", "malformed", "mismatch", "malformed-late", "absence-400", "absence-404", "versions-nonempty", "versions-empty", "versions-error"} {
+	// LiteLLM 1.104.0's scoped versions route reads only the database, so an
+	// info 400/404 followed by its own "No versions found" 404 is authoritative
+	// absence. An empty list or a generic 404 is not.
+	for _, absentMode := range []string{"absence-400", "absence-404"} {
+		absentMode := absentMode
+		t.Run(absentMode+" removes state after database confirmation", func(t *testing.T) {
+			response, infoCalls, versionCalls := read(absentMode)
+			if accessGroupProtocolDiagnosticsHaveError(response.Diagnostics) || infoCalls != 1 || versionCalls != 1 {
+				t.Fatalf("info=%d versions=%d diagnostics=%s", infoCalls, versionCalls, agentProtocolDiagnosticsText(response.Diagnostics))
+			}
+			if value, err := response.NewState.Unmarshal(schema.ValueType()); err != nil || !value.IsNull() {
+				t.Fatalf("absent prompt stayed in state: %v err=%v", value, err)
+			}
+		})
+	}
+
+	t.Run("config prompt is never removed by an absent history", func(t *testing.T) {
+		configPrior := organizationProjectProtocolReplace(t, schema, prior, map[string]interface{}{"prompt_type": "config"})
+		mu.Lock()
+		mode, infoAttempts, versionAttempts = "absence-404", 0, 0
+		mu.Unlock()
+		response, err := protocolServer.ReadResource(ctx, &tfprotov6.ReadResourceRequest{TypeName: "litellm_prompt", CurrentState: configPrior, Private: private})
+		if err != nil {
+			t.Fatal(err)
+		}
+		mu.Lock()
+		versionCalls := versionAttempts
+		mu.Unlock()
+		if !accessGroupProtocolDiagnosticsHaveError(response.Diagnostics) || versionCalls != 0 {
+			t.Fatalf("config prompt: versions=%d diagnostics=%s", versionCalls, agentProtocolDiagnosticsText(response.Diagnostics))
+		}
+		if value, err := response.NewState.Unmarshal(schema.ValueType()); err != nil || value.IsNull() {
+			t.Fatalf("config prompt was removed from state: err=%v", err)
+		}
+	})
+
+	for _, failureMode := range []string{"exhaustion", "terminal-403", "malformed", "mismatch", "malformed-late", "versions-nonempty", "versions-empty", "versions-error", "versions-generic-404"} {
 		failureMode := failureMode
 		t.Run(failureMode+" retains exact state", func(t *testing.T) {
 			response, infoCalls, versionCalls := read(failureMode)
 			wantInfo, wantVersions := 1, 0
 			if failureMode == "exhaustion" {
 				wantInfo = defaultSafeReadRetryPolicy.maxAttempts
+			}
+			if strings.HasPrefix(failureMode, "versions-") {
+				wantVersions = 1
 			}
 			text := agentProtocolDiagnosticsText(response.Diagnostics)
 			if !accessGroupProtocolDiagnosticsHaveError(response.Diagnostics) || infoCalls != wantInfo || versionCalls != wantVersions {

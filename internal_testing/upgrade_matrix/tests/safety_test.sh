@@ -13,7 +13,7 @@ if env -u TF_ACC -u LITELLM_REMOTE_ACCEPTANCE_CONFIRM -u LITELLM_TEST_NAMESPACE 
   exit 1
 fi
 
-TF_ACC=1 LITELLM_ACCEPTANCE_CONFIRM=local-v1.98.0 \
+TF_ACC=1 LITELLM_ACCEPTANCE_CONFIRM=local-v1.104.0 \
   python3 "$SCRIPT_DIR/harness.py" preflight local >/dev/null
 sh "$SCRIPT_DIR/tests/private_plan_trigger_test.sh"
 TF_ACC=1 LITELLM_REMOTE_ACCEPTANCE_CONFIRM=dev-disposable-objects-only \
@@ -34,6 +34,15 @@ grep -q 'unset SMOKE_SUPPLEMENTAL_ONLY SMOKE_FALLBACK_DELETE_UNSUPPORTED SMOKE_F
 grep -q 'terraform state rm "$fallback_delete_address"' "$REPO_ROOT/internal_testing/smoke.sh"
 grep -q 'validate_fixture_name "$file"' "$REPO_ROOT/internal_testing/smoke.sh"
 grep -q 'scenario command evidence is not bound to one exact' "$SCRIPT_DIR/harness.py"
+# Organizations require a LiteLLM Enterprise license from 1.102.0: without the
+# licensed confirmation, acceptance must prove the exact license diagnostic and
+# the runner must record explicit skips rather than passes.
+grep -q 'run_organization_license_gate_probe' "$REPO_ROOT/internal_testing/acceptance.sh"
+grep -q 'title != "Error: LiteLLM Enterprise License Required"' "$REPO_ROOT/internal_testing/acceptance.sh"
+grep -q 'resources organization_minimal.tf$' "$REPO_ROOT/internal_testing/acceptance.sh"
+grep -q "record 'lifecycle:litellm_organization_member' lifecycle skipped enterprise-license-required" "$SCRIPT_DIR/run.sh"
+grep -q '"type":"litellm_organization",.*"lane":"enterprise"' "$SCRIPT_DIR/matrix.json"
+grep -q '"type":"litellm_organization_member",.*"lane":"enterprise"' "$SCRIPT_DIR/matrix.json"
 grep -q 'CLI=$selected_cli' "$SCRIPT_DIR/run.sh"
 grep -q 'rm -f -- "$port_file" "$stats_file"' "$SCRIPT_DIR/run.sh"
 grep -q 'unforwarded team identity was not authoritatively absent' "$SCRIPT_DIR/run.sh"

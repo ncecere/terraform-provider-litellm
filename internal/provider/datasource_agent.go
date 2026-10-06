@@ -131,11 +131,15 @@ func projectAgentData(ctx context.Context, item map[string]interface{}, expected
 			return data, err
 		}
 		data.LiteLLMParams = legacy
-		structured, err := reconcileAgentJSONObject(types.StringNull(), params)
+		// A read-only data source has no owned prior value to restore a masked
+		// secret from. LiteLLM 1.104.0 masks secret agent parameters for every
+		// caller, so project its placeholders verbatim as inventory metadata,
+		// as the guardrail data source does.
+		structured, err := canonicalAgentJSON(stripAgentSyntheticParams(params))
 		if err != nil {
-			return data, fmt.Errorf("unrecoverable masked litellm_params")
+			return data, fmt.Errorf("invalid litellm_params")
 		}
-		data.LiteLLMParamsJSON = structured
+		data.LiteLLMParamsJSON = types.StringValue(structured)
 	}
 	if raw, present := item["object_permission"]; present && raw != nil {
 		permission, ok := raw.(map[string]interface{})

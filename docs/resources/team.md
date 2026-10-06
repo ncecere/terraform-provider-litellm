@@ -4,6 +4,8 @@ Manages a team in LiteLLM. Teams allow you to group users and apply shared budge
 
 Team members are managed separately via the `litellm_team_member` resource.
 
+From LiteLLM 1.104.0, a team-admin key (not proxy admin or organization admin) can no longer update teams unless `general_settings.team_admin_editable_team_fields` allows it, and even then only `tpm_limit`, `rpm_limit`, and `max_budget`. Manage `litellm_team` with a proxy-admin or organization-admin key; updates made with a team-admin key fail with HTTP 403 and leave Terraform state unchanged.
+
 ## Example Usage
 
 ### Minimal
@@ -121,7 +123,7 @@ LiteLLM stores sensitive callback variables as ciphertext. The provider can pres
 
 LiteLLM owns `team_member_budget_id`. If that root exists remotely, a metadata update is allowed only when the same team update includes a non-null member-default value that makes LiteLLM reinsert the relation. The provider never sends the ID as caller metadata and blocks metadata updates combined only with member-default clears.
 
-LiteLLM v1.98 exposes no ETag, revision, or compare-and-swap field for team metadata. A concurrent writer can therefore win or be overwritten between hydration and update. Post-write verification detects divergence but cannot eliminate that bounded last-writer-wins window.
+LiteLLM exposes no ETag, revision, or compare-and-swap field for team metadata. A concurrent writer can therefore win or be overwritten between hydration and update. Post-write verification detects divergence but cannot eliminate that bounded last-writer-wins window.
 
 Imports and upgraded states leave `metadata_json` null and unmanaged. Explicit configuration performs takeover on a later apply. Team data sources do not expose a semantic sibling because doing so would persist arbitrary API-owned metadata into Terraform state.
 
@@ -166,9 +168,10 @@ The following arguments are supported:
 * `max_budget` - (Optional) Maximum budget allocated to the team.
 * `budget_duration` - (Optional) Recurring team budget reset interval. Use a positive integer followed by `s`, `m`, `h`, `d`, or `w` (for example, `30d`, `24h`, or `1w`); one of the exact aliases `hourly`, `daily`, `weekly`, or `monthly`; or exactly `1mo`. Zero values, other month counts such as `2mo` or `12mo`, case variants, and malformed aliases or units are rejected.
 * `tpm_limit` - (Optional) Tokens per minute limit for the team.
+* `tpd_limit` - (Optional) Tokens per day limit. Requires LiteLLM 1.104.0 or later, which enforces it only for batch submissions (not ordinary completion requests). Removing it clears the limit.
 * `rpm_limit` - (Optional) Requests per minute limit for the team.
-* `tpm_limit_type` - (Optional, Forces replacement) Create-only TPM limit type. LiteLLM v1.98 accepts exactly `"guaranteed_throughput"` or `"best_effort_throughput"` when creating a team. Adding, changing, or removing it replaces the team.
-* `rpm_limit_type` - (Optional, Forces replacement) Create-only RPM limit type. LiteLLM v1.98 accepts exactly `"guaranteed_throughput"` or `"best_effort_throughput"` when creating a team. Adding, changing, or removing it replaces the team.
+* `tpm_limit_type` - (Optional, Forces replacement) Create-only TPM limit type. LiteLLM accepts exactly `"guaranteed_throughput"` or `"best_effort_throughput"` when creating a team. Adding, changing, or removing it replaces the team.
+* `rpm_limit_type` - (Optional, Forces replacement) Create-only RPM limit type. LiteLLM accepts exactly `"guaranteed_throughput"` or `"best_effort_throughput"` when creating a team. Adding, changing, or removing it replaces the team.
 * `models` - (Optional) List of model names the team is allowed to use.
 * `blocked` - (Optional) Whether the team is blocked from making requests.
 * `guardrails` - (Optional) List of guardrail identifiers applied to the team.
@@ -222,8 +225,8 @@ terraform import litellm_team.example <team-id>
 
 ## Notes
 
-- LiteLLM v1.98 permits a nullable `team_alias`, but this resource intentionally retains its existing required, non-null Terraform contract. Import and refresh therefore require the remote team to have an alias; a null or omitted alias fails safely instead of retaining stale state.
-- Team metadata is selectively owned. The provider preserves API-managed and unconfigured metadata keys while reading configured keys authoritatively. Fields represented by dedicated arguments (including tags, guardrails, prompts, per-model limits, and limit types) are read from their native LiteLLM v1.98 metadata locations rather than copied into the generic `metadata` map.
-- Earlier provider documentation suggested `"key"` and `"team"` for the limit-type attributes. LiteLLM v1.98 rejects those values in `NewTeamRequest`, and `UpdateTeamRequest` has no limit-type fields. The attributes are therefore create-only and force replacement when added, changed, or removed. Existing imported/read state is not rewritten by schema validation, but explicit configuration must use one of the two supported throughput literals.
+- LiteLLM permits a nullable `team_alias`, but this resource intentionally retains its existing required, non-null Terraform contract. Import and refresh therefore require the remote team to have an alias; a null or omitted alias fails safely instead of retaining stale state.
+- Team metadata is selectively owned. The provider preserves API-managed and unconfigured metadata keys while reading configured keys authoritatively. Fields represented by dedicated arguments (including tags, guardrails, prompts, per-model limits, and limit types) are read from their native LiteLLM metadata locations rather than copied into the generic `metadata` map.
+- Earlier provider documentation suggested `"key"` and `"team"` for the limit-type attributes. LiteLLM rejects those values in `NewTeamRequest`, and `UpdateTeamRequest` has no limit-type fields. The attributes are therefore create-only and force replacement when added, changed, or removed. Existing imported/read state is not rewritten by schema validation, but explicit configuration must use one of the two supported throughput literals.
 - Team members are managed through the separate `litellm_team_member` resource. See the `litellm_team_member` resource documentation for details on managing team membership.
 - The `tags` attribute requires a LiteLLM Enterprise license.

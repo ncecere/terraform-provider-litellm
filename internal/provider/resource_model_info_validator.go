@@ -2,7 +2,10 @@ package provider
 
 import (
 	"context"
+	"sort"
 
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 )
 
@@ -48,4 +51,57 @@ func (modelInfoReservedKeysValidator) ValidateMap(ctx context.Context, req valid
 			)
 		}
 	}
+	addModelInfoPricingKeyDiagnostics(req.Path, "additional_model_info", sortedKeys(elements), &resp.Diagnostics)
+}
+
+// addModelInfoPricingKeyDiagnostics warns about pricing keys in a model_info
+// surface. It is a warning, not an error: LiteLLM 1.101 and earlier (including
+// 1.98.0) still honor these keys, and an unchanged key on an existing model
+// produces no request at all, so existing configurations stay valid. Key names
+// are not sensitive; values are never included.
+func addModelInfoPricingKeyDiagnostics(attributePath path.Path, attribute string, keys []string, diagnostics *diag.Diagnostics) {
+	for _, key := range keys {
+		if isLiteLLMModelInfoPricingKey(key) {
+			diagnostics.AddAttributeWarning(
+				attributePath,
+				"Custom Pricing in Model Information",
+				attribute+" cannot manage \""+key+"\". "+modelInfoPricingKeyDiagnostic,
+			)
+		}
+	}
+}
+
+func sortedKeys[V any](values map[string]V) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// modelInfoJSONPricingKeyValidator applies the same pricing rule to the
+// top-level members of additional_model_info_json. Malformed JSON is reported
+// by modelSemanticDictionaryValidator instead.
+type modelInfoJSONPricingKeyValidator struct{}
+
+var _ validator.String = modelInfoJSONPricingKeyValidator{}
+
+func (modelInfoJSONPricingKeyValidator) Description(context.Context) string {
+	return "Top-level members cannot be LiteLLM pricing fields, which LiteLLM 1.102.0 and later ignore in model_info."
+}
+
+func (v modelInfoJSONPricingKeyValidator) MarkdownDescription(ctx context.Context) string {
+	return v.Description(ctx)
+}
+
+func (modelInfoJSONPricingKeyValidator) ValidateString(ctx context.Context, req validator.StringRequest, resp *validator.StringResponse) {
+	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		return
+	}
+	object, err := parseSemanticDictionary(ctx, req.ConfigValue.ValueString())
+	if err != nil {
+		return
+	}
+	addModelInfoPricingKeyDiagnostics(req.Path, "additional_model_info_json", sortedKeys(object), &resp.Diagnostics)
 }

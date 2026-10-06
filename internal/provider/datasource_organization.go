@@ -62,8 +62,8 @@ func (d *OrganizationDataSource) Schema(_ context.Context, _ datasource.SchemaRe
 			"model_tpm_limit":       schema.MapAttribute{Description: "Per-model TPM limits stored in metadata.", Computed: true, ElementType: types.Int64Type},
 			"budget_duration":       schema.StringAttribute{Description: "Budget reset duration.", Computed: true},
 			"metadata":              schema.MapAttribute{Description: "Metadata excluding dedicated per-model rate maps.", Computed: true, ElementType: types.StringType},
-			"blocked":               schema.BoolAttribute{Description: "Compatibility field. LiteLLM v1.98 has no organization blocked column, so this is false.", Computed: true},
-			"tags":                  schema.ListAttribute{Description: "Compatibility field. LiteLLM v1.98 has no organization tags column, so this is empty.", Computed: true, ElementType: types.StringType},
+			"blocked":               schema.BoolAttribute{Description: "Compatibility field. LiteLLM has no organization blocked column, so this is false.", Computed: true},
+			"tags":                  schema.ListAttribute{Description: "Compatibility field. LiteLLM has no organization tags column, so this is empty.", Computed: true, ElementType: types.StringType},
 			"spend":                 schema.Float64Attribute{Description: "Amount spent by this organization.", Computed: true},
 			"created_at":            schema.StringAttribute{Description: "Creation timestamp.", Computed: true},
 			"updated_at":            schema.StringAttribute{Description: "Last update timestamp.", Computed: true},
@@ -94,7 +94,7 @@ func (d *OrganizationDataSource) Read(ctx context.Context, req datasource.ReadRe
 	query := url.Values{"organization_id": []string{organizationID}}
 	endpoint := endpointWithQuery("/organization/info", query)
 	if err := d.client.DoRequestWithResponse(ctx, "GET", endpoint, nil, &result); err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read organization %q: %s", organizationID, err))
+		addLicenseAwareError(&resp.Diagnostics, err, "Client Error", fmt.Sprintf("Unable to read organization %q: %s", organizationID, err))
 		return
 	}
 	object, err := unwrapObjectEnvelope(result, "organization_info", "data")

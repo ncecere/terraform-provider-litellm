@@ -22,6 +22,7 @@ type JWTKeyMappingsListDataSourceModel struct {
 
 type JWTKeyMappingListItemModel struct {
 	ID          types.String `tfsdk:"id"`
+	Issuer      types.String `tfsdk:"jwt_issuer"`
 	ClaimName   types.String `tfsdk:"jwt_claim_name"`
 	ClaimValue  types.String `tfsdk:"jwt_claim_value"`
 	Description types.String `tfsdk:"description"`
@@ -37,10 +38,11 @@ func (d *JWTKeyMappingsListDataSource) Metadata(_ context.Context, req datasourc
 }
 
 func (d *JWTKeyMappingsListDataSource) Schema(_ context.Context, _ datasource.SchemaRequest, resp *datasource.SchemaResponse) {
-	resp.Schema = schema.Schema{Description: "Reads every LiteLLM JWT key mapping using two bounded full v1.98 pagination scans, requiring identical observable rows before sorting by UUID.", Attributes: map[string]schema.Attribute{
+	resp.Schema = schema.Schema{Description: "Reads every LiteLLM JWT key mapping using two bounded full pagination scans, requiring identical observable rows before sorting by UUID.", Attributes: map[string]schema.Attribute{
 		"id": schema.StringAttribute{Description: "Stable data source identifier.", Computed: true},
 		"mappings": schema.ListNestedAttribute{Description: "Complete mapping inventory in ascending UUID order.", Computed: true, NestedObject: schema.NestedAttributeObject{Attributes: map[string]schema.Attribute{
 			"id":              schema.StringAttribute{Description: "Authoritative mapping UUID.", Computed: true},
+			"jwt_issuer":      schema.StringAttribute{Description: "JWT issuer scope, or null for the global scope.", Computed: true},
 			"jwt_claim_name":  schema.StringAttribute{Description: "JWT claim name.", Computed: true},
 			"jwt_claim_value": schema.StringAttribute{Description: "Sensitive JWT claim value.", Computed: true, Sensitive: true},
 			"description":     schema.StringAttribute{Description: "Description, or null when absent.", Computed: true},
@@ -73,7 +75,7 @@ func (d *JWTKeyMappingsListDataSource) Read(ctx context.Context, _ datasource.Re
 	}
 	data := JWTKeyMappingsListDataSourceModel{ID: types.StringValue("jwt-key-mappings"), Mappings: make([]JWTKeyMappingListItemModel, 0, len(mappings))}
 	for _, mapping := range mappings {
-		item := JWTKeyMappingListItemModel{ID: types.StringValue(mapping.ID), ClaimName: types.StringValue(mapping.ClaimName), ClaimValue: types.StringValue(mapping.ClaimValue), IsActive: types.BoolValue(mapping.IsActive), CreatedAt: types.StringValue(mapping.CreatedAt), UpdatedAt: types.StringValue(mapping.UpdatedAt)}
+		item := JWTKeyMappingListItemModel{ID: types.StringValue(mapping.ID), Issuer: types.StringPointerValue(mapping.Issuer), ClaimName: types.StringValue(mapping.ClaimName), ClaimValue: types.StringValue(mapping.ClaimValue), IsActive: types.BoolValue(mapping.IsActive), CreatedAt: types.StringValue(mapping.CreatedAt), UpdatedAt: types.StringValue(mapping.UpdatedAt)}
 		if mapping.Description == nil {
 			item.Description = types.StringNull()
 		} else {

@@ -2,6 +2,8 @@
 
 Manages a LiteLLM organization. Organizations group teams and users under shared model access and budget controls.
 
+Organization endpoints require a LiteLLM Enterprise license from LiteLLM 1.102.0, including reads. On an unlicensed proxy every operation fails with `LiteLLM Enterprise License Required` and Terraform state is left unchanged.
+
 ## Example Usage
 
 ### Minimal Configuration
@@ -70,7 +72,7 @@ resource "litellm_organization" "structured" {
 
 Before a metadata update, the provider performs one fresh exact-identity read, removes previously owned leaves, overlays the configured legacy, dedicated, and semantic values, and sends the complete metadata column. Unowned API siblings are preserved. If removal readback is interrupted, prior state and value-free recovery metadata are retained until a later refresh confirms either the complete new shape or the complete prior shape; partial transitions fail closed.
 
-LiteLLM v1.98 exposes no ETag, revision, or compare-and-swap field for organization metadata. A concurrent writer can therefore win or be overwritten between hydration and PATCH. Post-write verification detects divergence but cannot eliminate that bounded last-writer-wins window.
+LiteLLM exposes no ETag, revision, or compare-and-swap field for organization metadata. A concurrent writer can therefore win or be overwritten between hydration and PATCH. Post-write verification detects divergence but cannot eliminate that bounded last-writer-wins window.
 
 Imports and upgraded states leave `metadata_json` null and unmanaged. Explicit configuration performs takeover on a later apply. Organization data sources do not expose a semantic sibling because doing so would persist arbitrary API-owned metadata, including potential credentials, into Terraform state.
 
@@ -86,7 +88,7 @@ resource "litellm_organization" "legacy_compatible" {
 }
 ```
 
-Do not configure `blocked = true` or non-empty `tags`. LiteLLM v1.98 has no organization columns that persist those values, and the provider rejects new non-default values rather than reporting false success. Use project/team blocking and organization `metadata` as appropriate.
+Do not configure `blocked = true` or non-empty `tags`. LiteLLM has no organization columns that persist those values, and the provider rejects new non-default values rather than reporting false success. Use project/team blocking and organization `metadata` as appropriate.
 
 ## Argument Reference
 
@@ -98,8 +100,8 @@ Do not configure `blocked = true` or non-empty `tags`. LiteLLM v1.98 has no orga
 
 - `organization_id` - (String, ForceNew) Caller-selected ID. LiteLLM generates one when omitted.
 - `models` - (List of String) Models the organization may use. Configure `[]` to clear the list.
-- `budget_id` - (String) Existing budget to use during creation. Reassociating an existing organization is blocked because v1.98 has no safe convergent reassociation lifecycle.
-- `max_budget` - (Float64) Hard budget limit.
+- `budget_id` - (String) Existing budget to use during creation. Reassociating an existing organization is blocked because LiteLLM has no safe convergent reassociation lifecycle.
+- `max_budget` - (Float64) Hard budget limit. From LiteLLM 1.103.0, 0 means zero allowance (all spend is blocked); omit the attribute for an unlimited budget.
 - `soft_budget` - (Float64) Budget alert threshold.
 - `tpm_limit` - (Int64) Tokens-per-minute limit.
 - `rpm_limit` - (Int64) Requests-per-minute limit.
@@ -127,10 +129,10 @@ The first authoritative import read adopts visible nested budget values, includi
 
 ## Budget and Drift Semantics
 
-- LiteLLM v1.98 returns organization budget controls through `litellm_budget_table`; similarly named top-level fields are not authoritative. Structured `model_max_budget` is deferred because its GenericBudgetConfig values cannot be represented accurately as `map(float64)`.
+- LiteLLM returns organization budget controls through `litellm_budget_table`; similarly named top-level fields are not authoritative. Structured `model_max_budget` is deferred because its GenericBudgetConfig values cannot be represented accurately as `map(float64)`.
 - Configured/imported budget values detect out-of-band changes and explicit remote nulls. Removing or changing a configured `budget_id` is rejected; an import-provenance marker permits omission only for an imported association.
-- An existing `budget_id` cannot be combined with budget limits or duration during create because v1.98 strips or ignores those controls against the shared budget. An absent or null relation clears owned state; malformed relations fail without publishing partial state.
-- Scalar and duration removal uses v1.98's transactional `/v2/organization/{id}` merge-patch endpoint with explicit `null` clears. Duration changes also recompute, or clear, the server reset timestamp.
+- An existing `budget_id` cannot be combined with budget limits or duration during create because LiteLLM strips or ignores those controls against the shared budget. An absent or null relation clears owned state; malformed relations fail without publishing partial state.
+- Scalar and duration removal uses LiteLLM's transactional `/v2/organization/{id}` merge-patch endpoint with explicit `null` clears. Duration changes also recompute, or clear, the server reset timestamp.
 - Per-model RPM/TPM keys use the same endpoint's complete metadata replacement, allowing owned keys to clear without replacing the organization. Unrelated metadata already visible in state is preserved.
 - The provider never replaces or deletes an organization merely to clear a budget or metadata key; organization deletion cascades to dependent teams, memberships, and keys.
-- `budget_reset_at` is server-managed and is not exposed by the v1.98 organization response model. The provider initializes it when a configured duration is created and updates it when duration changes.
+- `budget_reset_at` is server-managed and is not exposed by the LiteLLM organization response model. The provider initializes it when a configured duration is created and updates it when duration changes.

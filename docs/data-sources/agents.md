@@ -34,4 +34,4 @@ output "agent_names" {
   * `created_by` - User who created the agent.
   * `updated_by` - User who last updated the agent.
 
-Single and list data sources use the same strict projection. Present fields are type-validated, while endpoint-observable partial cards may omit the resource-only card `name`/`url` identity pair. Present malformed values fail the complete read. Role-sanitized omissions are null for that item and never reuse prior data-source state.
+Single and list data sources use the same strict projection. Present fields are type-validated, while endpoint-observable partial cards may omit the resource-only card `name`/`url` identity pair. Present malformed values fail the complete read. Secret `litellm_params` values that LiteLLM 1.104.0 masks for every caller are reported as its `REDACTED_BY_LITELM` placeholder. Role-sanitized omissions are null for that item and never reuse prior data-source state.

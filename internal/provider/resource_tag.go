@@ -57,7 +57,7 @@ func (r *TagResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *
 			"name":                  schema.StringAttribute{Description: "The unique name of the tag.", Required: true, PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}},
 			"description":           schema.StringAttribute{Description: "Description of the tag.", Optional: true},
 			"models":                schema.ListAttribute{Description: "Models associated with this tag.", Optional: true, Computed: true, ElementType: types.StringType},
-			"budget_id":             schema.StringAttribute{Description: "Budget ID associated with this tag. LiteLLM v1.98 cannot safely detach or reassign an existing association.", Optional: true, Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
+			"budget_id":             schema.StringAttribute{Description: "Budget ID associated with this tag. LiteLLM cannot safely detach or reassign an existing association.", Optional: true, Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
 			"max_budget":            schema.Float64Attribute{Description: "Max budget in USD for this tag.", Optional: true, Computed: true},
 			"soft_budget":           schema.Float64Attribute{Description: "Soft budget in USD for this tag.", Optional: true, Computed: true},
 			"max_parallel_requests": schema.Int64Attribute{Description: "Max concurrent requests allowed for this tag.", Optional: true, Computed: true},
@@ -113,7 +113,7 @@ func (r *TagResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanReq
 	}
 	if req.State.Raw.IsNull() {
 		if knownString(config.BudgetID) && tagBudgetControlsPresent(&config) {
-			resp.Diagnostics.AddAttributeError(path.Root("budget_id"), "Unsafe Shared Tag Budget Controls", "budget_id cannot be combined with inline tag budget controls. LiteLLM v1.98 ignores those controls for an existing shared budget.")
+			resp.Diagnostics.AddAttributeError(path.Root("budget_id"), "Unsafe Shared Tag Budget Controls", "budget_id cannot be combined with inline tag budget controls. LiteLLM ignores those controls for an existing shared budget.")
 		}
 		return
 	}
@@ -138,14 +138,14 @@ func (r *TagResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanReq
 		if err != nil {
 			resp.Diagnostics.AddAttributeError(path.Root("model_max_budget"), "Invalid Tag Model Budget", err.Error())
 		} else if legacy {
-			resp.Diagnostics.AddAttributeError(path.Root("model_max_budget"), "Unsupported Legacy Scalar Tag Model Budget Update", "Finite scalar model budgets remain readable for compatibility, but LiteLLM v1.98 rejects them on budget update. Keep the existing scalar unchanged or migrate every model value to a GenericBudgetConfig object.")
+			resp.Diagnostics.AddAttributeError(path.Root("model_max_budget"), "Unsupported Legacy Scalar Tag Model Budget Update", "Finite scalar model budgets remain readable for compatibility, but LiteLLM rejects them on budget update. Keep the existing scalar unchanged or migrate every model value to a GenericBudgetConfig object.")
 		}
 	}
 	if state.BudgetID.IsNull() {
 		stateFields, configFields := tagBudgetAttributeValues(&state), tagBudgetAttributeValues(&config)
 		for _, name := range tagBudgetControlNames {
 			if stateFields[name].IsNull() && !configFields[name].IsNull() && !configFields[name].IsUnknown() {
-				resp.Diagnostics.AddAttributeError(path.Root(name), "Unsafe Inline Tag Budget Creation", "LiteLLM v1.98 cannot atomically create and attach a tag budget during update; an association race could mutate another budget. Configure inline controls when creating the tag, or create a dedicated litellm_budget and attach only its budget_id to this existing tag.")
+				resp.Diagnostics.AddAttributeError(path.Root(name), "Unsafe Inline Tag Budget Creation", "LiteLLM cannot atomically create and attach a tag budget during update; an association race could mutate another budget. Configure inline controls when creating the tag, or create a dedicated litellm_budget and attach only its budget_id to this existing tag.")
 			}
 		}
 		if resp.Diagnostics.HasError() {
@@ -194,7 +194,7 @@ func (r *TagResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanReq
 			if unmanaged[name] {
 				resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root(name), prior)...)
 			} else if name == "model_max_budget" && knownString(state.ModelMaxBudget) {
-				resp.Diagnostics.AddAttributeError(path.Root(name), "Unsupported Tag Model Budget Clear", "LiteLLM v1.98 cannot persist either null or an empty object for model_max_budget through its tag or budget management APIs. Keep the existing value configured; direct database mutation is outside this API-only provider's safety boundary.")
+				resp.Diagnostics.AddAttributeError(path.Root(name), "Unsupported Tag Model Budget Clear", "LiteLLM does not persist null for model_max_budget through its tag or budget management APIs, and LiteLLM 1.98 also rejects an empty object, so the provider sends neither. Keep the existing value configured; direct database mutation is outside this API-only provider's safety boundary.")
 			} else {
 				resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root(name), tagBudgetNullValue(name))...)
 			}
@@ -210,7 +210,7 @@ func (r *TagResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanReq
 		case config.BudgetID.IsNull():
 			resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("budget_id"), state.BudgetID)...)
 		case config.BudgetID.IsUnknown() || !config.BudgetID.Equal(state.BudgetID):
-			resp.Diagnostics.AddAttributeError(path.Root("budget_id"), "Unsafe Tag Budget Reassociation", "LiteLLM v1.98 cannot safely detach or reassign an existing tag budget. Keep the existing budget_id or omit it to preserve the association.")
+			resp.Diagnostics.AddAttributeError(path.Root("budget_id"), "Unsafe Tag Budget Reassociation", "LiteLLM cannot safely detach or reassign an existing tag budget. Keep the existing budget_id or omit it to preserve the association.")
 		}
 	}
 	if knownString(config.BudgetID) && tagBudgetControlsPresent(&config) {
@@ -478,7 +478,7 @@ func (r *TagResource) Update(ctx context.Context, req resource.UpdateRequest, re
 	if budgetChanged && !budgetExists {
 		for name, value := range budgetRequest {
 			if name != "budget_reset_at" && value != nil {
-				resp.Diagnostics.AddError("Unsafe Inline Tag Budget Creation", "LiteLLM v1.98 cannot atomically create and attach a tag budget during update; no API call was made. Configure inline controls at tag creation, or attach a separately managed litellm_budget by budget_id.")
+				resp.Diagnostics.AddError("Unsafe Inline Tag Budget Creation", "LiteLLM cannot atomically create and attach a tag budget during update; no API call was made. Configure inline controls at tag creation, or attach a separately managed litellm_budget by budget_id.")
 				return
 			}
 		}
@@ -592,7 +592,7 @@ func (r *TagResource) ImportState(ctx context.Context, req resource.ImportStateR
 
 func (r *TagResource) buildTagRequest(ctx context.Context, data *TagResourceModel) (map[string]interface{}, error) {
 	if knownString(data.BudgetID) && tagBudgetControlsConfigured(data) {
-		return nil, fmt.Errorf("budget_id cannot be combined with inline tag budget controls because LiteLLM v1.98 ignores those controls for an existing shared budget")
+		return nil, fmt.Errorf("budget_id cannot be combined with inline tag budget controls because LiteLLM ignores those controls for an existing shared budget")
 	}
 	request := map[string]interface{}{"name": data.Name.ValueString()}
 	if knownString(data.Description) {
@@ -850,14 +850,14 @@ func buildTagBudgetUpdateRequest(plan, state *TagResourceModel) (map[string]inte
 	}
 	if !plan.ModelMaxBudget.IsUnknown() && !plan.ModelMaxBudget.Equal(state.ModelMaxBudget) {
 		if plan.ModelMaxBudget.IsNull() {
-			return nil, false, fmt.Errorf("model_max_budget cannot be cleared because LiteLLM v1.98 rejects both null and an empty object")
+			return nil, false, fmt.Errorf("model_max_budget cannot be cleared because LiteLLM does not persist null and LiteLLM 1.98 rejects an empty object")
 		} else {
 			legacy, err := configuredModelBudgetIsLegacy(plan.ModelMaxBudget)
 			if err != nil {
 				return nil, false, err
 			}
 			if legacy {
-				return nil, false, fmt.Errorf("legacy scalar model_max_budget values cannot be added or changed through LiteLLM v1.98 budget update")
+				return nil, false, fmt.Errorf("legacy scalar model_max_budget values cannot be added or changed through LiteLLM budget update")
 			}
 			value, err := decodeRequestJSONObject(plan.ModelMaxBudget.ValueString(), "model_max_budget")
 			if err != nil {

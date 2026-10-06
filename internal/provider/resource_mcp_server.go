@@ -356,23 +356,23 @@ func (r *MCPServerResource) Schema(ctx context.Context, req resource.SchemaReque
 				Description: "Transport type for the MCP server (http, sse, stdio).",
 				Required:    true,
 				Validators: []validator.String{
-					newMCPSafeEnumValidator(mcpTransportsV198, "Transport must be one of the values accepted by LiteLLM v1.98."),
+					newMCPSafeEnumValidator(mcpTransportsV198, "Transport must be one of the values accepted by LiteLLM."),
 				},
 			},
 			"spec_version": schema.StringAttribute{
-				Description:        "Deprecated compatibility attribute. LiteLLM v1.98 does not accept or return this field.",
+				Description:        "Deprecated compatibility attribute. LiteLLM does not accept or return this field.",
 				DeprecationMessage: "spec_version is retained only for state and HCL compatibility and is not sent to LiteLLM. Remove it from configuration.",
 				Optional:           true,
 				Computed:           true,
 				Default:            stringdefault.StaticString("2024-11-05"),
 			},
 			"auth_type": schema.StringAttribute{
-				Description: "Authentication type accepted by the LiteLLM v1.98 MCP server request contract.",
+				Description: "Authentication type accepted by the LiteLLM MCP server request contract.",
 				Optional:    true,
 				Computed:    true,
 				Default:     stringdefault.StaticString("none"),
 				Validators: []validator.String{
-					newMCPSafeEnumValidator(mcpAuthTypesV198, "Authentication type must be one of the values accepted by LiteLLM v1.98."),
+					newMCPSafeEnumValidator(mcpAuthTypesV198, "Authentication type must be one of the values accepted by LiteLLM."),
 				},
 			},
 			"mcp_access_groups": schema.ListAttribute{
@@ -509,12 +509,12 @@ func (r *MCPServerResource) Schema(ctx context.Context, req resource.SchemaReque
 				Optional:    true,
 			},
 			"skip_url_validation": schema.BoolAttribute{
-				Description:        "Deprecated compatibility attribute. LiteLLM v1.98 does not accept this field; new or changed true values are unsafe, while unchanged historical state remains plannable.",
+				Description:        "Deprecated compatibility attribute. LiteLLM does not accept this field; new or changed true values are unsafe, while unchanged historical state remains plannable.",
 				DeprecationMessage: "skip_url_validation is retained only for state and HCL compatibility and is not sent to LiteLLM. Remove it from configuration.",
 				Optional:           true,
 			},
 			"oauth_scopes": schema.ListAttribute{
-				Description: "Sensitive write-only OAuth scopes stored natively at credentials.scopes. LiteLLM v1.98 management reads never expose this value.",
+				Description: "Sensitive OAuth scopes stored natively at credentials.scopes. LiteLLM 1.104.0 returns them to full proxy admins and the provider verifies them after each write; older releases and restricted roles never expose them, so configured values are retained through redaction.",
 				Optional:    true,
 				Sensitive:   true,
 				ElementType: types.StringType,
@@ -736,7 +736,7 @@ func (r *MCPServerResource) ValidateConfig(ctx context.Context, req resource.Val
 				resp.Diagnostics.AddAttributeError(
 					path.Root("command"),
 					"Invalid MCP Stdio Configuration",
-					"The command executable is not in LiteLLM v1.98's built-in stdio allowlist: deno, docker, node, npx, python, python3, uvx.",
+					"The command executable is not in LiteLLM's built-in stdio allowlist: deno, docker, node, npx, python, python3, uvx.",
 				)
 			}
 		}
@@ -1030,7 +1030,7 @@ func (r *MCPServerResource) ModifyPlan(ctx context.Context, req resource.ModifyP
 			resp.Diagnostics.AddAttributeError(
 				path.Root("server_name"),
 				"Invalid MCP Server Name",
-				"Configured server_name must contain 1 to 128 ASCII letters, digits, underscores, or periods and must not contain LiteLLM v1.98's tool-prefix separator.",
+				"Configured server_name must contain 1 to 128 ASCII letters, digits, underscores, or periods and must not contain LiteLLM's tool-prefix separator.",
 			)
 		}
 	}
@@ -1040,7 +1040,7 @@ func (r *MCPServerResource) ModifyPlan(ctx context.Context, req resource.ModifyP
 			resp.Diagnostics.AddAttributeError(
 				path.Root("alias"),
 				"Invalid MCP Server Alias",
-				"Configured alias must normalize to 1 to 128 ASCII letters, digits, underscores, or periods and must not contain LiteLLM v1.98's tool-prefix separator.",
+				"Configured alias must normalize to 1 to 128 ASCII letters, digits, underscores, or periods and must not contain LiteLLM's tool-prefix separator.",
 			)
 		}
 	}
@@ -1063,7 +1063,7 @@ func (r *MCPServerResource) ModifyPlan(ctx context.Context, req resource.ModifyP
 		resp.Diagnostics.AddAttributeError(
 			path.Root("spec_version"),
 			"Unsupported Deprecated MCP Configuration",
-			"LiteLLM v1.98 does not accept this compatibility field. A historical non-default value may remain unchanged, but new or changed non-default values are unsafe.",
+			"LiteLLM does not accept this compatibility field. A historical non-default value may remain unchanged, but new or changed non-default values are unsafe.",
 		)
 	}
 
@@ -1073,7 +1073,7 @@ func (r *MCPServerResource) ModifyPlan(ctx context.Context, req resource.ModifyP
 		resp.Diagnostics.AddAttributeError(
 			path.Root("skip_url_validation"),
 			"Unsupported Deprecated MCP Configuration",
-			"LiteLLM v1.98 does not accept this compatibility field. A historical true value may remain unchanged, but a new or changed true value is unsafe.",
+			"LiteLLM does not accept this compatibility field. A historical true value may remain unchanged, but a new or changed true value is unsafe.",
 		)
 	}
 	if resp.Diagnostics.HasError() {
@@ -1417,7 +1417,7 @@ func (r *MCPServerResource) Create(ctx context.Context, req resource.CreateReque
 	var result map[string]interface{}
 	accepted, createErr := r.client.doRequestWithResponse(ctx, "POST", "/v1/mcp/server", mcpReq, &result)
 	if createErr != nil && !accepted {
-		resp.Diagnostics.AddError("Client Error", "Unable to create MCP server because LiteLLM did not accept the request.")
+		addMCPMutationError(&resp.Diagnostics, createErr, mcpReq, "Client Error", "Unable to create MCP server because LiteLLM did not accept the request.")
 		return
 	}
 	data.ServerID = types.StringValue(serverID)
@@ -1670,7 +1670,7 @@ func (r *MCPServerResource) updateLegacyIssue213(ctx context.Context, req resour
 		if putErr != nil && !accepted {
 			resp.State = req.State
 			resp.Private = req.Private
-			resp.Diagnostics.AddError("Client Error", "LiteLLM did not confirm the MCP server update. Prior public and private state was retained.")
+			addMCPMutationError(&resp.Diagnostics, putErr, mcpReq, "Client Error", "LiteLLM did not confirm the MCP server update. Prior public and private state was retained.")
 			return
 		}
 		// Accepted response-body failures and malformed success bodies are
@@ -2377,12 +2377,18 @@ func validateMCPServerResponse(result map[string]interface{}, expectedServerID s
 	if err := validateMCPEnvVarsAPI(result); err != nil {
 		return fmt.Errorf("MCP server response contains a malformed environment-variable collection")
 	}
+	// credentials is a string map except for LiteLLM 1.104.0's native scopes
+	// list. Unknown string members stay tolerated for the resource, which only
+	// reads members it owns.
+	if _, err := decodeMCPCredentialProjection(result, false); err != nil {
+		return fmt.Errorf("MCP server response contains a malformed credentials projection")
+	}
 	return validateMCPServerOptionalResponseFields(
 		result,
 		[]string{"server_name", "url", "spec_path", "alias", "description", "command", "issuer", "authorization_url", "token_url", "registration_url", "token_exchange_endpoint", "audience", "subject_token_type", "token_exchange_profile", "auth_type", "oauth2_flow", "instructions", "byok_api_key_help_url", "source_url", "created_at", "created_by", "updated_at", "updated_by"},
 		[]string{"allow_all_keys", "available_on_public_internet", "delegate_auth_to_upstream", "oauth_passthrough", "dcr_bridge", "is_byok"},
 		[]string{"mcp_access_groups", "args", "allowed_tools", "extra_headers", "byok_description"},
-		[]string{"env", "static_headers", "credentials", "tool_name_to_display_name", "tool_name_to_description"},
+		[]string{"env", "static_headers", "tool_name_to_display_name", "tool_name_to_description"},
 		[]string{"timeout"},
 		[]string{"max_concurrent_requests"},
 	)
@@ -2757,9 +2763,11 @@ func (r *MCPServerResource) readMCPServerResultProjection(ctx context.Context, d
 				priorCredentials[name], changed = remote, true
 			}
 		}
-		if _, configured := priorCredentials["upstream_resource"]; configured {
-			if remote, visible := mcpObservedCredentialString(result, "upstream_resource"); visible {
-				priorCredentials["upstream_resource"], changed = remote, true
+		for name := range mcpCredentialProjectionStringKeys {
+			if _, configured := priorCredentials[name]; configured {
+				if remote, visible := mcpObservedCredentialString(result, name); visible {
+					priorCredentials[name], changed = remote, true
+				}
 			}
 		}
 		if changed {

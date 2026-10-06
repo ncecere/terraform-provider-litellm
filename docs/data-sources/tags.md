@@ -48,7 +48,7 @@ This data source has no required arguments.
   * `budget_duration` - Duration for budget reset.
   * `model_max_budget` - Canonical JSON object mapping model names to LiteLLM `GenericBudgetConfig` objects.
 
-## LiteLLM v1.98 Behavior
+## LiteLLM Behavior
 
 Stored tags expose budget fields through the nested `litellm_budget_table` relation. Missing relations and null fields become Terraform null; empty model maps remain `"{}"`; malformed relations or fields fail the complete read. TPM/RPM integers are decoded exactly, models and tags are sorted deterministically, and single/list budget projections use the same decoder. Historical finite numeric scalar model budgets created through earlier provider examples remain readable as a compatibility exception; all other entries must be valid `GenericBudgetConfig` objects.
 

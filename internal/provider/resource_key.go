@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/mapvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/resourcevalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
@@ -91,6 +92,12 @@ func writeOnlyKeyCreateError(err error) string {
 }
 
 func keyResourceReadError(err error) string {
+	switch {
+	case errors.Is(err, errKeyInfoArchived):
+		return "LiteLLM reports this key as deleted (it may have been deleted or regenerated outside Terraform). Response details were omitted because they may contain key dictionary values or the lookup token."
+	case errors.Is(err, errKeyInfoStatusInvalid):
+		return "LiteLLM returned an unrecognized key status, so the key could not be classified as live or deleted. Prior state was retained; response details were omitted."
+	}
 	var apiErr *APIError
 	if errors.As(err, &apiErr) {
 		return fmt.Sprintf("LiteLLM returned HTTP %d while reading the key. Response details were omitted because they may contain key dictionary values or the lookup token.", apiErr.StatusCode)
@@ -142,6 +149,7 @@ type KeyResourceModel struct {
 	Metadata                 types.Map     `tfsdk:"metadata"`
 	MetadataJSON             types.String  `tfsdk:"metadata_json"`
 	TPMLimit                 types.Int64   `tfsdk:"tpm_limit"`
+	TPDLimit                 types.Int64   `tfsdk:"tpd_limit"`
 	RPMLimit                 types.Int64   `tfsdk:"rpm_limit"`
 	TPMLimitType             types.String  `tfsdk:"tpm_limit_type"`
 	RPMLimitType             types.String  `tfsdk:"rpm_limit_type"`
@@ -251,7 +259,7 @@ func (r *KeyResource) Schema(ctx context.Context, req resource.SchemaRequest, re
 				Optional:    true,
 			},
 			"project_id": schema.StringAttribute{
-				Description: "Project ID associated with this key. When set, models and budget are validated against the project's limits.",
+				Description: "Project ID associated with this key. When set, models and budget are validated against the project's limits. LiteLLM 1.104.0 and later cannot assign or change the project of an existing key (plan-time error); removing the attribute detaches the key.",
 				Optional:    true,
 			},
 			"budget_id": schema.StringAttribute{
@@ -259,7 +267,7 @@ func (r *KeyResource) Schema(ctx context.Context, req resource.SchemaRequest, re
 				Optional:    true,
 			},
 			"service_account_id": schema.StringAttribute{
-				Description: "Service account ID for team-owned keys. LiteLLM v1.98 does not update this identity in place.",
+				Description: "Service account ID for team-owned keys. LiteLLM does not update this identity in place.",
 				Optional:    true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
@@ -291,20 +299,25 @@ func (r *KeyResource) Schema(ctx context.Context, req resource.SchemaRequest, re
 				Optional:    true,
 				Computed:    true,
 			},
+			"tpd_limit": schema.Int64Attribute{
+				Description: "Tokens per day limit. Requires LiteLLM 1.104.0 or later, which enforces it only for batch submissions. Removing it clears the limit.",
+				Optional:    true,
+				Validators:  []validator.Int64{int64validator.AtLeast(0)},
+			},
 			"rpm_limit": schema.Int64Attribute{
 				Description: "Requests per minute limit.",
 				Optional:    true,
 				Computed:    true,
 			},
 			"tpm_limit_type": schema.StringAttribute{
-				Description: "TPM limit enforcement type. LiteLLM v1.98 accepts guaranteed_throughput, best_effort_throughput, or dynamic for keys.",
+				Description: "TPM limit enforcement type. LiteLLM accepts guaranteed_throughput, best_effort_throughput, or dynamic for keys.",
 				Optional:    true,
 				Validators: []validator.String{
 					stringvalidator.OneOf("guaranteed_throughput", "best_effort_throughput", "dynamic"),
 				},
 			},
 			"rpm_limit_type": schema.StringAttribute{
-				Description: "RPM limit enforcement type. LiteLLM v1.98 accepts guaranteed_throughput, best_effort_throughput, or dynamic for keys.",
+				Description: "RPM limit enforcement type. LiteLLM accepts guaranteed_throughput, best_effort_throughput, or dynamic for keys.",
 				Optional:    true,
 				Validators: []validator.String{
 					stringvalidator.OneOf("guaranteed_throughput", "best_effort_throughput", "dynamic"),
@@ -321,7 +334,7 @@ func (r *KeyResource) Schema(ctx context.Context, req resource.SchemaRequest, re
 				ElementType: types.StringType,
 			},
 			"soft_budget": schema.Float64Attribute{
-				Description: "Soft budget limit for warnings.",
+				Description: "Soft budget limit for warnings. On update it is sent only when it changes; LiteLLM writes it to the key's budget row, which other keys may share through budget_id.",
 				Optional:    true,
 				Computed:    true,
 			},
@@ -455,6 +468,17 @@ func (r *KeyResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanReq
 	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
 	if resp.Diagnostics.HasError() {
 		return
+	}
+	if keyProjectAssignmentChanges(config.ProjectID, state.ProjectID) {
+		// LiteLLM 1.104.0 rejects every non-null project_id that differs from
+		// the stored one, including a first assignment; only null detaches.
+		resp.Diagnostics.AddAttributeError(path.Root("project_id"), "Key Project Cannot Change In Place",
+			"LiteLLM 1.104.0 and later cannot move an existing key into a project or between projects; it only allows detaching with null. Remove project_id to detach the key, or create a replacement key in the new project: run terraform taint on its address, then apply (terraform apply -replace is not enough, because this check runs against the existing key first). Replacement issues a new key secret. No request was sent.")
+		return
+	}
+	if !config.BudgetID.IsNull() && !config.SoftBudget.IsNull() && !config.SoftBudget.IsUnknown() && !config.SoftBudget.Equal(state.SoftBudget) {
+		resp.Diagnostics.AddAttributeWarning(path.Root("soft_budget"), "Soft Budget Updates a Shared Budget",
+			"LiteLLM 1.104.0 writes soft_budget to the key's budget row. Because budget_id is set, the change applies to every key that uses that budget.")
 	}
 
 	semanticChanged := false
@@ -765,7 +789,7 @@ func (r *KeyResource) Read(ctx context.Context, req resource.ReadRequest, resp *
 	}
 
 	if err := r.refreshKeyWithOwnership(ctx, &data, imported, ownership); err != nil {
-		if IsAPIErrorStatus(err, http.StatusNotFound) {
+		if isKeyInfoAbsence(err) {
 			resp.State.RemoveResource(ctx)
 			return
 		}
@@ -932,6 +956,7 @@ func (r *KeyResource) Update(ctx context.Context, req resource.UpdateRequest, re
 		return
 	}
 	applyKeyRouterSettingsUpdateSemantics(updateReq, data.RouterSettings, state.RouterSettings)
+	applyKeyProjectAndSoftBudgetUpdateSemantics(updateReq, data, state)
 
 	if semanticInvolved {
 		// service_account_id is the only current dedicated provider field that
@@ -1286,6 +1311,9 @@ func (r *KeyResource) buildKeyRequest(ctx context.Context, data *KeyResourceMode
 	if !data.MaxParallelRequests.IsNull() && !data.MaxParallelRequests.IsUnknown() {
 		keyReq["max_parallel_requests"] = data.MaxParallelRequests.ValueInt64()
 	}
+	if !data.TPDLimit.IsNull() && !data.TPDLimit.IsUnknown() {
+		keyReq["tpd_limit"] = data.TPDLimit.ValueInt64()
+	}
 	if !data.TPMLimit.IsNull() && !data.TPMLimit.IsUnknown() {
 		keyReq["tpm_limit"] = data.TPMLimit.ValueInt64()
 	}
@@ -1397,6 +1425,32 @@ func stringMapMatchesAttrValues(current types.Map, observed map[string]attr.Valu
 	return true
 }
 
+// keyProjectAssignmentChanges reports a configured project_id that differs
+// from the stored assignment, which LiteLLM 1.104.0 rejects on /key/update.
+func keyProjectAssignmentChanges(configured, prior types.String) bool {
+	if configured.IsNull() || configured.IsUnknown() || prior.IsUnknown() {
+		return false
+	}
+	return prior.IsNull() || configured.ValueString() != prior.ValueString()
+}
+
+// applyKeyProjectAndSoftBudgetUpdateSemantics adapts /key/update to LiteLLM
+// 1.104.0, which now honors project_id and soft_budget on update:
+//   - removing project_id sends an explicit null, the only accepted detach;
+//   - soft_budget is sent only when it changes, because LiteLLM writes it to
+//     the key's budget row, which other keys may share through budget_id.
+func applyKeyProjectAndSoftBudgetUpdateSemantics(updateReq map[string]interface{}, planned, prior KeyResourceModel) {
+	if planned.TPDLimit.IsNull() && !prior.TPDLimit.IsNull() && !prior.TPDLimit.IsUnknown() {
+		updateReq["tpd_limit"] = nil
+	}
+	if planned.ProjectID.IsNull() && !prior.ProjectID.IsNull() && !prior.ProjectID.IsUnknown() {
+		updateReq["project_id"] = nil
+	}
+	if !planned.SoftBudget.IsNull() && !planned.SoftBudget.IsUnknown() && planned.SoftBudget.Equal(prior.SoftBudget) {
+		delete(updateReq, "soft_budget")
+	}
+}
+
 func keyInfoEndpoint(keyIdentifier string) string {
 	// Canonical url.Values encoding ensures special characters in a plaintext
 	// key (e.g. '#') are not interpreted as a URL fragment. LiteLLM also accepts
@@ -1420,6 +1474,9 @@ func (r *KeyResource) getKeyInfo(ctx context.Context, data *KeyResourceModel) (m
 	if nested, ok := result["info"].(map[string]interface{}); ok {
 		info = nested
 	}
+	if err := classifyKeyInfoStatus(info); err != nil {
+		return nil, nil, err
+	}
 	return result, info, nil
 }
 
@@ -1438,6 +1495,9 @@ func (r *KeyResource) getSafeExactKeyInfo(ctx context.Context, data *KeyResource
 		return nil, nil, errSemanticDictionaryTraversal
 	}
 	if err := validateExactKeyInfoIdentity(result, info, keyIdentifier); err != nil {
+		return nil, nil, err
+	}
+	if err := classifyKeyInfoStatus(info); err != nil {
 		return nil, nil, err
 	}
 	if err := validateOrdinaryKeyInfoScalars(info); err != nil {
@@ -1483,6 +1543,9 @@ func (r *KeyResource) getFreshExactKeyInfo(ctx context.Context, data *KeyResourc
 		return nil, nil, errSemanticDictionaryTraversal
 	}
 	if err := validateExactKeyInfoIdentity(result, info, keyIdentifier); err != nil {
+		return nil, nil, err
+	}
+	if err := classifyKeyInfoStatus(info); err != nil {
 		return nil, nil, err
 	}
 	return result, info, nil
@@ -1633,6 +1696,7 @@ func (r *KeyResource) readKeyWithTransport(ctx context.Context, data *KeyResourc
 		target *types.Int64
 	}{
 		{"tpm_limit", &data.TPMLimit},
+		{"tpd_limit", &data.TPDLimit},
 		{"rpm_limit", &data.RPMLimit},
 		{"max_parallel_requests", &data.MaxParallelRequests},
 	} {
@@ -1651,6 +1715,10 @@ func (r *KeyResource) readKeyWithTransport(ctx context.Context, data *KeyResourc
 	}
 	if projectID, ok := info["project_id"].(string); ok && projectID != "" {
 		data.ProjectID = types.StringValue(projectID)
+	} else if !data.ProjectID.IsNull() && !data.ProjectID.IsUnknown() {
+		// The key was detached (by Terraform or out of band); record it so a
+		// detach is verified and drift is visible.
+		data.ProjectID = types.StringNull()
 	}
 	// Only set budget_id if the user explicitly configured it or if the
 	// current value is unknown (needs resolving). The API auto-creates budgets

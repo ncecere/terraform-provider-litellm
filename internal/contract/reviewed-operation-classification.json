@@ -6,9 +6,19 @@
       "path": "/"
     },
     {
+      "category": "public_metadata",
+      "method": "GET",
+      "path": "/.well-known/agent-skills/index.json"
+    },
+    {
       "category": "authentication_flow",
       "method": "GET",
       "path": "/.well-known/jwks.json"
+    },
+    {
+      "category": "authentication_flow",
+      "method": "GET",
+      "path": "/.well-known/litellm-cli-auth"
     },
     {
       "category": "public_metadata",
@@ -84,6 +94,21 @@
       "category": "inference_workload",
       "method": "POST",
       "path": "/a2a/{agent_id}/message/send"
+    },
+    {
+      "category": "access_control_management",
+      "method": "DELETE",
+      "path": "/access_group/{access_group}/budget"
+    },
+    {
+      "category": "access_control_management",
+      "method": "GET",
+      "path": "/access_group/{access_group}/budget"
+    },
+    {
+      "category": "access_control_management",
+      "method": "PUT",
+      "path": "/access_group/{access_group}/budget"
     },
     {
       "category": "health",
@@ -221,6 +246,21 @@
       "path": "/authorize/complete"
     },
     {
+      "category": "authentication_flow",
+      "method": "GET",
+      "path": "/authorize/flow"
+    },
+    {
+      "category": "authentication_flow",
+      "method": "GET",
+      "path": "/authorize/mcp-session"
+    },
+    {
+      "category": "testing_validation",
+      "method": "POST",
+      "path": "/auto_router/availability"
+    },
+    {
       "category": "spend_analytics",
       "method": "GET",
       "path": "/auto_router/benchmarks"
@@ -229,6 +269,16 @@
       "category": "public_metadata",
       "method": "GET",
       "path": "/auto_router/classifier/default_prompt"
+    },
+    {
+      "category": "suggestion_discovery",
+      "method": "POST",
+      "path": "/auto_router/classifier/default_prompt"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/auto_router/session"
     },
     {
       "category": "spend_analytics",
@@ -256,6 +306,11 @@
       "path": "/auto_router/test_routing"
     },
     {
+      "category": "testing_validation",
+      "method": "POST",
+      "path": "/auto_router/validate_complexity_router_config"
+    },
+    {
       "category": "inference_workload",
       "method": "DELETE",
       "path": "/azure/{endpoint}"
@@ -304,6 +359,31 @@
       "category": "inference_workload",
       "method": "PUT",
       "path": "/azure_ai/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "DELETE",
+      "path": "/azure_speech/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/azure_speech/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PATCH",
+      "path": "/azure_speech/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/azure_speech/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PUT",
+      "path": "/azure_speech/{endpoint}"
     },
     {
       "category": "inference_workload",
@@ -521,6 +601,26 @@
       "path": "/compliance/gdpr"
     },
     {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/comprehendmedical"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/comprehendmedical/{operation}"
+    },
+    {
+      "category": "global_proxy_configuration",
+      "method": "GET",
+      "path": "/config/block_requests_for_models_without_pricing"
+    },
+    {
+      "category": "global_proxy_configuration",
+      "method": "PATCH",
+      "path": "/config/block_requests_for_models_without_pricing"
+    },
+    {
       "category": "global_proxy_configuration",
       "method": "GET",
       "path": "/config/cost_discount_config"
@@ -564,6 +664,26 @@
       "category": "pass_through_configuration",
       "method": "POST",
       "path": "/config/pass_through_endpoint/{endpoint_id}"
+    },
+    {
+      "category": "global_proxy_configuration",
+      "method": "DELETE",
+      "path": "/config_overrides/cyberark"
+    },
+    {
+      "category": "global_proxy_configuration",
+      "method": "GET",
+      "path": "/config_overrides/cyberark"
+    },
+    {
+      "category": "global_proxy_configuration",
+      "method": "POST",
+      "path": "/config_overrides/cyberark"
+    },
+    {
+      "category": "testing_validation",
+      "method": "POST",
+      "path": "/config_overrides/cyberark/test_connection"
     },
     {
       "category": "global_proxy_configuration",
@@ -649,6 +769,16 @@
       "category": "spend_analytics",
       "method": "POST",
       "path": "/cost/estimate"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "POST",
+      "path": "/cost/predict-cache"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/cost_optimization/prompt_caching/requests"
     },
     {
       "category": "credential_inventory",
@@ -751,6 +881,16 @@
       "path": "/debug/asyncio-tasks"
     },
     {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/deepgram/listen"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/deepgram/v1/listen"
+    },
+    {
       "category": "global_proxy_configuration",
       "method": "POST",
       "path": "/delete/allowed_ip"
@@ -814,6 +954,31 @@
       "category": "inference_workload",
       "method": "PUT",
       "path": "/eu.assemblyai/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "DELETE",
+      "path": "/fal_ai/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/fal_ai/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PATCH",
+      "path": "/fal_ai/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/fal_ai/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PUT",
+      "path": "/fal_ai/{endpoint}"
     },
     {
       "category": "inference_workload",
@@ -901,9 +1066,19 @@
       "path": "/get/internal_user_settings"
     },
     {
+      "category": "public_metadata",
+      "method": "GET",
+      "path": "/get/latest_release_info"
+    },
+    {
       "category": "global_proxy_configuration",
       "method": "GET",
       "path": "/get/mcp_semantic_filter_settings"
+    },
+    {
+      "category": "global_proxy_configuration",
+      "method": "GET",
+      "path": "/get/mcp_tool_search_settings"
     },
     {
       "category": "global_proxy_configuration",
@@ -924,6 +1099,36 @@
       "category": "global_proxy_configuration",
       "method": "GET",
       "path": "/get/user_banner"
+    },
+    {
+      "category": "global_proxy_configuration",
+      "method": "GET",
+      "path": "/get/websearch_interception_settings"
+    },
+    {
+      "category": "inference_workload",
+      "method": "DELETE",
+      "path": "/gigachat/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/gigachat/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PATCH",
+      "path": "/gigachat/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/gigachat/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PUT",
+      "path": "/gigachat/{endpoint}"
     },
     {
       "category": "spend_analytics",
@@ -1141,6 +1346,11 @@
       "path": "/interactions/{interaction_id}/cancel"
     },
     {
+      "category": "authentication_flow",
+      "method": "POST",
+      "path": "/introspect"
+    },
+    {
       "category": "key_management",
       "method": "GET",
       "path": "/key/aliases"
@@ -1216,6 +1426,31 @@
       "path": "/management/v1/spend_logs/end_users"
     },
     {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/management/v1/spend_logs/users"
+    },
+    {
+      "category": "team_management",
+      "method": "POST",
+      "path": "/management/v1/teams/{team_id}/members/bulk_delete"
+    },
+    {
+      "category": "team_management",
+      "method": "POST",
+      "path": "/management/v1/teams/{team_id}/members/bulk_update"
+    },
+    {
+      "category": "user_budget_management",
+      "method": "POST",
+      "path": "/management/v1/users/bulk"
+    },
+    {
+      "category": "user_budget_management",
+      "method": "POST",
+      "path": "/management/v1/users/bulk_delete"
+    },
+    {
       "category": "inference_workload",
       "method": "DELETE",
       "path": "/mcp"
@@ -1278,6 +1513,41 @@
     {
       "category": "inference_workload",
       "method": "DELETE",
+      "path": "/mcp/proxy"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/mcp/proxy"
+    },
+    {
+      "category": "inference_workload",
+      "method": "HEAD",
+      "path": "/mcp/proxy"
+    },
+    {
+      "category": "inference_workload",
+      "method": "OPTIONS",
+      "path": "/mcp/proxy"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PATCH",
+      "path": "/mcp/proxy"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/mcp/proxy"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PUT",
+      "path": "/mcp/proxy"
+    },
+    {
+      "category": "inference_workload",
+      "method": "DELETE",
       "path": "/milvus/{endpoint}"
     },
     {
@@ -1331,6 +1601,11 @@
       "path": "/model/block"
     },
     {
+      "category": "public_metadata",
+      "method": "GET",
+      "path": "/model/deprecations"
+    },
+    {
       "category": "operational_action",
       "method": "POST",
       "path": "/model/unblock"
@@ -1382,8 +1657,38 @@
     },
     {
       "category": "inference_workload",
+      "method": "DELETE",
+      "path": "/nvidia_nim/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/nvidia_nim/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PATCH",
+      "path": "/nvidia_nim/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/nvidia_nim/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PUT",
+      "path": "/nvidia_nim/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
       "method": "POST",
       "path": "/ocr"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/openai/"
     },
     {
       "category": "inference_workload",
@@ -1442,6 +1747,11 @@
     },
     {
       "category": "inference_workload",
+      "method": "POST",
+      "path": "/openai/v1/responses/input_tokens"
+    },
+    {
+      "category": "inference_workload",
       "method": "DELETE",
       "path": "/openai/v1/responses/{response_id}"
     },
@@ -1487,6 +1797,11 @@
     },
     {
       "category": "inference_workload",
+      "method": "GET",
+      "path": "/openai_passthrough/"
+    },
+    {
+      "category": "inference_workload",
       "method": "DELETE",
       "path": "/openai_passthrough/{endpoint}"
     },
@@ -1509,6 +1824,31 @@
       "category": "inference_workload",
       "method": "PUT",
       "path": "/openai_passthrough/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "DELETE",
+      "path": "/openrouter/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/openrouter/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PATCH",
+      "path": "/openrouter/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/openrouter/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PUT",
+      "path": "/openrouter/{endpoint}"
     },
     {
       "category": "spend_analytics",
@@ -1698,6 +2038,21 @@
     {
       "category": "public_metadata",
       "method": "GET",
+      "path": "/public/autorouter_presets"
+    },
+    {
+      "category": "public_metadata",
+      "method": "GET",
+      "path": "/public/complexity_router/fuse_presets"
+    },
+    {
+      "category": "public_metadata",
+      "method": "GET",
+      "path": "/public/complexity_router/scorer_defaults"
+    },
+    {
+      "category": "public_metadata",
+      "method": "GET",
       "path": "/public/endpoints"
     },
     {
@@ -1739,6 +2094,16 @@
       "category": "suggestion_discovery",
       "method": "GET",
       "path": "/public/skill_hub"
+    },
+    {
+      "category": "public_metadata",
+      "method": "GET",
+      "path": "/public/v1/model_hub"
+    },
+    {
+      "category": "public_metadata",
+      "method": "GET",
+      "path": "/public/v1/model_hub/{facet}"
     },
     {
       "category": "inference_workload",
@@ -1797,6 +2162,11 @@
     },
     {
       "category": "inference_workload",
+      "method": "POST",
+      "path": "/responses/input_tokens"
+    },
+    {
+      "category": "inference_workload",
       "method": "DELETE",
       "path": "/responses/{response_id}"
     },
@@ -1814,6 +2184,11 @@
       "category": "inference_workload",
       "method": "GET",
       "path": "/responses/{response_id}/input_items"
+    },
+    {
+      "category": "authentication_flow",
+      "method": "POST",
+      "path": "/revoke"
     },
     {
       "category": "suggestion_discovery",
@@ -1926,6 +2301,16 @@
       "path": "/scim/v2/Users/{user_id}"
     },
     {
+      "category": "scim_directory_management",
+      "method": "GET",
+      "path": "/scim/v2/placeholders"
+    },
+    {
+      "category": "operational_action",
+      "method": "POST",
+      "path": "/scim/v2/placeholders/{user_id}/merge"
+    },
+    {
       "category": "inference_workload",
       "method": "POST",
       "path": "/search"
@@ -1951,6 +2336,11 @@
       "path": "/search_tools/ui/available_providers"
     },
     {
+      "category": "authentication_flow",
+      "method": "POST",
+      "path": "/session/logout"
+    },
+    {
       "category": "health",
       "method": "GET",
       "path": "/settings"
@@ -1959,6 +2349,11 @@
       "category": "spend_analytics",
       "method": "POST",
       "path": "/spend/calculate"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/spend/capture_rate"
     },
     {
       "category": "spend_analytics",
@@ -2031,6 +2426,11 @@
       "path": "/team/daily/activity"
     },
     {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/team/daily/activity/aggregated"
+    },
+    {
       "category": "key_management",
       "method": "POST",
       "path": "/team/key/bulk_update"
@@ -2058,6 +2458,11 @@
     {
       "category": "spend_analytics",
       "method": "GET",
+      "path": "/team/spend/by_user"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
       "path": "/team/spend/report"
     },
     {
@@ -2076,9 +2481,24 @@
       "path": "/team/{team_id}/callback"
     },
     {
+      "category": "integration_callback_configuration",
+      "method": "DELETE",
+      "path": "/team/{team_id}/callback/{callback_name}"
+    },
+    {
       "category": "team_management",
       "method": "POST",
       "path": "/team/{team_id}/disable_logging"
+    },
+    {
+      "category": "operational_action",
+      "method": "POST",
+      "path": "/team/{team_id}/member/{user_id}/reset_budget"
+    },
+    {
+      "category": "operational_action",
+      "method": "POST",
+      "path": "/team/{team_id}/member/{user_id}/reset_spend"
     },
     {
       "category": "public_metadata",
@@ -2114,6 +2534,16 @@
       "category": "inference_workload",
       "method": "POST",
       "path": "/threads/{thread_id}/runs"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/tinyfish/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/tinyfish/{endpoint}"
     },
     {
       "category": "authentication_flow",
@@ -2156,6 +2586,41 @@
       "path": "/toolset/{toolset_name}/mcp"
     },
     {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/transcribe"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/transcribe/{operation}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "DELETE",
+      "path": "/typesafe/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/typesafe/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PATCH",
+      "path": "/typesafe/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/typesafe/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "PUT",
+      "path": "/typesafe/{endpoint}"
+    },
+    {
       "category": "global_proxy_configuration",
       "method": "PATCH",
       "path": "/update/default_team_settings"
@@ -2169,6 +2634,11 @@
       "category": "global_proxy_configuration",
       "method": "PATCH",
       "path": "/update/mcp_semantic_filter_settings"
+    },
+    {
+      "category": "global_proxy_configuration",
+      "method": "PATCH",
+      "path": "/update/mcp_tool_search_settings"
     },
     {
       "category": "global_proxy_configuration",
@@ -2189,6 +2659,11 @@
       "category": "global_proxy_configuration",
       "method": "PATCH",
       "path": "/update/user_banner"
+    },
+    {
+      "category": "global_proxy_configuration",
+      "method": "PATCH",
+      "path": "/update/websearch_interception_settings"
     },
     {
       "category": "global_proxy_configuration",
@@ -2221,6 +2696,11 @@
       "path": "/user/daily/activity/aggregated"
     },
     {
+      "category": "operational_action",
+      "method": "POST",
+      "path": "/user/password/change"
+    },
+    {
       "category": "spend_analytics",
       "method": "GET",
       "path": "/user/spend/report"
@@ -2229,6 +2709,11 @@
       "category": "testing_validation",
       "method": "POST",
       "path": "/utils/dotprompt_json_converter"
+    },
+    {
+      "category": "suggestion_discovery",
+      "method": "GET",
+      "path": "/utils/model_info"
     },
     {
       "category": "suggestion_discovery",
@@ -2269,6 +2754,11 @@
       "category": "agent_prompt_tool_management",
       "method": "PUT",
       "path": "/v1/agents/{agent_id}"
+    },
+    {
+      "category": "operational_action",
+      "method": "POST",
+      "path": "/v1/agents/{agent_id}/kill_switch"
     },
     {
       "category": "operational_action",
@@ -2536,6 +3026,11 @@
       "path": "/v1/mcp/server/health"
     },
     {
+      "category": "mcp_server_management",
+      "method": "POST",
+      "path": "/v1/mcp/server/import"
+    },
+    {
       "category": "authentication_flow",
       "method": "POST",
       "path": "/v1/mcp/server/oauth/session"
@@ -2587,6 +3082,11 @@
     },
     {
       "category": "mcp_credential_configuration",
+      "method": "GET",
+      "path": "/v1/mcp/server/{server_id}/user-credentials"
+    },
+    {
+      "category": "mcp_credential_configuration",
       "method": "DELETE",
       "path": "/v1/mcp/server/{server_id}/user-env-vars"
     },
@@ -2599,6 +3099,16 @@
       "category": "mcp_credential_configuration",
       "method": "POST",
       "path": "/v1/mcp/server/{server_id}/user-env-vars"
+    },
+    {
+      "category": "operational_action",
+      "method": "DELETE",
+      "path": "/v1/mcp/sessions"
+    },
+    {
+      "category": "health",
+      "method": "GET",
+      "path": "/v1/mcp/sessions"
     },
     {
       "category": "suggestion_discovery",
@@ -2678,6 +3188,11 @@
     {
       "category": "public_metadata",
       "method": "GET",
+      "path": "/v1/model/deprecations"
+    },
+    {
+      "category": "public_metadata",
+      "method": "GET",
       "path": "/v1/model/info"
     },
     {
@@ -2752,6 +3267,11 @@
     },
     {
       "category": "inference_workload",
+      "method": "POST",
+      "path": "/v1/responses/input_tokens"
+    },
+    {
+      "category": "inference_workload",
       "method": "DELETE",
       "path": "/v1/responses/{response_id}"
     },
@@ -2809,6 +3329,11 @@
       "category": "inference_workload",
       "method": "GET",
       "path": "/v1/skills/{skill_id}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "GET",
+      "path": "/v1/skills/{skill_id}/archive"
     },
     {
       "category": "inference_workload",

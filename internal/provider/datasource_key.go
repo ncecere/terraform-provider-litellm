@@ -40,6 +40,7 @@ type KeyDataSourceModel struct {
 	ProjectID           types.String  `tfsdk:"project_id"`
 	MaxParallelRequests types.Int64   `tfsdk:"max_parallel_requests"`
 	TPMLimit            types.Int64   `tfsdk:"tpm_limit"`
+	TPDLimit            types.Int64   `tfsdk:"tpd_limit"`
 	RPMLimit            types.Int64   `tfsdk:"rpm_limit"`
 	BudgetDuration      types.String  `tfsdk:"budget_duration"`
 	SoftBudget          types.Float64 `tfsdk:"soft_budget"`
@@ -119,6 +120,7 @@ func (d *KeyDataSource) Schema(ctx context.Context, req datasource.SchemaRequest
 				Description: "Tokens per minute limit.",
 				Computed:    true,
 			},
+			"tpd_limit": schema.Int64Attribute{Description: "Tokens per day limit (LiteLLM 1.104.0 and later).", Computed: true},
 			"rpm_limit": schema.Int64Attribute{
 				Description: "Requests per minute limit.",
 				Computed:    true,
@@ -217,6 +219,10 @@ func (d *KeyDataSource) Read(ctx context.Context, req datasource.ReadRequest, re
 	}
 
 	complete, err := projectKeyDataSourceAPIObject(data, result, lookupValue, managementID)
+	if errors.Is(err, errKeyInfoArchived) {
+		resp.Diagnostics.AddError("Key Not Found", "LiteLLM reports this key as deleted. Deleted and regenerated keys are not readable through this data source. Request details were omitted.")
+		return
+	}
 	if err != nil {
 		resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned a malformed or identity-mismatched key response. Response and request details were omitted.")
 		return
@@ -235,6 +241,9 @@ func projectKeyDataSourceAPIObject(data KeyDataSourceModel, result map[string]in
 	}
 	if err := validateExactKeyInfoIdentity(result, info, lookupValue); err != nil {
 		return KeyDataSourceModel{}, fmt.Errorf("invalid key response identity")
+	}
+	if err := classifyKeyInfoStatus(info); err != nil {
+		return KeyDataSourceModel{}, err
 	}
 
 	complete := KeyDataSourceModel{ID: types.StringValue(managementID), Key: data.Key, KeyHash: data.KeyHash}
@@ -269,6 +278,9 @@ func projectKeyDataSourceAPIObject(data KeyDataSourceModel, result map[string]in
 		return KeyDataSourceModel{}, err
 	}
 	if complete.TPMLimit, err = dataSourceRoleRedactedNullableInt64At(info, "tpm_limit"); err != nil {
+		return KeyDataSourceModel{}, err
+	}
+	if complete.TPDLimit, err = dataSourceRoleRedactedNullableInt64At(info, "tpd_limit"); err != nil {
 		return KeyDataSourceModel{}, err
 	}
 	if complete.RPMLimit, err = dataSourceRoleRedactedNullableInt64At(info, "rpm_limit"); err != nil {
@@ -337,12 +349,8 @@ func keyDataSourceCollections(info map[string]interface{}) (types.List, types.Ma
 		metadata, mapErr := dataSourceNullableStringMapAt(info, "metadata")
 		return tags, metadata, mapErr
 	}
-	projected := make(map[string]interface{}, len(metadataObject))
-	for key, value := range metadataObject {
-		if key != "tags" {
-			projected[key] = value
-		}
-	}
+	projected := withoutStructuredMetadata(metadataObject, keyMetadataStructuredFields)
+	delete(projected, "tags")
 	wrapper := map[string]interface{}{"metadata": projected}
 	metadata, err := dataSourceNullableStringMapAt(wrapper, "metadata")
 	if err != nil {

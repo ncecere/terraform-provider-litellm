@@ -72,7 +72,7 @@ resource "litellm_key" "invited" {
 
 `send_invite_email` is a write-only, create-only action flag. Before creating the key, the provider verifies that `user_id` resolves to that exact LiteLLM user and a syntactically valid, non-empty email address. LiteLLM then queues email processing after successful key creation, but returns before delivery and provides no delivery acknowledgement. Configure a supported [LiteLLM email backend](https://docs.litellm.ai/docs/proxy/email) before enabling it. Service-account keys cannot use this action.
 
-LiteLLM v1.98.0's enterprise email implementation defaults `EMAIL_INCLUDE_API_KEY` to `true`, including raw generated or predefined `key_wo` values in email. Set `EMAIL_INCLUDE_API_KEY=false` unless email infrastructure and recipient mailboxes are approved secret-delivery channels.
+LiteLLM's enterprise email implementation defaults `EMAIL_INCLUDE_API_KEY` to `true`, including raw generated or predefined `key_wo` values in email. Set `EMAIL_INCLUDE_API_KEY=false` unless email infrastructure and recipient mailboxes are approved secret-delivery channels.
 
 The action is requested once per successful LiteLLM Create request, not once for the lifetime of the HCL configuration. Resource replacement requests another email. If the create response is lost before Terraform persists state, retrying can create another key and request another email; inspect LiteLLM before retrying an ambiguous failure.
 
@@ -251,7 +251,7 @@ The following arguments are supported:
 
 * `organization_id` - (Optional) Organization ID associated with this key.
 
-* `project_id` - (Optional) Project ID associated with this key. When set, models and budget are validated against the project's limits.
+* `project_id` - (Optional) Project ID associated with this key. When set, models and budget are validated against the project's limits. LiteLLM 1.104.0 and later cannot assign a project to an existing key or move it between projects, so the provider rejects that change at plan time. To move a key, replace it with `terraform taint litellm_key.example` followed by `terraform apply` (this issues a new key secret); `terraform apply -replace` is not sufficient on its own, because the provider checks the change against the existing key first. Removing the attribute detaches the key (an explicit `null` is sent).
 
 * `budget_id` - (Optional) Budget ID to associate with this key.
 
@@ -268,18 +268,19 @@ The following arguments are supported:
 * `metadata_json` - (Optional, Sensitive) Non-null JSON object for lossless heterogeneous metadata. It is independently recursively owned, cannot overlap `metadata` or dedicated metadata fields, and requires caller-selected `key` or `key_wo` identity on create.
 
 * `tpm_limit` - (Optional) Tokens per minute limit.
+* `tpd_limit` - (Optional) Tokens per day limit. Requires LiteLLM 1.104.0 or later, which enforces it only for batch submissions (not ordinary completion requests). Removing it clears the limit.
 
 * `rpm_limit` - (Optional) Requests per minute limit.
 
-* `tpm_limit_type` - (Optional) Type of TPM limit enforcement. LiteLLM v1.98 accepts exactly `"guaranteed_throughput"`, `"best_effort_throughput"`, or `"dynamic"` for key requests.
+* `tpm_limit_type` - (Optional) Type of TPM limit enforcement. LiteLLM accepts exactly `"guaranteed_throughput"`, `"best_effort_throughput"`, or `"dynamic"` for key requests.
 
-* `rpm_limit_type` - (Optional) Type of RPM limit enforcement. LiteLLM v1.98 accepts exactly `"guaranteed_throughput"`, `"best_effort_throughput"`, or `"dynamic"` for key requests.
+* `rpm_limit_type` - (Optional) Type of RPM limit enforcement. LiteLLM accepts exactly `"guaranteed_throughput"`, `"best_effort_throughput"`, or `"dynamic"` for key requests.
 
 * `budget_duration` - (Optional) Duration for the budget (e.g., `"30d"`, `"7d"`).
 
 * `allowed_cache_controls` - (Optional) List of allowed cache control directives.
 
-* `soft_budget` - (Optional) Soft budget warning threshold.
+* `soft_budget` - (Optional) Soft budget warning threshold. LiteLLM 1.104.0 applies it on update by writing the key's budget row; when `budget_id` is set that row may be shared with other keys, so the provider sends `soft_budget` only when it changes and warns at plan time.
 
 * `duration` - (Optional) Duration for which this key is valid (e.g., `"30d"`, `"90d"`).
 
@@ -309,11 +310,11 @@ The following arguments are supported:
 
 * `blocked` - (Optional) Whether this key is blocked.
 
-* `router_settings` - (Optional) Complete key-specific router-settings document. Omitting the block leaves remote settings unmanaged. A configured block replaces the complete document on update rather than merging individual fields. Supported LiteLLM v1.98.0 fields:
+* `router_settings` - (Optional) Complete key-specific router-settings document. Omitting the block leaves remote settings unmanaged. A configured block replaces the complete document on update rather than merging individual fields. Supported fields:
   * `routing_strategy_args` - (Optional) JSON object passed to the routing strategy.
   * `routing_strategy` - (Optional) Routing strategy name.
   * `routing_groups` - (Optional) JSON array of routing groups.
-  * `retry_policy` - (Optional) Typed retry counts: `bad_request_error_retries`, `authentication_error_retries`, `timeout_error_retries`, `rate_limit_error_retries`, `content_policy_violation_error_retries`, and `internal_server_error_retries`.
+  * `retry_policy` - (Optional) Typed retry counts: `bad_request_error_retries`, `authentication_error_retries`, `timeout_error_retries`, `rate_limit_error_retries`, `content_policy_violation_error_retries`, `internal_server_error_retries`, and, on LiteLLM 1.104.0 and later, `service_unavailable_error_retries`, `not_found_error_retries`, and `default_retries`.
   * `model_group_retry_policy` - (Optional) JSON object mapping model groups to retry policies. Nested retry keys use LiteLLM's PascalCase names, such as `RateLimitErrorRetries`.
   * `model_group_affinity_config` - (Optional) JSON object mapping affinity groups to lists of model groups.
   * `allowed_fails` - (Optional) Failures allowed before cooldown.
@@ -327,8 +328,10 @@ The following arguments are supported:
   * `model_group_alias` - (Optional) JSON object mapping aliases to model groups or alias configuration objects.
   * `enable_tag_filtering` - (Optional) Enables request-tag routing.
   * `tag_routing_prefix` - (Optional) Prefix for tag-based routing.
+  * `weights` - (Optional) JSON object of router weights (LiteLLM 1.104.0 and later; LiteLLM rejects weights for unknown deployments).
+  * `optional_pre_call_checks` - (Optional) Ordered JSON array of optional pre-call check names such as `prompt_caching` (LiteLLM 1.104.0 and later).
 
-  LiteLLM v1.98.0 accepts and stores all fields above, but its per-key request path currently applies only `fallbacks`, `context_window_fallbacks`, `num_retries`, `timeout`, `model_group_retry_policy`, `routing_strategy`, `enable_tag_filtering`, and `model_group_alias`. Other accepted fields are exposed for API fidelity and future LiteLLM behavior.
+  LiteLLM accepts and stores all fields above, but its per-key request path does not apply every field in every release. Fields are exposed for API fidelity.
 
 ## Attribute Reference
 
@@ -338,7 +341,7 @@ In addition to all arguments above, the following attributes are exported:
 
 * `key` - The API key token (sensitive). This is the actual secret used for authentication for generated or stateful predefined keys. It remains null in write-only mode.
 
-Ordinary refreshes retry bounded transient transport, HTTP 408, 429, and 5xx failures. Only an exact 404 removes state; malformed, identity-mismatched, or exhausted reads retain the prior public/private state. Create/update confirmation, accepted or pending recovery, semantic hydration, router convergence, invitation/access-group probes, and mutations retain their existing single-attempt behavior.
+Ordinary refreshes retry bounded transient transport, HTTP 408, 429, and 5xx failures. Only an exact 404, or LiteLLM 1.104's archived `status = "deleted"` response for a key that was deleted or regenerated outside Terraform, removes state; an unrecognized status, malformed, identity-mismatched, or exhausted reads retain the prior public/private state. Create/update confirmation, accepted or pending recovery, semantic hydration, router convergence, invitation/access-group probes, and mutations retain their existing single-attempt behavior.
 
 ## Import
 
@@ -363,9 +366,9 @@ Switching an existing stateful `key` resource to `key_wo` replaces the key and r
 
 ## Upgrade Notes
 
-### LiteLLM v1.98 rate-limit types
+### LiteLLM rate-limit types
 
-The earlier provider documentation suggested `"key"` and `"team"`, but LiteLLM v1.98 rejects both in `/key/generate` and `/key/update`. Replace an explicitly configured old value with `"best_effort_throughput"`, `"guaranteed_throughput"`, or `"dynamic"` according to the desired enforcement behavior. The validator applies to configuration, not API read-back, so import and refresh can still preserve a legacy server value until the configuration is migrated.
+The earlier provider documentation suggested `"key"` and `"team"`, but LiteLLM rejects both in `/key/generate` and `/key/update`. Replace an explicitly configured old value with `"best_effort_throughput"`, `"guaranteed_throughput"`, or `"dynamic"` according to the desired enforcement behavior. The validator applies to configuration, not API read-back, so import and refresh can still preserve a legacy server value until the configuration is migrated.
 
 ### v1.1.0 → v1.2.0: Hashed Resource ID
 

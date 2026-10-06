@@ -815,7 +815,7 @@ func (r *TeamMemberResource) Create(ctx context.Context, req resource.CreateRequ
 	}
 	_, configuredEmail, _ := teamMemberConfiguredIdentity(&data)
 	if err := preflightTeamMember(before, canonicalBeforeAdd, configuredEmail); err != nil {
-		resp.Diagnostics.AddError("Team Member Already Exists or Is Ambiguous", err.Error()+" Import a roster-backed membership before managing it; manually remediate a membership-only LiteLLM v1.98 row.")
+		resp.Diagnostics.AddError("Team Member Already Exists or Is Ambiguous", err.Error()+" Import a roster-backed membership before managing it; manually remediate a membership-only LiteLLM row.")
 		return
 	}
 
@@ -907,7 +907,7 @@ func (r *TeamMemberResource) Create(ctx context.Context, req resource.CreateRequ
 		return
 	}
 	if responseValidationErr != nil {
-		resp.Diagnostics.AddError("Malformed Team Member Add Response", fmt.Sprintf("LiteLLM accepted the add and the provider retained the canonical mutation identity, but its response did not match the v1.98 contract: %s", teamMemberDiagnosticError(responseValidationErr)))
+		resp.Diagnostics.AddError("Malformed Team Member Add Response", fmt.Sprintf("LiteLLM accepted the add and the provider retained the canonical mutation identity, but its response did not match the LiteLLM contract: %s", teamMemberDiagnosticError(responseValidationErr)))
 		return
 	}
 	if observation.Status == teamMemberRemoteMembershipOnly {
@@ -915,7 +915,7 @@ func (r *TeamMemberResource) Create(ctx context.Context, req resource.CreateRequ
 		return
 	}
 	if observation.Status == teamMemberRemoteRosterOnly {
-		resp.Diagnostics.AddError("Roster-Only Team Member Creation", "LiteLLM accepted the add and wrote members_with_roles, but no canonical team_memberships row exists. The partial roster identity was retained; manually remediate the inconsistent v1.98 state before update.")
+		resp.Diagnostics.AddError("Roster-Only Team Member Creation", "LiteLLM accepted the add and wrote members_with_roles, but no canonical team_memberships row exists. The partial roster identity was retained; manually remediate the inconsistent LiteLLM state before update.")
 		return
 	}
 	if postErr != nil {
@@ -999,7 +999,7 @@ func (r *TeamMemberResource) Read(ctx context.Context, req resource.ReadRequest,
 		resp.Diagnostics.AddError("Membership-Only Team Member State", teamMemberAddOrphanRemediation)
 	}
 	if observation.Status == teamMemberRemoteRosterOnly {
-		resp.Diagnostics.AddError("Roster-Only Team Member State", "LiteLLM returned the owned members_with_roles entry without its canonical team_memberships row. State was retained; manually remediate this partial v1.98 condition before update.")
+		resp.Diagnostics.AddError("Roster-Only Team Member State", "LiteLLM returned the owned members_with_roles entry without its canonical team_memberships row. State was retained; manually remediate this partial LiteLLM condition before update.")
 	}
 	if !resp.Diagnostics.HasError() && imported && resp.Private != nil {
 		resp.Diagnostics.Append(resp.Private.SetKey(ctx, numericImportedPrivateKey, nil)...)
@@ -1073,7 +1073,7 @@ func (r *TeamMemberResource) Update(ctx context.Context, req resource.UpdateRequ
 		return
 	case teamMemberRemoteRosterOnly:
 		resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
-		resp.Diagnostics.AddError("Roster-Only Team Member State", "The canonical team_memberships row is missing. The provider retained state and did not send v1.98 member_update.")
+		resp.Diagnostics.AddError("Roster-Only Team Member State", "The canonical team_memberships row is missing. The provider retained state and did not send member_update.")
 		return
 	}
 	manageMaxBudget := !state.MaxBudgetInTeam.IsNull() || !plan.MaxBudgetInTeam.IsNull()
@@ -1150,7 +1150,7 @@ func (r *TeamMemberResource) Update(ctx context.Context, req resource.UpdateRequ
 	if updateErr != nil {
 		detail := fmt.Sprintf("Unable to confirm the team member update: %s", teamMemberDiagnosticError(updateErr))
 		if accepted {
-			detail = "LiteLLM accepted the update, but its exact v1.98 response or authoritative read-back could not be confirmed. " + detail
+			detail = "LiteLLM accepted the update, but its exact response or authoritative read-back could not be confirmed. " + detail
 		}
 		if readErr != nil && !IsAPIErrorStatus(readErr, http.StatusNotFound) {
 			detail += ". State reconciliation also failed: " + teamMemberDiagnosticError(readErr)

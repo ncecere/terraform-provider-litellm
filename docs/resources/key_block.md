@@ -2,7 +2,7 @@
 
 Manages the blocked state of a LiteLLM API key. Creating this resource blocks the key; destroying it unblocks the key.
 
-The resource ID is always a non-sensitive `sha256:<64-hex>` management identifier. LiteLLM v1.98 accepts the corresponding bare hash for block, read, and unblock operations, so this resource hashes raw inputs locally and sends only the bare hash to LiteLLM.
+The resource ID is always a non-sensitive `sha256:<64-hex>` management identifier. LiteLLM accepts the corresponding bare hash for block, read, and unblock operations, so this resource hashes raw inputs locally and sends only the bare hash to LiteLLM.
 
 ## Recommended: hash-only identity
 
@@ -41,7 +41,7 @@ Changing the target key forces replacement. Switching between `key` and `key_has
 - `id` - Canonical non-sensitive `sha256:<64-hex>` management identifier.
 - `blocked` - Whether the key is currently blocked.
 
-Ordinary refreshes retry bounded transient transport, HTTP 408, 429, and 5xx failures. Terraform removes the resource only after LiteLLM returns an exact 404 for the key or an identity-matched response with `blocked = false`; malformed or ambiguous responses retain state and fail closed.
+Ordinary refreshes retry bounded transient transport, HTTP 408, 429, and 5xx failures. Terraform removes the resource only after LiteLLM returns an exact 404 for the key, its archived `status = "deleted"` response (LiteLLM 1.104 keeps returning a deleted key's row, possibly still `blocked = true`), or an identity-matched response with `blocked = false`; malformed or ambiguous responses retain state and fail closed.
 
 ## Import
 

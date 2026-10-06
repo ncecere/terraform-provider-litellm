@@ -98,11 +98,11 @@ func (d *CredentialDataSource) Read(ctx context.Context, req datasource.ReadRequ
 		sample, probeErr = probeCredentialEndpoint(ctx, d.client, credentialByNamePath(credentialName), credentialName)
 	}
 	if probeErr != nil || !sample.hasPresence() {
-		resp.Diagnostics.AddError("Credential Data Source Read Error", "Bounded fresh-connection probes did not return a usable credential from the selected exact lookup route. Retry transient failures or reconcile LiteLLM v1.98 process-local worker caches before retrying.")
+		resp.Diagnostics.AddError("Credential Data Source Read Error", "Bounded fresh-connection probes did not return a usable credential from the selected exact lookup route. Retry transient failures or reconcile LiteLLM process-local worker caches before retrying.")
 		return
 	}
 	if !sample.versionsMatch() {
-		resp.Diagnostics.AddError("Credential Worker Convergence Uncertain", "Fresh-connection probes returned different cached credential versions from LiteLLM v1.98 workers. No arbitrary version was selected. Reload or restart workers as appropriate, verify their process-local credential caches are consistent, and retry.")
+		resp.Diagnostics.AddError("Credential Worker Convergence Uncertain", "Fresh-connection probes returned different cached credential versions from LiteLLM workers. No arbitrary version was selected. Reload or restart workers as appropriate, verify their process-local credential caches are consistent, and retry.")
 		return
 	}
 	remote := sample.present[0]
@@ -126,7 +126,7 @@ func (d *CredentialDataSource) Read(ctx context.Context, req datasource.ReadRequ
 	if sample.absent != 0 {
 		resp.Diagnostics.AddWarning(
 			"Credential Worker Convergence Uncertain",
-			"At least one fresh-connection probe returned one consistent credential version while another LiteLLM v1.98 worker returned exact 404. The data source returned that version. LiteLLM stores the durable record in its database but serves this lookup from each worker's process-local credential_list, so Terraform does not claim worker-cache or cluster-wide convergence.",
+			"At least one fresh-connection probe returned one consistent credential version while another LiteLLM worker returned exact 404. The data source returned that version. LiteLLM stores the durable record in its database but serves this lookup from each worker's process-local credential_list, so Terraform does not claim worker-cache or cluster-wide convergence.",
 		)
 	}
 }

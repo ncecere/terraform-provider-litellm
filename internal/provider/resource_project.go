@@ -55,6 +55,7 @@ type ProjectResourceModel struct {
 	BudgetDuration      types.String  `tfsdk:"budget_duration"`
 	BudgetID            types.String  `tfsdk:"budget_id"`
 	TPMLimit            types.Int64   `tfsdk:"tpm_limit"`
+	TPDLimit            types.Int64   `tfsdk:"tpd_limit"`
 	RPMLimit            types.Int64   `tfsdk:"rpm_limit"`
 	MaxParallelRequests types.Int64   `tfsdk:"max_parallel_requests"`
 	ModelMaxBudget      types.Map     `tfsdk:"model_max_budget"`
@@ -83,12 +84,13 @@ func (r *ProjectResource) Schema(_ context.Context, _ resource.SchemaRequest, re
 			"models":                schema.ListAttribute{Description: "List of models the project can access.", Optional: true, Computed: true, ElementType: types.StringType},
 			"metadata":              schema.MapAttribute{Description: "Metadata for the project. Values are strings; use jsonencode() for complex values.", Optional: true, Computed: true, ElementType: types.StringType},
 			"metadata_json":         schema.StringAttribute{Description: "Additional project metadata as a semantic JSON object.", Optional: true, Computed: true, Sensitive: true, Validators: []validator.String{keySemanticDictionaryValidator{}}},
-			"tags":                  schema.ListAttribute{Description: "Tags associated with the project. LiteLLM v1.98 stores these in project metadata.", Optional: true, Computed: true, ElementType: types.StringType},
-			"max_budget":            schema.Float64Attribute{Description: "Maximum budget for this project.", Optional: true},
+			"tags":                  schema.ListAttribute{Description: "Tags associated with the project. LiteLLM stores these in project metadata.", Optional: true, Computed: true, ElementType: types.StringType},
+			"max_budget":            schema.Float64Attribute{Description: "Maximum budget for this project. From LiteLLM 1.103.0, 0 means zero allowance (all spend is blocked); omit the attribute for an unlimited budget.", Optional: true},
 			"soft_budget":           schema.Float64Attribute{Description: "Soft budget limit for warnings.", Optional: true},
 			"budget_duration":       schema.StringAttribute{Description: "Budget reset duration (for example, '30d' or '1h').", Optional: true},
-			"budget_id":             schema.StringAttribute{Description: "Budget ID associated with this project. Reassociation is not safely supported by LiteLLM v1.98.", Optional: true, Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
+			"budget_id":             schema.StringAttribute{Description: "Budget ID associated with this project. Reassociation is not safely supported by LiteLLM.", Optional: true, Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}},
 			"tpm_limit":             schema.Int64Attribute{Description: "Tokens per minute limit.", Optional: true},
+			"tpd_limit":             schema.Int64Attribute{Description: "Tokens per day limit. Requires LiteLLM 1.104.0 or later, which stores it but does not enforce it for projects. Removing it clears the limit.", Optional: true},
 			"rpm_limit":             schema.Int64Attribute{Description: "Requests per minute limit.", Optional: true},
 			"max_parallel_requests": schema.Int64Attribute{Description: "Maximum parallel requests allowed.", Optional: true},
 			"model_max_budget":      schema.MapAttribute{Description: "Legacy per-model budget map shape retained for schema compatibility.", Optional: true, Computed: true, ElementType: types.Float64Type, Validators: []validator.Map{mapvalidator.NoNullValues()}},
@@ -132,10 +134,10 @@ func (r *ProjectResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 			resp.Diagnostics.AddAttributeError(path.Root("metadata_json"), "Invalid Semantic Project Dictionary", "The JSON object is malformed, overlaps another managed project metadata surface, or cannot be persisted exactly.")
 		}
 		if !config.BudgetID.IsNull() && projectBudgetControlsPresentInConfig(&config) {
-			resp.Diagnostics.AddAttributeError(path.Root("budget_id"), "Unsafe Shared Project Budget Controls", "budget_id cannot be combined with project budget controls during creation because LiteLLM v1.98 ignores or strips those controls for an existing shared budget.")
+			resp.Diagnostics.AddAttributeError(path.Root("budget_id"), "Unsafe Shared Project Budget Controls", "budget_id cannot be combined with project budget controls during creation because LiteLLM ignores or strips those controls for an existing shared budget.")
 		}
 		if config.ModelMaxBudget.IsUnknown() || (knownMap(config.ModelMaxBudget) && len(config.ModelMaxBudget.Elements()) > 0) {
-			resp.Diagnostics.AddAttributeError(path.Root("model_max_budget"), "Unsupported Structured Project Model Budget", "LiteLLM v1.98 requires GenericBudgetConfig objects for model_max_budget, but this resource's legacy schema is map(float64). Non-empty or unknown configuration is rejected until a migration-safe structured representation is available.")
+			resp.Diagnostics.AddAttributeError(path.Root("model_max_budget"), "Unsupported Structured Project Model Budget", "LiteLLM requires GenericBudgetConfig objects for model_max_budget, but this resource's legacy schema is map(float64). Non-empty or unknown configuration is rejected until a migration-safe structured representation is available.")
 		}
 		return
 	}
@@ -219,9 +221,9 @@ func (r *ProjectResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 		case field.config.IsNull() && field.imported:
 			resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root(field.name), field.state)...)
 		case knownString(field.state) && field.config.IsNull():
-			resp.Diagnostics.AddAttributeError(path.Root(field.name), "Unsupported Project String Clear", fmt.Sprintf("LiteLLM v1.98's /project/update excludes null %s values, so removing this configured value cannot converge. Keep it configured or set an explicit non-null replacement.", field.name))
+			resp.Diagnostics.AddAttributeError(path.Root(field.name), "Unsupported Project String Clear", fmt.Sprintf("LiteLLM's /project/update excludes null %s values, so removing this configured value cannot converge. Keep it configured or set an explicit non-null replacement.", field.name))
 		case knownString(field.state) && (field.config.IsUnknown() || field.plan.IsUnknown()):
-			resp.Diagnostics.AddAttributeError(path.Root(field.name), "Unknown Project String Transition", fmt.Sprintf("%s must be known while planning because an unknown value could resolve to an unsupported null clear on LiteLLM v1.98.", field.name))
+			resp.Diagnostics.AddAttributeError(path.Root(field.name), "Unknown Project String Transition", fmt.Sprintf("%s must be known while planning because an unknown value could resolve to an unsupported null clear on LiteLLM.", field.name))
 		}
 	}
 	if config.ModelMaxBudget.IsNull() && knownMap(state.ModelMaxBudget) {
@@ -229,7 +231,7 @@ func (r *ProjectResource) ModifyPlan(ctx context.Context, req resource.ModifyPla
 		// explicit null budget update. Override the framework's computed unknown.
 		resp.Diagnostics.Append(resp.Plan.SetAttribute(ctx, path.Root("model_max_budget"), types.MapNull(types.Float64Type))...)
 	} else if config.ModelMaxBudget.IsUnknown() || (knownMap(config.ModelMaxBudget) && len(config.ModelMaxBudget.Elements()) > 0 && !config.ModelMaxBudget.Equal(state.ModelMaxBudget)) {
-		resp.Diagnostics.AddAttributeError(path.Root("model_max_budget"), "Unsupported Structured Project Model Budget", "LiteLLM v1.98 requires GenericBudgetConfig objects for model_max_budget, but this resource's legacy schema is map(float64). Non-empty additions, changes, or unknown transitions are rejected until a migration-safe structured representation is available.")
+		resp.Diagnostics.AddAttributeError(path.Root("model_max_budget"), "Unsupported Structured Project Model Budget", "LiteLLM requires GenericBudgetConfig objects for model_max_budget, but this resource's legacy schema is map(float64). Non-empty additions, changes, or unknown transitions are rejected until a migration-safe structured representation is available.")
 	}
 	if resp.Diagnostics.HasError() {
 		return
@@ -313,7 +315,7 @@ func (r *ProjectResource) Create(ctx context.Context, req resource.CreateRequest
 				retainRecovery("Project Creation Outcome Uncertain", "The project create was dispatched, but its outcome could not be confirmed. Only the generated identity was retained for authoritative recovery.")
 			}
 		} else {
-			resp.Diagnostics.AddError("Project Creation Failed", "LiteLLM did not confirm the project create. Response, identity, URL, and transport details were omitted.")
+			addLicenseAwareError(&resp.Diagnostics, createErr, "Project Creation Failed", "LiteLLM did not confirm the project create. Response, identity, URL, and transport details were omitted.")
 		}
 		return
 	}
@@ -410,7 +412,7 @@ func (r *ProjectResource) Read(ctx context.Context, req resource.ReadRequest, re
 			resp.State.RemoveResource(ctx)
 			return
 		}
-		resp.Diagnostics.AddError("Project Read Failed", "The authoritative project response could not be validated or projected safely. Response, identity, metadata, and transport details were omitted.")
+		addLicenseAwareError(&resp.Diagnostics, err, "Project Read Failed", "The authoritative project response could not be validated or projected safely. Response, identity, metadata, and transport details were omitted.")
 		return
 	}
 	if reconcile.Present && reconcile.Committed {
@@ -737,7 +739,7 @@ func (r *ProjectResource) Delete(ctx context.Context, req resource.DeleteRequest
 		return
 	}
 	if err := r.client.DoRequestWithResponse(ctx, http.MethodDelete, "/project/delete", map[string]interface{}{"project_ids": []string{data.ID.ValueString()}}, nil); err != nil && !IsNotFoundError(err) {
-		resp.Diagnostics.AddError("Project Delete Failed", "The project deletion failed. Response, identity, URL, and transport details were omitted.")
+		addLicenseAwareError(&resp.Diagnostics, err, "Project Delete Failed", "The project deletion failed. Response, identity, URL, and transport details were omitted.")
 	}
 }
 
@@ -791,10 +793,10 @@ func (r *ProjectResource) buildProjectRequest(ctx context.Context, data *Project
 
 func (r *ProjectResource) buildProjectCreateRequest(ctx context.Context, data *ProjectResourceModel) (map[string]interface{}, error) {
 	if knownString(data.BudgetID) && projectBudgetControlsConfigured(data) {
-		return nil, fmt.Errorf("budget_id cannot be combined with project budget controls during creation because LiteLLM v1.98 ignores or strips those controls for an existing shared budget")
+		return nil, fmt.Errorf("budget_id cannot be combined with project budget controls during creation because LiteLLM ignores or strips those controls for an existing shared budget")
 	}
 	if knownMap(data.ModelMaxBudget) && len(data.ModelMaxBudget.Elements()) > 0 {
-		return nil, fmt.Errorf("non-empty model_max_budget is unsupported because LiteLLM v1.98 requires structured GenericBudgetConfig values while the migration-compatible project schema is map(float64)")
+		return nil, fmt.Errorf("non-empty model_max_budget is unsupported because LiteLLM requires structured GenericBudgetConfig values while the migration-compatible project schema is map(float64)")
 	}
 	request := map[string]interface{}{"team_id": data.TeamID.ValueString()}
 	if knownString(data.ProjectAlias) {
@@ -812,6 +814,7 @@ func (r *ProjectResource) buildProjectCreateRequest(ctx context.Context, data *P
 	addKnownFloat(request, "max_budget", data.MaxBudget)
 	addKnownFloat(request, "soft_budget", data.SoftBudget)
 	addKnownInt(request, "tpm_limit", data.TPMLimit)
+	addKnownInt(request, "tpd_limit", data.TPDLimit)
 	addKnownInt(request, "rpm_limit", data.RPMLimit)
 	addKnownInt(request, "max_parallel_requests", data.MaxParallelRequests)
 	if !data.ModelMaxBudget.IsNull() && !data.ModelMaxBudget.IsUnknown() {
@@ -845,13 +848,13 @@ func buildProjectRowUpdateRequest(ctx context.Context, plan, state *ProjectResou
 	request := map[string]interface{}{}
 	if !plan.ProjectAlias.IsUnknown() && !plan.ProjectAlias.Equal(state.ProjectAlias) {
 		if plan.ProjectAlias.IsNull() {
-			return nil, false, fmt.Errorf("project_alias cannot be cleared because LiteLLM v1.98 excludes null on update")
+			return nil, false, fmt.Errorf("project_alias cannot be cleared because LiteLLM excludes null on update")
 		}
 		request["project_alias"] = plan.ProjectAlias.ValueString()
 	}
 	if !plan.Description.IsUnknown() && !plan.Description.Equal(state.Description) {
 		if plan.Description.IsNull() {
-			return nil, false, fmt.Errorf("description cannot be cleared because LiteLLM v1.98 excludes null on update")
+			return nil, false, fmt.Errorf("description cannot be cleared because LiteLLM excludes null on update")
 		}
 		request["description"] = plan.Description.ValueString()
 	}
@@ -887,6 +890,7 @@ func buildProjectBudgetUpdateRequest(plan, state *ProjectResourceModel) (map[str
 	addChangedFloat(request, "max_budget", plan.MaxBudget, state.MaxBudget)
 	addChangedFloat(request, "soft_budget", plan.SoftBudget, state.SoftBudget)
 	addChangedInt(request, "tpm_limit", plan.TPMLimit, state.TPMLimit)
+	addChangedInt(request, "tpd_limit", plan.TPDLimit, state.TPDLimit)
 	addChangedInt(request, "rpm_limit", plan.RPMLimit, state.RPMLimit)
 	addChangedInt(request, "max_parallel_requests", plan.MaxParallelRequests, state.MaxParallelRequests)
 	if !plan.BudgetDuration.IsUnknown() && !plan.BudgetDuration.Equal(state.BudgetDuration) {
@@ -1199,7 +1203,7 @@ func (r *ProjectResource) readProjectWithOwnership(ctx context.Context, data *Pr
 		name   string
 		target *types.Int64
 	}{
-		{"tpm_limit", &data.TPMLimit}, {"rpm_limit", &data.RPMLimit}, {"max_parallel_requests", &data.MaxParallelRequests},
+		{"tpm_limit", &data.TPMLimit}, {"tpd_limit", &data.TPDLimit}, {"rpm_limit", &data.RPMLimit}, {"max_parallel_requests", &data.MaxParallelRequests},
 	} {
 		owned := imported || knownInt(*field.target)
 		if err := updateBudgetInt64(field.target, table, owned, owned, field.name); err != nil {
@@ -1228,6 +1232,9 @@ func (r *ProjectResource) readProjectWithOwnership(ctx context.Context, data *Pr
 	}
 	if ownership.pendingBudget["tpm_limit"] {
 		data.TPMLimit = original.TPMLimit
+	}
+	if ownership.pendingBudget["tpd_limit"] {
+		data.TPDLimit = original.TPDLimit
 	}
 	if ownership.pendingBudget["rpm_limit"] {
 		data.RPMLimit = original.RPMLimit

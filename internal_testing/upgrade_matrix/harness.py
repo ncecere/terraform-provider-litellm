@@ -90,18 +90,35 @@ ASSERTION_CODES = {
     "validated-documentation", "allowlisted-unavailability",
     "refresh-only-config-state-zero-drift",
 }
+# LiteLLM gates projects, and from 1.102.0 every organization endpoint, behind an
+# Enterprise license. The pinned local backend is unlicensed, so each of these
+# registered resources/data sources is an exact, explicit skip, never a pass.
 MODERN_MANDATORY_SKIPS = {
+    ("resource_coverage", "litellm_organization", "enterprise-license-required"),
+    ("resource_coverage", "litellm_organization_member", "enterprise-license-required"),
     ("resource_coverage", "litellm_project", "enterprise-license-required"),
     ("upgrade", "litellm_jwt_key_mapping", "previous-release-resource-unavailable"),
+    ("upgrade", "litellm_organization", "enterprise-license-required"),
+    ("upgrade", "litellm_organization_member", "enterprise-license-required"),
     ("upgrade", "litellm_project", "enterprise-license-required"),
+    ("lifecycle", "litellm_organization", "enterprise-license-required"),
+    ("lifecycle", "litellm_organization_member", "enterprise-license-required"),
     ("lifecycle", "litellm_project", "enterprise-license-required"),
     ("import", "litellm_agent", "role-redacted-state-requires-admin"),
+    ("import", "litellm_organization", "enterprise-license-required"),
+    ("import", "litellm_organization_member", "enterprise-license-required"),
     ("import", "litellm_project", "enterprise-license-required"),
+    ("drift", "litellm_organization", "enterprise-license-required"),
+    ("drift", "litellm_organization_member", "enterprise-license-required"),
     ("drift", "litellm_project", "enterprise-license-required"),
+    ("data_source", "litellm_organization", "enterprise-license-required"),
+    ("data_source", "litellm_organizations", "enterprise-license-required"),
     ("data_source", "litellm_project", "enterprise-license-required"),
     ("data_source", "litellm_projects", "enterprise-license-required"),
     ("optional_feature", "key_wo", "api-endpoint-unavailable"),
 }
+ENTERPRISE_RESOURCES = {"litellm_organization", "litellm_organization_member", "litellm_project"}
+ENTERPRISE_DATA_SOURCES = {"litellm_organization", "litellm_organizations", "litellm_project", "litellm_projects"}
 FALLBACK_CONDITIONAL_SKIPS = {
     ("lifecycle", "litellm_fallback", "fallback-delete-not-authoritative"),
     ("import", "litellm_fallback", "fallback-delete-not-authoritative"),
@@ -323,6 +340,31 @@ def check_inventory(matrix: dict) -> None:
         raise HarnessError("importable/action resource accounting is incomplete")
     if introduced != {"litellm_jwt_key_mapping"}:
         raise HarnessError("post-v2.0.1 resource accounting is incomplete")
+    enterprise_resources = {item["type"] for item in resources if item.get("lane") == "enterprise"}
+    enterprise_data_sources = {
+        name for name, reason in matrix.get("data_source_expected_limitations", {}).items()
+        if reason == "enterprise-license-required"
+    }
+    if (
+        enterprise_resources != ENTERPRISE_RESOURCES
+        or enterprise_data_sources != ENTERPRISE_DATA_SOURCES
+        or any(
+            "enterprise-license-required" not in item.get("limitations", [])
+            for item in resources if item["type"] in ENTERPRISE_RESOURCES
+        )
+        or any(
+            "enterprise-license-required" in item.get("limitations", [])
+            for item in resources if item["type"] not in ENTERPRISE_RESOURCES
+        )
+    ):
+        raise HarnessError("enterprise-license lane accounting changed without review")
+    enterprise_skips = {
+        (category, subject, "enterprise-license-required")
+        for subject in ENTERPRISE_RESOURCES
+        for category in ("resource_coverage", "upgrade", "lifecycle", "import", "drift")
+    } | {("data_source", subject, "enterprise-license-required") for subject in ENTERPRISE_DATA_SOURCES}
+    if enterprise_skips != {item for item in MODERN_MANDATORY_SKIPS if item[2] == "enterprise-license-required"}:
+        raise HarnessError("enterprise-license skips differ from the enterprise lane inventory")
     for item in resources:
         for required in ("fixture", "address", "import_expression", "lane", "action"):
             if required not in item:
@@ -355,8 +397,8 @@ def check_inventory(matrix: dict) -> None:
     skip_identities = {(item.get("category"), item.get("subject"), item.get("reason")) for item in expected_skips}
     conditional_skips = matrix.get("terraform_1_11_4_conditional_skips", [])
     conditional_identities = {(item.get("category"), item.get("subject"), item.get("reason")) for item in conditional_skips}
-    if len(expected_skips) != 10 or skip_identities != MODERN_MANDATORY_SKIPS:
-        raise HarnessError("modern CLI lanes must have the exact ten independently reviewed mandatory skips")
+    if len(expected_skips) != 22 or skip_identities != MODERN_MANDATORY_SKIPS:
+        raise HarnessError("modern CLI lanes must have the exact twenty-two independently reviewed mandatory skips")
     if len(conditional_skips) != 2 or conditional_identities != FALLBACK_CONDITIONAL_SKIPS:
         raise HarnessError("fallback conditional skip inventory is not exact")
     for scenario in matrix.get("replacement_scenarios", []):
@@ -1983,7 +2025,7 @@ def remove_session_key(args: argparse.Namespace) -> int:
 
 def preflight(args: argparse.Namespace) -> int:
     if args.target == "local":
-        if os.environ.get("TF_ACC") != "1" or os.environ.get("LITELLM_ACCEPTANCE_CONFIRM") != "local-v1.98.0":
+        if os.environ.get("TF_ACC") != "1" or os.environ.get("LITELLM_ACCEPTANCE_CONFIRM") != "local-v1.104.0":
             raise HarnessError("local destructive matrix requires both documented confirmations")
     else:
         if os.environ.get("TF_ACC") != "1" or os.environ.get("LITELLM_REMOTE_ACCEPTANCE_CONFIRM") != "dev-disposable-objects-only":

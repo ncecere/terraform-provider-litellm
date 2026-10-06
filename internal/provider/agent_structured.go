@@ -220,6 +220,14 @@ func stripAgentSyntheticParams(object map[string]interface{}) map[string]interfa
 }
 
 func restoreMaskedAgentLeaves(remote, prior interface{}, key string) (interface{}, error) {
+	if marker, ok := remote.(string); ok && marker == liteLLMRedactedMarker {
+		// LiteLLM 1.104.0 replaces a secret key's whole value, whatever its
+		// type, with the marker. Only an owned prior value can restore it.
+		if prior == nil {
+			return nil, errors.New("masked structured agent value has no owned prior value")
+		}
+		return prior, nil
+	}
 	if isMaskedAgentAPIValue(key, remote) {
 		priorString, ok := prior.(string)
 		if !ok {

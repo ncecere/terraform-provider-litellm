@@ -90,12 +90,12 @@ func (r *VectorStoreResource) Schema(ctx context.Context, req resource.SchemaReq
 				ElementType: types.StringType,
 			},
 			"litellm_credential_name": schema.StringAttribute{
-				Description: "Name of the LiteLLM credential to use. Changes require replacement because LiteLLM v1.98 does not accept this field on update.",
+				Description: "Name of the LiteLLM credential to use. Changes require replacement because LiteLLM does not accept this field on update.",
 				Optional:    true,
 				Computed:    true,
 			},
 			"litellm_params": schema.MapAttribute{
-				Description: "Additional LiteLLM parameters. Changes require replacement because LiteLLM v1.98 does not accept this field on update.",
+				Description: "Additional LiteLLM parameters. Changes require replacement because LiteLLM does not accept this field on update.",
 				Optional:    true,
 				Computed:    true,
 				Sensitive:   true,

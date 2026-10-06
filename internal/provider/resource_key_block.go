@@ -308,6 +308,10 @@ func (r *KeyBlockResource) Read(ctx context.Context, req resource.ReadRequest, r
 	}
 
 	blocked, err := projectKeyBlockAPIObject(result, identity.apiValue)
+	if errors.Is(err, errKeyInfoArchived) {
+		resp.State.RemoveResource(ctx)
+		return
+	}
 	if err != nil {
 		resp.Diagnostics.AddError("Invalid API Response", "LiteLLM returned a malformed or identity-mismatched key response. Response and request details were omitted.")
 		return
@@ -331,6 +335,11 @@ func projectKeyBlockAPIObject(result map[string]interface{}, expectedKey string)
 	}
 	if err := validateExactKeyInfoIdentity(result, info, expectedKey); err != nil {
 		return false, errors.New("invalid key response identity")
+	}
+	// A deleted key's archived row can still say blocked=true; it must never
+	// keep a block resource alive.
+	if err := classifyKeyInfoStatus(info); err != nil {
+		return false, err
 	}
 	blocked, ok := info["blocked"].(bool)
 	if !ok {

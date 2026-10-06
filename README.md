@@ -19,9 +19,9 @@ This Terraform provider allows you to manage LiteLLM resources through Infrastru
 - [Terraform](https://developer.hashicorp.com/terraform/install) >= 1.1.0 (provider protocol 6.0)
 - [OpenTofu](https://opentofu.org/docs/intro/install/) >= 1.6.0
 - [Go](https://go.dev/doc/install) >= 1.24.0 for provider development
-- Tested backend: exactly LiteLLM 1.98.0
+- Tested backend: exactly LiteLLM 1.104.0
 
-The provider's global client baseline is Terraform 1.1.0 or OpenTofu 1.6.0. Terraform 1.0 is not supported because its `ignore_changes` planning behavior can erase the distinction between an omitted map and an explicitly empty map before the provider receives the configuration. The optional write-only attributes `litellm_key.key_wo`, `litellm_key.send_invite_email`, and `litellm_user.send_invite_email` require Terraform or OpenTofu 1.11.0 or later only when they are configured.
+The provider's global client baseline is Terraform 1.1.0 or OpenTofu 1.6.0. Terraform 1.0 is not supported because its `ignore_changes` planning behavior can erase the distinction between an omitted map and an explicitly empty map before the provider receives the configuration. The optional write-only attributes `litellm_key.key_wo`, `litellm_key.send_invite_email`, `litellm_user.send_invite_email`, and `litellm_jwt_key_mapping.key_wo` require Terraform or OpenTofu 1.11.0 or later only when they are configured.
 
 ## Using the Provider
 

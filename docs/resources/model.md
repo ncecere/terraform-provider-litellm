@@ -169,13 +169,13 @@ The following arguments are supported:
 
 * `base_model` - (Required) string. The actual model identifier from the provider (e.g., "gpt-4", "claude-2").
 
-* `tier` - (Optional) string. The usage tier for this model. LiteLLM v1.98 accepts exactly `"free"` or `"paid"`; the provider validates the value during planning. Default: `"free"`.
+* `tier` - (Optional) string. The usage tier for this model. LiteLLM accepts exactly `"free"` or `"paid"`; the provider validates the value during planning. Default: `"free"`.
 
-* `team_id` - (Optional) string. Associate the model with a specific team. Changing or removing an owned team association replaces the model because LiteLLM v1.98 does not provide a reliable in-place detach operation.
+* `team_id` - (Optional) string. Associate the model with a specific team. Changing or removing an owned team association replaces the model because LiteLLM does not provide a reliable in-place detach operation.
 
 * `access_groups` - (Optional) list(string). List of access groups this model belongs to. Teams and keys with access to these groups can use this model. See [LiteLLM Access Groups](https://docs.litellm.ai/docs/proxy/model_access_groups) for more details.
 
-* `mode` - (Optional) string. The intended use of the model. Removing an owned mode replaces the model because LiteLLM may infer and retain a mode during updates. LiteLLM v1.98 keeps this request field extensible rather than declaring an endpoint enum; common values include:
+* `mode` - (Optional) string. The intended use of the model. Removing an owned mode replaces the model because LiteLLM may infer and retain a mode during updates. LiteLLM keeps this request field extensible rather than declaring an endpoint enum; common values include:
   * `chat`
   * `completion`
   * `embedding`
@@ -223,7 +223,7 @@ The following arguments are supported:
 
 * `vertex_credentials` - (Optional) string. Vertex credentials (JSON string or path depending on your setup).
 
-* `litellm_credential_name` - (Optional) string. Name of a credential created via `litellm_credential` resource. This allows you to reference stored credentials instead of providing API keys directly in the model configuration.
+* `litellm_credential_name` - (Optional) string. Name of a credential created via `litellm_credential` resource. This allows you to reference stored credentials instead of providing API keys directly in the model configuration. Removing it detaches the credential in place. The provider sends an empty string, which LiteLLM 1.98.0 stores as the cleared value; LiteLLM 1.104.0 rejects that before any write and detaches only for an explicit `null`, so the provider then retries once with `null`.
 
 * `additional_litellm_params` - (Optional) map(string). A map of arbitrary additional parameters that will be merged into the `litellm_params` object sent to the LiteLLM API. This is intended for provider-specific or experimental options not exposed as dedicated arguments.
 
@@ -268,7 +268,7 @@ The following arguments are supported:
 
 * `additional_litellm_params_json` - (Optional, Computed, Sensitive) a lossless JSON-object sibling for heterogeneous custom `litellm_params` values. Use it when the legacy `additional_litellm_params` `map(string)` cannot preserve native types.
 
-  * The root must be one non-null JSON object with unique members. Native strings, booleans, nested objects and arrays, and arbitrary-size integers remain distinct. JSON null is rejected at every depth because LiteLLM v1.98's `/model/info` masking layer stringifies it, so its persisted type cannot be confirmed. Direct numeric, boolean, or null values beneath sensitive-named map keys are also rejected because that layer converts them to masked strings; native numbers and booleans inside sensitive lists remain supported. The exact string `"None"` and an empty string directly beneath a sensitive-named map key are rejected because they are indistinguishable from that lossy null conversion. Decimal and exponent values must round-trip exactly through LiteLLM's Python-float behavior; lossy values such as `1.0000000000000001` are rejected before any request.
+  * The root must be one non-null JSON object with unique members. Native strings, booleans, nested objects and arrays, and arbitrary-size integers remain distinct. JSON null is rejected at every depth because LiteLLM's `/model/info` masking layer stringifies it, so its persisted type cannot be confirmed. Direct numeric, boolean, or null values beneath sensitive-named map keys are also rejected because that layer converts them to masked strings; native numbers and booleans inside sensitive lists remain supported. The exact string `"None"` and an empty string directly beneath a sensitive-named map key are rejected because they are indistinguishable from that lossy null conversion. Decimal and exponent values must round-trip exactly through LiteLLM's Python-float behavior; lossy values such as `1.0000000000000001` are rejected before any request.
   * Top-level keys must be disjoint from `additional_litellm_params` and every dedicated `litellm_model` parameter surface, including provider/model routing, limits, API settings, thinking/reasoning, AWS and Vertex settings, credential references, and costs. Credential fields removed by `/model/info` (`client_secret` and `vertex_ai_credentials`) are also unavailable. `max_budget` and `budget_duration` are reserved for the separate issue #223 model-budget lifecycle. Overlap is rejected before any request without including keys or values in diagnostics.
   * Terraform owns only the recursively configured JSON paths. API-only parameters are never adopted into this attribute or duplicated into the legacy map under a JSON-owned top-level key. Imports and states upgraded from an earlier provider keep the attribute null and unmanaged. `{}` is an explicitly managed empty view.
   * Any takeover, semantic or shape change, nested removal, clear, or attribute removal replaces the model. An unresolved value on an existing model also plans replacement. Formatting-only equality sends no PATCH and semantically equal reads preserve the configured spelling.
@@ -305,6 +305,7 @@ The following arguments are supported:
   * Adding keys or changing values uses an in-place model update.
   * **Removing a key, clearing the map, or removing the argument replaces the model.** LiteLLM merges `model_info` during updates, so replacement ensures removed capability metadata is not silently retained.
   * LiteLLM fields managed by dedicated resource arguments (`base_model`, `tier`, `mode`, `team_id`, `access_groups`), internal identity fields, and system-managed audit fields are rejected as reserved keys.
+  * Pricing keys are rejected before any request. LiteLLM 1.102.0 and later ignore pricing in `model_info`; see [Custom pricing](#custom-pricing).
   * Imported and cost-map-derived metadata is not adopted into this map. Set `additional_model_info` explicitly when Terraform should manage selected fields.
 
   ```hcl
@@ -323,8 +324,9 @@ The following arguments are supported:
 
 * `additional_model_info_json` - (Optional, Computed, Sensitive) a lossless JSON-object sibling for heterogeneous custom `model_info` values. Use this attribute when string coercion in `additional_model_info` cannot preserve the intended type.
 
-  * The root must be one non-null JSON object with unique members. Nested objects, arrays, strings, booleans, numbers, and nested JSON null values are preserved without provider-side `float64` or string coercion. LiteLLM v1.98 omits arbitrary top-level null members when serializing `ModelInfo`, so the provider rejects them before any request; place a null inside a nested object or array when its presence is significant. Integers remain exact. Decimal/exponent values must survive LiteLLM v1.98's Python-float request/persistence round trip exactly; lossy values such as `1.0000000000000001` are rejected before any request instead of causing perpetual drift.
+  * The root must be one non-null JSON object with unique members. Nested objects, arrays, strings, booleans, numbers, and nested JSON null values are preserved without provider-side `float64` or string coercion. LiteLLM omits arbitrary top-level null members when serializing `ModelInfo`, so the provider rejects them before any request; place a null inside a nested object or array when its presence is significant. Integers remain exact. Decimal/exponent values must survive LiteLLM's Python-float request/persistence round trip exactly; lossy values such as `1.0000000000000001` are rejected before any request instead of causing perpetual drift.
   * Top-level keys must be disjoint from `additional_model_info` and from fields managed by dedicated model attributes, including LiteLLM's mirrored `input_cost_per_token` and `output_cost_per_token` fields. Overlap is rejected before any request, without including keys or values in diagnostics.
+  * Top-level pricing keys are rejected before any request, as for `additional_model_info`; see [Custom pricing](#custom-pricing).
   * Terraform manages only recursively owned JSON paths. Cost-map-derived and other API-only `model_info` fields are not adopted on read or import.
   * `{}` is an explicitly managed empty view and differs from an omitted attribute. Imports and states upgraded from an earlier provider keep this attribute null and unmanaged.
   * Any semantic value change, nested removal, clear, or removal of the attribute replaces the model. Formatting-only changes do not mutate the API, and semantically equal readback preserves the configured spelling.
@@ -366,9 +368,63 @@ The following arguments are supported:
 
 * `aws_role_name` - (Optional) string (Sensitive). AWS IAM role name for cross-account access scenarios.
 
+## Custom pricing
+
+Set a deployment's own prices in `litellm_params`, never in `model_info`:
+
+* the dedicated cost arguments (`input_cost_per_million_tokens`, `output_cost_per_million_tokens`, `input_cost_per_pixel`, `output_cost_per_pixel`, `input_cost_per_second`, `output_cost_per_second`), or
+* any other LiteLLM pricing field, such as `cache_read_input_token_cost` or `input_cost_per_token_above_200k_tokens`, in `additional_litellm_params` or `additional_litellm_params_json`.
+
+```hcl
+resource "litellm_model" "priced" {
+  model_name                     = "gpt-4o-mini-internal"
+  custom_llm_provider            = "openai"
+  base_model                     = "gpt-4o-mini"
+  input_cost_per_million_tokens  = 0.15
+  output_cost_per_million_tokens = 0.60
+
+  additional_litellm_params = {
+    cache_read_input_token_cost = "0.000000075"
+  }
+}
+```
+
+Changing any price, or removing a token price, is an in-place update; removing a token price falls back to LiteLLM's catalog price for `base_model`. Removing a per-pixel or per-second price replaces the model (see [Clear and Replacement Behavior](#clear-and-replacement-behavior)).
+
+LiteLLM 1.102.0 and later silently drop pricing sent in `model_info`: the model is saved without the price, spend is billed at the catalog price, and Terraform reports an inconsistent result. The provider therefore warns at plan time about pricing keys in `additional_model_info` and `additional_model_info_json`. It is a warning rather than an error because LiteLLM 1.101 and earlier still honor these keys and an unchanged key on an existing model sends no request; on LiteLLM 1.102.0 and later, creating or changing such a key fails at apply. A key is treated as pricing when it is one of LiteLLM's 107 pricing fields, a tiered `*_above_<N>_tokens` rate, or the LiteLLM-generated `key` or `pricing_overrides` fields.
+
+### Migrating pricing out of `model_info`
+
+Models created on LiteLLM 1.101 or earlier may store prices in `model_info`. After upgrading LiteLLM those stored prices still apply, but they cannot be changed, and a replacement would recreate the model without them. Move each pricing key to `litellm_params`:
+
+1. Move each pricing key from `additional_model_info` (or `additional_model_info_json`) to the matching dedicated cost argument or to `additional_litellm_params`. Keep the same value; per-million arguments use the per-token value multiplied by 1,000,000.
+2. Add `lifecycle { create_before_destroy = true }` to the model. Removing a key from `additional_model_info` replaces the model, and creating the replacement first keeps a deployment serving the model name, so LiteLLM 1.104.0 does not remove the name from access groups when the old deployment is deleted.
+3. Run `terraform apply`. The replacement stores the price in `litellm_params`, which `/model/info` lists in `model_info.pricing_overrides`.
+
+## Effects on access groups and allowlists
+
+LiteLLM 1.104.0 keeps other records in sync with model deployments:
+
+* Deleting a model removes its `model_name` from unified access groups (`litellm_unified_access_group.access_model_names`) when no other deployment, from the database or `config.yaml`, still serves that name.
+* Renaming a model (changing `model_name`, an in-place update) rewrites that name in access groups and in the `models` allowlists of keys, teams, organizations, projects, and users.
+
+Terraform does not see these server-side edits until the affected resources are refreshed, which then shows drift. Because many `litellm_model` changes force replacement, and the default destroy-then-create order deletes the only deployment serving the name, add `lifecycle { create_before_destroy = true }` to models that access groups reference:
+
+```hcl
+resource "litellm_model" "gpt" {
+  model_name          = "gpt-4o-internal"
+  custom_llm_provider = "openai"
+  base_model          = "gpt-4o"
+
+  lifecycle {
+    create_before_destroy = true
+  }
+}
+```
+
 ## Clear and Replacement Behavior
 
-LiteLLM v1.98 merges model updates, so Terraform distinguishes fields with a verified clear representation from fields that cannot be removed safely.
+LiteLLM merges model updates, so Terraform distinguishes fields with a verified clear representation from fields that cannot be removed safely.
 
 The required `model_name`, `custom_llm_provider`, and `base_model` arguments can be changed in place but cannot be omitted. Setting `tier` back to its default (`"free"`) and setting a new non-empty `mode` are also in-place updates.
 

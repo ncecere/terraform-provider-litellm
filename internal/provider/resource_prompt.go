@@ -161,7 +161,7 @@ func (r *PromptResource) Create(ctx context.Context, req resource.CreateRequest,
 	}
 
 	if !data.PromptType.IsNull() && !data.PromptType.IsUnknown() && data.PromptType.ValueString() == "config" {
-		resp.Diagnostics.AddError("Config Prompt Is Read-Only", "LiteLLM v1.98 cannot update or delete config prompts. Import them for read-only visibility, or use prompt_type = \"db\" for managed resources.")
+		resp.Diagnostics.AddError("Config Prompt Is Read-Only", "LiteLLM cannot update or delete config prompts. Import them for read-only visibility, or use prompt_type = \"db\" for managed resources.")
 		return
 	}
 	exists, existenceErr := promptScopedExists(ctx, r.client, data.PromptID.ValueString(), data.Environment.ValueString())
@@ -214,9 +214,23 @@ func (r *PromptResource) Read(ctx context.Context, req resource.ReadRequest, res
 	}
 	imported := string(importedMarker) == "true"
 	if err := r.refreshPrompt(ctx, &data, imported); err != nil {
-		// LiteLLM v1.98 does not expose whether a singular 400/404 or a
-		// versions-route 404 came from Prisma or its process-local registry.
-		// No current response can therefore prove durable absence safely.
+		// The info route answers 400/404 both for absence and for registry or
+		// visibility failures, so it never proves absence alone. The scoped
+		// versions route reads only the database (proxy_admin or
+		// proxy_admin_viewer); for a database prompt, its own "No versions found"
+		// 404 after an info 400/404 is authoritative absence. A config prompt is
+		// never in the database, so its history proves nothing. Any other
+		// outcome, including 403, retains state.
+		if isPromptAbsentError(err) && !data.PromptType.IsNull() && !data.PromptType.IsUnknown() && data.PromptType.ValueString() == "db" {
+			promptID := data.PromptID.ValueString()
+			if promptID == "" {
+				promptID = data.ID.ValueString()
+			}
+			if absent, historyErr := promptScopedHistoryAbsent(ctx, r.client, promptID, data.Environment.ValueString()); historyErr == nil && absent {
+				resp.State.RemoveResource(ctx)
+				return
+			}
+		}
 		resp.Diagnostics.AddError("Prompt Read Error", "Unable to read and validate the scoped prompt. Response and request details were omitted.")
 		return
 	}
@@ -246,7 +260,7 @@ func (r *PromptResource) Update(ctx context.Context, req resource.UpdateRequest,
 	data.PromptID = state.PromptID
 	if (!state.PromptType.IsNull() && !state.PromptType.IsUnknown() && state.PromptType.ValueString() == "config") ||
 		(!data.PromptType.IsNull() && !data.PromptType.IsUnknown() && data.PromptType.ValueString() == "config") {
-		resp.Diagnostics.AddError("Config Prompt Is Read-Only", "LiteLLM v1.98 cannot update config prompts. Keep imported config prompts unchanged, or manage a database prompt instead.")
+		resp.Diagnostics.AddError("Config Prompt Is Read-Only", "LiteLLM cannot update config prompts. Keep imported config prompts unchanged, or manage a database prompt instead.")
 		return
 	}
 
@@ -322,6 +336,18 @@ func (r *PromptResource) Delete(ctx context.Context, req resource.DeleteRequest,
 			}
 		}
 	}
+	// The scoped versions route reads only the database, so it is consistent
+	// across workers, while the singular read also falls back to each worker's
+	// in-memory registry, which another worker can still hold for a moment
+	// after a successful delete on a multi-worker proxy. Once the final DELETE
+	// succeeded, LiteLLM's "No versions found" 404 proves absence. A failed
+	// DELETE (config prompts, a lost registry key) keeps the fail-closed checks
+	// below, because a missing history alone is not proof.
+	if deleteErr == nil && !isPromptAbsentError(probeErr) {
+		if absent, err := promptScopedHistoryAbsent(ctx, r.client, data.PromptID.ValueString(), data.Environment.ValueString()); err == nil && absent {
+			return
+		}
+	}
 	if isPromptAbsentError(probeErr) {
 		if deleteErr != nil {
 			resp.Diagnostics.AddWarning("Prompt Delete Recovered", "LiteLLM returned an error after deletion, but a scoped read confirmed this prompt environment is absent.")
@@ -366,7 +392,7 @@ func validateMutablePromptInfo(info map[string]interface{}) error {
 	case "db":
 		return nil
 	case "config":
-		return fmt.Errorf("LiteLLM reports this as a config prompt, which v1.98 cannot update or delete through the management API")
+		return fmt.Errorf("LiteLLM reports this as a config prompt, which LiteLLM cannot update or delete through the management API")
 	default:
 		return fmt.Errorf("prompt response field %q returned unsupported value %q", "prompt_info.prompt_type", promptType)
 	}

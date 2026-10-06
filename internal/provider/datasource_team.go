@@ -30,6 +30,7 @@ type TeamDataSourceModel struct {
 	MaxBudget             types.Float64 `tfsdk:"max_budget"`
 	Spend                 types.Float64 `tfsdk:"spend"`
 	TPMLimit              types.Int64   `tfsdk:"tpm_limit"`
+	TPDLimit              types.Int64   `tfsdk:"tpd_limit"`
 	RPMLimit              types.Int64   `tfsdk:"rpm_limit"`
 	BudgetDuration        types.String  `tfsdk:"budget_duration"`
 	Metadata              types.Map     `tfsdk:"metadata"`
@@ -83,6 +84,7 @@ func (d *TeamDataSource) Schema(ctx context.Context, req datasource.SchemaReques
 				Description: "Tokens per minute limit for the team.",
 				Computed:    true,
 			},
+			"tpd_limit": schema.Int64Attribute{Description: "Tokens per day limit (LiteLLM 1.104.0 and later).", Computed: true},
 			"rpm_limit": schema.Int64Attribute{
 				Description: "Requests per minute limit for the team.",
 				Computed:    true,
@@ -180,6 +182,7 @@ func projectTeamDataSourceInfo(result map[string]interface{}, expectedTeamID str
 		MaxBudget:             types.Float64Null(),
 		Spend:                 types.Float64Null(),
 		TPMLimit:              types.Int64Null(),
+		TPDLimit:              types.Int64Null(),
 		RPMLimit:              types.Int64Null(),
 		BudgetDuration:        types.StringNull(),
 		Metadata:              types.MapNull(types.StringType),
@@ -187,13 +190,13 @@ func projectTeamDataSourceInfo(result map[string]interface{}, expectedTeamID str
 		Blocked:               types.BoolNull(),
 	}
 	if result == nil || len(result) == 0 {
-		return next, fmt.Errorf("invalid /team/info response: expected the authoritative v1.98 object envelope")
+		return next, fmt.Errorf("invalid /team/info response: expected the authoritative LiteLLM object envelope")
 	}
 	for field := range result {
 		switch field {
 		case "team_id", "team_info", "keys", "team_memberships":
 		default:
-			return next, fmt.Errorf("invalid /team/info response: envelope contains a field outside the authoritative v1.98 relation")
+			return next, fmt.Errorf("invalid /team/info response: envelope contains a field outside the authoritative LiteLLM relation")
 		}
 	}
 
@@ -247,6 +250,7 @@ func projectTeamDataSourceInfo(result map[string]interface{}, expectedTeamID str
 		target *types.Int64
 	}{
 		{"tpm_limit", &next.TPMLimit},
+		{"tpd_limit", &next.TPDLimit},
 		{"rpm_limit", &next.RPMLimit},
 	} {
 		value, fieldErr := dataSourceNullableInt64At(teamInfo, field.name)
@@ -268,7 +272,11 @@ func projectTeamDataSourceInfo(result map[string]interface{}, expectedTeamID str
 	if err != nil {
 		return next, err
 	}
-	next.Metadata, err = dataSourceNullableStringMapAt(teamInfo, "metadata")
+	metadataSource := teamInfo
+	if raw, ok := teamInfo["metadata"].(map[string]interface{}); ok {
+		metadataSource = map[string]interface{}{"metadata": withoutStructuredMetadata(raw, teamMetadataStructuredFields)}
+	}
+	next.Metadata, err = dataSourceNullableStringMapAt(metadataSource, "metadata")
 	if err != nil {
 		return next, err
 	}
@@ -296,13 +304,13 @@ func validateTeamDataSourceObjectRelation(result map[string]interface{}, field s
 func projectTeamDataSourcePermissions(result map[string]interface{}, expectedTeamID string) (types.List, error) {
 	null := types.ListNull(types.StringType)
 	if result == nil || len(result) == 0 {
-		return null, fmt.Errorf("invalid /team/permissions_list response: expected the authoritative v1.98 object envelope")
+		return null, fmt.Errorf("invalid /team/permissions_list response: expected the authoritative LiteLLM object envelope")
 	}
 	for field := range result {
 		switch field {
 		case "team_id", "all_available_permissions", "team_member_permissions":
 		default:
-			return null, fmt.Errorf("invalid /team/permissions_list response: envelope contains a field outside the authoritative v1.98 relation")
+			return null, fmt.Errorf("invalid /team/permissions_list response: envelope contains a field outside the authoritative LiteLLM relation")
 		}
 	}
 	teamID, err := dataSourceRequiredStringAt(result, "team_id")

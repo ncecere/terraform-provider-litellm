@@ -85,7 +85,7 @@ func TestComposeTeamMetadataReplacementCiphertextAndMemberBudgetID(t *testing.T)
 	prior := TeamResourceModel{MetadataJSON: priorJSON, Metadata: types.MapValueMust(types.StringType, map[string]attr.Value{"legacy": types.StringValue("old")})}
 	remote := mustParseSemanticDictionary(t, `{"logging":[{"callback_vars":{"api_key":"litellm_enc::ciphertext"}}],"legacy":"old","api":{"keep":true}}`)
 	request := map[string]interface{}{"team_member_budget": 10.0}
-	replacement, reinsert, err := composeTeamMetadataReplacement(ctx, remote, plan, prior, priorPrepared.provenance, priorPrepared, request)
+	replacement, reinsert, err := composeTeamMetadataReplacement(ctx, remote, plan, prior, priorPrepared.provenance, priorPrepared, request, true)
 	if err != nil || reinsert {
 		t.Fatalf("replacement err=%v reinsert=%v", err, reinsert)
 	}
@@ -96,19 +96,38 @@ func TestComposeTeamMetadataReplacementCiphertextAndMemberBudgetID(t *testing.T)
 	}
 
 	unowned := mustParseSemanticDictionary(t, `{"callback_settings":{"callback_vars":{"api_key":"litellm_enc::ciphertext"}}}`)
-	if _, _, err := composeTeamMetadataReplacement(ctx, unowned, plan, prior, priorPrepared.provenance, priorPrepared, request); err == nil {
+	if _, _, err := composeTeamMetadataReplacement(ctx, unowned, plan, prior, priorPrepared.provenance, priorPrepared, request, true); err == nil {
 		t.Fatal("unowned callback ciphertext was replayable")
 	}
 	generic := mustParseSemanticDictionary(t, `{"api":"[REDACTED]"}`)
-	if _, _, err := composeTeamMetadataReplacement(ctx, generic, plan, prior, priorPrepared.provenance, priorPrepared, request); err == nil {
+	if _, _, err := composeTeamMetadataReplacement(ctx, generic, plan, prior, priorPrepared.provenance, priorPrepared, request, true); err == nil {
 		t.Fatal("generic redaction was replayable")
 	}
 
 	remoteID := mustParseSemanticDictionary(t, `{"team_member_budget_id":"server-id","api":true}`)
-	if _, _, err := composeTeamMetadataReplacement(ctx, remoteID, plan, prior, priorPrepared.provenance, priorPrepared, map[string]interface{}{"team_member_budget": nil}); err == nil {
-		t.Fatal("metadata plus all-null member defaults accepted")
+	// LiteLLM 1.98.0 strips team_member_budget_id from the request and replaces
+	// the stored metadata, so without restored member defaults the change is
+	// refused before any request.
+	if _, _, err := composeTeamMetadataReplacement(ctx, remoteID, plan, prior, priorPrepared.provenance, priorPrepared, map[string]interface{}{"team_member_budget": nil}, false); err == nil {
+		t.Fatal("pre-1.101 server: metadata plus all-null member defaults accepted")
 	}
-	replacement, reinsert, err = composeTeamMetadataReplacement(ctx, remoteID, plan, prior, priorPrepared.provenance, priorPrepared, request)
+	if _, _, err := composeTeamMetadataReplacement(ctx, remoteID, plan, prior, priorPrepared.provenance, priorPrepared, request, false); err != nil {
+		t.Fatalf("pre-1.101 server with restored member defaults: %v", err)
+	}
+	if !serverMergesMemberBudgetID(map[string]interface{}{"team_id": "t", "tpd_limit": nil}) || serverMergesMemberBudgetID(map[string]interface{}{"team_id": "t"}) {
+		t.Fatal("tpd_limit presence must mark a merging server")
+	}
+	// LiteLLM 1.101.0 and later merge the stored team_member_budget_id into
+	// every metadata update, so a metadata change after member defaults are
+	// cleared is safe: the ID is never sent and read-back must still show it.
+	cleared, clearedReinsert, err := composeTeamMetadataReplacement(ctx, remoteID, plan, prior, priorPrepared.provenance, priorPrepared, map[string]interface{}{"team_member_budget": nil}, true)
+	if err != nil || !clearedReinsert {
+		t.Fatalf("metadata after cleared member defaults: err=%v expectReinsert=%v", err, clearedReinsert)
+	}
+	if _, sent := cleared["team_member_budget_id"]; sent {
+		t.Fatal("server-owned team_member_budget_id was sent")
+	}
+	replacement, reinsert, err = composeTeamMetadataReplacement(ctx, remoteID, plan, prior, priorPrepared.provenance, priorPrepared, request, true)
 	if err != nil || !reinsert {
 		t.Fatalf("reinsert composition err=%v reinsert=%v", err, reinsert)
 	}
