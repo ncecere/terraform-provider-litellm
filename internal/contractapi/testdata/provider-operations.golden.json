@@ -668,7 +668,7 @@
       },
       {
         "file": "internal/provider/resource_model.go",
-        "line": 2671
+        "line": 2673
       }
     ]
   },
@@ -994,11 +994,11 @@
     "evidence": [
       {
         "file": "internal/provider/prompt_helpers.go",
-        "line": 96
+        "line": 99
       },
       {
         "file": "internal/provider/prompt_helpers.go",
-        "line": 129
+        "line": 133
       }
     ]
   },

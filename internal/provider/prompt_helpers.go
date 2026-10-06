@@ -90,19 +90,23 @@ func promptScopedExists(ctx context.Context, client *Client, promptID, environme
 	if !IsAPIErrorStatus(err, http.StatusBadRequest) && !IsAPIErrorStatus(err, http.StatusNotFound) {
 		return false, err
 	}
-	// v1.98 uses 400 both for ordinary absence and for authorization/visibility
-	// failures. The scoped versions route is the bounded authoritative DB check:
-	// only a successful empty envelope proves that Create may use this identity.
+	// The info route uses 400 both for ordinary absence and for
+	// authorization/visibility failures. The scoped versions route is the
+	// bounded authoritative database check. LiteLLM's POST /prompts has no
+	// duplicate check, so only LiteLLM's own "No versions found" 404 proves that
+	// Create may use this identity; a generic 404, an empty list (which LiteLLM
+	// never sends), or any other outcome fails closed.
 	versions, versionsErr := fetchEnvelopeListObjects(ctx, client, promptVersionsEndpoint(promptID, environment), "prompts", "prompt version item")
 	if versionsErr != nil {
-		// Unlike info, v1.98's versions route uses 404 for an absent scoped
-		// history. Other 4xx responses remain ambiguous and fail closed.
-		if IsAPIErrorStatus(versionsErr, http.StatusNotFound) {
+		if isPromptVersionsNotFoundError(versionsErr) {
 			return false, nil
 		}
 		return false, versionsErr
 	}
-	return len(versions) > 0, nil
+	if len(versions) == 0 {
+		return false, fmt.Errorf("prompt version history response was empty instead of LiteLLM's absence response")
+	}
+	return true, nil
 }
 
 // liteLLMPromptVersionsNotFoundMarker is the detail LiteLLM's scoped versions

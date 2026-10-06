@@ -2665,7 +2665,9 @@ func (r *ModelResource) patchModel(ctx context.Context, data, prior *ModelResour
 	endpoint := endpointWithPathSegment("/model/", modelID, "/update")
 	var result map[string]interface{}
 	err := r.client.DoRequestWithResponse(ctx, "PATCH", endpoint, patchReq, &result)
-	if err != nil && isModelCredentialEmptyRejectedError(err) && litellmParams["litellm_credential_name"] == "" {
+	// Retry only a detach (planned null). An explicitly configured "" is sent
+	// as-is, and LiteLLM 1.104.0's rejection is reported to the user.
+	if err != nil && isModelCredentialEmptyRejectedError(err) && data.LiteLLMCredentialName.IsNull() && litellmParams["litellm_credential_name"] == "" {
 		litellmParams["litellm_credential_name"] = nil
 		result = nil
 		err = r.client.DoRequestWithResponse(ctx, "PATCH", endpoint, patchReq, &result)
