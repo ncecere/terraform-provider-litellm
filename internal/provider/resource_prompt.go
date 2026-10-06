@@ -215,11 +215,13 @@ func (r *PromptResource) Read(ctx context.Context, req resource.ReadRequest, res
 	imported := string(importedMarker) == "true"
 	if err := r.refreshPrompt(ctx, &data, imported); err != nil {
 		// The info route answers 400/404 both for absence and for registry or
-		// visibility failures, so it never proves absence alone. LiteLLM 1.104.0's
-		// scoped versions route reads only the database (admin only); an empty or
-		// 404 history after an info 400/404 is authoritative absence. Any other
+		// visibility failures, so it never proves absence alone. The scoped
+		// versions route reads only the database (proxy_admin or
+		// proxy_admin_viewer); for a database prompt, its own "No versions found"
+		// 404 after an info 400/404 is authoritative absence. A config prompt is
+		// never in the database, so its history proves nothing. Any other
 		// outcome, including 403, retains state.
-		if isPromptAbsentError(err) {
+		if isPromptAbsentError(err) && !data.PromptType.IsNull() && !data.PromptType.IsUnknown() && data.PromptType.ValueString() == "db" {
 			promptID := data.PromptID.ValueString()
 			if promptID == "" {
 				promptID = data.ID.ValueString()

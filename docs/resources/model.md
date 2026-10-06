@@ -223,7 +223,7 @@ The following arguments are supported:
 
 * `vertex_credentials` - (Optional) string. Vertex credentials (JSON string or path depending on your setup).
 
-* `litellm_credential_name` - (Optional) string. Name of a credential created via `litellm_credential` resource. This allows you to reference stored credentials instead of providing API keys directly in the model configuration. Removing it detaches the credential in place; the provider sends an explicit `null`, which LiteLLM 1.104.0 requires (it rejects an empty string).
+* `litellm_credential_name` - (Optional) string. Name of a credential created via `litellm_credential` resource. This allows you to reference stored credentials instead of providing API keys directly in the model configuration. Removing it detaches the credential in place. The provider sends an empty string, which LiteLLM 1.98.0 stores as the cleared value; LiteLLM 1.104.0 rejects that before any write and detaches only for an explicit `null`, so the provider then retries once with `null`.
 
 * `additional_litellm_params` - (Optional) map(string). A map of arbitrary additional parameters that will be merged into the `litellm_params` object sent to the LiteLLM API. This is intended for provider-specific or experimental options not exposed as dedicated arguments.
 
@@ -391,7 +391,7 @@ resource "litellm_model" "priced" {
 
 Changing any price, or removing a token price, is an in-place update; removing a token price falls back to LiteLLM's catalog price for `base_model`. Removing a per-pixel or per-second price replaces the model (see [Clear and Replacement Behavior](#clear-and-replacement-behavior)).
 
-LiteLLM 1.102.0 and later silently drop pricing sent in `model_info`: the model is saved without the price, spend is billed at the catalog price, and Terraform reports an inconsistent result. The provider therefore rejects pricing keys in `additional_model_info` and `additional_model_info_json` at plan time. A key is treated as pricing when it is one of LiteLLM's 107 pricing fields, a tiered `*_above_<N>_tokens` rate, or the LiteLLM-generated `key` or `pricing_overrides` fields.
+LiteLLM 1.102.0 and later silently drop pricing sent in `model_info`: the model is saved without the price, spend is billed at the catalog price, and Terraform reports an inconsistent result. The provider therefore warns at plan time about pricing keys in `additional_model_info` and `additional_model_info_json`. It is a warning rather than an error because LiteLLM 1.101 and earlier still honor these keys and an unchanged key on an existing model sends no request; on LiteLLM 1.102.0 and later, creating or changing such a key fails at apply. A key is treated as pricing when it is one of LiteLLM's 107 pricing fields, a tiered `*_above_<N>_tokens` rate, or the LiteLLM-generated `key` or `pricing_overrides` fields.
 
 ### Migrating pricing out of `model_info`
 

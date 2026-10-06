@@ -100,14 +100,12 @@ func TestPatchModelEmitsOnlySupportedClearSentinels(t *testing.T) {
 	if !ok {
 		t.Fatalf("litellm_params = %#v", body["litellm_params"])
 	}
-	for _, key := range []string{"api_key", "api_base", "api_version", "aws_access_key_id", "aws_secret_access_key", "aws_region_name", "aws_session_name", "aws_role_name", "vertex_project", "vertex_location", "vertex_credentials"} {
+	// litellm_credential_name is sent as "" first (LiteLLM 1.98.0); patchModel
+	// retries with null only on LiteLLM 1.104.0's empty-string rejection.
+	for _, key := range []string{"api_key", "api_base", "api_version", "aws_access_key_id", "aws_secret_access_key", "aws_region_name", "aws_session_name", "aws_role_name", "vertex_project", "vertex_location", "vertex_credentials", "litellm_credential_name"} {
 		if value, present := params[key]; !present || value != "" {
 			t.Errorf("%s clear = %#v, present=%t", key, value, present)
 		}
-	}
-	// LiteLLM 1.104.0 rejects "" for litellm_credential_name; only null detaches.
-	if value, present := params["litellm_credential_name"]; !present || value != nil {
-		t.Errorf("litellm_credential_name clear = %#v, present=%t; want explicit null", value, present)
 	}
 	if params["reasoning_effort"] != "none" {
 		t.Errorf("reasoning_effort clear = %#v", params["reasoning_effort"])

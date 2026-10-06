@@ -14,16 +14,24 @@ import (
 	"github.com/hashicorp/terraform-plugin-go/tftypes"
 )
 
-// TestModelCredentialDetachSendsNullAndWaitsForWorkers covers LiteLLM 1.104.0:
-// "" is rejected for litellm_credential_name and only JSON null detaches it,
+// TestModelCredentialDetachAcrossLiteLLMVersions covers both detach contracts.
+// LiteLLM 1.104.0 rejects "" before any write and detaches only for JSON null,
 // and a multi-worker proxy keeps returning the old value until each worker
-// reloads its model list.
-func TestModelCredentialDetachSendsNullAndWaitsForWorkers(t *testing.T) {
+// reloads its model list. LiteLLM 1.98.0 stores "" as the cleared value and
+// ignores an explicit null.
+func TestModelCredentialDetachAcrossLiteLLMVersions(t *testing.T) {
+	for _, version := range []string{"1.104", "1.98"} {
+		t.Run(version, func(t *testing.T) { testModelCredentialDetach(t, version) })
+	}
+}
+
+func testModelCredentialDetach(t *testing.T, version string) {
 	ctx := context.Background()
 	var mu sync.Mutex
 	credential := "shared-credential"
 	staleReads := 0
 	var patch map[string]interface{}
+	var sentValues []interface{}
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
@@ -35,12 +43,15 @@ func TestModelCredentialDetachSendsNullAndWaitsForWorkers(t *testing.T) {
 			_ = json.NewDecoder(request.Body).Decode(&patch)
 			params, _ := patch["litellm_params"].(map[string]interface{})
 			if value, sent := params["litellm_credential_name"]; sent {
-				if value == "" {
-					http.Error(writer, `{"detail":"litellm_credential_name cannot be an empty string"}`, http.StatusBadRequest)
+				sentValues = append(sentValues, value)
+				switch {
+				case version == "1.104" && value == "":
+					http.Error(writer, `{"error":{"message":"litellm_credential_name cannot be an empty string. Send null to detach the stored credential or omit the field to leave it unchanged.","type":"invalid_request_error","param":"litellm_credential_name","code":"400"}}`, http.StatusBadRequest)
 					return
-				}
-				if value == nil {
+				case version == "1.104" && value == nil:
 					credential, staleReads = "", 3
+				case version == "1.98" && value == "":
+					credential = ""
 				}
 			}
 			_, _ = fmt.Fprint(writer, `{"status":"ok"}`)
@@ -95,9 +106,12 @@ func TestModelCredentialDetachSendsNullAndWaitsForWorkers(t *testing.T) {
 	if err != nil || accessGroupProtocolDiagnosticsHaveError(applied.Diagnostics) {
 		t.Fatalf("detach: err=%v diagnostics=%s", err, agentProtocolDiagnosticsText(applied.Diagnostics))
 	}
-	params, _ := patch["litellm_params"].(map[string]interface{})
-	if value, sent := params["litellm_credential_name"]; !sent || value != nil {
-		t.Fatalf("detach PATCH litellm_credential_name=%#v sent=%t, want explicit null", value, sent)
+	want := []interface{}{""}
+	if version == "1.104" {
+		want = []interface{}{"", nil}
+	}
+	if fmt.Sprint(sentValues) != fmt.Sprint(want) || len(sentValues) != len(want) {
+		t.Fatalf("detach PATCH litellm_credential_name values=%#v, want %#v", sentValues, want)
 	}
 	if !protocolAttributeMap(t, schema, applied.NewState)["litellm_credential_name"].IsNull() {
 		t.Fatal("detached credential name remained in state")

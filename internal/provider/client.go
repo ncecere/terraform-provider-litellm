@@ -33,6 +33,9 @@ type APIError struct {
 	// versions route ("No versions found for prompt ID ..."), as opposed to a
 	// generic 404 from a different route or an intermediary.
 	promptVersionsNotFound bool
+	// modelCredentialEmptyRejected marks LiteLLM 1.104.0's pre-write 400 for
+	// litellm_credential_name = "" on /model/{id}/update.
+	modelCredentialEmptyRejected bool
 }
 
 func (e *APIError) Error() string {
@@ -343,20 +346,22 @@ func (c *Client) doRequestWithResponseOptions(ctx context.Context, method, reque
 		fallbackNotReady := classifyFallbackNotReadyBody(bodyBytes)
 		enterpriseLicenseRequired := response.StatusCode == http.StatusForbidden && classifyEnterpriseLicenseRequiredBody(bodyBytes)
 		promptVersionsNotFound := response.StatusCode == http.StatusNotFound && classifyPromptVersionsNotFoundBody(bodyBytes)
+		modelCredentialEmptyRejected := response.StatusCode == http.StatusBadRequest && classifyModelCredentialEmptyRejectedBody(bodyBytes)
 		detail, detailOmitted := "", true
 		if !truncated && (response.StatusCode < http.StatusMultipleChoices || response.StatusCode >= http.StatusBadRequest) {
 			detail, detailOmitted = safeResponseDetail(bodyBytes, response.Header.Get("Content-Type"), safety)
 		}
 		return false, withSafeRetrySchedule(&APIError{
-			StatusCode:                response.StatusCode,
-			Body:                      detail,
-			RequestID:                 requestID,
-			Detail:                    detail,
-			DetailOmitted:             detailOmitted,
-			BodyTruncated:             truncated,
-			fallbackNotReady:          fallbackNotReady,
-			enterpriseLicenseRequired: enterpriseLicenseRequired,
-			promptVersionsNotFound:    promptVersionsNotFound,
+			StatusCode:                   response.StatusCode,
+			Body:                         detail,
+			RequestID:                    requestID,
+			Detail:                       detail,
+			DetailOmitted:                detailOmitted,
+			BodyTruncated:                truncated,
+			fallbackNotReady:             fallbackNotReady,
+			enterpriseLicenseRequired:    enterpriseLicenseRequired,
+			promptVersionsNotFound:       promptVersionsNotFound,
+			modelCredentialEmptyRejected: modelCredentialEmptyRejected,
 		}, retryAfter, hasRetryAfter)
 	}
 

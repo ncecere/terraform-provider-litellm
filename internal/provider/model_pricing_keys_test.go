@@ -102,9 +102,9 @@ func TestModelInfoPricingKeysRejectedAtValidation(t *testing.T) {
 		return accessGroupProtocolDynamicValue(t, schema, organizationProjectProtocolValue(t, schema, values))
 	}
 	for _, test := range []struct {
-		name      string
-		extra     map[string]interface{}
-		wantError bool
+		name        string
+		extra       map[string]interface{}
+		wantWarning bool
 	}{
 		{"map pricing key", map[string]interface{}{"additional_model_info": stringMapProtocolValue(map[string]string{"input_cost_per_token": "0.000003"})}, true},
 		{"map tiered pricing key", map[string]interface{}{"additional_model_info": stringMapProtocolValue(map[string]string{"input_cost_per_token_above_200k_tokens": "0.000006"})}, true},
@@ -120,10 +120,11 @@ func TestModelInfoPricingKeysRejectedAtValidation(t *testing.T) {
 				t.Fatal(err)
 			}
 			text := agentProtocolDiagnosticsText(response.Diagnostics)
-			if accessGroupProtocolDiagnosticsHaveError(response.Diagnostics) != test.wantError {
+			// A warning, never an error: existing configurations must stay valid.
+			if accessGroupProtocolDiagnosticsHaveError(response.Diagnostics) || (len(response.Diagnostics) > 0) != test.wantWarning {
 				t.Fatalf("diagnostics=%s", text)
 			}
-			if test.wantError && (!strings.Contains(text, "Custom Pricing Is Not Supported in Model Information") || !strings.Contains(text, "additional_litellm_params")) {
+			if test.wantWarning && (!strings.Contains(text, "Custom Pricing in Model Information") || !strings.Contains(text, "additional_litellm_params")) {
 				t.Fatalf("diagnostic lacks guidance: %s", text)
 			}
 			if strings.Contains(text, "0.000003") || strings.Contains(text, "5e-7") {

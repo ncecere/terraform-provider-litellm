@@ -595,7 +595,7 @@
     "evidence": [
       {
         "file": "internal/provider/resource_model.go",
-        "line": 1120
+        "line": 1122
       }
     ]
   },
@@ -618,11 +618,11 @@
       },
       {
         "file": "internal/provider/resource_model.go",
-        "line": 1374
+        "line": 1376
       },
       {
         "file": "internal/provider/resource_model.go",
-        "line": 1376
+        "line": 1378
       },
       {
         "file": "internal/provider/resource_model_semantic_dictionary.go",
@@ -638,7 +638,7 @@
     "evidence": [
       {
         "file": "internal/provider/resource_model.go",
-        "line": 1358
+        "line": 1360
       }
     ]
   },
@@ -650,7 +650,7 @@
     "evidence": [
       {
         "file": "internal/provider/resource_model.go",
-        "line": 1358
+        "line": 1360
       }
     ]
   },
@@ -664,7 +664,11 @@
     "evidence": [
       {
         "file": "internal/provider/resource_model.go",
-        "line": 2663
+        "line": 2667
+      },
+      {
+        "file": "internal/provider/resource_model.go",
+        "line": 2671
       }
     ]
   },
@@ -896,11 +900,11 @@
     "evidence": [
       {
         "file": "internal/provider/resource_prompt.go",
-        "line": 316
+        "line": 318
       },
       {
         "file": "internal/provider/resource_prompt.go",
-        "line": 331
+        "line": 333
       }
     ]
   },
@@ -928,23 +932,23 @@
       },
       {
         "file": "internal/provider/resource_prompt.go",
-        "line": 271
+        "line": 273
       },
       {
         "file": "internal/provider/resource_prompt.go",
-        "line": 322
+        "line": 324
       },
       {
         "file": "internal/provider/resource_prompt.go",
-        "line": 333
-      },
-      {
-        "file": "internal/provider/resource_prompt.go",
-        "line": 550
+        "line": 335
       },
       {
         "file": "internal/provider/resource_prompt.go",
         "line": 552
+      },
+      {
+        "file": "internal/provider/resource_prompt.go",
+        "line": 554
       }
     ]
   },
@@ -960,7 +964,7 @@
     "evidence": [
       {
         "file": "internal/provider/resource_prompt.go",
-        "line": 330
+        "line": 332
       }
     ]
   },
@@ -974,7 +978,7 @@
     "evidence": [
       {
         "file": "internal/provider/resource_prompt.go",
-        "line": 294
+        "line": 296
       }
     ]
   },

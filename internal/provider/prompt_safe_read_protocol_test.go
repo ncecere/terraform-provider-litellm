@@ -161,6 +161,26 @@ func TestPromptResourceSafeReadProtocolSequences(t *testing.T) {
 		})
 	}
 
+	t.Run("config prompt is never removed by an absent history", func(t *testing.T) {
+		configPrior := organizationProjectProtocolReplace(t, schema, prior, map[string]interface{}{"prompt_type": "config"})
+		mu.Lock()
+		mode, infoAttempts, versionAttempts = "absence-404", 0, 0
+		mu.Unlock()
+		response, err := protocolServer.ReadResource(ctx, &tfprotov6.ReadResourceRequest{TypeName: "litellm_prompt", CurrentState: configPrior, Private: private})
+		if err != nil {
+			t.Fatal(err)
+		}
+		mu.Lock()
+		versionCalls := versionAttempts
+		mu.Unlock()
+		if !accessGroupProtocolDiagnosticsHaveError(response.Diagnostics) || versionCalls != 0 {
+			t.Fatalf("config prompt: versions=%d diagnostics=%s", versionCalls, agentProtocolDiagnosticsText(response.Diagnostics))
+		}
+		if value, err := response.NewState.Unmarshal(schema.ValueType()); err != nil || value.IsNull() {
+			t.Fatalf("config prompt was removed from state: err=%v", err)
+		}
+	})
+
 	for _, failureMode := range []string{"exhaustion", "terminal-403", "malformed", "mismatch", "malformed-late", "versions-nonempty", "versions-empty", "versions-error", "versions-generic-404"} {
 		failureMode := failureMode
 		t.Run(failureMode+" retains exact state", func(t *testing.T) {

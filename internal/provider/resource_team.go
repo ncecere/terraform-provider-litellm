@@ -821,7 +821,7 @@ func (r *TeamResource) Update(ctx context.Context, req resource.UpdateRequest, r
 			resp.Diagnostics.AddError("Team Metadata Hydration Failed", "The complete metadata document was malformed or not persistable exactly. No update request was sent.")
 			return
 		}
-		replacement, reinsert, compositionErr := composeTeamMetadataReplacement(ctx, remote, data, state, priorProvenance, prepared, teamReq)
+		replacement, reinsert, compositionErr := composeTeamMetadataReplacement(ctx, remote, data, state, priorProvenance, prepared, teamReq, serverMergesMemberBudgetID(teamInfo))
 		if compositionErr != nil {
 			resp.Diagnostics.AddError("Team Metadata Composition Failed", "The complete metadata replacement could not be composed safely. No update request was sent.")
 			return

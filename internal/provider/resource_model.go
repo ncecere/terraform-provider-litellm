@@ -1,11 +1,13 @@
 package provider
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
+	"net/http"
 	"net/url"
 	"reflect"
 	"strconv"
@@ -2591,9 +2593,11 @@ func (r *ModelResource) patchModel(ctx context.Context, data, prior *ModelResour
 	setModelPatchString(litellmParams, "vertex_project", data.VertexProject, prior.VertexProject)
 	setModelPatchString(litellmParams, "vertex_location", data.VertexLocation, prior.VertexLocation)
 	setModelPatchString(litellmParams, "vertex_credentials", data.VertexCredentials, prior.VertexCredentials)
-	// LiteLLM 1.104.0 rejects "" with HTTP 400 and detaches the stored
-	// credential only for an explicit JSON null.
-	setModelPatchNullableString(litellmParams, "litellm_credential_name", data.LiteLLMCredentialName, prior.LiteLLMCredentialName)
+	// A detach sends "", which LiteLLM 1.98.0 stores as the cleared value (it
+	// ignores an explicit null here). LiteLLM 1.104.0 rejects "" before any
+	// write and detaches only for null; patchModel retries once with null on
+	// exactly that rejection.
+	setModelPatchString(litellmParams, "litellm_credential_name", data.LiteLLMCredentialName, prior.LiteLLMCredentialName)
 
 	setModelPatchCost(litellmParams, "input_cost_per_pixel", data.InputCostPerPixel, prior.InputCostPerPixel, 1.0, false)
 	setModelPatchCost(litellmParams, "output_cost_per_pixel", data.OutputCostPerPixel, prior.OutputCostPerPixel, 1.0, false)
@@ -2660,10 +2664,30 @@ func (r *ModelResource) patchModel(ctx context.Context, data, prior *ModelResour
 
 	endpoint := endpointWithPathSegment("/model/", modelID, "/update")
 	var result map[string]interface{}
-	if err := r.client.DoRequestWithResponse(ctx, "PATCH", endpoint, patchReq, &result); err != nil {
+	err := r.client.DoRequestWithResponse(ctx, "PATCH", endpoint, patchReq, &result)
+	if err != nil && isModelCredentialEmptyRejectedError(err) && litellmParams["litellm_credential_name"] == "" {
+		litellmParams["litellm_credential_name"] = nil
+		result = nil
+		err = r.client.DoRequestWithResponse(ctx, "PATCH", endpoint, patchReq, &result)
+	}
+	if err != nil {
 		return nil, err
 	}
 	return result, nil
+}
+
+// liteLLMModelCredentialEmptyMarker is the start of LiteLLM 1.104.0's
+// validation message for litellm_credential_name = "", raised before any
+// database write.
+var liteLLMModelCredentialEmptyMarker = []byte("litellm_credential_name cannot be an empty string")
+
+func classifyModelCredentialEmptyRejectedBody(body []byte) bool {
+	return bytes.Contains(body, liteLLMModelCredentialEmptyMarker)
+}
+
+func isModelCredentialEmptyRejectedError(err error) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusBadRequest && apiErr.modelCredentialEmptyRejected
 }
 
 // normalizeNumericString normalises a string that represents a number into a

@@ -406,7 +406,17 @@ func restoreTeamOwnedCallbackCiphertext(ctx context.Context, remote map[string]i
 	return overlaySemanticDictionaryObject(ctx, result, restored)
 }
 
-func composeTeamMetadataReplacement(ctx context.Context, remote map[string]interface{}, plan, prior TeamResourceModel, priorProvenance semanticDictionaryProvenance, prepared teamSemanticPrepared, request map[string]interface{}) (map[string]interface{}, bool, error) {
+// serverMergesMemberBudgetID reports whether the team row came from a LiteLLM
+// release that merges the stored team_member_budget_id back into every
+// metadata update (1.101.0 and later). The team row's tpd_limit column exists
+// from 1.103.0, so its presence is a conservative marker; without it the
+// provider keeps the 1.98-safe refusal.
+func serverMergesMemberBudgetID(teamInfo map[string]interface{}) bool {
+	_, present := teamInfo["tpd_limit"]
+	return present
+}
+
+func composeTeamMetadataReplacement(ctx context.Context, remote map[string]interface{}, plan, prior TeamResourceModel, priorProvenance semanticDictionaryProvenance, prepared teamSemanticPrepared, request map[string]interface{}, serverMergesBudgetID bool) (map[string]interface{}, bool, error) {
 	result, err := restoreTeamOwnedCallbackCiphertext(ctx, remote, prior.MetadataJSON, prior.Metadata, priorProvenance)
 	if err != nil {
 		return nil, false, err
@@ -417,10 +427,24 @@ func composeTeamMetadataReplacement(ctx context.Context, remote map[string]inter
 		if !validMemberBudgetID || memberBudgetText == "" {
 			return nil, false, errSemanticDictionaryTraversal
 		}
-		// The relation is server-owned. LiteLLM 1.104.0 merges its stored
-		// team_member_budget_id back into every metadata update
-		// (TeamMemberBudgetHandler.SYSTEM_MANAGED_METADATA_KEYS), so it is
-		// never sent; read-back must still show it.
+		// The relation is server-owned and never sent. LiteLLM 1.101.0 and
+		// later merge the stored team_member_budget_id back into every metadata
+		// update (TeamMemberBudgetHandler.SYSTEM_MANAGED_METADATA_KEYS). Earlier
+		// releases (1.98.0) strip it from the request and replace the stored
+		// metadata, which would sever the member-budget relation, so there the
+		// same request must re-send non-null member defaults.
+		if !serverMergesBudgetID {
+			willRestore := false
+			for name := range teamPendingMemberDefaultAllowedFields {
+				if value, present := request[name]; present && value != nil {
+					willRestore = true
+					break
+				}
+			}
+			if !willRestore {
+				return nil, false, errSemanticDictionaryTraversal
+			}
+		}
 		delete(result, "team_member_budget_id")
 	}
 	if knownMap(prior.Metadata) {

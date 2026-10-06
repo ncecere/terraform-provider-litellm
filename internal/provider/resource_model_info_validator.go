@@ -54,15 +54,17 @@ func (modelInfoReservedKeysValidator) ValidateMap(ctx context.Context, req valid
 	addModelInfoPricingKeyDiagnostics(req.Path, "additional_model_info", sortedKeys(elements), &resp.Diagnostics)
 }
 
-// addModelInfoPricingKeyDiagnostics rejects pricing keys in a model_info
-// surface before any request is sent. Key names are not sensitive; values are
-// never included.
+// addModelInfoPricingKeyDiagnostics warns about pricing keys in a model_info
+// surface. It is a warning, not an error: LiteLLM 1.101 and earlier (including
+// 1.98.0) still honor these keys, and an unchanged key on an existing model
+// produces no request at all, so existing configurations stay valid. Key names
+// are not sensitive; values are never included.
 func addModelInfoPricingKeyDiagnostics(attributePath path.Path, attribute string, keys []string, diagnostics *diag.Diagnostics) {
 	for _, key := range keys {
 		if isLiteLLMModelInfoPricingKey(key) {
-			diagnostics.AddAttributeError(
+			diagnostics.AddAttributeWarning(
 				attributePath,
-				"Custom Pricing Is Not Supported in Model Information",
+				"Custom Pricing in Model Information",
 				attribute+" cannot manage \""+key+"\". "+modelInfoPricingKeyDiagnostic,
 			)
 		}
