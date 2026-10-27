@@ -495,6 +495,24 @@ var teamMetadataStructuredFields = map[string]bool{
 // withoutStructuredMetadata returns a copy of a metadata object without the
 // listed dedicated members whose values are not strings. Every other member,
 // and any listed member that is a plain string, is kept unchanged.
+// withStringifiedScalarMetadata renders scalar boolean and number members of a
+// legacy map(string) metadata projection as their JSON text, the same way the
+// resources render them. LiteLLM's admin UI writes flags such as
+// disable_global_guardrails as JSON booleans (issue #299). Objects, arrays,
+// and null remain unchanged and keep their existing validation.
+func withStringifiedScalarMetadata(metadata map[string]interface{}) map[string]interface{} {
+	projected := make(map[string]interface{}, len(metadata))
+	for key, value := range metadata {
+		switch value.(type) {
+		case bool, json.Number, float64:
+			projected[key] = metadataValueToString(value)
+		default:
+			projected[key] = value
+		}
+	}
+	return projected
+}
+
 func withoutStructuredMetadata(metadata map[string]interface{}, structured map[string]bool) map[string]interface{} {
 	projected := make(map[string]interface{}, len(metadata))
 	for key, value := range metadata {

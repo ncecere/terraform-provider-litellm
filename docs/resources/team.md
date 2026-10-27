@@ -181,7 +181,7 @@ The following arguments are supported:
 * `team_member_budget_duration` - (Optional) Recurring reset interval for the default member budget. Use a positive integer followed by `s`, `m`, `h`, `d`, or `w` (for example, `30d`, `24h`, or `1w`); one of the exact aliases `hourly`, `daily`, `weekly`, or `monthly`; or exactly `1mo`. Zero values, other month counts such as `2mo` or `12mo`, case variants, and malformed aliases or units are rejected. LiteLLM applies it to new/default membership budgets and may backfill memberships without a budget; private member overrides are preserved. Configure `litellm_team_member.budget_duration` for per-member control.
 * `team_member_rpm_limit` - (Optional) Default requests per minute limit for each team member.
 * `team_member_tpm_limit` - (Optional) Default tokens per minute limit for each team member.
-* `metadata` - (Optional) Legacy metadata map. Values are strings; use `jsonencode()` for historically supported objects and arrays.
+* `metadata` - (Optional) Legacy metadata map. Values are strings; use `jsonencode()` for historically supported objects and arrays. Booleans and numbers stored by LiteLLM (for example `disable_global_guardrails = true`, which the LiteLLM admin UI writes) are read as their JSON text (`"true"`), but this map always writes strings. To send a real boolean or number, manage that key with `metadata_json`.
 * `metadata_json` - (Optional, Sensitive) Non-null JSON object for lossless heterogeneous metadata. Its top-level keys cannot overlap legacy, dedicated, or server-owned metadata roots.
 * `model_aliases` - (Optional) A map of alias names to model names.
 * `model_rpm_limit` - (Optional) A map of model names to per-model RPM limits.

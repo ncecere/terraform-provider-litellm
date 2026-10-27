@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **`litellm_user` SSO users (issue #311)**: Refreshing a user created through LiteLLM SSO login failed with "Unable to read user" since 2.1.0, because LiteLLM stores `metadata` such as `{"auth_provider": null}` and the strict `map(string)` projection rejected the `null` member. Explicit `null` members of user metadata are now treated as absent keys in the `litellm_user` resource and data source; every other non-string member still fails closed. Thanks to @ZubikIT for the patch.
+- **`litellm_team` boolean and number metadata (issue #299)**: When a tracked legacy `metadata` key held a JSON boolean or number, which the LiteLLM admin UI writes (for example `disable_global_guardrails`), refresh failed with "Team Read Failed" whenever `metadata_json` was configured, and every team update failed at its confirming read. The `litellm_team` data source failed the same way with "Invalid Team Response". Booleans and numbers are now read as their JSON text (`"true"`), so the change shows as normal drift. The legacy map still writes strings; manage such a key with `metadata_json` to send a real boolean.
 
 ## [2.2.0] - 2026-10-05
 
