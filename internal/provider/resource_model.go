@@ -55,6 +55,11 @@ type modelReadOwnership struct {
 	clearedFields                         map[string]struct{}
 	durablyClearedFields                  map[string]struct{}
 	freshConnection                       bool
+	// refreshDrift is set only by ordinary refresh. There, a Terraform-owned
+	// additional_litellm_params_json key that LiteLLM no longer returns is
+	// projected as drift instead of failing the read (issue #297). Create and
+	// update confirmations keep requiring every owned key.
+	refreshDrift bool
 }
 
 // ModelResourceModel describes the resource data model.
@@ -888,6 +893,7 @@ func (r *ModelResource) Read(ctx context.Context, req resource.ReadRequest, resp
 		topThinkingOwned:                      topThinkingOwned,
 		additionalLiteLLMParamsJSONProvenance: paramsSemanticProvenance,
 		additionalModelInfoJSONProvenance:     semanticProvenance,
+		refreshDrift:                          true,
 	})
 	if err != nil {
 		if IsNotFoundError(err) {
@@ -913,6 +919,21 @@ func (r *ModelResource) Read(ctx context.Context, req resource.ReadRequest, resp
 		data.AdditionalModelInfoConfigured = types.BoolValue(configured)
 	}
 
+	// Refresh can report an owned additional_litellm_params_json key as removed
+	// (issue #297). Ownership must match the refreshed value exactly, so the
+	// next plan treats the configured key as an addition and restores it.
+	if paramsSemanticProvenance.Configured && knownString(data.AdditionalLiteLLMParamsJSON) {
+		refreshedObject, parseErr := parseSemanticDictionary(ctx, data.AdditionalLiteLLMParamsJSON.ValueString())
+		var refreshedPaths semanticDictionaryPathSet
+		if parseErr == nil {
+			refreshedPaths, parseErr = semanticDictionaryLeafPaths(ctx, refreshedObject)
+		}
+		if parseErr != nil {
+			resp.Diagnostics.AddAttributeError(path.Root("additional_litellm_params_json"), "Invalid Semantic Dictionary Provenance", "Private ownership state could not be encoded safely. No model state was produced.")
+			return
+		}
+		paramsSemanticProvenance.TerraformOwned = refreshedPaths
+	}
 	paramsSemanticRaw, paramsSemanticErr := encodeModelAdditionalLiteLLMParamsJSONProvenance(ctx, paramsSemanticProvenance)
 	if paramsSemanticErr != nil {
 		resp.Diagnostics.AddAttributeError(path.Root("additional_litellm_params_json"), "Invalid Semantic Dictionary Provenance", "Private ownership state could not be encoded safely. No model state was produced.")
@@ -1784,6 +1805,7 @@ func (r *ModelResource) readModelWithOwnership(ctx context.Context, data *ModelR
 		data.AdditionalLiteLLMParamsJSON,
 		semanticLiteLLMParams,
 		ownership.additionalLiteLLMParamsJSONProvenance,
+		ownership.refreshDrift,
 	)
 	if err != nil {
 		return fmt.Errorf("%w", errModelLiteLLMParamsJSONProjection)

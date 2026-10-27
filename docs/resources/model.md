@@ -274,6 +274,8 @@ The following arguments are supported:
   * Any takeover, semantic or shape change, nested removal, clear, or attribute removal replaces the model. An unresolved value on an existing model also plans replacement. Formatting-only equality sends no PATCH and semantically equal reads preserve the configured spelling.
   * Before an unrelated in-place update, Terraform performs one fresh identity-checked `/model/info` read. It preserves API-owned nested siblings beneath configured object keys, then overlays configured values. If an API-owned sibling is masked, Terraform fails before PATCH rather than resending the mask as a credential.
   * `/model/info` recursively masks values controlled by sensitive key segments. Terraform restores only configured owned masked leaves from prior authoritative state. Ambiguous mask-like configured strings under sensitive keys, missing plaintext, missing or changed owned shape, and identity failures fail closed. Literal mask-like strings under non-sensitive keys remain ordinary values.
+  * During ordinary refresh, a configured top-level key that LiteLLM no longer returns in `litellm_params` is reported as drift, and the next apply restores it (which, like any change to this attribute, replaces the model). Create and update confirmations still require every configured key.
+  * Context-window limits such as `max_input_tokens` and `max_output_tokens` belong in `model_info`: LiteLLM 1.104.0 reads configured token limits from the deployment's `model_info`. Set them with `additional_model_info` or `additional_model_info_json`, not here.
   * This attribute is sensitive because arbitrary parameters can contain credentials. Mark outputs derived from it as sensitive.
 
   ```hcl

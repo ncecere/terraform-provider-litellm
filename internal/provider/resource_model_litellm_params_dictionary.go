@@ -387,12 +387,28 @@ func reconcileModelAdditionalLiteLLMParamsJSON(
 	current types.String,
 	observed map[string]interface{},
 	provenance semanticDictionaryProvenance,
+	missingOwnedIsDrift bool,
 ) (types.String, error) {
 	if !provenance.Configured {
 		return types.StringNull(), nil
 	}
 	if current.IsNull() || current.IsUnknown() || observed == nil {
 		return types.StringNull(), errSemanticDictionaryTraversal
+	}
+	prior, err := parseSemanticDictionary(ctx, current.ValueString())
+	if err != nil {
+		return types.StringNull(), err
+	}
+	// A Terraform-owned top-level parameter that the identity-checked
+	// /model/info response no longer carries in litellm_params is ordinary
+	// drift: project it as removed so the next plan restores it, rather than
+	// failing every refresh (issue #297). Nested type changes and masked
+	// values still fail closed below.
+	if missingOwnedIsDrift {
+		provenance, prior, err = withoutMissingModelParamRoots(ctx, provenance, prior, observed)
+		if err != nil {
+			return types.StringNull(), err
+		}
 	}
 	projected, err := projectModelAdditionalModelInfoJSON(ctx, observed, provenance)
 	if err != nil {
@@ -406,10 +422,6 @@ func reconcileModelAdditionalLiteLLMParamsJSON(
 	}
 	if irreversiblyStringified {
 		return types.StringNull(), errSemanticDictionaryMasked
-	}
-	prior, err := parseSemanticDictionary(ctx, current.ValueString())
-	if err != nil {
-		return types.StringNull(), err
 	}
 	sameShape, err := semanticDictionarySameShape(ctx, prior, projected)
 	if err != nil {
@@ -467,4 +479,43 @@ func semanticDictionaryTopLevelOwnedKeys(ctx context.Context, provenance semanti
 		result[members[0]] = true
 	}
 	return result, nil
+}
+
+// withoutMissingModelParamRoots removes Terraform-owned top-level members that
+// are absent from the observed litellm_params, from both the ownership used for
+// this projection and the prior value. The returned provenance is a copy; the
+// persisted ownership is unchanged, so the configured value is restored by the
+// next apply.
+func withoutMissingModelParamRoots(ctx context.Context, provenance semanticDictionaryProvenance, prior, observed map[string]interface{}) (semanticDictionaryProvenance, map[string]interface{}, error) {
+	missing := map[string]bool{}
+	for pointer := range provenance.TerraformOwned {
+		if err := ctx.Err(); err != nil {
+			return provenance, prior, err
+		}
+		members, err := decodeSemanticDictionaryPointer(pointer)
+		if err != nil || len(members) == 0 {
+			return provenance, prior, errSemanticDictionaryPrivate
+		}
+		if _, present := observed[members[0]]; !present {
+			missing[members[0]] = true
+		}
+	}
+	if len(missing) == 0 {
+		return provenance, prior, nil
+	}
+	reduced := provenance
+	reduced.TerraformOwned = semanticDictionaryPathSet{}
+	for pointer := range provenance.TerraformOwned {
+		members, _ := decodeSemanticDictionaryPointer(pointer)
+		if !missing[members[0]] {
+			reduced.TerraformOwned[pointer] = true
+		}
+	}
+	prunedPrior := make(map[string]interface{}, len(prior))
+	for name, value := range prior {
+		if !missing[name] {
+			prunedPrior[name] = value
+		}
+	}
+	return reduced, prunedPrior, nil
 }
