@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -437,5 +438,76 @@ func TestModelAdditionalLiteLLMParamsJSONPrivatePathBindingProtocol(t *testing.T
 	}
 	if value, err := decodeModelAdditionalLiteLLMParamsJSONProvenance(ctx, mismatched, state); err == nil || value.Initialized {
 		t.Fatalf("mismatched private provenance decoded as %#v, %v", value, err)
+	}
+}
+
+// Issue #297: once LiteLLM stops returning a Terraform-owned
+// additional_litellm_params_json key, ordinary refresh reports drift instead
+// of failing every plan.
+func TestModelAdditionalLiteLLMParamsJSONRefreshToleratesMissingOwnedKey(t *testing.T) {
+	ctx := context.Background()
+	var mu sync.Mutex
+	params := `{"custom_llm_provider":"openai","model":"openai/gpt-4o-mini","max_input_tokens":"128000","keep":true}`
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		writer.Header().Set("Content-Type", "application/json")
+		switch {
+		case request.Method == http.MethodPost && request.URL.Path == "/model/new",
+			request.Method == http.MethodPatch:
+			_, _ = fmt.Fprint(writer, `{}`)
+		case request.Method == http.MethodGet && request.URL.Path == "/model/info":
+			_, _ = fmt.Fprintf(writer, `{"data":[{"model_name":"model-json","litellm_params":%s,"model_info":{"id":%q,"base_model":"gpt-4o-mini","max_input_tokens":128000}}]}`, params, request.URL.Query().Get("litellm_model_id"))
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+	protocolServer, schemas := configuredImportProtocolServer(t, ctx, server.URL)
+	const typeName = "litellm_model"
+	schema := schemas.ResourceSchemas[typeName]
+	values := map[string]interface{}{
+		"model_name": "model-json", "custom_llm_provider": "openai", "base_model": "gpt-4o-mini",
+		"additional_litellm_params_json": `{"keep":true,"max_input_tokens":"128000"}`,
+	}
+	config := accessGroupProtocolDynamicValue(t, schema, organizationProjectProtocolValue(t, schema, values))
+	nullState := accessGroupProtocolDynamicValue(t, schema, tftypes.NewValue(schema.ValueType(), nil))
+	planned, err := protocolServer.PlanResourceChange(ctx, &tfprotov6.PlanResourceChangeRequest{TypeName: typeName, Config: config, PriorState: nullState, ProposedNewState: modelAdditionalLiteLLMParamsJSONCreateProposed(t, schema, values)})
+	if err != nil || accessGroupProtocolDiagnosticsHaveError(planned.Diagnostics) {
+		t.Fatalf("plan: err=%v diagnostics=%v", err, planned.Diagnostics)
+	}
+	created, err := protocolServer.ApplyResourceChange(ctx, &tfprotov6.ApplyResourceChangeRequest{TypeName: typeName, Config: config, PriorState: nullState, PlannedState: planned.PlannedState, PlannedPrivate: planned.PlannedPrivate})
+	if err != nil || accessGroupProtocolDiagnosticsHaveError(created.Diagnostics) {
+		t.Fatalf("create: err=%v diagnostics=%s", err, agentProtocolDiagnosticsText(created.Diagnostics))
+	}
+
+	mu.Lock()
+	params = `{"custom_llm_provider":"openai","model":"openai/gpt-4o-mini","keep":true}`
+	mu.Unlock()
+	read, err := protocolServer.ReadResource(ctx, &tfprotov6.ReadResourceRequest{TypeName: typeName, CurrentState: created.NewState, Private: created.Private})
+	if err != nil || accessGroupProtocolDiagnosticsHaveError(read.Diagnostics) {
+		t.Fatalf("refresh failed on a missing owned key: err=%v diagnostics=%s", err, agentProtocolDiagnosticsText(read.Diagnostics))
+	}
+	var got string
+	if err := protocolAttributeMap(t, schema, read.NewState)["additional_litellm_params_json"].As(&got); err != nil || !jsonSemanticallyEqual(got, `{"keep":true}`) {
+		t.Fatalf("refreshed additional_litellm_params_json = %q, %v; want the missing key reported as drift", got, err)
+	}
+
+	// The next plan restores the configured key and the apply converges.
+	proposed := organizationProjectProtocolReplace(t, schema, read.NewState, map[string]interface{}{"additional_litellm_params_json": values["additional_litellm_params_json"]})
+	replan, err := protocolServer.PlanResourceChange(ctx, &tfprotov6.PlanResourceChangeRequest{TypeName: typeName, Config: config, PriorState: read.NewState, ProposedNewState: proposed, PriorPrivate: read.Private})
+	if err != nil || accessGroupProtocolDiagnosticsHaveError(replan.Diagnostics) {
+		t.Fatalf("restore plan: err=%v diagnostics=%s", err, agentProtocolDiagnosticsText(replan.Diagnostics))
+	}
+	var restoredJSON string
+	if err := protocolAttributeMap(t, schema, replan.PlannedState)["additional_litellm_params_json"].As(&restoredJSON); err != nil || !jsonSemanticallyEqual(restoredJSON, values["additional_litellm_params_json"].(string)) {
+		t.Fatalf("restore plan additional_litellm_params_json = %q, %v", restoredJSON, err)
+	}
+	mu.Lock()
+	params = `{"custom_llm_provider":"openai","model":"openai/gpt-4o-mini","max_input_tokens":"128000","keep":true}`
+	mu.Unlock()
+	restored, err := protocolServer.ApplyResourceChange(ctx, &tfprotov6.ApplyResourceChangeRequest{TypeName: typeName, Config: config, PriorState: read.NewState, PlannedState: replan.PlannedState, PlannedPrivate: replan.PlannedPrivate})
+	if err != nil || accessGroupProtocolDiagnosticsHaveError(restored.Diagnostics) {
+		t.Fatalf("restore apply: err=%v diagnostics=%s", err, agentProtocolDiagnosticsText(restored.Diagnostics))
 	}
 }

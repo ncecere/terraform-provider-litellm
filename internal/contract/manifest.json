@@ -1,22 +1,22 @@
 {
   "classification": {
-    "excluded_non_durable": 589,
-    "operation_count": 798,
+    "excluded_non_durable": 661,
+    "operation_count": 895,
     "path": "internal/contract/reviewed-operation-classification.json",
-    "sha256": "944e60b48507d9870e9ed588297283d9022a76da7a7ab09a4fe42acff7f34792",
-    "unsupported_durable": 209
+    "sha256": "7059bad0649feb21cf6e6e6ceb87bf05c0541025ce3857e7c746e98869bc0346",
+    "unsupported_durable": 234
   },
   "generation_command": "make contract-update LITELLM_SOURCE=../litellm",
   "openapi": {
-    "operation_count": 906,
+    "operation_count": 1003,
     "path": "openapi.json",
-    "path_count": 654,
-    "sha256": "bb7aa4cf229cabb2fa1633a176c2eba26ee62d095b3d55910b392c268fb2f0b2"
+    "path_count": 742,
+    "sha256": "9644015506c38aaa5b7e63f3c6e96297f0770dffe22b6854507cebcd86c06e41"
   },
   "provider_golden": {
     "operation_count": 108,
     "path": "internal/contractapi/testdata/provider-operations.golden.json",
-    "sha256": "4b43e2d61f295e6120cb945c2cf821fee4693fdfa7e4d92f3701295f822fa18d"
+    "sha256": "a29c301ef84aa170be3c79b5162a22a0a0a8a507832a903f9f5cfacbd444a9d2"
   },
   "provider_operations": [
     {
@@ -231,15 +231,15 @@
         },
         {
           "file": "internal/provider/resource_credential.go",
-          "line": 1462
+          "line": 1501
         },
         {
           "file": "internal/provider/resource_credential.go",
-          "line": 1511
+          "line": 1550
         },
         {
           "file": "internal/provider/resource_credential.go",
-          "line": 1564
+          "line": 1603
         }
       ],
       "method": "GET",
@@ -611,7 +611,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_model.go",
-          "line": 1122
+          "line": 1143
         }
       ],
       "method": "POST",
@@ -631,11 +631,11 @@
         },
         {
           "file": "internal/provider/resource_model.go",
-          "line": 1376
+          "line": 1397
         },
         {
           "file": "internal/provider/resource_model.go",
-          "line": 1378
+          "line": 1399
         },
         {
           "file": "internal/provider/resource_model_semantic_dictionary.go",
@@ -654,7 +654,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_model.go",
-          "line": 1360
+          "line": 1381
         }
       ],
       "method": "POST",
@@ -666,7 +666,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_model.go",
-          "line": 1360
+          "line": 1381
         }
       ],
       "method": "POST",
@@ -678,11 +678,11 @@
       "evidence": [
         {
           "file": "internal/provider/resource_model.go",
-          "line": 2667
+          "line": 2689
         },
         {
           "file": "internal/provider/resource_model.go",
-          "line": 2673
+          "line": 2695
         }
       ],
       "method": "PATCH",
@@ -1180,7 +1180,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_team.go",
-          "line": 932
+          "line": 943
         }
       ],
       "method": "POST",
@@ -1196,11 +1196,11 @@
         },
         {
           "file": "internal/provider/resource_team.go",
-          "line": 1280
+          "line": 1291
         },
         {
           "file": "internal/provider/resource_team.go",
-          "line": 1293
+          "line": 1304
         },
         {
           "file": "internal/provider/resource_team_block.go",
@@ -1320,7 +1320,7 @@
         },
         {
           "file": "internal/provider/resource_team.go",
-          "line": 1407
+          "line": 1418
         }
       ],
       "method": "GET",
@@ -1334,7 +1334,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_team.go",
-          "line": 878
+          "line": 889
         }
       ],
       "method": "POST",
@@ -1358,11 +1358,11 @@
       "evidence": [
         {
           "file": "internal/provider/resource_team.go",
-          "line": 853
+          "line": 864
         },
         {
           "file": "internal/provider/resource_team.go",
-          "line": 862
+          "line": 873
         }
       ],
       "method": "POST",
@@ -1880,11 +1880,11 @@
     },
     {
       "attribute": "router",
-      "live_operation_count": 10,
+      "live_operation_count": 12,
       "module": "litellm.proxy.agent_endpoints.endpoints",
       "mount_prefix": "",
       "name": "agents",
-      "openapi_operation_count": 10,
+      "openapi_operation_count": 12,
       "path_prefixes": [
         "/v1/agents",
         "/agents",
@@ -2001,6 +2001,20 @@
     },
     {
       "attribute": "router",
+      "live_operation_count": 2,
+      "module": "litellm.proxy.management_endpoints.model_insights_endpoints",
+      "mount_prefix": "",
+      "name": "model_insights",
+      "openapi_operation_count": 2,
+      "path_prefixes": [
+        "/model-insights"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
       "live_operation_count": 7,
       "module": "litellm.proxy.search_endpoints.search_tool_management",
       "mount_prefix": "",
@@ -2015,11 +2029,11 @@
     },
     {
       "attribute": "router",
-      "live_operation_count": 40,
+      "live_operation_count": 42,
       "module": "litellm.proxy.management_endpoints.mcp_management_endpoints",
       "mount_prefix": "",
       "name": "mcp_management",
-      "openapi_operation_count": 37,
+      "openapi_operation_count": 39,
       "path_prefixes": [
         "/v1/mcp/"
       ],
@@ -2044,12 +2058,13 @@
     },
     {
       "attribute": "router",
-      "live_operation_count": 24,
+      "live_operation_count": 25,
       "module": "litellm.proxy._experimental.mcp_server.discoverable_endpoints",
       "mount_prefix": "",
       "name": "mcp_discoverable",
       "openapi_operation_count": 24,
       "path_prefixes": [
+        "/oauth/client-metadata.json",
         "/.well-known/oauth-",
         "/.well-known/openid-configuration",
         "/.well-known/jwks.json",
@@ -2113,11 +2128,11 @@
     },
     {
       "attribute": "router",
-      "live_operation_count": 121,
+      "live_operation_count": 123,
       "module": "litellm.proxy.pass_through_endpoints.llm_passthrough_endpoints",
       "mount_prefix": "",
       "name": "llm_passthrough",
-      "openapi_operation_count": 116,
+      "openapi_operation_count": 118,
       "path_prefixes": [
         "/anthropic/",
         "/assemblyai/",
@@ -2141,6 +2156,8 @@
         "/tinyfish/",
         "/transcribe",
         "/typesafe/",
+        "/laya/",
+        "/bespoke/",
         "/openrouter/",
         "/vertex-ai/",
         "/vertex_ai/",
@@ -2200,7 +2217,7 @@
     },
     {
       "attribute": "router",
-      "live_operation_count": 9,
+      "live_operation_count": 10,
       "module": "litellm.proxy.anthropic_endpoints.gateway_endpoints",
       "mount_prefix": "",
       "name": "claude_code_gateway",
@@ -2236,6 +2253,23 @@
       "path_prefixes": [
         "/v1/evals",
         "/evals"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "live_operation_count": 4,
+      "module": "litellm.proxy.decisions_endpoints.endpoints",
+      "mount_prefix": "",
+      "name": "decisions",
+      "openapi_operation_count": 4,
+      "path_prefixes": [
+        "/v1/decisions",
+        "/decisions",
+        "/v1/systemone",
+        "/systemone"
       ],
       "path_suffixes": [],
       "persistent_swagger_stub": false,
@@ -2375,14 +2409,14 @@
   "supplemental": {
     "path": "internal/contract/supplemental-routes.json",
     "route_count": 0,
-    "sha256": "5cf3cf125be7574657a7f7161a1dcc1cc40be6cfdc351837e5076ff8e1ce37f0"
+    "sha256": "37901b6953c199e08f0f63d808d21411836da08e08849420b47980b061fc6bf3"
   },
   "upstream": {
-    "commit": "79645770fedc7ec2627e6468d31062f20f82aecc",
+    "commit": "ea7ca16dbc3904d9e59a9505f379a2ca3091821f",
     "python": "3.12.14",
     "repository": "https://github.com/BerriAI/litellm",
-    "tag": "v1.104.0",
+    "tag": "v1.106.4",
     "uv": "0.12.6",
-    "uv_lock_sha256": "4d02833751421f29facee660c303f6b02cf0282c2709e93c7ad5898bbc1c38de"
+    "uv_lock_sha256": "96a10b8673cd9da46d99619f87def30ce272b8bdb6d3e95fd568e69dcde1071f"
   }
 }

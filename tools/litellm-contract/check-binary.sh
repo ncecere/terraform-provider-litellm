@@ -13,8 +13,8 @@ fi
   go build -o "$work/provider" .
 )
 for marker in \
-  79645770fedc7ec2627e6468d31062f20f82aecc \
-  4d02833751421f29facee660c303f6b02cf0282c2709e93c7ad5898bbc1c38de \
+  ea7ca16dbc3904d9e59a9505f379a2ca3091821f \
+  96a10b8673cd9da46d99619f87def30ce272b8bdb6d3e95fd568e69dcde1071f \
   '/v1/mcp/server/{server_id}/oauth-user-credential/status' \
   '/management/v1/users/bulk_delete' \
   'Credential collection inventory is durable' \

@@ -805,6 +805,38 @@ REVIEWED_V1104_RELEASE_RUNTIME_DIFF_SHA256 = (
 )
 
 
+# v2.2.1 (LiteLLM 1.106.4) release candidate, reviewed against v2.2.0.
+REVIEWED_V1106_RELEASE_BASE = "618ddd0d6a0b1cfa0aab47ca412d2de4bdbd842e"
+REVIEWED_V1106_RELEASE_PATHS = (
+    'internal/provider/collection_conversion.go',
+    'internal/provider/collection_conversion_test.go',
+    'internal/provider/credential_convergence_test.go',
+    'internal/provider/datasource_presence.go',
+    'internal/provider/datasource_presence_test.go',
+    'internal/provider/datasource_team.go',
+    'internal/provider/datasource_user.go',
+    'internal/provider/mcp_info_lifecycle.go',
+    'internal/provider/mcp_info_v1106_test.go',
+    'internal/provider/model_pricing_keys.go',
+    'internal/provider/resource_credential.go',
+    'internal/provider/resource_credential_test.go',
+    'internal/provider/resource_key.go',
+    'internal/provider/resource_model.go',
+    'internal/provider/resource_model_litellm_params_dictionary.go',
+    'internal/provider/resource_model_litellm_params_dictionary_protocol_test.go',
+    'internal/provider/resource_model_litellm_params_dictionary_test.go',
+    'internal/provider/resource_team.go',
+    'internal/provider/resource_team_semantic_dictionary.go',
+    'internal/provider/resource_team_semantic_dictionary_protocol_test.go',
+    'internal/provider/resource_user.go',
+    'internal/provider/service_identity_import_test.go',
+    'internal/provider/team_metadata_scalar_test.go',
+)
+REVIEWED_V1106_RELEASE_RUNTIME_DIFF_SHA256 = (
+    "2a1571ef30dd1fbc22a0629d367d850bafed7d05cb0a078a80acb317e0991892"
+)
+
+
 def git(*args: str) -> str:
     proc = subprocess.run(
         ["git", *args], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -1018,6 +1050,12 @@ def main() -> int:
             and digest == REVIEWED_V1104_RELEASE_RUNTIME_DIFF_SHA256
         ):
             reviewed = "v1.104-release"
+        elif (
+            comparison == REVIEWED_V1106_RELEASE_BASE
+            and changed_paths == REVIEWED_V1106_RELEASE_PATHS
+            and digest == REVIEWED_V1106_RELEASE_RUNTIME_DIFF_SHA256
+        ):
+            reviewed = "v2.2.1-release"
         if reviewed is not None:
             print(
                 f"Provider runtime parity verified: reviewed={reviewed} "

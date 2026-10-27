@@ -44,6 +44,6 @@ resource "litellm_key" "team_key" {
 * `tpd_limit` - Tokens per day limit (LiteLLM 1.104.0 and later).
 * `rpm_limit` - Requests per minute limit.
 * `budget_duration` - Budget reset duration.
-* `metadata` - Map of metadata for the team.
+* `metadata` - Map of metadata for the team. Boolean and number values are returned as their JSON text (for example `"true"`); dedicated structured members such as per-model limits are omitted.
 * `team_member_permissions` - List of permissions granted to team members.
 * `blocked` - Whether the team is blocked.

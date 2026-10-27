@@ -1667,6 +1667,28 @@ func (r *KeyResource) readKeyWithTransport(ctx context.Context, data *KeyResourc
 	next := *data
 	data = &next
 
+	// Read the dedicated identity from the original metadata, before the legacy
+	// projection filters or converts values. Only imports adopt remote identity;
+	// ordinary reads preserve optional configuration and tolerate API omission.
+	// An unmanaged (null) identity is not validated on ordinary refresh, so a
+	// malformed legacy metadata value never makes an unchanged key unreadable.
+	serviceAccountID, serviceAccountPresent := "", false
+	if imported || (!data.ServiceAccountID.IsNull() && !data.ServiceAccountID.IsUnknown()) {
+		var identityErr error
+		serviceAccountID, serviceAccountPresent, identityErr = keyResponseServiceAccountID(info)
+		if identityErr != nil {
+			return identityErr
+		}
+	}
+	if imported {
+		data.ServiceAccountID = types.StringNull()
+		if serviceAccountPresent {
+			data.ServiceAccountID = types.StringValue(serviceAccountID)
+		}
+	} else if serviceAccountPresent && !data.ServiceAccountID.IsNull() && !data.ServiceAccountID.IsUnknown() && data.ServiceAccountID.ValueString() != serviceAccountID {
+		return fmt.Errorf("LiteLLM returned a conflicting key service-account identity; response contents were omitted")
+	}
+
 	// LiteLLM v1.98 stores max_budget on the verification-token row, while
 	// soft_budget belongs to the budget relation. Older responses may expose
 	// either field at the other location, so each field has its own fallback
@@ -1953,6 +1975,25 @@ func keyResponseObject(raw interface{}) (map[string]interface{}, bool, bool) {
 	default:
 		return nil, true, false
 	}
+}
+
+func keyResponseServiceAccountID(info map[string]interface{}) (string, bool, error) {
+	metadata, present, ok := keyResponseObject(info["metadata"])
+	if !ok {
+		return "", false, fmt.Errorf("LiteLLM returned malformed key metadata; response contents were omitted")
+	}
+	if !present {
+		return "", false, nil
+	}
+	raw, present := metadata["service_account_id"]
+	if !present || raw == nil {
+		return "", false, nil
+	}
+	identity, ok := raw.(string)
+	if !ok || identity == "" {
+		return "", false, fmt.Errorf("LiteLLM returned a malformed key service-account identity; response contents were omitted")
+	}
+	return identity, true, nil
 }
 
 func projectKeyStringList(ctx context.Context, object map[string]interface{}, field string, target *types.List) error {

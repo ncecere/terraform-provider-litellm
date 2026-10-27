@@ -285,6 +285,45 @@ func TestStrictAPIStringMapPresenceSensitivityAndContentSafety(t *testing.T) {
 	}
 }
 
+func TestStrictAPIStringMapSkippingNullsTreatsNullMembersAsAbsent(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		object     map[string]interface{}
+		want       map[string]string
+		wantNull   bool
+		presence   apiValuePresence
+		wantErrors int
+		wantPath   string
+	}{
+		{name: "absent", object: map[string]interface{}{}, wantNull: true, presence: apiValueAbsent},
+		{name: "explicit null", object: map[string]interface{}{"metadata": nil}, wantNull: true, presence: apiValueNull},
+		{name: "sso null member becomes empty map", object: map[string]interface{}{"metadata": map[string]interface{}{"auth_provider": nil}}, want: map[string]string{}, presence: apiValuePresent},
+		{name: "mixed map drops null members", object: map[string]interface{}{"metadata": map[string]interface{}{"a": "x", "b": nil}}, want: map[string]string{"a": "x"}, presence: apiValuePresent},
+		{name: "number member remains invalid", object: map[string]interface{}{"metadata": map[string]interface{}{"a": 42}}, wantNull: true, presence: apiValuePresent, wantErrors: 1, wantPath: `metadata["a"]`},
+		{name: "object member remains invalid", object: map[string]interface{}{"metadata": map[string]interface{}{"a": map[string]interface{}{}}}, wantNull: true, presence: apiValuePresent, wantErrors: 1, wantPath: `metadata["a"]`},
+		{name: "wrong collection shape", object: map[string]interface{}{"metadata": []interface{}{}}, wantNull: true, presence: apiValuePresent, wantErrors: 1, wantPath: "metadata"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			got, presence, diagnostics := strictAPIStringMapSkippingNulls(context.Background(), test.object, "metadata", path.Root("metadata"), false)
+			if presence != test.presence {
+				t.Fatalf("presence = %d, want %d", presence, test.presence)
+			}
+			if got.IsNull() != test.wantNull {
+				t.Fatalf("null = %t, want %t", got.IsNull(), test.wantNull)
+			}
+			if !got.IsNull() {
+				assertMapValue(t, got, test.want)
+			}
+			assertCollectionDiagnostics(t, diagnostics, test.wantErrors, test.wantPath)
+		})
+	}
+}
+
 func TestStrictCollectionConversionsHonorCanceledContext(t *testing.T) {
 	t.Parallel()
 

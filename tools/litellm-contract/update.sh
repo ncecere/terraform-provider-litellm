@@ -4,7 +4,7 @@ set -eu
 mode=${1:-update}
 repo_root=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
 upstream_repo=https://github.com/BerriAI/litellm
-upstream_commit=79645770fedc7ec2627e6468d31062f20f82aecc
+upstream_commit=ea7ca16dbc3904d9e59a9505f379a2ca3091821f
 required_uv='uv 0.12.6'
 work=$(mktemp -d "${TMPDIR:-/tmp}/litellm-contract.XXXXXX")
 stage="$work/stage"

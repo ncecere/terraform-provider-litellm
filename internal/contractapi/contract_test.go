@@ -3177,12 +3177,12 @@ func TestManifestPinnedMetadataCountsAndReviewInventory(t *testing.T) {
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		t.Fatal(err)
 	}
-	if manifest.Upstream.Tag != "v1.104.0" || manifest.Upstream.Commit != "79645770fedc7ec2627e6468d31062f20f82aecc" || manifest.Upstream.Python != "3.12.14" || manifest.Upstream.UV != "0.12.6" {
+	if manifest.Upstream.Tag != "v1.106.4" || manifest.Upstream.Commit != "ea7ca16dbc3904d9e59a9505f379a2ca3091821f" || manifest.Upstream.Python != "3.12.14" || manifest.Upstream.UV != "0.12.6" {
 		t.Fatalf("upstream provenance is not pinned: %+v", manifest.Upstream)
 	}
 	// v1.104.0 publishes PATCH /v2/organization/{organization_id} in OpenAPI, so
 	// the reviewed supplemental (hidden) route inventory is now empty.
-	if manifest.OpenAPI.PathCount != 654 || manifest.OpenAPI.OperationCount != 906 || manifest.Supplemental.RouteCount != 0 || len(manifest.RequiredLazyFeatures) != 35 {
+	if manifest.OpenAPI.PathCount != 742 || manifest.OpenAPI.OperationCount != 1003 || manifest.Supplemental.RouteCount != 0 || len(manifest.RequiredLazyFeatures) != 37 {
 		t.Fatalf("artifact or complete lazy-feature review counts changed: %+v %+v lazy=%d", manifest.OpenAPI, manifest.Supplemental, len(manifest.RequiredLazyFeatures))
 	}
 	var pins ReviewedPins
@@ -3190,7 +3190,7 @@ func TestManifestPinnedMetadataCountsAndReviewInventory(t *testing.T) {
 	if err != nil || json.Unmarshal(pinsData, &pins) != nil {
 		t.Fatalf("load reviewed pins: %v", err)
 	}
-	if pins.Upstream.UV != "0.12.6" || pins.Artifacts.ProviderGolden.OperationCount != 108 || pins.Artifacts.Classification.OperationCount != 798 || len(pins.LazyFeatures) != 35 {
+	if pins.Upstream.UV != "0.12.6" || pins.Artifacts.ProviderGolden.OperationCount != 108 || pins.Artifacts.Classification.OperationCount != 895 || len(pins.LazyFeatures) != 37 {
 		t.Fatalf("reviewed pins changed unexpectedly: artifacts=%+v lazy=%d", pins.Artifacts, len(pins.LazyFeatures))
 	}
 }
@@ -3379,7 +3379,7 @@ func TestLazyExpansionHasExactReviewedClassification(t *testing.T) {
 			}
 		}
 	}
-	if counts["mcp"] != 37 || counts["prompt"] != 10 || counts["integration"] != 20 {
+	if counts["mcp"] != 39 || counts["prompt"] != 10 || counts["integration"] != 20 {
 		t.Fatalf("lazy expansion counts changed: %v", counts)
 	}
 	for key, category := range map[string]string{

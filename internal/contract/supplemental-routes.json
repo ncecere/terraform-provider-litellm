@@ -63,11 +63,11 @@
     },
     {
       "attribute": "router",
-      "live_operation_count": 10,
+      "live_operation_count": 12,
       "module": "litellm.proxy.agent_endpoints.endpoints",
       "mount_prefix": "",
       "name": "agents",
-      "openapi_operation_count": 10,
+      "openapi_operation_count": 12,
       "path_prefixes": [
         "/v1/agents",
         "/agents",
@@ -184,6 +184,20 @@
     },
     {
       "attribute": "router",
+      "live_operation_count": 2,
+      "module": "litellm.proxy.management_endpoints.model_insights_endpoints",
+      "mount_prefix": "",
+      "name": "model_insights",
+      "openapi_operation_count": 2,
+      "path_prefixes": [
+        "/model-insights"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
       "live_operation_count": 7,
       "module": "litellm.proxy.search_endpoints.search_tool_management",
       "mount_prefix": "",
@@ -198,11 +212,11 @@
     },
     {
       "attribute": "router",
-      "live_operation_count": 40,
+      "live_operation_count": 42,
       "module": "litellm.proxy.management_endpoints.mcp_management_endpoints",
       "mount_prefix": "",
       "name": "mcp_management",
-      "openapi_operation_count": 37,
+      "openapi_operation_count": 39,
       "path_prefixes": [
         "/v1/mcp/"
       ],
@@ -227,12 +241,13 @@
     },
     {
       "attribute": "router",
-      "live_operation_count": 24,
+      "live_operation_count": 25,
       "module": "litellm.proxy._experimental.mcp_server.discoverable_endpoints",
       "mount_prefix": "",
       "name": "mcp_discoverable",
       "openapi_operation_count": 24,
       "path_prefixes": [
+        "/oauth/client-metadata.json",
         "/.well-known/oauth-",
         "/.well-known/openid-configuration",
         "/.well-known/jwks.json",
@@ -296,11 +311,11 @@
     },
     {
       "attribute": "router",
-      "live_operation_count": 121,
+      "live_operation_count": 123,
       "module": "litellm.proxy.pass_through_endpoints.llm_passthrough_endpoints",
       "mount_prefix": "",
       "name": "llm_passthrough",
-      "openapi_operation_count": 116,
+      "openapi_operation_count": 118,
       "path_prefixes": [
         "/anthropic/",
         "/assemblyai/",
@@ -324,6 +339,8 @@
         "/tinyfish/",
         "/transcribe",
         "/typesafe/",
+        "/laya/",
+        "/bespoke/",
         "/openrouter/",
         "/vertex-ai/",
         "/vertex_ai/",
@@ -383,7 +400,7 @@
     },
     {
       "attribute": "router",
-      "live_operation_count": 9,
+      "live_operation_count": 10,
       "module": "litellm.proxy.anthropic_endpoints.gateway_endpoints",
       "mount_prefix": "",
       "name": "claude_code_gateway",
@@ -419,6 +436,23 @@
       "path_prefixes": [
         "/v1/evals",
         "/evals"
+      ],
+      "path_suffixes": [],
+      "persistent_swagger_stub": false,
+      "registration": "include_router"
+    },
+    {
+      "attribute": "router",
+      "live_operation_count": 4,
+      "module": "litellm.proxy.decisions_endpoints.endpoints",
+      "mount_prefix": "",
+      "name": "decisions",
+      "openapi_operation_count": 4,
+      "path_prefixes": [
+        "/v1/decisions",
+        "/decisions",
+        "/v1/systemone",
+        "/systemone"
       ],
       "path_suffixes": [],
       "persistent_swagger_stub": false,
@@ -556,5 +590,5 @@
   ],
   "routes": [],
   "schema_version": 2,
-  "upstream_commit": "79645770fedc7ec2627e6468d31062f20f82aecc"
+  "upstream_commit": "ea7ca16dbc3904d9e59a9505f379a2ca3091821f"
 }

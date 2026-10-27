@@ -232,6 +232,28 @@ func TestDataSourceRoleRedactedNullableOmissionIsTypedNull(t *testing.T) {
 	}
 }
 
+func TestDataSourceNullableUserMetadataMapSkipsNullMembers(t *testing.T) {
+	t.Parallel()
+
+	onlyNull, err := dataSourceNullableUserMetadataMapAt(map[string]interface{}{"metadata": map[string]interface{}{"auth_provider": nil}}, "metadata")
+	if err != nil || onlyNull.IsNull() || len(onlyNull.Elements()) != 0 {
+		t.Fatalf("sso null-only metadata was not an empty map: null=%t error=%v", onlyNull.IsNull(), err)
+	}
+	mixed, err := dataSourceNullableUserMetadataMapAt(map[string]interface{}{"metadata": map[string]interface{}{"a": "x", "b": nil}}, "metadata")
+	if err != nil || mixed.IsNull() || len(mixed.Elements()) != 1 || mixed.Elements()["a"].(types.String).ValueString() != "x" {
+		t.Fatalf("mixed metadata did not drop the null member: null=%t error=%v", mixed.IsNull(), err)
+	}
+	if value, err := dataSourceNullableUserMetadataMapAt(map[string]interface{}{"metadata": nil}, "metadata"); err != nil || !value.IsNull() {
+		t.Fatalf("explicit null metadata did not resolve to typed null: null=%t error=%v", value.IsNull(), err)
+	}
+	if _, err := dataSourceNullableUserMetadataMapAt(map[string]interface{}{"metadata": map[string]interface{}{"a": 42}}, "metadata"); err == nil {
+		t.Fatal("number metadata member was accepted")
+	}
+	if _, err := dataSourceNullableUserMetadataMapAt(map[string]interface{}{"metadata": map[string]interface{}{"a": map[string]interface{}{}}}, "metadata"); err == nil {
+		t.Fatal("object metadata member was accepted")
+	}
+}
+
 func assertKnownEmptyCollection(t *testing.T, value attr.Value) {
 	t.Helper()
 	switch value := value.(type) {

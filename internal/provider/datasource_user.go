@@ -190,7 +190,7 @@ func projectUserDataSourceAPIObject(config UserDataSourceModel, result map[strin
 	if data.RPMLimit, err = dataSourceRoleRedactedNullableInt64At(userInfo, "rpm_limit"); err != nil {
 		return UserDataSourceModel{}, err
 	}
-	if data.Metadata, err = dataSourceRoleRedactedNullableStringMapAt(userInfo, "metadata"); err != nil {
+	if data.Metadata, err = dataSourceNullableUserMetadataMapAt(userInfo, "metadata"); err != nil {
 		return UserDataSourceModel{}, err
 	}
 	if data.Spend, err = dataSourceRoleRedactedNullableFloat64At(userInfo, "spend"); err != nil {

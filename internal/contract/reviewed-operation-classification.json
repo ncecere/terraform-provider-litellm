@@ -131,6 +131,31 @@
       "path": "/agent/daily/activity"
     },
     {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/agent/daily/activity/aggregated"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/agent/daily/activity/aggregated/keys"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/agent/daily/activity/aggregated/model_top_keys"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/agent/daily/activity/aggregated/search"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/agent/daily/activity/export"
+    },
+    {
       "category": "inference_workload",
       "method": "DELETE",
       "path": "/anthropic/{endpoint}"
@@ -429,6 +454,11 @@
       "category": "inference_workload",
       "method": "PUT",
       "path": "/bedrock/{endpoint}"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/bespoke/v1/systemone"
     },
     {
       "category": "user_budget_management",
@@ -796,6 +826,11 @@
       "path": "/credentials/migrate-encryption/check"
     },
     {
+      "category": "authentication_flow",
+      "method": "GET",
+      "path": "/credentials/{credential_name}/jwks"
+    },
+    {
       "category": "inference_workload",
       "method": "POST",
       "path": "/cursor/chat/completions"
@@ -846,6 +881,31 @@
       "path": "/customer/daily/activity"
     },
     {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/customer/daily/activity/aggregated"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/customer/daily/activity/aggregated/keys"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/customer/daily/activity/aggregated/model_top_keys"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/customer/daily/activity/aggregated/search"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/customer/daily/activity/export"
+    },
+    {
       "category": "customer_end_user_management",
       "method": "POST",
       "path": "/customer/delete"
@@ -879,6 +939,11 @@
       "category": "audit_observability",
       "method": "GET",
       "path": "/debug/asyncio-tasks"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/decisions"
     },
     {
       "category": "inference_workload",
@@ -1411,6 +1476,241 @@
       "path": "/langfuse/{endpoint}"
     },
     {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/laya/v1/systemone"
+    },
+    {
+      "category": "integration_callback_configuration",
+      "method": "GET",
+      "path": "/lens"
+    },
+    {
+      "category": "integration_callback_configuration",
+      "method": "POST",
+      "path": "/lens"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/lens/activity/available"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/lens/agents"
+    },
+    {
+      "category": "integration_callback_configuration",
+      "method": "GET",
+      "path": "/lens/datasets"
+    },
+    {
+      "category": "integration_callback_configuration",
+      "method": "POST",
+      "path": "/lens/datasets"
+    },
+    {
+      "category": "operational_action",
+      "method": "POST",
+      "path": "/lens/datasets/build"
+    },
+    {
+      "category": "integration_callback_configuration",
+      "method": "GET",
+      "path": "/lens/datasets/{dataset_id}"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/lens/datasets/{dataset_id}/export"
+    },
+    {
+      "category": "integration_callback_configuration",
+      "method": "POST",
+      "path": "/lens/datasets/{dataset_id}/revisions"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/lens/datasets/{dataset_id}/revisions/{revision}/cases"
+    },
+    {
+      "category": "integration_callback_configuration",
+      "method": "DELETE",
+      "path": "/lens/feedback"
+    },
+    {
+      "category": "integration_callback_configuration",
+      "method": "GET",
+      "path": "/lens/feedback"
+    },
+    {
+      "category": "integration_callback_configuration",
+      "method": "PUT",
+      "path": "/lens/feedback"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "POST",
+      "path": "/lens/feedback/summary"
+    },
+    {
+      "category": "authentication_flow",
+      "method": "GET",
+      "path": "/lens/internal/ingestion-credentials"
+    },
+    {
+      "category": "testing_validation",
+      "method": "POST",
+      "path": "/lens/preview/sample"
+    },
+    {
+      "category": "health",
+      "method": "GET",
+      "path": "/lens/service"
+    },
+    {
+      "category": "integration_callback_configuration",
+      "method": "GET",
+      "path": "/lens/signals"
+    },
+    {
+      "category": "integration_callback_configuration",
+      "method": "PUT",
+      "path": "/lens/signals"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "POST",
+      "path": "/lens/traces/findings"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "POST",
+      "path": "/lens/traces/signals"
+    },
+    {
+      "category": "integration_callback_configuration",
+      "method": "GET",
+      "path": "/lens/tracing/keys"
+    },
+    {
+      "category": "integration_callback_configuration",
+      "method": "POST",
+      "path": "/lens/tracing/keys"
+    },
+    {
+      "category": "integration_callback_configuration",
+      "method": "DELETE",
+      "path": "/lens/tracing/keys/{key_id}"
+    },
+    {
+      "category": "integration_callback_configuration",
+      "method": "POST",
+      "path": "/lens/watch-all"
+    },
+    {
+      "category": "operational_action",
+      "method": "POST",
+      "path": "/lens/worker/claim"
+    },
+    {
+      "category": "operational_action",
+      "method": "GET",
+      "path": "/lens/worker/{lens_id}/{job_id}/content"
+    },
+    {
+      "category": "operational_action",
+      "method": "POST",
+      "path": "/lens/worker/{lens_id}/{job_id}/heartbeat"
+    },
+    {
+      "category": "operational_action",
+      "method": "POST",
+      "path": "/lens/worker/{lens_id}/{job_id}/model"
+    },
+    {
+      "category": "operational_action",
+      "method": "POST",
+      "path": "/lens/worker/{lens_id}/{job_id}/progress"
+    },
+    {
+      "category": "operational_action",
+      "method": "POST",
+      "path": "/lens/worker/{lens_id}/{job_id}/result"
+    },
+    {
+      "category": "operational_action",
+      "method": "GET",
+      "path": "/lens/worker/{lens_id}/{job_id}/reviews"
+    },
+    {
+      "category": "operational_action",
+      "method": "GET",
+      "path": "/lens/worker/{lens_id}/{job_id}/sample"
+    },
+    {
+      "category": "integration_callback_configuration",
+      "method": "POST",
+      "path": "/lens/workers/register"
+    },
+    {
+      "category": "integration_callback_configuration",
+      "method": "DELETE",
+      "path": "/lens/workers/{worker_id}"
+    },
+    {
+      "category": "integration_callback_configuration",
+      "method": "PUT",
+      "path": "/lens/workers/{worker_id}/billing-key"
+    },
+    {
+      "category": "integration_callback_configuration",
+      "method": "GET",
+      "path": "/lens/{lens_id}"
+    },
+    {
+      "category": "integration_callback_configuration",
+      "method": "PUT",
+      "path": "/lens/{lens_id}"
+    },
+    {
+      "category": "operational_action",
+      "method": "POST",
+      "path": "/lens/{lens_id}/cancel"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/lens/{lens_id}/executions/{execution_id}"
+    },
+    {
+      "category": "integration_callback_configuration",
+      "method": "PATCH",
+      "path": "/lens/{lens_id}/findings/{finding_id}"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/lens/{lens_id}/runs"
+    },
+    {
+      "category": "operational_action",
+      "method": "POST",
+      "path": "/lens/{lens_id}/runs"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/lens/{lens_id}/runs/{job_id}"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/lens/{lens_id}/runs/{job_id}/reviews"
+    },
+    {
       "category": "public_metadata",
       "method": "GET",
       "path": "/litellm/.well-known/litellm-ui-config"
@@ -1596,6 +1896,16 @@
       "path": "/mistral/{endpoint}"
     },
     {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/model-insights"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/model-insights/tasks"
+    },
+    {
       "category": "operational_action",
       "method": "POST",
       "path": "/model/block"
@@ -1654,6 +1964,16 @@
       "category": "inference_workload",
       "method": "POST",
       "path": "/moderations"
+    },
+    {
+      "category": "authentication_flow",
+      "method": "POST",
+      "path": "/moyai/connect/exchange"
+    },
+    {
+      "category": "authentication_flow",
+      "method": "POST",
+      "path": "/moyai/connect/start"
     },
     {
       "category": "inference_workload",
@@ -1854,6 +2174,31 @@
       "category": "spend_analytics",
       "method": "GET",
       "path": "/organization/daily/activity"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/organization/daily/activity/aggregated"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/organization/daily/activity/aggregated/keys"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/organization/daily/activity/aggregated/model_top_keys"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/organization/daily/activity/aggregated/search"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/organization/daily/activity/export"
     },
     {
       "category": "organization_project_management",
@@ -2376,9 +2721,39 @@
       "path": "/sso/readiness"
     },
     {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/systemone"
+    },
+    {
       "category": "spend_analytics",
       "method": "GET",
       "path": "/tag/daily/activity"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/tag/daily/activity/aggregated"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/tag/daily/activity/aggregated/keys"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/tag/daily/activity/aggregated/model_top_keys"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/tag/daily/activity/aggregated/search"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/tag/daily/activity/export"
     },
     {
       "category": "spend_analytics",
@@ -2429,6 +2804,26 @@
       "category": "spend_analytics",
       "method": "GET",
       "path": "/team/daily/activity/aggregated"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/team/daily/activity/aggregated/keys"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/team/daily/activity/aggregated/model_top_keys"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/team/daily/activity/aggregated/search"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/team/daily/activity/export"
     },
     {
       "category": "key_management",
@@ -2696,6 +3091,31 @@
       "path": "/user/daily/activity/aggregated"
     },
     {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/user/daily/activity/aggregated/cache_leakage_keys"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/user/daily/activity/aggregated/keys"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/user/daily/activity/aggregated/model_top_keys"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/user/daily/activity/aggregated/search"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/user/daily/activity/export"
+    },
+    {
       "category": "operational_action",
       "method": "POST",
       "path": "/user/password/change"
@@ -2746,6 +3166,11 @@
       "path": "/v1/a2a/{agent_id}/message/send"
     },
     {
+      "category": "agent_prompt_tool_management",
+      "method": "GET",
+      "path": "/v1/agents/identity/providers"
+    },
+    {
       "category": "operational_action",
       "method": "POST",
       "path": "/v1/agents/make_public"
@@ -2754,6 +3179,11 @@
       "category": "agent_prompt_tool_management",
       "method": "PUT",
       "path": "/v1/agents/{agent_id}"
+    },
+    {
+      "category": "agent_prompt_tool_management",
+      "method": "GET",
+      "path": "/v1/agents/{agent_id}/identity"
     },
     {
       "category": "operational_action",
@@ -2864,6 +3294,11 @@
       "category": "inference_workload",
       "method": "GET",
       "path": "/v1/containers/{container_id}/files/{file_id}/content"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
+      "path": "/v1/decisions"
     },
     {
       "category": "inference_workload",
@@ -3064,6 +3499,16 @@
       "category": "mcp_credential_configuration",
       "method": "GET",
       "path": "/v1/mcp/server/{server_id}/oauth-user-credential/status"
+    },
+    {
+      "category": "mcp_server_management",
+      "method": "DELETE",
+      "path": "/v1/mcp/server/{server_id}/pin"
+    },
+    {
+      "category": "mcp_server_management",
+      "method": "POST",
+      "path": "/v1/mcp/server/{server_id}/pin"
     },
     {
       "category": "operational_action",
@@ -3338,6 +3783,11 @@
     {
       "category": "inference_workload",
       "method": "POST",
+      "path": "/v1/systemone"
+    },
+    {
+      "category": "inference_workload",
+      "method": "POST",
       "path": "/v1/threads"
     },
     {
@@ -3399,6 +3849,41 @@
       "category": "agent_prompt_tool_management",
       "method": "DELETE",
       "path": "/v1/tool/{tool_name}/overrides"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/v1/traces"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/v1/traces/agents"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "POST",
+      "path": "/v1/traces/query"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/v1/traces/query/help"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/v1/traces/{trace_id}"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/v1/traces/{trace_id}/spans/{span_id}"
+    },
+    {
+      "category": "spend_analytics",
+      "method": "GET",
+      "path": "/v1/traces/{trace_id}/spans/{span_id}/error"
     },
     {
       "category": "access_control_management",

@@ -2025,7 +2025,7 @@ def remove_session_key(args: argparse.Namespace) -> int:
 
 def preflight(args: argparse.Namespace) -> int:
     if args.target == "local":
-        if os.environ.get("TF_ACC") != "1" or os.environ.get("LITELLM_ACCEPTANCE_CONFIRM") != "local-v1.104.0":
+        if os.environ.get("TF_ACC") != "1" or os.environ.get("LITELLM_ACCEPTANCE_CONFIRM") != "local-v1.106.4":
             raise HarnessError("local destructive matrix requires both documented confirmations")
     else:
         if os.environ.get("TF_ACC") != "1" or os.environ.get("LITELLM_REMOTE_ACCEPTANCE_CONFIRM") != "dev-disposable-objects-only":

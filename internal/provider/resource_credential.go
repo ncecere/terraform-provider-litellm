@@ -1439,8 +1439,47 @@ func probeCredentialEndpoint(ctx context.Context, client *Client, endpoint, expe
 	return sample, errCredentialProbeIncomplete
 }
 
+// errCredentialNoPresence reports a conclusive probe sample in which no
+// sampled worker returned the credential.
+var errCredentialNoPresence = errors.New("no sampled worker returned the requested credential state")
+
+// LiteLLM stores a created credential in the database and in the
+// process-local credential_list of the worker that handled the create only.
+// Other workers load it on their next reload (PROXY_CONFIG_RELOAD_INTERVAL_SECONDS,
+// 30 seconds by default), so on a multi-replica proxy every fresh-connection
+// probe can briefly miss it (issue #298). A create confirmation therefore keeps
+// sampling, with backoff, for longer than one reload interval while no sampled
+// worker has returned the credential yet. Tests shorten these.
+var (
+	credentialCreateConvergenceWindow       = 45 * time.Second
+	credentialCreateConvergenceInitialDelay = time.Second
+	credentialCreateConvergenceMaxDelay     = 5 * time.Second
+)
+
 func (r *CredentialResource) confirmCredentialCreate(ctx context.Context, name string, verify func(credentialRemote) error) (credentialRemote, credentialProbeSample, error) {
+	deadline := time.Now().Add(credentialCreateConvergenceWindow)
+	delay := credentialCreateConvergenceInitialDelay
 	remote, sample, err := r.confirmCredentialMutation(ctx, name, verify)
+	for err != nil && !sample.hasPresence() && (errors.Is(err, errCredentialNoPresence) || errors.Is(err, errCredentialProbeIncomplete)) {
+		// Only the absence of any sampled representation is retried. A present
+		// representation that fails verification, a malformed response, or an
+		// identity mismatch is final and fails closed.
+		if !time.Now().Add(delay).Before(deadline) {
+			break
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return credentialRemote{}, sample, ctx.Err()
+		case <-timer.C:
+		}
+		delay *= 2
+		if delay > credentialCreateConvergenceMaxDelay {
+			delay = credentialCreateConvergenceMaxDelay
+		}
+		remote, sample, err = r.confirmCredentialMutation(ctx, name, verify)
+	}
 	if err != nil {
 		return credentialRemote{}, sample, err
 	}
@@ -1480,7 +1519,7 @@ func (r *CredentialResource) confirmCredentialMutation(ctx context.Context, name
 		return matching, sample, nil
 	}
 	if lastErr == nil {
-		lastErr = errors.New("no sampled worker returned the requested credential state")
+		lastErr = errCredentialNoPresence
 	}
 	return credentialRemote{}, sample, lastErr
 }

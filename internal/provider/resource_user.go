@@ -716,7 +716,7 @@ func projectUserResourceAPIObject(ctx context.Context, data *UserResourceModel, 
 	}
 
 	// Handle metadata map - preserve null when API returns empty and config didn't specify metadata.
-	metadata, metadataPresence, diagnostics := strictAPIStringMap(ctx, userInfo, "metadata", path.Root("metadata"), false)
+	metadata, metadataPresence, diagnostics := strictAPIStringMapSkippingNulls(ctx, userInfo, "metadata", path.Root("metadata"), false)
 	if err := collectionProjectionError(ctx, diagnostics); err != nil {
 		return err
 	}

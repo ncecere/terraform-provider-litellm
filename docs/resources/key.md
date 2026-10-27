@@ -255,7 +255,7 @@ The following arguments are supported:
 
 * `budget_id` - (Optional) Budget ID to associate with this key.
 
-* `service_account_id` - (Optional, ForceNew) Identifier for a team-owned service account. When set, the provider calls the service-account API and defaults `key_alias` to this value.
+* `service_account_id` - (Optional, ForceNew) Identifier for a team-owned service account. When set, the provider calls the service-account API and defaults `key_alias` to this value. Import restores this identity when present in the key's metadata; keep the same value explicitly configured afterward. Omitting or changing an imported non-null identity requires replacement.
 
 * `allowed_routes` - (Optional) List of LiteLLM proxy routes this key is allowed to call.
 
@@ -363,6 +363,23 @@ TF_VAR_litellm_key="$LITELLM_KEY" terraform import \
 Hash import initializes `key_wo_version` to `"1"`; the configuration must initially match it. The ephemeral input must be available during import and subsequent operations. An initial apply may be needed to normalize other Optional+Computed key attributes. Imports never adopt remote values into `metadata_json`, `config_json`, or `permissions_json`; those attributes remain null until explicitly configured.
 
 Switching an existing stateful `key` resource to `key_wo` replaces the key and removes plaintext from the current state. Historical local backups or remote-state versions may still contain the old value and must be expired or purged according to the backend's retention controls.
+
+### Service-account identity
+
+Both raw-token and hash imports restore `service_account_id` from a non-empty string in the exact key's `metadata.service_account_id`. Absent or null identity leaves the attribute null; the provider never infers it from `key_alias`. Keep a restored identity explicitly configured after import, for example:
+
+```hcl
+resource "litellm_key" "example" {
+  service_account_id = "example-automation"
+  team_id            = "example-team"
+}
+```
+
+Matching `service_account_id` configuration avoids replacement for this attribute. Omitting or changing an imported non-null identity requires replacement because LiteLLM does not update it in place. Ordinary refreshes do not backfill an unconfigured `service_account_id`. This identity restoration does not change raw-token or hash/write-only mode requirements; a hash import still requires `key_wo` and the initial `key_wo_version = "1"` configuration described above.
+
+### External key rotation
+
+Keys rotated outside Terraform are not supported as the same managed resource: the provider cannot safely recover the replacement token or management hash from the previous identifier or an alias. Restoring service-account identity during exact-key import does not add rotation recovery. Full support requires a stable, recoverable server-side key identity; see [issue #146](https://github.com/ncecere/terraform-provider-litellm/issues/146).
 
 ## Upgrade Notes
 
