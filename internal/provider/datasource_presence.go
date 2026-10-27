@@ -310,6 +310,29 @@ func dataSourceRoleRedactedNullableStringMapAt(object map[string]interface{}, pa
 	return dataSourceNullableStringMapAt(object, path...)
 }
 
+// dataSourceNullableUserMetadataMapAt projects user metadata, which LiteLLM
+// legitimately populates with explicit null members after SSO login (for
+// example {"auth_provider": null}). A map of strings cannot represent null
+// members, so they are treated as absent keys; every other non-string member
+// remains a shape error, exactly like dataSourceNullableStringMapAt.
+func dataSourceNullableUserMetadataMapAt(object map[string]interface{}, path ...string) (types.Map, error) {
+	raw, present, err := dataSourceNullableValueAt(object, "an object of strings or null", path...)
+	if err != nil || !present {
+		return types.MapNull(types.StringType), err
+	}
+	if typed, ok := raw.(map[string]interface{}); ok {
+		projected := make(map[string]interface{}, len(typed))
+		for key, value := range typed {
+			if value == nil {
+				continue
+			}
+			projected[key] = value
+		}
+		raw = projected
+	}
+	return dataSourceStringMapValue(raw, path)
+}
+
 func dataSourceRoleRedactedNullableCanonicalJSONObjectAt(object map[string]interface{}, path ...string) (types.String, error) {
 	return dataSourceNullableCanonicalJSONObjectAt(object, path...)
 }

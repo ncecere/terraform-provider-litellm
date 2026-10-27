@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.1]
+
+### Upgrade Notes
+- Patch release. Schemas, state, IDs, and imports are unchanged, and no configuration changes are required. The tested backend remains exactly LiteLLM 1.104.0.
+
+### Security
+- No security-sensitive behavior changes. New and changed diagnostics name only resource identities and fixed reasons; response bodies and values are never echoed.
+
+### Fixed
+- **`litellm_user` SSO users (issue #311)**: Refreshing a user created through LiteLLM SSO login failed with "Unable to read user" since 2.1.0, because LiteLLM stores `metadata` such as `{"auth_provider": null}` and the strict `map(string)` projection rejected the `null` member. Explicit `null` members of user metadata are now treated as absent keys in the `litellm_user` resource and data source; every other non-string member still fails closed. Thanks to @ZubikIT for the patch.
+
 ## [2.2.0] - 2026-10-05
 
 ### Upgrade Notes
