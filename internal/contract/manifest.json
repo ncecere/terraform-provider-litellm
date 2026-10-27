@@ -16,7 +16,7 @@
   "provider_golden": {
     "operation_count": 108,
     "path": "internal/contractapi/testdata/provider-operations.golden.json",
-    "sha256": "4b43e2d61f295e6120cb945c2cf821fee4693fdfa7e4d92f3701295f822fa18d"
+    "sha256": "a90854ccedb5711542141ceee5b287258939662b43b43c8feb7550f3949b85ed"
   },
   "provider_operations": [
     {
@@ -231,15 +231,15 @@
         },
         {
           "file": "internal/provider/resource_credential.go",
-          "line": 1462
+          "line": 1501
         },
         {
           "file": "internal/provider/resource_credential.go",
-          "line": 1511
+          "line": 1550
         },
         {
           "file": "internal/provider/resource_credential.go",
-          "line": 1564
+          "line": 1603
         }
       ],
       "method": "GET",
@@ -611,7 +611,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_model.go",
-          "line": 1122
+          "line": 1143
         }
       ],
       "method": "POST",
@@ -631,11 +631,11 @@
         },
         {
           "file": "internal/provider/resource_model.go",
-          "line": 1376
+          "line": 1397
         },
         {
           "file": "internal/provider/resource_model.go",
-          "line": 1378
+          "line": 1399
         },
         {
           "file": "internal/provider/resource_model_semantic_dictionary.go",
@@ -654,7 +654,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_model.go",
-          "line": 1360
+          "line": 1381
         }
       ],
       "method": "POST",
@@ -666,7 +666,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_model.go",
-          "line": 1360
+          "line": 1381
         }
       ],
       "method": "POST",
@@ -678,11 +678,11 @@
       "evidence": [
         {
           "file": "internal/provider/resource_model.go",
-          "line": 2667
+          "line": 2689
         },
         {
           "file": "internal/provider/resource_model.go",
-          "line": 2673
+          "line": 2695
         }
       ],
       "method": "PATCH",

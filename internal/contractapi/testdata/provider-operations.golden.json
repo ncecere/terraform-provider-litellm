@@ -217,15 +217,15 @@
       },
       {
         "file": "internal/provider/resource_credential.go",
-        "line": 1462
+        "line": 1501
       },
       {
         "file": "internal/provider/resource_credential.go",
-        "line": 1511
+        "line": 1550
       },
       {
         "file": "internal/provider/resource_credential.go",
-        "line": 1564
+        "line": 1603
       }
     ]
   },
@@ -595,7 +595,7 @@
     "evidence": [
       {
         "file": "internal/provider/resource_model.go",
-        "line": 1122
+        "line": 1143
       }
     ]
   },
@@ -618,11 +618,11 @@
       },
       {
         "file": "internal/provider/resource_model.go",
-        "line": 1376
+        "line": 1397
       },
       {
         "file": "internal/provider/resource_model.go",
-        "line": 1378
+        "line": 1399
       },
       {
         "file": "internal/provider/resource_model_semantic_dictionary.go",
@@ -638,7 +638,7 @@
     "evidence": [
       {
         "file": "internal/provider/resource_model.go",
-        "line": 1360
+        "line": 1381
       }
     ]
   },
@@ -650,7 +650,7 @@
     "evidence": [
       {
         "file": "internal/provider/resource_model.go",
-        "line": 1360
+        "line": 1381
       }
     ]
   },
@@ -664,11 +664,11 @@
     "evidence": [
       {
         "file": "internal/provider/resource_model.go",
-        "line": 2667
+        "line": 2689
       },
       {
         "file": "internal/provider/resource_model.go",
-        "line": 2673
+        "line": 2695
       }
     ]
   },
