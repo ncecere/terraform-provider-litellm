@@ -1164,7 +1164,7 @@
     "evidence": [
       {
         "file": "internal/provider/resource_team.go",
-        "line": 932
+        "line": 943
       }
     ]
   },
@@ -1182,11 +1182,11 @@
       },
       {
         "file": "internal/provider/resource_team.go",
-        "line": 1280
+        "line": 1291
       },
       {
         "file": "internal/provider/resource_team.go",
-        "line": 1293
+        "line": 1304
       },
       {
         "file": "internal/provider/resource_team_block.go",
@@ -1306,7 +1306,7 @@
       },
       {
         "file": "internal/provider/resource_team.go",
-        "line": 1407
+        "line": 1418
       }
     ]
   },
@@ -1318,7 +1318,7 @@
     "evidence": [
       {
         "file": "internal/provider/resource_team.go",
-        "line": 878
+        "line": 889
       }
     ]
   },
@@ -1342,11 +1342,11 @@
     "evidence": [
       {
         "file": "internal/provider/resource_team.go",
-        "line": 853
+        "line": 864
       },
       {
         "file": "internal/provider/resource_team.go",
-        "line": 862
+        "line": 873
       }
     ]
   },

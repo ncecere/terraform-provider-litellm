@@ -16,7 +16,7 @@
   "provider_golden": {
     "operation_count": 108,
     "path": "internal/contractapi/testdata/provider-operations.golden.json",
-    "sha256": "a90854ccedb5711542141ceee5b287258939662b43b43c8feb7550f3949b85ed"
+    "sha256": "a29c301ef84aa170be3c79b5162a22a0a0a8a507832a903f9f5cfacbd444a9d2"
   },
   "provider_operations": [
     {
@@ -1180,7 +1180,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_team.go",
-          "line": 932
+          "line": 943
         }
       ],
       "method": "POST",
@@ -1196,11 +1196,11 @@
         },
         {
           "file": "internal/provider/resource_team.go",
-          "line": 1280
+          "line": 1291
         },
         {
           "file": "internal/provider/resource_team.go",
-          "line": 1293
+          "line": 1304
         },
         {
           "file": "internal/provider/resource_team_block.go",
@@ -1320,7 +1320,7 @@
         },
         {
           "file": "internal/provider/resource_team.go",
-          "line": 1407
+          "line": 1418
         }
       ],
       "method": "GET",
@@ -1334,7 +1334,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_team.go",
-          "line": 878
+          "line": 889
         }
       ],
       "method": "POST",
@@ -1358,11 +1358,11 @@
       "evidence": [
         {
           "file": "internal/provider/resource_team.go",
-          "line": 853
+          "line": 864
         },
         {
           "file": "internal/provider/resource_team.go",
-          "line": 862
+          "line": 873
         }
       ],
       "method": "POST",

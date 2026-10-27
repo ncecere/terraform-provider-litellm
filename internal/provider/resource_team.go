@@ -604,7 +604,11 @@ func (r *TeamResource) Create(ctx context.Context, req resource.CreateRequest, r
 	planned := data
 	ownership := teamSemanticOwnership{provenance: prepared.provenance, fresh: true, confirmCurrentValue: prepared.provenance.Configured}
 	if err := r.readTeamWithOwnership(ctx, &data, false, ownership); err != nil {
-		retainRecovery("Team Creation Not Confirmed", "LiteLLM accepted the team create, but one authoritative identity-bound read did not confirm complete state. Only the generated identity was retained for recovery.")
+		if IsAPIErrorStatus(err, http.StatusForbidden) {
+			retainRecovery(teamNotReadableSummary, "LiteLLM accepted the create of "+teamDiagnosticIdentity(teamID, data.TeamAlias)+", but returned HTTP 403 when the provider read it back. "+teamNotReadableDetail+" Terraform marks a resource whose create reported an error as tainted; run terraform untaint on this resource after switching credentials to keep this team instead of replacing it.")
+			return
+		}
+		retainRecovery("Team Creation Not Confirmed", "LiteLLM accepted the create of "+teamDiagnosticIdentity(teamID, data.TeamAlias)+", but one authoritative identity-bound read did not confirm complete state. Only the generated identity was retained for recovery.")
 		return
 	}
 	preserveTeamMutationRepresentations(planned, &data)
@@ -657,15 +661,22 @@ func (r *TeamResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 			resp.State.RemoveResource(ctx)
 			return
 		}
+		identity := teamDiagnosticIdentity(data.ID.ValueString(), data.TeamAlias)
+		if IsAPIErrorStatus(err, http.StatusForbidden) {
+			resp.State = req.State
+			resp.Private = req.Private
+			resp.Diagnostics.AddError(teamNotReadableSummary, "LiteLLM returned HTTP 403 when the provider read "+identity+". "+teamNotReadableDetail)
+			return
+		}
 		if IsNotFoundError(err) && ownership.acceptedCreate {
 			resp.State = req.State
 			resp.Private = req.Private
-			resp.Diagnostics.AddError("Team Creation Not Yet Confirmed", "The accepted team identity is not yet authoritatively readable. Recovery state was retained to prevent duplicate creation.")
+			resp.Diagnostics.AddError("Team Creation Not Yet Confirmed", "The accepted create of "+identity+" is not yet authoritatively readable. Recovery state was retained to prevent duplicate creation. If this persists, the provider credential may be unable to read teams it creates (for example a service-account key); configure a credential that can read this team and plan again.")
 			return
 		}
 		resp.State = req.State
 		resp.Private = req.Private
-		resp.Diagnostics.AddError("Team Read Failed", "The authoritative team response could not be validated or projected safely. Prior state was retained.")
+		resp.Diagnostics.AddError("Team Read Failed", "The authoritative response for "+identity+" could not be validated or projected safely. Prior state was retained.")
 		return
 	}
 	if reconcile.Present && reconcile.Committed {
@@ -1415,4 +1426,23 @@ func (r *TeamResource) readTeamWithOwnership(ctx context.Context, data *TeamReso
 
 	*data = projected
 	return nil
+}
+
+const teamNotReadableSummary = "Team Not Readable With Provider Credential"
+
+// teamNotReadableDetail explains LiteLLM's 403 for a team the provider
+// credential cannot read, such as a service-account key allowed to call
+// /team/new but not authorized for the new team (issue #310). State is always
+// retained so a later read with a suitable credential confirms it without a
+// duplicate create.
+const teamNotReadableDetail = "The provider credential may create teams but cannot read them; LiteLLM allows reading a team only to proxy admins, the team's own key, its members, and organization admins of its organization. Terraform state was retained. Configure a credential that can read this team (for example a proxy admin key) and plan again; the team will then be confirmed without being created twice."
+
+// teamDiagnosticIdentity names a team in diagnostics. Team IDs and aliases are
+// identifiers, not secrets.
+func teamDiagnosticIdentity(id string, alias types.String) string {
+	identity := fmt.Sprintf("team %q", id)
+	if !alias.IsNull() && !alias.IsUnknown() && alias.ValueString() != "" {
+		identity += fmt.Sprintf(" (alias %q)", alias.ValueString())
+	}
+	return identity
 }
