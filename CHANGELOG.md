@@ -7,10 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [2.2.1]
+## [2.2.1] - 2026-10-27
 
 ### Upgrade Notes
-- Patch release. Schemas, state, IDs, and imports are unchanged, and no configuration changes are required. The tested backend remains exactly LiteLLM 1.104.0.
+- Patch release; no configuration changes are required. The tested backend remains exactly LiteLLM 1.104.0. The published provider source remains `registry.terraform.io/ncecere/litellm`; Terraform >= 1.1.0, OpenTofu >= 1.6.0, and Go >= 1.24.0 for provider development are unchanged, and only optional write-only attributes require Terraform or OpenTofu >= 1.11.0. Published examples continue to constrain the provider to `>= 2.0.1, < 3.0.0`. No schema changes; existing HCL, state, IDs, and imports remain valid.
+- `litellm_model`: when LiteLLM no longer returns a configured `additional_litellm_params_json` key, refresh now reports drift instead of failing, and restoring the key replaces the model (see Fixed). Set context-window limits such as `max_input_tokens` with `additional_model_info` or `additional_model_info_json`.
+- `litellm_credential`: on a multi-replica proxy, a create can now take up to about 45 seconds while LiteLLM workers reload the new credential.
 
 ### Security
 - No security-sensitive behavior changes. New and changed diagnostics name only resource identities and fixed reasons; response bodies and values are never echoed.
