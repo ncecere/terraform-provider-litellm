@@ -387,6 +387,19 @@ func strictAPIStringList(ctx context.Context, object map[string]interface{}, fie
 // absent and explicit-null presence separate. The sensitive flag controls
 // whether a rejected key may be represented in the diagnostic path.
 func strictAPIStringMap(ctx context.Context, object map[string]interface{}, field string, valuePath path.Path, sensitive bool) (types.Map, apiValuePresence, diag.Diagnostics) {
+	return strictAPIStringMapValues(ctx, object, field, valuePath, sensitive, false)
+}
+
+// strictAPIStringMapSkippingNulls projects one API object field exactly like
+// strictAPIStringMap, except explicit null members are treated as absent keys.
+// LiteLLM writes user metadata such as {"auth_provider": null} after SSO
+// login, and a map of strings cannot represent null members. Every other
+// non-string member remains a projection error.
+func strictAPIStringMapSkippingNulls(ctx context.Context, object map[string]interface{}, field string, valuePath path.Path, sensitive bool) (types.Map, apiValuePresence, diag.Diagnostics) {
+	return strictAPIStringMapValues(ctx, object, field, valuePath, sensitive, true)
+}
+
+func strictAPIStringMapValues(ctx context.Context, object map[string]interface{}, field string, valuePath path.Path, sensitive, skipNullValues bool) (types.Map, apiValuePresence, diag.Diagnostics) {
 	raw, presence, err := apiValueAt(object, field)
 	if err != nil {
 		return apiStringMapFailure(valuePath, presence)
@@ -401,7 +414,16 @@ func strictAPIStringMap(ctx context.Context, object map[string]interface{}, fiel
 	values := make(map[string]interface{})
 	switch typed := raw.(type) {
 	case map[string]interface{}:
-		values = typed
+		if skipNullValues {
+			for key, value := range typed {
+				if value == nil {
+					continue
+				}
+				values[key] = value
+			}
+		} else {
+			values = typed
+		}
 	case map[string]string:
 		for key, value := range typed {
 			values[key] = value

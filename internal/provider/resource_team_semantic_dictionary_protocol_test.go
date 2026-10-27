@@ -6,6 +6,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -593,5 +594,59 @@ func TestTeamMutationRequiresCompleteWrappedMetadataAuthorityProtocol(t *testing
 				t.Fatalf("complete authority replacement=%#v", updateBody["metadata"])
 			}
 		})
+	}
+}
+
+// Issue #310: a credential that may call /team/new but cannot read the new
+// team (for example a service-account key) gets HTTP 403 on the read-back.
+// Create and refresh must name the team, explain the credential cause, and keep
+// the accepted-create recovery state.
+func TestTeamCreateUnreadableWithProviderCredentialProtocol(t *testing.T) {
+	ctx := context.Background()
+	var requestedID atomic.Value
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		if request.Method == http.MethodPost && request.URL.Path == "/team/new" {
+			var body map[string]interface{}
+			_ = json.NewDecoder(request.Body).Decode(&body)
+			requestedID.Store(body["team_id"])
+			_ = json.NewEncoder(writer).Encode(map[string]interface{}{"team_id": body["team_id"], "team_alias": body["team_alias"]})
+			return
+		}
+		http.Error(writer, `{"error":{"message":"Team key for team=home not authorized to access this team"}}`, http.StatusForbidden)
+	}))
+	defer server.Close()
+
+	protocolServer, schemas := configuredImportProtocolServer(t, ctx, server.URL)
+	schema := schemas.ResourceSchemas["litellm_team"]
+	nullState := accessGroupProtocolDynamicValue(t, schema, tftypes.NewValue(schema.ValueType(), nil))
+	values := map[string]interface{}{"team_alias": "service-account-created"}
+	config := teamSemanticProtocolValue(t, schema, values)
+	plan, err := protocolServer.PlanResourceChange(ctx, &tfprotov6.PlanResourceChangeRequest{TypeName: "litellm_team", Config: config, PriorState: nullState, ProposedNewState: teamSemanticCreateProposed(t, schema, values)})
+	if err != nil || accessGroupProtocolDiagnosticsHaveError(plan.Diagnostics) {
+		t.Fatalf("plan err=%v diagnostics=%s", err, agentProtocolDiagnosticsText(plan.Diagnostics))
+	}
+	applied, err := protocolServer.ApplyResourceChange(ctx, &tfprotov6.ApplyResourceChangeRequest{TypeName: "litellm_team", Config: config, PriorState: nullState, PlannedState: plan.PlannedState, PlannedPrivate: plan.PlannedPrivate})
+	createdID, _ := requestedID.Load().(string)
+	text := agentProtocolDiagnosticsText(applied.Diagnostics)
+	if err != nil || createdID == "" || !strings.Contains(text, teamNotReadableSummary) || !strings.Contains(text, createdID) || !strings.Contains(text, "service-account-created") {
+		t.Fatalf("create diagnostics=%s err=%v", text, err)
+	}
+	if strings.Contains(text, "not authorized") {
+		t.Fatalf("create diagnostic echoed the response body: %s", text)
+	}
+	if !protocolPrivateHasKey(t, applied.Private, teamAcceptedCreateRecoveryPrivateKey) {
+		t.Fatal("accepted-create recovery state was not retained")
+	}
+
+	read, err := protocolServer.ReadResource(ctx, &tfprotov6.ReadResourceRequest{TypeName: "litellm_team", CurrentState: applied.NewState, Private: applied.Private})
+	text = agentProtocolDiagnosticsText(read.Diagnostics)
+	if err != nil || !strings.Contains(text, teamNotReadableSummary) || !strings.Contains(text, createdID) || !protocolPrivateHasKey(t, read.Private, teamAcceptedCreateRecoveryPrivateKey) {
+		t.Fatalf("refresh diagnostics=%s err=%v private=%s", text, err, read.Private)
+	}
+	before, _ := applied.NewState.Unmarshal(schema.ValueType())
+	after, _ := read.NewState.Unmarshal(schema.ValueType())
+	if !before.Equal(after) {
+		t.Fatal("a 403 refresh changed the retained recovery state")
 	}
 }

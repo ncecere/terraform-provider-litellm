@@ -310,6 +310,29 @@ func dataSourceRoleRedactedNullableStringMapAt(object map[string]interface{}, pa
 	return dataSourceNullableStringMapAt(object, path...)
 }
 
+// dataSourceNullableUserMetadataMapAt projects user metadata, which LiteLLM
+// legitimately populates with explicit null members after SSO login (for
+// example {"auth_provider": null}). A map of strings cannot represent null
+// members, so they are treated as absent keys; every other non-string member
+// remains a shape error, exactly like dataSourceNullableStringMapAt.
+func dataSourceNullableUserMetadataMapAt(object map[string]interface{}, path ...string) (types.Map, error) {
+	raw, present, err := dataSourceNullableValueAt(object, "an object of strings or null", path...)
+	if err != nil || !present {
+		return types.MapNull(types.StringType), err
+	}
+	if typed, ok := raw.(map[string]interface{}); ok {
+		projected := make(map[string]interface{}, len(typed))
+		for key, value := range typed {
+			if value == nil {
+				continue
+			}
+			projected[key] = value
+		}
+		raw = projected
+	}
+	return dataSourceStringMapValue(raw, path)
+}
+
 func dataSourceRoleRedactedNullableCanonicalJSONObjectAt(object map[string]interface{}, path ...string) (types.String, error) {
 	return dataSourceNullableCanonicalJSONObjectAt(object, path...)
 }
@@ -467,6 +490,24 @@ var keyMetadataStructuredFields = map[string]bool{
 var teamMetadataStructuredFields = map[string]bool{
 	"model_rpm_limit": true, "model_tpm_limit": true, "model_aliases": true, "guardrails": true,
 	"prompts": true, "tags": true,
+}
+
+// withStringifiedScalarMetadata renders scalar boolean and number members of a
+// legacy map(string) metadata projection as their JSON text, the same way the
+// resources render them. LiteLLM's admin UI writes flags such as
+// disable_global_guardrails as JSON booleans (issue #299). Objects, arrays,
+// and null remain unchanged and keep their existing validation.
+func withStringifiedScalarMetadata(metadata map[string]interface{}) map[string]interface{} {
+	projected := make(map[string]interface{}, len(metadata))
+	for key, value := range metadata {
+		switch value.(type) {
+		case bool, json.Number, float64:
+			projected[key] = metadataValueToString(value)
+		default:
+			projected[key] = value
+		}
+	}
+	return projected
 }
 
 // withoutStructuredMetadata returns a copy of a metadata object without the

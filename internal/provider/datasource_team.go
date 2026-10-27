@@ -274,7 +274,7 @@ func projectTeamDataSourceInfo(result map[string]interface{}, expectedTeamID str
 	}
 	metadataSource := teamInfo
 	if raw, ok := teamInfo["metadata"].(map[string]interface{}); ok {
-		metadataSource = map[string]interface{}{"metadata": withoutStructuredMetadata(raw, teamMetadataStructuredFields)}
+		metadataSource = map[string]interface{}{"metadata": withStringifiedScalarMetadata(withoutStructuredMetadata(raw, teamMetadataStructuredFields))}
 	}
 	next.Metadata, err = dataSourceNullableStringMapAt(metadataSource, "metadata")
 	if err != nil {

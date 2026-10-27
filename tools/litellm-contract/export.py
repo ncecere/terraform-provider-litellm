@@ -15,10 +15,10 @@ from pathlib import Path
 from typing import Any
 
 UPSTREAM_REPOSITORY = "https://github.com/BerriAI/litellm"
-UPSTREAM_TAG = "v1.104.0"
-UPSTREAM_COMMIT = "79645770fedc7ec2627e6468d31062f20f82aecc"
+UPSTREAM_TAG = "v1.106.4"
+UPSTREAM_COMMIT = "ea7ca16dbc3904d9e59a9505f379a2ca3091821f"
 PYTHON_VERSION = "3.12.14"
-UV_LOCK_SHA256 = "4d02833751421f29facee660c303f6b02cf0282c2709e93c7ad5898bbc1c38de"
+UV_LOCK_SHA256 = "96a10b8673cd9da46d99619f87def30ce272b8bdb6d3e95fd568e69dcde1071f"
 # v1.98.0 registered this organization update route with include_in_schema=False,
 # so it had to be carried as a supplemental route. From v1.104.0 it is a normal
 # public route; the exporter now requires it to be present in generated OpenAPI
@@ -42,8 +42,10 @@ def feature(name: str, module: str, prefixes: tuple[str, ...], *, suffixes: tupl
 
 
 # Exact source-reviewed LAZY_FEATURES order and mounting contract at UPSTREAM_COMMIT.
-# The pinned source contains 35 definitions. v1.104.0 added llm_passthrough and
-# claude_code_gateway and extended mcp_discoverable's prefixes.
+# The pinned source contains 37 definitions. v1.104.0 added llm_passthrough and
+# claude_code_gateway and extended mcp_discoverable's prefixes. v1.106.4 added
+# model_insights and decisions, added /oauth/client-metadata.json to
+# mcp_discoverable, and added /laya/ and /bespoke/ to llm_passthrough.
 EXPECTED_LAZY_FEATURES = (
     feature("guardrails", "litellm.proxy.guardrails.guardrail_endpoints", ("/guardrails", "/v2/guardrails", "/apply_guardrail", "/policies/usage")),
     feature("policies", "litellm.proxy.management_endpoints.policy_endpoints", ("/policy/", "/utils/test_policies_and_guardrails")),
@@ -57,20 +59,22 @@ EXPECTED_LAZY_FEATURES = (
     feature("vector_store_management", "litellm.proxy.vector_store_endpoints.management_endpoints", ("/vector_store/", "/v1/vector_store/")),
     feature("vector_store_files", "litellm.proxy.vector_store_files_endpoints.endpoints", ("/v1/vector_stores", "/vector_stores")),
     feature("tools", "litellm.proxy.management_endpoints.tool_management_endpoints", ("/v1/tool", "/tool")),
+    feature("model_insights", "litellm.proxy.management_endpoints.model_insights_endpoints", ("/model-insights",)),
     feature("search_tools", "litellm.proxy.search_endpoints.search_tool_management", ("/search_tools",)),
     feature("mcp_management", "litellm.proxy.management_endpoints.mcp_management_endpoints", ("/v1/mcp/",)),
     feature("mcp_byok_oauth", "litellm.proxy._experimental.mcp_server.byok_oauth_endpoints", ("/v1/mcp/oauth", "/.well-known/oauth-")),
-    feature("mcp_discoverable", "litellm.proxy._experimental.mcp_server.discoverable_endpoints", ("/.well-known/oauth-", "/.well-known/openid-configuration", "/.well-known/jwks.json", "/.well-known/litellm-cli-auth", "/authorize", "/token", "/callback", "/register", "/revoke", "/introspect"), suffixes=("/authorize", "/token", "/register")),
+    feature("mcp_discoverable", "litellm.proxy._experimental.mcp_server.discoverable_endpoints", ("/oauth/client-metadata.json", "/.well-known/oauth-", "/.well-known/openid-configuration", "/.well-known/jwks.json", "/.well-known/litellm-cli-auth", "/authorize", "/token", "/callback", "/register", "/revoke", "/introspect"), suffixes=("/authorize", "/token", "/register")),
     feature("mcp_rest", "litellm.proxy._experimental.mcp_server.rest_endpoints", ("/mcp-rest",)),
     feature("mcp_app", "litellm.proxy._experimental.mcp_server.server", ("/mcp",), registration="mount_app", attribute="app", mount_prefix="/mcp", persistent_stub=True),
     feature("config_overrides", "litellm.proxy.management_endpoints.config_override_endpoints", ("/config_overrides",)),
-    feature("llm_passthrough", "litellm.proxy.pass_through_endpoints.llm_passthrough_endpoints", ("/anthropic/", "/assemblyai/", "/azure/", "/azure_ai/", "/azure_speech/", "/bedrock/", "/cohere/", "/comprehendmedical", "/cursor/", "/deepgram/", "/eu.assemblyai/", "/fal_ai/", "/gemini/", "/gigachat/", "/milvus/", "/mistral/", "/nvidia_nim/", "/openai/", "/openai_passthrough/", "/tinyfish/", "/transcribe", "/typesafe/", "/openrouter/", "/vertex-ai/", "/vertex_ai/", "/vllm/", "/watsonx/")),
+    feature("llm_passthrough", "litellm.proxy.pass_through_endpoints.llm_passthrough_endpoints", ("/anthropic/", "/assemblyai/", "/azure/", "/azure_ai/", "/azure_speech/", "/bedrock/", "/cohere/", "/comprehendmedical", "/cursor/", "/deepgram/", "/eu.assemblyai/", "/fal_ai/", "/gemini/", "/gigachat/", "/milvus/", "/mistral/", "/nvidia_nim/", "/openai/", "/openai_passthrough/", "/tinyfish/", "/transcribe", "/typesafe/", "/laya/", "/bespoke/", "/openrouter/", "/vertex-ai/", "/vertex_ai/", "/vllm/", "/watsonx/")),
     feature("realtime", "litellm.proxy.realtime_endpoints.endpoints", ("/openai/v1/realtime", "/v1/realtime", "/realtime")),
     feature("anthropic_passthrough", "litellm.proxy.anthropic_endpoints.endpoints", ("/v1/messages", "/anthropic", "/api/event_logging")),
     feature("anthropic_skills", "litellm.proxy.anthropic_endpoints.skills_endpoints", ("/v1/skills", "/skills")),
     feature("claude_code_gateway", "litellm.proxy.anthropic_endpoints.gateway_endpoints", ("/claude_code_gateway",)),
     feature("langfuse_passthrough", "litellm.proxy.vertex_ai_endpoints.langfuse_endpoints", ("/langfuse",)),
     feature("evals", "litellm.proxy.openai_evals_endpoints.endpoints", ("/v1/evals", "/evals")),
+    feature("decisions", "litellm.proxy.decisions_endpoints.endpoints", ("/v1/decisions", "/decisions", "/v1/systemone", "/systemone")),
     feature("claude_code_marketplace", "litellm.proxy.anthropic_endpoints.claude_code_endpoints", ("/claude-code",), attribute="claude_code_marketplace_router"),
     feature("scim", "litellm.proxy.management_endpoints.scim.scim_v2", ("/scim",), attribute="scim_router"),
     feature("cloudzero", "litellm.proxy.spend_tracking.cloudzero_endpoints", ("/cloudzero",)),

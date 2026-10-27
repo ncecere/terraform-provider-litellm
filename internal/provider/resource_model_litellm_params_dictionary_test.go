@@ -261,7 +261,7 @@ func TestModelAdditionalLiteLLMParamsJSONFormattingOnlyChangeIsNotAnAPIChange(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	reconciled, err := reconcileModelAdditionalLiteLLMParamsJSON(context.Background(), planned.AdditionalLiteLLMParamsJSON, mustParseSemanticDictionary(t, `{"nested":{"a":1,"b":2}}`), provenance)
+	reconciled, err := reconcileModelAdditionalLiteLLMParamsJSON(context.Background(), planned.AdditionalLiteLLMParamsJSON, mustParseSemanticDictionary(t, `{"nested":{"a":1,"b":2}}`), provenance, false)
 	if err != nil || !reconciled.Equal(planned.AdditionalLiteLLMParamsJSON) {
 		t.Fatalf("configured spelling = %#v, %v", reconciled, err)
 	}
@@ -279,7 +279,7 @@ func TestModelAdditionalLiteLLMParamsJSONProjectionMaskRecoveryAndShape(t *testi
 		"custom":{"api_secret":"abcd***hijk","api_token":["*****","abcd****ijkl"],"nested":{"private_key":"abcd***hijk","api_only":true},"api_only":"ignored"},
 		"safe_literal":"****","remote_only":true
 	}`)
-	reconciled, err := reconcileModelAdditionalLiteLLMParamsJSON(context.Background(), configured, observed, provenance)
+	reconciled, err := reconcileModelAdditionalLiteLLMParamsJSON(context.Background(), configured, observed, provenance, false)
 	if err != nil || !reconciled.Equal(configured) {
 		t.Fatalf("masked reconciliation = %#v, %v", reconciled, err)
 	}
@@ -288,7 +288,7 @@ func TestModelAdditionalLiteLLMParamsJSONProjectionMaskRecoveryAndShape(t *testi
 	}
 
 	drifted := mustParseSemanticDictionary(t, `{"custom":{"api_secret":"changed-plain","api_token":["short","abcdefghijkl"],"nested":{"private_key":"abcdefghijk"}},"safe_literal":"****"}`)
-	reconciled, err = reconcileModelAdditionalLiteLLMParamsJSON(context.Background(), configured, drifted, provenance)
+	reconciled, err = reconcileModelAdditionalLiteLLMParamsJSON(context.Background(), configured, drifted, provenance, false)
 	if err != nil || !strings.Contains(reconciled.ValueString(), "changed-plain") {
 		t.Fatalf("unmasked drift = %#v, %v", reconciled, err)
 	}
@@ -298,7 +298,7 @@ func TestModelAdditionalLiteLLMParamsJSONProjectionMaskRecoveryAndShape(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if value, err := reconcileModelAdditionalLiteLLMParamsJSON(context.Background(), ambiguous, mustParseSemanticDictionary(t, `{"custom":{"api_secret":"****"}}`), ambiguousProvenance); err == nil || !value.IsNull() {
+	if value, err := reconcileModelAdditionalLiteLLMParamsJSON(context.Background(), ambiguous, mustParseSemanticDictionary(t, `{"custom":{"api_secret":"****"}}`), ambiguousProvenance, false); err == nil || !value.IsNull() {
 		t.Fatalf("ambiguous configured mask recovered as %#v, %v", value, err)
 	}
 
@@ -315,7 +315,7 @@ func TestModelAdditionalLiteLLMParamsJSONProjectionMaskRecoveryAndShape(t *testi
 			if name == "missing prior" {
 				prior = types.StringNull()
 			}
-			if value, err := reconcileModelAdditionalLiteLLMParamsJSON(context.Background(), prior, mustParseSemanticDictionary(t, malformed), provenance); err == nil || !value.IsNull() {
+			if value, err := reconcileModelAdditionalLiteLLMParamsJSON(context.Background(), prior, mustParseSemanticDictionary(t, malformed), provenance, false); err == nil || !value.IsNull() {
 				t.Fatalf("unsafe projection = %#v, %v", value, err)
 			}
 		})
@@ -503,5 +503,39 @@ func TestModelAdditionalLiteLLMParamsJSONInvalidConfigurationSendsNoRequest(t *t
 	}
 	if requests.Load() != 0 {
 		t.Fatalf("invalid configurations sent %d requests", requests.Load())
+	}
+}
+
+// Issue #297: a Terraform-owned top-level parameter missing from the observed
+// litellm_params is drift during ordinary refresh, but still fails the strict
+// create/update confirmation projection.
+func TestModelAdditionalLiteLLMParamsJSONMissingOwnedKeyIsRefreshDrift(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	configured := types.StringValue(`{"max_input_tokens":"128000","max_output_tokens":"8192","nested":{"a":1}}`)
+	_, provenance, err := modelAdditionalLiteLLMParamsJSONConfiguration(ctx, configured, types.MapNull(types.StringType))
+	if err != nil {
+		t.Fatal(err)
+	}
+	observed := mustParseSemanticDictionary(t, `{"model":"bedrock/minimax.minimax-m2","nested":{"a":1}}`)
+
+	if value, err := reconcileModelAdditionalLiteLLMParamsJSON(ctx, configured, observed, provenance, false); err == nil || !value.IsNull() {
+		t.Fatalf("strict confirmation accepted a missing owned key: %#v %v", value, err)
+	}
+	refreshed, err := reconcileModelAdditionalLiteLLMParamsJSON(ctx, configured, observed, provenance, true)
+	if err != nil {
+		t.Fatalf("refresh failed on a missing owned key: %v", err)
+	}
+	if !jsonSemanticallyEqual(refreshed.ValueString(), `{"nested":{"a":1}}`) {
+		t.Fatalf("refreshed = %s, want only the remaining owned key", refreshed.ValueString())
+	}
+	if _, owned := provenance.TerraformOwned["/max_input_tokens"]; !owned {
+		t.Fatal("persisted ownership must keep the missing key so the next apply restores it")
+	}
+
+	// A nested owned member that changed type still fails closed.
+	retyped := mustParseSemanticDictionary(t, `{"max_input_tokens":"128000","max_output_tokens":"8192","nested":"flat"}`)
+	if value, err := reconcileModelAdditionalLiteLLMParamsJSON(ctx, configured, retyped, provenance, true); err == nil || !value.IsNull() {
+		t.Fatalf("type change was tolerated: %#v %v", value, err)
 	}
 }

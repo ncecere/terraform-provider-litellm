@@ -2576,6 +2576,7 @@ func TestCredentialCreatePreflightRefusesCollisionAndFailure(t *testing.T) {
 
 func TestCredentialAmbiguousCreateRecoveryIsBoundedAndRetainsPartialIdentity(t *testing.T) {
 	// The retry backoff is intentionally exercised, so do not run this in parallel.
+	shortenCredentialCreateConvergence(t)
 	gets := 0
 	posts := 0
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -2595,7 +2596,9 @@ func TestCredentialAmbiguousCreateRecoveryIsBoundedAndRetainsPartialIdentity(t *
 	plan := credentialTestPlan(t, schema, model)
 	response := &resource.CreateResponse{State: tfsdk.State{Raw: plan.Raw, Schema: schema}}
 	(&CredentialResource{client: &Client{APIBase: server.URL, APIKey: "admin", HTTPClient: server.Client()}}).Create(context.Background(), resource.CreateRequest{Plan: plan}, response)
-	if !response.Diagnostics.HasError() || posts != 1 || gets != 2*credentialProbeSampleSize {
+	// Preflight takes one conclusive sample; the postflight keeps sampling within
+	// the bounded create-convergence window (issue #298) and then fails closed.
+	if !response.Diagnostics.HasError() || posts != 1 || gets <= 2*credentialProbeSampleSize {
 		t.Fatalf("bounded recovery diagnostics=%v posts=%d gets=%d", response.Diagnostics, posts, gets)
 	}
 	var partial CredentialResourceModel

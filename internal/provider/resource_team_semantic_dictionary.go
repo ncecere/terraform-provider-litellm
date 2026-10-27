@@ -590,8 +590,11 @@ func projectTeamLegacyMetadataWithSemantic(ctx context.Context, current types.Ma
 			value = restored[name]
 			filtered[name] = value
 		}
+		// Scalar booleans and numbers are stringified like objects and arrays.
+		// LiteLLM's own admin UI stores flags such as
+		// disable_global_guardrails as JSON booleans (issue #299).
 		switch value.(type) {
-		case string, map[string]interface{}, []interface{}, nil:
+		case string, map[string]interface{}, []interface{}, nil, bool, json.Number, float64:
 		default:
 			return types.MapNull(types.StringType), errSemanticDictionaryTraversal
 		}
