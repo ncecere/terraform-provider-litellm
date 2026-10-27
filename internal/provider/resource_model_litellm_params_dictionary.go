@@ -483,9 +483,9 @@ func semanticDictionaryTopLevelOwnedKeys(ctx context.Context, provenance semanti
 
 // withoutMissingModelParamRoots removes Terraform-owned top-level members that
 // are absent from the observed litellm_params, from both the ownership used for
-// this projection and the prior value. The returned provenance is a copy; the
-// persisted ownership is unchanged, so the configured value is restored by the
-// next apply.
+// this projection and the prior value. The caller (ordinary refresh) then
+// persists ownership recomputed from the refreshed value, so the next plan
+// treats the configured key as an addition and restores it.
 func withoutMissingModelParamRoots(ctx context.Context, provenance semanticDictionaryProvenance, prior, observed map[string]interface{}) (semanticDictionaryProvenance, map[string]interface{}, error) {
 	missing := map[string]bool{}
 	for pointer := range provenance.TerraformOwned {

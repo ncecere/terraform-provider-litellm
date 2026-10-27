@@ -1670,9 +1670,15 @@ func (r *KeyResource) readKeyWithTransport(ctx context.Context, data *KeyResourc
 	// Read the dedicated identity from the original metadata, before the legacy
 	// projection filters or converts values. Only imports adopt remote identity;
 	// ordinary reads preserve optional configuration and tolerate API omission.
-	serviceAccountID, serviceAccountPresent, err := keyResponseServiceAccountID(info)
-	if err != nil {
-		return err
+	// An unmanaged (null) identity is not validated on ordinary refresh, so a
+	// malformed legacy metadata value never makes an unchanged key unreadable.
+	serviceAccountID, serviceAccountPresent := "", false
+	if imported || (!data.ServiceAccountID.IsNull() && !data.ServiceAccountID.IsUnknown()) {
+		var identityErr error
+		serviceAccountID, serviceAccountPresent, identityErr = keyResponseServiceAccountID(info)
+		if identityErr != nil {
+			return identityErr
+		}
 	}
 	if imported {
 		data.ServiceAccountID = types.StringNull()

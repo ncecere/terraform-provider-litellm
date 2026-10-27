@@ -26,17 +26,17 @@ import (
 
 const (
 	pinnedRepository        = "https://github.com/BerriAI/litellm"
-	pinnedTag               = "v1.104.0"
-	pinnedVersion           = "1.104.0"
-	pinnedCommit            = "79645770fedc7ec2627e6468d31062f20f82aecc"
+	pinnedTag               = "v1.106.4"
+	pinnedVersion           = "1.106.4"
+	pinnedCommit            = "ea7ca16dbc3904d9e59a9505f379a2ca3091821f"
 	pinnedPython            = "3.12.14"
 	pinnedUV                = "0.12.6"
-	pinnedUVLockSHA256      = "4d02833751421f29facee660c303f6b02cf0282c2709e93c7ad5898bbc1c38de"
-	pinnedLazyFeatureSHA256 = "1997fb47519ff5bc3adbbf6e5c3eff6edb88e999184855218a436ca899baba7d"
+	pinnedUVLockSHA256      = "96a10b8673cd9da46d99619f87def30ce272b8bdb6d3e95fd568e69dcde1071f"
+	pinnedLazyFeatureSHA256 = "2704131bac9ad975f937951f8e6bf4839068041f39e2b83ad4b5f7f64e499b3e"
 )
 
 // pinnedLazyFeatureCount is the exact LAZY_FEATURES length at pinnedCommit.
-const pinnedLazyFeatureCount = 35
+const pinnedLazyFeatureCount = 37
 
 // hiddenOnlyLazyFeatures register live routes that upstream deliberately marks
 // include_in_schema=False, so they contribute zero generated OpenAPI operations.

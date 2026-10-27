@@ -216,6 +216,17 @@ func TestKeyServiceIdentityErrorsRetainRawStateProtocol(t *testing.T) {
 					prior = keyNumericProtocolDynamic(t, schema, tftypes.NewValue(schema.ValueType(), attributes))
 				}
 				read, err := server.ReadResource(ctx, &tfprotov6.ReadResourceRequest{TypeName: "litellm_key", CurrentState: prior, Private: private})
+				if mode == "unconfigured-null" && !strings.HasSuffix(test.name, "-metadata") {
+					// An unmanaged identity is not validated on ordinary refresh, so a
+					// malformed metadata member never makes an unchanged key unreadable.
+					if err != nil || accessGroupProtocolDiagnosticsHaveError(read.Diagnostics) {
+						t.Fatalf("unmanaged identity failed refresh: err=%v diagnostics=%s", err, agentProtocolDiagnosticsText(read.Diagnostics))
+					}
+					if !protocolAttributeMap(t, schema, read.NewState)["service_account_id"].IsNull() {
+						t.Fatal("ordinary refresh backfilled an unmanaged identity")
+					}
+					return
+				}
 				if err != nil || !accessGroupProtocolDiagnosticsHaveError(read.Diagnostics) {
 					t.Fatalf("read must reject unsafe identity: err=%v diagnostics=%s", err, agentProtocolDiagnosticsText(read.Diagnostics))
 				}

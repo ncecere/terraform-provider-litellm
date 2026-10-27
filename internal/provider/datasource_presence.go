@@ -492,9 +492,6 @@ var teamMetadataStructuredFields = map[string]bool{
 	"prompts": true, "tags": true,
 }
 
-// withoutStructuredMetadata returns a copy of a metadata object without the
-// listed dedicated members whose values are not strings. Every other member,
-// and any listed member that is a plain string, is kept unchanged.
 // withStringifiedScalarMetadata renders scalar boolean and number members of a
 // legacy map(string) metadata projection as their JSON text, the same way the
 // resources render them. LiteLLM's admin UI writes flags such as
@@ -513,6 +510,9 @@ func withStringifiedScalarMetadata(metadata map[string]interface{}) map[string]i
 	return projected
 }
 
+// withoutStructuredMetadata returns a copy of a metadata object without the
+// listed dedicated members whose values are not strings. Every other member,
+// and any listed member that is a plain string, is kept unchanged.
 func withoutStructuredMetadata(metadata map[string]interface{}, structured map[string]bool) map[string]interface{} {
 	projected := make(map[string]interface{}, len(metadata))
 	for key, value := range metadata {

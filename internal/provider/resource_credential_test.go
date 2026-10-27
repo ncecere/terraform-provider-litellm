@@ -2576,6 +2576,7 @@ func TestCredentialCreatePreflightRefusesCollisionAndFailure(t *testing.T) {
 
 func TestCredentialAmbiguousCreateRecoveryIsBoundedAndRetainsPartialIdentity(t *testing.T) {
 	// The retry backoff is intentionally exercised, so do not run this in parallel.
+	shortenCredentialCreateConvergence(t)
 	gets := 0
 	posts := 0
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

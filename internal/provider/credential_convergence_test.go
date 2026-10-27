@@ -14,12 +14,18 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
-// Keep the create-convergence wait short in unit tests; the production window
-// spans LiteLLM's 30-second credential reload interval.
-func init() {
+// shortenCredentialCreateConvergence keeps the create-convergence wait short in
+// one test; the production window spans LiteLLM's 30-second credential reload
+// interval. Callers must not run in parallel.
+func shortenCredentialCreateConvergence(t *testing.T) {
+	t.Helper()
+	window, initial, maximum := credentialCreateConvergenceWindow, credentialCreateConvergenceInitialDelay, credentialCreateConvergenceMaxDelay
 	credentialCreateConvergenceWindow = 300 * time.Millisecond
 	credentialCreateConvergenceInitialDelay = 5 * time.Millisecond
 	credentialCreateConvergenceMaxDelay = 20 * time.Millisecond
+	t.Cleanup(func() {
+		credentialCreateConvergenceWindow, credentialCreateConvergenceInitialDelay, credentialCreateConvergenceMaxDelay = window, initial, maximum
+	})
 }
 
 // Issue #298: on a multi-replica proxy only the worker that handled the create
@@ -27,6 +33,7 @@ func init() {
 // the first fresh-connection probes can all miss it. Create must keep sampling
 // within the bounded window instead of retaining uncertain-ownership state.
 func TestCredentialCreateWaitsForWorkerConvergence(t *testing.T) {
+	shortenCredentialCreateConvergence(t)
 	var mu sync.Mutex
 	posts, gets := 0, 0
 	var stored []byte

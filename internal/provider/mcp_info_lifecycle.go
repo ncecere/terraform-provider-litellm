@@ -118,8 +118,49 @@ func mcpInfoDocumentFromResponse(result map[string]interface{}) (map[string]inte
 				return nil, apiValueNull, nil
 			}
 		}
+		if _, derived := document[mcpInfoDerivedPublicExplicitKey]; derived {
+			// LiteLLM 1.106 overlays two computed booleans on every MCP server
+			// response: is_public (from the public-server allowlist and
+			// available_on_public_internet, never from stored mcp_info) and
+			// is_public_explicit. Restricted virtual-key views contain only
+			// those two keys and null the audit fields; that view is masked,
+			// like the v1.98 singleton. Admin views carry the stored document
+			// plus the overlay, so the derived keys are removed.
+			if len(document) == 2 && mcpInfoOnlyDerivedPublicFlags(document) && mcpServerAuditFieldsRedacted(result) {
+				return nil, apiValueNull, nil
+			}
+			stored := make(map[string]interface{}, len(document))
+			for name, value := range document {
+				if name != mcpInfoDerivedPublicKey && name != mcpInfoDerivedPublicExplicitKey {
+					stored[name] = value
+				}
+			}
+			document = stored
+		}
 	}
 	return document, presence, nil
+}
+
+const (
+	mcpInfoDerivedPublicKey         = "is_public"
+	mcpInfoDerivedPublicExplicitKey = "is_public_explicit"
+)
+
+func mcpInfoOnlyDerivedPublicFlags(document map[string]interface{}) bool {
+	_, publicIsBool := document[mcpInfoDerivedPublicKey].(bool)
+	_, explicitIsBool := document[mcpInfoDerivedPublicExplicitKey].(bool)
+	return publicIsBool && explicitIsBool
+}
+
+// mcpServerAuditFieldsRedacted reports LiteLLM's restricted virtual-key view,
+// which nulls the audit fields every stored server row carries.
+func mcpServerAuditFieldsRedacted(result map[string]interface{}) bool {
+	for _, field := range []string{"created_at", "updated_at"} {
+		if value, present := result[field]; present && value != nil {
+			return false
+		}
+	}
+	return true
 }
 
 func setCompleteMCPInfoJSONState(data *MCPServerResourceModel, document map[string]interface{}) error {

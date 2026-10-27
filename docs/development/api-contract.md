@@ -1,8 +1,8 @@
 # LiteLLM API contract maintenance
 
-The provider is tested against exactly LiteLLM 1.104.0. Its API review consists of:
+The provider is tested against exactly LiteLLM 1.106.4. Its API review consists of:
 
-- generated `openapi.json`, after fail-closed direct registration of all 35 lazy feature definitions in the pinned source;
+- generated `openapi.json`, after fail-closed direct registration of all 37 lazy feature definitions in the pinned source;
 - generated `internal/contract/supplemental-routes.json`, containing the complete feature/module/prefix/suffix/router-or-mount contract, per-feature live/OpenAPI counts, and the explicitly reviewed hidden route;
 - generated `internal/contract/manifest.json` and `internal/contractapi/testdata/provider-operations.golden.json`;
 - reviewed `internal/contract/reviewed-operation-classification.json`, with one exact normalized `METHOD /path` entry for every operation not used by the provider; and
@@ -46,10 +46,10 @@ CI and the release workflow run this offline gate. Release runs it before import
 
 Generation requires all of the following exact inputs:
 
-- upstream tag `v1.104.0` at commit `79645770fedc7ec2627e6468d31062f20f82aecc`;
+- upstream tag `v1.106.4` at commit `ea7ca16dbc3904d9e59a9505f379a2ca3091821f`;
 - Python `3.12.14`;
 - uv `0.12.6` (the local command rejects any other release); and
-- upstream `uv.lock` SHA256 `4d02833751421f29facee660c303f6b02cf0282c2709e93c7ad5898bbc1c38de`.
+- upstream `uv.lock` SHA256 `96a10b8673cd9da46d99619f87def30ce272b8bdb6d3e95fd568e69dcde1071f`.
 
 With an existing exact checkout:
 
