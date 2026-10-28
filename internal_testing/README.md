@@ -74,6 +74,29 @@ The `docker-compose.yml` starts two services:
 ./compose.sh down -v
 ```
 
+## External rotation mock assembly
+
+The opt-in `litellm_key.external_rotation` lifecycle has an isolated assembly test
+with synthetic AWS Secrets Manager and LiteLLM HTTP servers. It uses a locally
+built provider, no production credentials, no real AWS services, and only a
+disposable local Terraform state. Provider `dev_overrides` are confined to the
+temporary test directory.
+
+```bash
+go build -o /tmp/terraform-provider-litellm-external .
+python3 -I internal_testing/external_rotation_mock.py \
+  --terraform /path/to/terraform \
+  --provider /tmp/terraform-provider-litellm-external
+```
+
+Repeat with an OpenTofu executable for client parity. The test covers missing-state
+adoption without key generation, refresh after external rotation removes the old
+key, updates to the current key, secret-version races before mutation, wrong-team
+refusal with sanitized output, and forget-only destruction. It relies on the AWS
+SDK's standard `AWS_ENDPOINT_URL_SECRETS_MANAGER` setting only inside the isolated
+synthetic test environment. It does not establish live AWS IAM/KMS access or
+production LiteLLM rotation/application integration.
+
 ## Directory Layout
 
 ```

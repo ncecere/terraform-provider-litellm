@@ -55,6 +55,65 @@ In write-only mode, `key` remains null and `id` contains only `sha256:<key-hash>
 
 > **Compatibility:** The optional write-only argument requires Terraform or OpenTofu 1.11+. Older clients can continue using the provider when `key_wo` is omitted, but reject configurations that set it.
 
+### Adopt an Externally Rotated Service-Account Key
+
+An externally owned rotation process can publish a service account's current raw
+credential to AWS Secrets Manager. Opt in with an exact secret ARN:
+
+```hcl
+resource "litellm_key" "external" {
+  service_account_id = "sa-example"
+  key_alias          = "key-example"
+  team_id            = "example-team"
+  project_id         = "example-project"
+
+  external_rotation = {
+    secret_arn = "arn:aws:secretsmanager:us-west-2:123456789012:secret:service-accounts/key-example-AbCdEf"
+  }
+
+  models     = ["example-model"]
+  max_budget = 100
+}
+```
+
+This mode **adopts an existing key**, including when its Terraform binding is
+missing; it never generates a replacement credential or deletes the externally
+owned key. Terraform still manages explicitly configured key settings. Removing
+an enrolled resource forgets the binding; revocation belongs to the external key
+owner. The secret must already contain the raw `sk-...` token in `AWSCURRENT`.
+JSON credential envelopes and binary secrets are not accepted.
+
+The AWS SDK uses its default credential chain and the region from the full ARN.
+Grant `secretsmanager:GetSecretValue` on that exact ARN and `kms:Decrypt` where
+required. AWS permissions are separate from the LiteLLM management credential and
+Terraform backend permissions; check the deployment's target-account role. No
+Terraform AWS data source or shell command is required.
+
+Plan/refresh resolves the current credential and reads its exact `/key/info`
+record by management hash. Service-account metadata, team, project, and explicit
+alias must match; the record must be active and unblocked. Missing or inaccessible
+secrets, missing/archived keys, malformed responses, and identity conflicts stop
+with sanitized diagnostics and do not fall back to generation. The secret ARN is
+an enrollment locator, not permission to adopt arbitrary alias matches.
+
+Apply checks the planned credential/version again before a key update. Rotation
+between plan and apply requires a fresh plan rather than a mutation of a different
+key. This cannot make AWS and LiteLLM atomic: the external rotation process must
+publish a consistent current secret, and concurrent rotation/mutation still needs
+operational coordination.
+
+`key` remains sensitive but is stored as plaintext in Terraform state and saved
+plans; protect retained snapshots. Tokens are not import IDs or command arguments,
+and AWS/LiteLLM error bodies are suppressed. `external_rotation` cannot be combined
+with predefined `key`, `key_wo`/`key_wo_version`, or semantic JSON dictionary
+ownership. `blocked = true` is unsupported: this mode manages only active,
+unblocked keys. The enrolled secret ARN and service-account/team/project/alias
+identity tuple are immutable; removing `external_rotation` from a still-managed
+resource is rejected rather than enabling generation/deletion ownership implicitly.
+To stop enrollment, remove the resource configuration and let Terraform forget it,
+then coordinate any new ownership/import separately. Existing ordinary resources,
+IDs, and import formats are unchanged.
+
 ### Create a Key and Email Its User
 
 ```hcl
@@ -257,6 +316,8 @@ The following arguments are supported:
 
 * `service_account_id` - (Optional, ForceNew) Identifier for a team-owned service account. When set, the provider calls the service-account API and defaults `key_alias` to this value. Import restores this identity when present in the key's metadata; keep the same value explicitly configured afterward. Omitting or changing an imported non-null identity requires replacement.
 
+* `external_rotation` - (Optional) Opt-in adoption and management of an existing externally rotated service-account key. `secret_arn` is the full AWS Secrets Manager ARN containing the current raw token. `version_hash` is computed from the AWS secret version identifier for plan/apply race checks; do not configure it. Explicit matching `service_account_id`, `team_id`, `project_id`, and `key_alias` are required. Generation and remote deletion are disabled in this mode; see the lifecycle example above.
+
 * `allowed_routes` - (Optional) List of LiteLLM proxy routes this key is allowed to call.
 
 * `allowed_passthrough_routes` - (Optional) Pass-through endpoints the key is allowed to access.
@@ -379,7 +440,9 @@ Matching `service_account_id` configuration avoids replacement for this attribut
 
 ### External key rotation
 
-Keys rotated outside Terraform are not supported as the same managed resource: the provider cannot safely recover the replacement token or management hash from the previous identifier or an alias. Restoring service-account identity during exact-key import does not add rotation recovery. Full support requires a stable, recoverable server-side key identity; see [issue #146](https://github.com/ncecere/terraform-provider-litellm/issues/146).
+Ordinary keys rotated outside Terraform are not supported as the same managed resource: the provider cannot safely recover the replacement token or management hash from the previous identifier or an alias. Restoring service-account identity during exact-key import does not add rotation recovery.
+
+The opt-in `external_rotation` mode above provides an explicitly configured AWS Secrets Manager locator plus exact identity checks, allowing refresh to follow the current externally published credential and missing bindings to adopt that verified key. It does not infer identity by alias, invoke LiteLLM regeneration, create the secret, or support arbitrary secret managers. General server-side rotation support remains separate; see [issue #146](https://github.com/ncecere/terraform-provider-litellm/issues/146).
 
 ## Upgrade Notes
 
