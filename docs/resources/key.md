@@ -114,6 +114,12 @@ To stop enrollment, remove the resource configuration and let Terraform forget i
 then coordinate any new ownership/import separately. Existing ordinary resources,
 IDs, and import formats are unchanged.
 
+> **Draft review limitation:** removal/clear confirmation for `tpd_limit` and
+> `router_settings` in external mode still needs dedicated ownership/convergence
+> coverage. Do not rely on this draft for those clear operations. The normal
+> provider-owned key paths retain their existing behavior. Upstream static
+> identity/provenance and operation-inventory review is also required before release.
+
 ### Create a Key and Email Its User
 
 ```hcl
