@@ -53,7 +53,7 @@ func TestKeyResourceSafeReadProtocolSequences(t *testing.T) {
 		currentAttempt := attempt
 		mu.Unlock()
 		writer.Header().Set("Content-Type", "application/json")
-		if request.Method != http.MethodGet || request.URL.Path != "/key/info" || request.URL.Query().Get("key") != raw {
+		if request.Method != http.MethodGet || request.URL.Path != "/key/info" || request.URL.Query().Get("key") != testKeyHash(raw) {
 			http.Error(writer, `{"detail":"unexpected-route-secret"}`, http.StatusBadRequest)
 			return
 		}
@@ -64,7 +64,7 @@ func TestKeyResourceSafeReadProtocolSequences(t *testing.T) {
 				http.Error(writer, `{"detail":"temporary-response-secret"}`, http.StatusServiceUnavailable)
 				return
 			}
-			_, _ = writer.Write(keySafeReadBody(t, raw, true))
+			_, _ = writer.Write(keySafeReadBody(t, testKeyHash(raw), true))
 		case "exhaustion", "accepted-exhaustion":
 			writer.Header().Set("Retry-After", "0")
 			http.Error(writer, `{"detail":"body-secret 404 not found"}`, http.StatusBadGateway)
@@ -73,15 +73,15 @@ func TestKeyResourceSafeReadProtocolSequences(t *testing.T) {
 		case "malformed":
 			_, _ = writer.Write([]byte(`{"key":`))
 		case "missing-info":
-			_, _ = fmt.Fprintf(writer, `{"key":%q}`, raw)
+			_, _ = fmt.Fprintf(writer, `{"key":%q}`, testKeyHash(raw))
 		case "mismatch":
 			_, _ = writer.Write(keySafeReadBody(t, "wrong-key-secret", true))
 		case "malformed-scalar":
-			_, _ = fmt.Fprintf(writer, `{"key":%q,"info":{"blocked":"true"}}`, raw)
+			_, _ = fmt.Fprintf(writer, `{"key":%q,"info":{"blocked":"true"}}`, testKeyHash(raw))
 		case "404":
 			http.Error(writer, `{"detail":"missing body-secret"}`, http.StatusNotFound)
 		default:
-			_, _ = writer.Write(keySafeReadBody(t, raw, true))
+			_, _ = writer.Write(keySafeReadBody(t, testKeyHash(raw), true))
 		}
 	}))
 	defer server.Close()
@@ -196,17 +196,17 @@ func TestKeyDataSourceSafeReadProtocolSequences(t *testing.T) {
 						http.Error(writer, `{"detail":"temporary-body-secret"}`, http.StatusServiceUnavailable)
 						return
 					}
-					_, _ = writer.Write(keySafeReadBody(t, raw, true))
+					_, _ = writer.Write(keySafeReadBody(t, testKeyHash(raw), true))
 				case "404":
 					http.Error(writer, `{"detail":"missing-body-secret"}`, http.StatusNotFound)
 				case "400":
 					http.Error(writer, `{"detail":"404 not found body-secret"}`, http.StatusBadRequest)
 				case "missing":
-					_, _ = fmt.Fprintf(writer, `{"key":%q}`, raw)
+					_, _ = fmt.Fprintf(writer, `{"key":%q}`, testKeyHash(raw))
 				case "mismatch":
 					_, _ = writer.Write(keySafeReadBody(t, "wrong-key-secret", true))
 				case "malformed":
-					_, _ = fmt.Fprintf(writer, `{"key":%q,"info":{"key_alias":7}}`, raw)
+					_, _ = fmt.Fprintf(writer, `{"key":%q,"info":{"key_alias":7}}`, testKeyHash(raw))
 				case "exhaustion":
 					writer.Header().Set("Retry-After", "0")
 					http.Error(writer, `{"detail":"body-secret"}`, http.StatusServiceUnavailable)

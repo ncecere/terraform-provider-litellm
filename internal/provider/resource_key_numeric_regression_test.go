@@ -133,8 +133,8 @@ func assertKeyNumericMaps(t *testing.T, data *KeyResourceModel, wantBudget map[s
 func TestKeyNumericReadUsesFieldSpecificBudgetPrecedenceWithoutDrift(t *testing.T) {
 	t.Parallel()
 
-	const response = `{
-		"key":"sk-live",
+	response := `{
+		"key":"` + testKeyHash("sk-live") + `",
 		"info":{
 			"max_budget":100,
 			"model_max_budget":{"legacy":999},
@@ -183,8 +183,8 @@ func TestKeyCreateAndDataSourceKeepVerificationTokenMaxBudget(t *testing.T) {
 	t.Parallel()
 
 	const key = "sk-live-budget-precedence"
-	const infoResponse = `{
-		"key":"sk-live-budget-precedence",
+	infoResponse := `{
+		"key":"` + testKeyHash("sk-live-budget-precedence") + `",
 		"info":{
 			"max_budget":100,
 			"tpm_limit":9007199254740993,
@@ -299,7 +299,7 @@ func TestKeyNumericHistoricalFlatBudgetFallback(t *testing.T) {
 
 	data := configuredKeyNumericModel("sk-flat")
 	readKeyNumericResponse(t, `{
-		"key":"sk-flat",
+		"key":"`+testKeyHash("sk-flat")+`",
 		"info":{
 			"max_budget":25.5,
 			"soft_budget":20,
@@ -325,7 +325,7 @@ func TestKeyNumericConfiguredOmissionPreservesLastKnownState(t *testing.T) {
 
 	data := configuredKeyNumericModel("sk-configured")
 	want := data
-	readKeyNumericResponse(t, `{"key":"sk-configured","info":{"litellm_budget_table":{},"metadata":{}}}`, &data, false)
+	readKeyNumericResponse(t, `{"key":"`+testKeyHash("sk-configured")+`","info":{"litellm_budget_table":{},"metadata":{}}}`, &data, false)
 
 	if data.MaxBudget != want.MaxBudget || data.SoftBudget != want.SoftBudget || data.TPMLimit != want.TPMLimit || data.RPMLimit != want.RPMLimit || data.MaxParallelRequests != want.MaxParallelRequests {
 		t.Fatalf("configured scalar omission changed state: %#v", data)
@@ -340,7 +340,7 @@ func TestKeyNumericFieldSpecificAuthoritativeNullsClearConfiguredState(t *testin
 
 	data := configuredKeyNumericModel("sk-null")
 	readKeyNumericResponse(t, `{
-		"key":"sk-null",
+		"key":"`+testKeyHash("sk-null")+`",
 		"info":{
 			"max_budget":null,
 			"soft_budget":999,
@@ -376,7 +376,7 @@ func TestKeyNumericUnconfiguredFieldsDoNotAdoptRemoteValues(t *testing.T) {
 		ModelTPMLimit:       types.MapUnknown(types.Int64Type),
 	}
 	readKeyNumericResponse(t, `{
-		"key":"sk-unconfigured",
+		"key":"`+testKeyHash("sk-unconfigured")+`",
 		"info":{
 			"tpm_limit":9007199254740993,
 			"rpm_limit":10,
@@ -399,7 +399,7 @@ func TestKeyNumericImportAdoptsVisibleValuesAndClearsOmissions(t *testing.T) {
 
 	adopted := KeyResourceModel{Key: types.StringValue("sk-import")}
 	readKeyNumericResponse(t, `{
-		"key":"sk-import",
+		"key":"`+testKeyHash("sk-import")+`",
 		"info":{
 			"tpm_limit":9007199254740993,
 			"rpm_limit":12,
@@ -418,7 +418,7 @@ func TestKeyNumericImportAdoptsVisibleValuesAndClearsOmissions(t *testing.T) {
 	)
 
 	cleared := configuredKeyNumericModel("sk-import-absent")
-	readKeyNumericResponse(t, `{"key":"sk-import-absent","info":{"litellm_budget_table":{},"metadata":{}}}`, &cleared, true)
+	readKeyNumericResponse(t, `{"key":"`+testKeyHash("sk-import-absent")+`","info":{"litellm_budget_table":{},"metadata":{}}}`, &cleared, true)
 	if !cleared.MaxBudget.IsNull() || !cleared.SoftBudget.IsNull() || !cleared.TPMLimit.IsNull() || !cleared.RPMLimit.IsNull() || !cleared.MaxParallelRequests.IsNull() || !cleared.ModelMaxBudget.IsNull() || !cleared.ModelRPMLimit.IsNull() || !cleared.ModelTPMLimit.IsNull() {
 		t.Fatalf("import omissions did not clear prior numeric state: %#v", cleared)
 	}
@@ -430,7 +430,7 @@ func TestKeyDataSourcesUseFieldSpecificBudgetPrecedenceAndExactTopLevelLimits(t 
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
 		_, _ = writer.Write([]byte(`{
-			"key":"sk-data",
+			"key":"` + testKeyHash("sk-data") + `",
 			"info":{
 				"key_alias":"data",
 				"models":[],

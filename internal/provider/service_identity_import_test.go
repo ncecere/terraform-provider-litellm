@@ -76,11 +76,12 @@ func TestKeyServiceIdentityImportReadProtocol(t *testing.T) {
 	ctx := context.Background()
 	for _, hashMode := range []bool{false, true} {
 		mode := "stateful"
-		id, lookup := keyServiceIdentityRawToken, keyServiceIdentityRawToken
+		// Both stateful and write-only keys are looked up by the bare SHA256
+		// hash; only the imported ID differs.
+		id, lookup := keyServiceIdentityRawToken, testKeyHash(keyServiceIdentityRawToken)
 		if hashMode {
 			mode = "hash-write-only"
 			id = hashKeyForID(keyServiceIdentityRawToken)
-			lookup = strings.TrimPrefix(id, "sha256:")
 		}
 		for _, test := range []struct {
 			name            string
@@ -153,7 +154,7 @@ func TestKeyServiceIdentityNormalReadOwnershipProtocol(t *testing.T) {
 			{"null-member", map[string]interface{}{"owner": "synthetic-refreshed-owner", "service_account_id": nil}, true},
 		} {
 			t.Run(mode+"/"+test.name, func(t *testing.T) {
-				api, requests := keyServiceIdentityAPI(t, keyServiceIdentityRawToken, test.metadata, test.metadataPresent)
+				api, requests := keyServiceIdentityAPI(t, testKeyHash(keyServiceIdentityRawToken), test.metadata, test.metadataPresent)
 				server, schemas := configuredImportProtocolServer(t, ctx, api.URL)
 				schema := schemas.ResourceSchemas["litellm_key"]
 				attributes := protocolAttributeMap(t, schema, keySafeReadProtocolPriorState(t, schema, keyServiceIdentityRawToken))
@@ -202,7 +203,7 @@ func TestKeyServiceIdentityErrorsRetainRawStateProtocol(t *testing.T) {
 				continue
 			}
 			t.Run(test.name+"/"+mode, func(t *testing.T) {
-				api, requests := keyServiceIdentityAPI(t, keyServiceIdentityRawToken, test.metadata, true)
+				api, requests := keyServiceIdentityAPI(t, testKeyHash(keyServiceIdentityRawToken), test.metadata, true)
 				server, schemas := configuredImportProtocolServer(t, ctx, api.URL)
 				schema := schemas.ResourceSchemas["litellm_key"]
 				prior := keySafeReadProtocolPriorState(t, schema, keyServiceIdentityRawToken)
@@ -266,11 +267,12 @@ func TestKeyServiceIdentityImportReadPlanRequiresReplaceProtocol(t *testing.T) {
 	ctx := context.Background()
 	for _, hashMode := range []bool{false, true} {
 		mode := "stateful"
-		id, lookup := keyServiceIdentityRawToken, keyServiceIdentityRawToken
+		// Both stateful and write-only keys are looked up by the bare SHA256
+		// hash; only the imported ID differs.
+		id, lookup := keyServiceIdentityRawToken, testKeyHash(keyServiceIdentityRawToken)
 		if hashMode {
 			mode = "hash-write-only"
 			id = hashKeyForID(keyServiceIdentityRawToken)
-			lookup = strings.TrimPrefix(id, "sha256:")
 		}
 		t.Run(mode, func(t *testing.T) {
 			api, requests := keyServiceIdentityAPI(t, lookup, map[string]interface{}{"service_account_id": keyServiceIdentityID}, true)

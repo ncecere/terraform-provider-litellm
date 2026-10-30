@@ -72,6 +72,9 @@ func keyHashFromID(id string) (string, error) {
 	return strings.ToLower(hash), nil
 }
 
+// keyLookupIdentifier returns the bare SHA256 token hash LiteLLM stores for the
+// key. The plaintext key is never used as an identifier because /key/info
+// carries it in the query string, where proxies and access logs record it.
 func keyLookupIdentifier(data *KeyResourceModel) (string, error) {
 	if !data.KeyWOVersion.IsNull() && !data.KeyWOVersion.IsUnknown() {
 		return keyHashFromID(data.ID.ValueString())
@@ -80,7 +83,7 @@ func keyLookupIdentifier(data *KeyResourceModel) (string, error) {
 	if key == "" {
 		return "", fmt.Errorf("key value is empty, cannot identify the LiteLLM key")
 	}
-	return key, nil
+	return keyHashFromID(hashKeyForID(key))
 }
 
 func writeOnlyKeyCreateError(err error) string {
@@ -1452,10 +1455,8 @@ func applyKeyProjectAndSoftBudgetUpdateSemantics(updateReq map[string]interface{
 }
 
 func keyInfoEndpoint(keyIdentifier string) string {
-	// Canonical url.Values encoding ensures special characters in a plaintext
-	// key (e.g. '#') are not interpreted as a URL fragment. LiteLLM also accepts
-	// the SHA256 token hash used to manage write-only keys without recovering
-	// plaintext.
+	// Callers pass the SHA256 token hash from keyLookupIdentifier, never the
+	// plaintext key, so request URIs are safe to log.
 	query := url.Values{"key": []string{keyIdentifier}}
 	return endpointWithQuery("/key/info", query)
 }
@@ -1595,8 +1596,8 @@ func (r *KeyResource) waitForKeyRouterSettings(ctx context.Context, data *KeyRes
 					return fmt.Errorf("LiteLLM router-settings read-back returned HTTP %d", apiErr.StatusCode)
 				}
 			} else {
-				// Transport errors can embed the request URL and therefore a raw
-				// stateful key. Keep the convergence diagnostic deliberately generic.
+				// Transport errors can embed the request URL and therefore the key
+				// hash. Keep the convergence diagnostic deliberately generic.
 				lastDetail = "the read-back transport request failed"
 			}
 		}

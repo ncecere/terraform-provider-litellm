@@ -86,8 +86,11 @@ func TestKeySemanticDictionaryCreateProtocol(t *testing.T) {
 			_, _ = writer.Write([]byte(`{"key":"sk-key-json"}`))
 		case request.Method == http.MethodGet && request.URL.Path == "/key/info":
 			reads.Add(1)
+			if got := request.URL.Query().Get("key"); got != testKeyHash("sk-key-json") {
+				t.Errorf("read key = %q, want bare hash", got)
+			}
 			_ = json.NewEncoder(writer).Encode(map[string]interface{}{
-				"key": "sk-key-json",
+				"key": testKeyHash("sk-key-json"),
 				"info": map[string]interface{}{
 					"metadata": map[string]interface{}{"integer": json.Number("9007199254740993"), "native": true, "string": "true", "nested": map[string]interface{}{"null": nil, "list": []interface{}{nil, false, "1", json.Number("1")}, "empty": map[string]interface{}{}}},
 					"config":   map[string]interface{}{}, "permissions": map[string]interface{}{},
@@ -178,12 +181,15 @@ func TestKeySemanticDictionaryUpdateRemovalAndSiblingPreservationProtocol(t *tes
 			_, _ = writer.Write([]byte(`{}`))
 		case request.Method == http.MethodGet && request.URL.Path == "/key/info":
 			reads.Add(1)
+			if got := request.URL.Query().Get("key"); got != testKeyHash("sk-key-update") {
+				t.Errorf("read key = %q, want bare hash", got)
+			}
 			var configRoot interface{} = remote["config"]
 			if serveMalformed.Load() {
 				configRoot = []interface{}{"malformed"}
 			}
 			_ = json.NewEncoder(writer).Encode(map[string]interface{}{
-				"key": "sk-key-update",
+				"key": testKeyHash("sk-key-update"),
 				"info": map[string]interface{}{
 					"metadata": remote["metadata"], "config": configRoot, "permissions": remote["permissions"],
 				},
@@ -243,6 +249,9 @@ func TestKeySemanticDictionaryUpdateRemovalAndSiblingPreservationProtocol(t *tes
 	}
 	if posts.Load() != 2 || reads.Load() != 3 {
 		t.Fatalf("posts=%d reads=%d, want one generate, one update, and three reads", posts.Load(), reads.Load())
+	}
+	if updateBody["key"] != testKeyHash("sk-key-update") {
+		t.Fatalf("update body key = %#v, want the bare SHA256 hash and never the raw key", updateBody["key"])
 	}
 	metadata := updateBody["metadata"].(map[string]interface{})
 	owned := metadata["owned"].(map[string]interface{})
@@ -430,8 +439,11 @@ func TestKeySemanticDictionaryAcceptedCreateRecoveryProtocol(t *testing.T) {
 			_, _ = writer.Write([]byte(`{"key":`))
 		case request.Method == http.MethodGet && request.URL.Path == "/key/info":
 			reads.Add(1)
+			if got := request.URL.Query().Get("key"); got != testKeyHash(rawKey) {
+				t.Errorf("read key = %q, want bare hash", got)
+			}
 			_ = json.NewEncoder(writer).Encode(map[string]interface{}{
-				"key": rawKey,
+				"key": testKeyHash(rawKey),
 				"info": map[string]interface{}{
 					"metadata": map[string]interface{}{"owned": true},
 					"config":   map[string]interface{}{}, "permissions": map[string]interface{}{},
@@ -597,8 +609,11 @@ func TestKeySemanticDictionaryImportNonAdoptionAndTakeoverProtocol(t *testing.T)
 		writer.Header().Set("Content-Type", "application/json")
 		switch {
 		case request.Method == http.MethodGet && request.URL.Path == "/key/info":
+			if got := request.URL.Query().Get("key"); got != testKeyHash(rawKey) {
+				t.Errorf("read key = %q, want bare hash", got)
+			}
 			_ = json.NewEncoder(writer).Encode(map[string]interface{}{
-				"key": rawKey,
+				"key": testKeyHash(rawKey),
 				"info": map[string]interface{}{
 					"metadata": map[string]interface{}{},
 					"config":   remoteConfig, "permissions": map[string]interface{}{},
@@ -611,6 +626,9 @@ func TestKeySemanticDictionaryImportNonAdoptionAndTakeoverProtocol(t *testing.T)
 			decoder.UseNumber()
 			if err := decoder.Decode(&body); err != nil {
 				t.Errorf("decode update: %v", err)
+			}
+			if body["key"] != testKeyHash(rawKey) {
+				t.Errorf("update body key = %#v, want bare hash", body["key"])
 			}
 			object, ok := body["config"].(map[string]interface{})
 			if !ok || object["native"] != true || object["api"].(map[string]interface{})["preserved"] != true {

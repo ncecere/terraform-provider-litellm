@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Upgrade Notes
+- Patch release; no configuration changes are required. The tested backend remains exactly LiteLLM 1.106.4. No schema changes; existing HCL, state, IDs, and imports remain valid.
+
+### Security
+- **`litellm_key` raw key in `/key/info` query strings (issue #317)**: For keys managed through `key` (every LiteLLM-generated key and every stateful predefined key), the provider looked the key up with `GET /key/info?key=<raw sk- key>` on create read-back and on every refresh, and the `litellm_key` data source did the same for a raw `key` argument. Reverse proxies, load balancers, and log pipelines that record request URIs therefore stored every managed key in plaintext. The provider now hashes the key client-side and sends only LiteLLM's SHA256 token hash, as the `key_wo` path and `litellm_key_block` already did; `/key/update` and `/key/delete` bodies also carry the hash. The plaintext key is still sent once in the `/key/generate` body when you create a predefined key. Review and rotate keys that may already be recorded in proxy access logs. Thanks to @kthy for the report and proposed fix.
+
 ## [2.2.1] - 2026-10-27
 
 ### Upgrade Notes

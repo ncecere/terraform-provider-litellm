@@ -95,7 +95,7 @@ func TestAdditionalNumericImportProtocolsAdoptOnceAndTransitionMarker(t *testing
 		case "/user/info":
 			_, _ = writer.Write([]byte(`{"user_id":"user-resource-import","user_info":{"user_id":"user-resource-import","user_email":"import@example.test","tpm_limit":9007199254740993}}`))
 		case "/key/info":
-			_, _ = writer.Write([]byte(`{"key":"sk-import","info":{"tpm_limit":9007199254740993,"litellm_budget_table":{"max_budget":50.5,"soft_budget":40,"model_max_budget":{}},"metadata":{"model_rpm_limit":{},"model_tpm_limit":{}}}}`))
+			_, _ = writer.Write([]byte(`{"key":"` + testKeyHash("sk-import") + `","info":{"tpm_limit":9007199254740993,"litellm_budget_table":{"max_budget":50.5,"soft_budget":40,"model_max_budget":{}},"metadata":{"model_rpm_limit":{},"model_tpm_limit":{}}}}`))
 		default:
 			http.NotFound(writer, request)
 		}
