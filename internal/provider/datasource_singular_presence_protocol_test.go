@@ -93,13 +93,13 @@ func singularPresenceCases() []singularPresenceCase {
 			body: func(mode string) string {
 				switch mode {
 				case "omit":
-					return `{"key":"presence-key","info":{}}`
+					return `{"key":"` + testKeyHash("presence-key") + `","info":{}}`
 				case "null":
-					return `{"key":"presence-key","info":{"models":null,"blocked":null}}`
+					return `{"key":"` + testKeyHash("presence-key") + `","info":{"models":null,"blocked":null}}`
 				case "empty":
-					return `{"key":"presence-key","info":{"key_alias":"","models":[],"max_budget":0,"spend":0,"user_id":"","team_id":"","project_id":"","max_parallel_requests":0,"tpm_limit":0,"rpm_limit":0,"budget_duration":"","litellm_budget_table":{"soft_budget":0},"metadata":{"tags":[]},"blocked":false,"router_settings":{}}}`
+					return `{"key":"` + testKeyHash("presence-key") + `","info":{"key_alias":"","models":[],"max_budget":0,"spend":0,"user_id":"","team_id":"","project_id":"","max_parallel_requests":0,"tpm_limit":0,"rpm_limit":0,"budget_duration":"","litellm_budget_table":{"soft_budget":0},"metadata":{"tags":[]},"blocked":false,"router_settings":{}}}`
 				case "malformed":
-					return `{"key":"presence-key","info":{"models":["ok",1]}}`
+					return `{"key":"` + testKeyHash("presence-key") + `","info":{"models":["ok",1]}}`
 				case "mismatch":
 					return `{"key":"other","info":{}}`
 				}

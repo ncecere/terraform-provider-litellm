@@ -114,7 +114,7 @@ func TestKeyOrdinaryRefreshRetriesButConfirmationStaysSingleAttempt(t *testing.T
 			http.Error(writer, `{"detail":"temporary-body-secret"}`, http.StatusServiceUnavailable)
 			return
 		}
-		_, _ = writer.Write(keySafeReadBody(t, raw, true))
+		_, _ = writer.Write(keySafeReadBody(t, testKeyHash(raw), true))
 	}))
 	defer server.Close()
 	resource := &KeyResource{client: &Client{APIBase: server.URL, APIKey: "admin", HTTPClient: server.Client()}}
@@ -140,7 +140,7 @@ func TestKeySafeReadIncomplete404RetriesThenSucceeds(t *testing.T) {
 			response.ContentLength = -1
 			return response, nil
 		}
-		return searchToolTestResponse(request, http.StatusOK, keySafeReadBody(t, raw, true), nil), nil
+		return searchToolTestResponse(request, http.StatusOK, keySafeReadBody(t, testKeyHash(raw), true), nil), nil
 	})
 	resource := &KeyResource{client: client}
 	data := keySafeReadModel(raw)

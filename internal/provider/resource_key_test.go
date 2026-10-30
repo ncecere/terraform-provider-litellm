@@ -6,14 +6,24 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
+	"github.com/hashicorp/terraform-plugin-go/tftypes"
 )
+
+// testKeyHash returns the bare lowercase SHA256 token hash LiteLLM stores for a
+// raw key. The provider sends this value, never the raw key, as the key
+// identifier for /key/info, /key/update, and /key/delete.
+func testKeyHash(raw string) string {
+	return strings.TrimPrefix(hashKeyForID(raw), "sha256:")
+}
 
 func mustBuildKeyRequest(t *testing.T, r *KeyResource, data *KeyResourceModel) map[string]interface{} {
 	t.Helper()
@@ -59,7 +69,7 @@ func TestKeyLookupIdentifier(t *testing.T) {
 	}{
 		"stateful plaintext": {
 			data: KeyResourceModel{Key: types.StringValue(raw), KeyWOVersion: types.StringNull()},
-			want: raw,
+			want: hash,
 		},
 		"write-only hash": {
 			data: KeyResourceModel{ID: types.StringValue(id), Key: types.StringNull(), KeyWOVersion: types.StringValue("1")},
@@ -1402,29 +1412,29 @@ func TestReadKeyTagsNoTagsAnywhere(t *testing.T) {
 	}
 }
 
-// TestReadKeyURLEncodesSpecialChars verifies that special characters in a key
-// value (e.g. '#') are percent-encoded when the key is placed in the
-// /key/info query string.  Without url.QueryEscape the '#' character is
-// interpreted as a URL fragment delimiter and silently truncates the key,
-// causing the server to return 404 "Key not found in database".
-func TestReadKeyURLEncodesSpecialChars(t *testing.T) {
+// TestReadKeyNeverSendsRawKeyInQuery verifies that reading a stateful key
+// sends only its SHA256 token hash in the /key/info query string. Query
+// strings are recorded by proxies and access logs, so the raw key (here one
+// containing URL-special characters such as '#') must never appear in the
+// request URL.
+func TestReadKeyNeverSendsRawKeyInQuery(t *testing.T) {
 	t.Parallel()
 
-	// Key that contains URL-special characters: '!' and '#'.
-	// '#' is the critical one: without encoding it acts as a fragment
-	// delimiter and everything from '#' onward is stripped before the
-	// HTTP request is sent.
+	// '#' and '!' would need percent-encoding if the raw key were ever placed
+	// in the query; neither the raw nor an escaped form may reach the server.
 	const keyWithSpecialChars = "sk-unit-test#special!chars"
+	hash := testKeyHash(keyWithSpecialChars)
 
-	var receivedKeyParam string
+	var receivedKeyParam, receivedRequestURI string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Capture the raw, server-decoded value of the "key" query parameter.
 		receivedKeyParam = r.URL.Query().Get("key")
+		receivedRequestURI = r.RequestURI
 		w.Header().Set("Content-Type", "application/json")
+		// LiteLLM echoes the lookup value exactly as passed.
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"key": keyWithSpecialChars,
+			"key": receivedKeyParam,
 			"info": map[string]interface{}{
-				"token": keyWithSpecialChars,
+				"token": hash,
 			},
 		})
 	}))
@@ -1461,13 +1471,60 @@ func TestReadKeyURLEncodesSpecialChars(t *testing.T) {
 		t.Fatalf("readKey failed: %v", err)
 	}
 
-	// The server must receive the complete key, including the '#special!chars' suffix.
-	// Without url.QueryEscape the Go HTTP client strips everything from '#'
-	// onward (URL fragment), so the server would receive "sk-unit-test#special!chars".
-	if receivedKeyParam != keyWithSpecialChars {
-		t.Fatalf("server received key param %q, want %q\n"+
-			"hint: '#' was likely not percent-encoded, causing URL fragment truncation",
-			receivedKeyParam, keyWithSpecialChars)
+	if receivedKeyParam != hash {
+		t.Fatalf("server received key param %q, want the bare SHA256 hash %q", receivedKeyParam, hash)
+	}
+	for _, leaked := range []string{keyWithSpecialChars, url.QueryEscape(keyWithSpecialChars), "sk-unit-test"} {
+		if strings.Contains(receivedRequestURI, leaked) {
+			t.Fatalf("request URI %q exposed raw key material %q", receivedRequestURI, leaked)
+		}
+	}
+}
+
+// TestKeyDeleteSendsHashNotRawKey verifies that deleting a stateful key
+// identifies it to /key/delete by its bare SHA256 token hash, never by the
+// raw key.
+func TestKeyDeleteSendsHashNotRawKey(t *testing.T) {
+	ctx := context.Background()
+	const raw = "sk-delete-hash-identity"
+	var deletes atomic.Int32
+	var deleteBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		if request.Method != http.MethodPost || request.URL.Path != "/key/delete" {
+			http.NotFound(writer, request)
+			return
+		}
+		deletes.Add(1)
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Errorf("read delete body: %v", err)
+		}
+		deleteBody = body
+		_, _ = writer.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	protocolServer, schemas := configuredImportProtocolServer(t, ctx, server.URL)
+	schema := schemas.ResourceSchemas["litellm_key"]
+	nullState := accessGroupProtocolDynamicValue(t, schema, tftypes.NewValue(schema.ValueType(), nil))
+	deleted, err := protocolServer.ApplyResourceChange(ctx, &tfprotov6.ApplyResourceChangeRequest{
+		TypeName: "litellm_key", Config: nullState, PriorState: keySafeReadProtocolPriorState(t, schema, raw), PlannedState: nullState,
+	})
+	if err != nil || accessGroupProtocolDiagnosticsHaveError(deleted.Diagnostics) || deletes.Load() != 1 {
+		t.Fatalf("delete: err=%v diagnostics=%s deletes=%d", err, agentProtocolDiagnosticsText(deleted.Diagnostics), deletes.Load())
+	}
+	var request struct {
+		Keys []string `json:"keys"`
+	}
+	if err := json.Unmarshal(deleteBody, &request); err != nil {
+		t.Fatalf("decode delete body: %v", err)
+	}
+	if len(request.Keys) != 1 || request.Keys[0] != testKeyHash(raw) {
+		t.Fatalf("delete keys = %q, want only the bare SHA256 hash", request.Keys)
+	}
+	if strings.Contains(string(deleteBody), raw) {
+		t.Fatal("delete body exposed the raw key")
 	}
 }
 

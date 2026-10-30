@@ -76,9 +76,9 @@ func TestKeyResourceTreatsArchivedDeletedKeyAsAbsent(t *testing.T) {
 		}
 		switch mode {
 		case "archived":
-			_, _ = writer.Write(keyArchivedInfoBody(t, raw, nil))
+			_, _ = writer.Write(keyArchivedInfoBody(t, testKeyHash(raw), nil))
 		case "unknown-status":
-			_, _ = writer.Write([]byte(`{"key":"` + raw + `","info":{"status":"suspended","blocked":false}}`))
+			_, _ = writer.Write([]byte(`{"key":"` + testKeyHash(raw) + `","info":{"status":"suspended","blocked":false}}`))
 		}
 	}))
 	defer server.Close()
@@ -135,7 +135,7 @@ func TestKeyDataSourceRejectsArchivedDeletedKey(t *testing.T) {
 	const raw = "sk-archived-data-source"
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")
-		_, _ = writer.Write(keyArchivedInfoBody(t, raw, false))
+		_, _ = writer.Write(keyArchivedInfoBody(t, testKeyHash(raw), false))
 	}))
 	defer server.Close()
 	protocolServer, schemas := configuredImportProtocolServer(t, ctx, server.URL)

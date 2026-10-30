@@ -26,7 +26,7 @@ func TestNumericImportOwnershipAdoptsOptionalResourceValues(t *testing.T) {
 		case "/user/info":
 			_, _ = writer.Write([]byte(`{"user_id":"user-1","user_info":{"user_id":"user-1","user_email":"user@example.com","max_budget":40.5,"tpm_limit":9007199254740993,"rpm_limit":90}}`))
 		case "/key/info":
-			_, _ = writer.Write([]byte(`{"key":"sk-test","info":{"max_budget":50.5,"tpm_limit":9007199254740993,"rpm_limit":100,"model_max_budget":{"gpt":1.5},"metadata":{"model_rpm_limit":{"gpt":9007199254740993},"model_tpm_limit":{}}}}`))
+			_, _ = writer.Write([]byte(`{"key":"` + testKeyHash("sk-test") + `","info":{"max_budget":50.5,"tpm_limit":9007199254740993,"rpm_limit":100,"model_max_budget":{"gpt":1.5},"metadata":{"model_rpm_limit":{"gpt":9007199254740993},"model_tpm_limit":{}}}}`))
 		default:
 			http.NotFound(writer, request)
 		}

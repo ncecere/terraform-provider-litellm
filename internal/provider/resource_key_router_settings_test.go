@@ -66,9 +66,10 @@ func TestKeyDataSourceLookupSupportsRawAndWriteOnlyHash(t *testing.T) {
 		wantID     string
 		wantError  bool
 	}{
+		// A raw key is hashed client-side so it never reaches the query string.
 		"raw key": {
 			data:       KeyDataSourceModel{Key: types.StringValue(raw), KeyHash: types.StringNull()},
-			wantLookup: raw,
+			wantLookup: bareHash,
 			wantID:     managementID,
 		},
 		"write-only hash": {

@@ -309,7 +309,7 @@ func TestReadKeyPreservesExactNestedLimits(t *testing.T) {
 	t.Parallel()
 
 	server, client := jsonServer(t, map[string]interface{}{
-		"key": "sk-test",
+		"key": testKeyHash("sk-test"),
 		"info": map[string]interface{}{
 			"tpm_limit":             int64(9007199254740993),
 			"rpm_limit":             int64(math.MaxInt64),

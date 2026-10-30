@@ -182,8 +182,14 @@ func keyDataSourceLookup(data *KeyDataSourceModel) (string, string, error) {
 	if data.Key.IsNull() || data.Key.IsUnknown() || data.Key.ValueString() == "" {
 		return "", "", fmt.Errorf("exactly one of key or key_hash must be known and non-empty")
 	}
-	key := data.Key.ValueString()
-	return key, hashKeyForID(key), nil
+	// Hash client-side so the plaintext key never appears in the /key/info
+	// query string.
+	managementID := hashKeyForID(data.Key.ValueString())
+	hash, err := keyHashFromID(managementID)
+	if err != nil {
+		return "", "", err
+	}
+	return hash, managementID, nil
 }
 
 func keyDataSourceReadError(err error) string {
@@ -191,7 +197,7 @@ func keyDataSourceReadError(err error) string {
 	if errors.As(err, &apiErr) {
 		return fmt.Sprintf("LiteLLM returned HTTP %d while reading the key. The response body was omitted because it may contain the lookup token.", apiErr.StatusCode)
 	}
-	// Go transport errors can embed the complete query URL, including a raw key.
+	// Go transport errors can embed the complete query URL, including the key hash.
 	return "The key read request failed at the transport layer. Error details were omitted because they may contain the lookup token."
 }
 

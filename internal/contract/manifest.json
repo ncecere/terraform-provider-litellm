@@ -16,7 +16,7 @@
   "provider_golden": {
     "operation_count": 108,
     "path": "internal/contractapi/testdata/provider-operations.golden.json",
-    "sha256": "a29c301ef84aa170be3c79b5162a22a0a0a8a507832a903f9f5cfacbd444a9d2"
+    "sha256": "a1106502621f8afaa186f8e4869ad2521d9277b32ff722fe9abcd7f07ee14169"
   },
   "provider_operations": [
     {
@@ -476,7 +476,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_key.go",
-          "line": 1074
+          "line": 1077
         }
       ],
       "method": "POST",
@@ -488,11 +488,11 @@
       "evidence": [
         {
           "file": "internal/provider/resource_key.go",
-          "line": 657
+          "line": 660
         },
         {
           "file": "internal/provider/resource_key.go",
-          "line": 659
+          "line": 662
         }
       ],
       "method": "POST",
@@ -504,19 +504,19 @@
       "evidence": [
         {
           "file": "internal/provider/datasource_key.go",
-          "line": 216
+          "line": 222
         },
         {
           "file": "internal/provider/resource_key.go",
-          "line": 1470
+          "line": 1471
         },
         {
           "file": "internal/provider/resource_key.go",
-          "line": 1490
+          "line": 1491
         },
         {
           "file": "internal/provider/resource_key.go",
-          "line": 1538
+          "line": 1539
         },
         {
           "file": "internal/provider/resource_key_block.go",
@@ -567,11 +567,11 @@
       "evidence": [
         {
           "file": "internal/provider/resource_key.go",
-          "line": 657
+          "line": 660
         },
         {
           "file": "internal/provider/resource_key.go",
-          "line": 659
+          "line": 662
         }
       ],
       "method": "POST",
@@ -595,7 +595,7 @@
       "evidence": [
         {
           "file": "internal/provider/resource_key.go",
-          "line": 1004
+          "line": 1007
         },
         {
           "file": "internal/provider/resource_unified_access_group.go",

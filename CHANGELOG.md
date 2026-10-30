@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.2] - 2026-10-30
+
+### Upgrade Notes
+- Patch release; no configuration changes are required. The tested backend remains exactly LiteLLM 1.106.4. The published provider source remains `registry.terraform.io/ncecere/litellm`; Terraform >= 1.1.0, OpenTofu >= 1.6.0, and Go >= 1.24.0 for provider development are unchanged, and only optional write-only attributes require Terraform or OpenTofu >= 1.11.0. Published examples continue to constrain the provider to `>= 2.0.1, < 3.0.0`. No schema changes; existing HCL, state, IDs, and imports remain valid.
+- `litellm_key`: lookups, updates, and deletes now identify the key by its SHA256 token hash (see Security). A stateful `key` that already holds a bare 64-character hex hash, instead of the plaintext `sk-` key, is no longer resolved; import such keys with the documented `sha256:<hash>` form.
+
+### Security
+- **`litellm_key` raw key in `/key/info` query strings (issue #317)**: For keys managed through `key` (every LiteLLM-generated key and every stateful predefined key), the provider looked the key up with `GET /key/info?key=<raw sk- key>` on create read-back and on every refresh, and the `litellm_key` data source did the same for a raw `key` argument. Reverse proxies, load balancers, and log pipelines that record request URIs therefore stored every managed key in plaintext. The provider now hashes the key client-side and sends only LiteLLM's SHA256 token hash, as the `key_wo` path and `litellm_key_block` already did; `/key/update` and `/key/delete` bodies also carry the hash. The plaintext key is still sent once in the `/key/generate` body when you create a predefined key. Review and rotate keys that may already be recorded in proxy access logs. Thanks to @kthy for the report and proposed fix.
+
 ## [2.2.1] - 2026-10-27
 
 ### Upgrade Notes
