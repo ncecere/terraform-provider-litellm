@@ -17,6 +17,8 @@ import (
 
 var externalRotationAttributeTypes = map[string]attr.Type{"secret_arn": types.StringType, "version_hash": types.StringType}
 
+const externalKeyPlannedIdentityPrivateKey = "external_key_planned_identity"
+
 func keyServiceAccountReplacementModifier() planmodifier.String {
 	return stringplanmodifier.RequiresReplaceIf(func(ctx context.Context, req planmodifier.StringRequest, resp *stringplanmodifier.RequiresReplaceIfFuncResponse) {
 		var rotation types.Object
@@ -242,6 +244,27 @@ func (r *KeyResource) modifyExternalKeyPlan(ctx context.Context, req resource.Mo
 		return true
 	}
 	plan := externalKeyDesired(config, snapshot)
+	if !req.State.Raw.IsNull() && keyExternalRotationEnabled(state.ExternalRotation) {
+		// Refresh adopts current external credentials into state. Planning must
+		// preserve that verified state identity: Terraform re-expands saved plans
+		// using original prior private data and resets computed plan values.
+		// Apply re-resolves AWSCURRENT and refuses races before mutation.
+		plan.ID, plan.Key, plan.ExternalRotation = state.ID, state.Key, state.ExternalRotation
+	} else {
+		// First-time adoption has no immutable credential identity in state yet.
+		// Leave the credential/version computed until apply, rather than fixing
+		// a value which may rotate during Terraform's final plan expansion.
+		plan.ID, plan.Key = types.StringUnknown(), types.StringUnknown()
+		rotation, diagnostics := types.ObjectValue(externalRotationAttributeTypes, map[string]attr.Value{
+			"secret_arn":   snapshot.ExternalRotation.Attributes()["secret_arn"],
+			"version_hash": types.StringUnknown(),
+		})
+		resp.Diagnostics.Append(diagnostics...)
+		if resp.Diagnostics.HasError() {
+			return true
+		}
+		plan.ExternalRotation = rotation
+	}
 	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 	// Enrollment of an already verified service account is adoption, not the
 	// ordinary service_account_id replacement/generation lifecycle.
@@ -254,6 +277,9 @@ func (r *KeyResource) readExternalKey(ctx context.Context, prior KeyResourceMode
 	if err != nil {
 		externalKeyDiagnostic(&resp.Diagnostics, err)
 		return
+	}
+	if resp.Private != nil {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, externalKeyPlannedIdentityPrivateKey, nil)...)
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &next)...)
 }
@@ -320,8 +346,14 @@ func (r *KeyResource) applyExternalKey(ctx context.Context, config, plan KeyReso
 	if err != nil {
 		return plan, false, err
 	}
-	if plan.ID.IsNull() || plan.ID.IsUnknown() || plan.Key.IsNull() || plan.Key.IsUnknown() || !plan.ID.Equal(snapshot.ID) || !plan.Key.Equal(snapshot.Key) || !plan.ExternalRotation.Equal(snapshot.ExternalRotation) {
-		return snapshot, false, errors.New("the external AWSCURRENT credential or version changed after planning, or verified planned identity is missing; no mutation was sent, refresh and create a new plan")
+	if prior != nil && keyExternalRotationEnabled(prior.ExternalRotation) {
+		if plan.ID.IsNull() || plan.ID.IsUnknown() || plan.Key.IsNull() || plan.Key.IsUnknown() || !plan.ID.Equal(snapshot.ID) || !plan.Key.Equal(snapshot.Key) || !plan.ExternalRotation.Equal(snapshot.ExternalRotation) {
+			return snapshot, false, errors.New("the external AWSCURRENT credential or version changed after planning, or verified planned identity is missing; no mutation was sent, refresh and create a new plan")
+		}
+	} else {
+		// New adoption resolves computed identity at apply after exact remote
+		// ownership verification. Configured identities remain immutable.
+		plan.ID, plan.Key, plan.ExternalRotation = snapshot.ID, snapshot.Key, snapshot.ExternalRotation
 	}
 	observed := snapshot
 	if prior != nil {
@@ -341,15 +373,25 @@ func (r *KeyResource) applyExternalKey(ctx context.Context, config, plan KeyReso
 	if err := r.sendKeyUpdate(ctx, payload); err != nil {
 		return snapshot, true, errors.New("the external key settings update could not be confirmed; the verified adopted binding was retained for refresh and response details were omitted")
 	}
-	confirmed, _, current, err := r.externalKeySnapshot(ctx, config)
+	confirmed, confirmedInfo, current, err := r.externalKeySnapshot(ctx, config)
 	if err != nil || current != credential || externalKeyHasDrift(config, confirmed) {
 		return snapshot, true, errors.New("the external key settings update was accepted but authoritative readback did not confirm the same credential and explicit settings; the verified adopted binding was retained for refresh")
 	}
-	if prior != nil && config.TPDLimit.IsNull() && !prior.TPDLimit.IsNull() {
-		// Verify clears using the prior ownership, not a null unowned target.
-		confirmed, _, _, err = r.externalKeySnapshot(ctx, externalKeyDesired(plan, snapshot))
-		if err != nil || !confirmed.TPDLimit.IsNull() {
+	// Optional-only removals are still owned by the prior enrollment. Inspect
+	// the raw fresh exact read above: projecting a null configuration leaves
+	// these fields unowned and can hide an ignored clear. Omission is not proof
+	// of clearing, especially on older backends that do not expose the field.
+	if prior != nil && config.TPDLimit.IsNull() && !prior.TPDLimit.IsNull() && !prior.TPDLimit.IsUnknown() {
+		value, present := confirmedInfo["tpd_limit"]
+		if !present || value != nil {
 			return snapshot, true, errors.New("the external key limit clear could not be confirmed; the verified adopted binding was retained for refresh")
+		}
+	}
+	if prior != nil && config.RouterSettings.IsNull() && !prior.RouterSettings.IsNull() {
+		value, present := confirmedInfo["router_settings"]
+		matches, comparisonErr := keyRouterSettingsMatchAPI(nil, value)
+		if !present || comparisonErr != nil || !matches {
+			return snapshot, true, errors.New("the external key router settings clear could not be confirmed; the verified adopted binding was retained for refresh")
 		}
 	}
 	return plan, true, nil
@@ -375,6 +417,9 @@ func (r *KeyResource) createExternalKey(ctx context.Context, req resource.Create
 		}
 		externalKeyDiagnostic(&resp.Diagnostics, err)
 		return true
+	}
+	if resp.Private != nil {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, externalKeyPlannedIdentityPrivateKey, nil)...)
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &next)...)
 	return true
@@ -408,6 +453,9 @@ func (r *KeyResource) updateExternalKey(ctx context.Context, req resource.Update
 		resp.Diagnostics.Append(resp.State.Set(context.WithoutCancel(ctx), &state)...)
 		externalKeyDiagnostic(&resp.Diagnostics, err)
 		return true
+	}
+	if resp.Private != nil {
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, externalKeyPlannedIdentityPrivateKey, nil)...)
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &next)...)
 	return true

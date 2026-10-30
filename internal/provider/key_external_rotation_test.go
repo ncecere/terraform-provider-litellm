@@ -2,7 +2,11 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -146,6 +150,139 @@ func TestExternalKeyUnsupportedConfiguration(t *testing.T) {
 			test.mutate(&data)
 			if _, err := externalKeyConfiguration(data, true); err == nil {
 				t.Fatal("unsupported configuration accepted")
+			}
+		})
+	}
+}
+
+func TestExternalKeyClearAuthoritativeReadback(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		clearTPD      bool
+		clearRouter   bool
+		tpd           interface{}
+		router        interface{}
+		omitTPD       bool
+		omitRouter    bool
+		unownedRemote bool
+		wantError     bool
+	}{
+		{name: "tpd null", clearTPD: true},
+		{name: "tpd ignored", clearTPD: true, tpd: 500, wantError: true},
+		{name: "tpd omitted", clearTPD: true, omitTPD: true, wantError: true},
+		{name: "tpd malformed", clearTPD: true, tpd: "response-secret", wantError: true},
+		{name: "router empty object", clearRouter: true, router: map[string]interface{}{}},
+		{name: "router null", clearRouter: true},
+		{name: "router encoded empty object", clearRouter: true, router: "{}"},
+		{name: "router ignored", clearRouter: true, router: map[string]interface{}{"num_retries": 3}, wantError: true},
+		{name: "router omitted", clearRouter: true, omitRouter: true, wantError: true},
+		{name: "router malformed", clearRouter: true, router: "response-secret", wantError: true},
+		{name: "both cleared", clearTPD: true, clearRouter: true, router: map[string]interface{}{}},
+		{name: "router ignored after tpd clear", clearTPD: true, clearRouter: true, router: map[string]interface{}{"num_retries": 3}, wantError: true},
+		{name: "tpd ignored after router clear", clearTPD: true, clearRouter: true, tpd: 500, router: map[string]interface{}{}, wantError: true},
+		{name: "unowned remote overrides remain unmanaged", unownedRemote: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			config := testExternalConfig()
+			info := map[string]interface{}{
+				"status": "active", "blocked": false, "team_id": "example-team", "project_id": "example-project", "key_alias": "example-alias",
+				"metadata": map[string]interface{}{"service_account_id": "example-service-account"}, "max_budget": 20, "models": []string{"example-model"},
+				"tpd_limit": 500, "router_settings": map[string]interface{}{"num_retries": 3},
+			}
+			priorConfig := config
+			if test.clearTPD {
+				priorConfig.TPDLimit = types.Int64Value(500)
+			}
+			if test.clearRouter {
+				var err error
+				priorConfig.RouterSettings, _, err = keyRouterSettingsFromAPI(info["router_settings"], types.ObjectNull(keyRouterSettingsAttrTypes))
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			aws := &fakeExternalSecrets{token: testExternalRawKey, version: "example-version"}
+			reads, updates := 0, 0
+			client := testRetryClient(func(request *http.Request) (*http.Response, error) {
+				hash, _ := keyHashFromID(hashKeyForID(testExternalRawKey))
+				var body interface{}
+				switch {
+				case request.Method == http.MethodGet && request.URL.Path == "/key/info":
+					reads++
+					if request.URL.Query().Get("key") != hash {
+						t.Error("read did not use exact token hash")
+					}
+					body = map[string]interface{}{"key": hash, "info": info}
+				case request.Method == http.MethodPost && request.URL.Path == "/key/update":
+					updates++
+					var payload map[string]interface{}
+					if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+						t.Fatal(err)
+					}
+					wanted := map[string]interface{}{"key": hash, "models": []interface{}{"example-model"}, "max_budget": float64(20)}
+					if test.clearTPD {
+						wanted["tpd_limit"] = nil
+						info["tpd_limit"] = test.tpd
+						if test.omitTPD {
+							delete(info, "tpd_limit")
+						}
+					}
+					if test.clearRouter {
+						wanted["router_settings"] = map[string]interface{}{}
+						info["router_settings"] = test.router
+						if test.omitRouter {
+							delete(info, "router_settings")
+						}
+					}
+					if test.unownedRemote {
+						wanted["max_budget"] = float64(30)
+						info["max_budget"] = 30
+					}
+					if !reflect.DeepEqual(payload, wanted) {
+						t.Errorf("update payload changed: got %#v want %#v", payload, wanted)
+					}
+					body = map[string]interface{}{"key": hash}
+				default:
+					t.Fatalf("unexpected external endpoint: %s %s", request.Method, request.URL.Path)
+				}
+				encoded, err := json.Marshal(body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				response := testHTTPResponse(request, http.StatusOK, nil)
+				response.Body = io.NopCloser(strings.NewReader(string(encoded)))
+				return response, nil
+			})
+			resource := &KeyResource{client: client, externalSecrets: aws}
+			prior, _, _, err := resource.externalKeySnapshot(ctx, priorConfig)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.unownedRemote {
+				config.MaxBudget = types.Float64Value(30)
+			}
+			snapshot, _, _, err := resource.externalKeySnapshot(ctx, config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan := externalKeyDesired(config, snapshot)
+			before := prior
+			reads, aws.calls = 0, 0
+			next, adopted, err := resource.applyExternalKey(ctx, config, plan, &prior)
+			if (err != nil) != test.wantError || !adopted {
+				t.Fatalf("clear confirmation: adopted=%t err=%v", adopted, err)
+			}
+			if err != nil && (strings.Contains(err.Error(), testExternalRawKey) || strings.Contains(err.Error(), "response-secret")) {
+				t.Fatal("readback values leaked")
+			}
+			if !reflect.DeepEqual(prior, before) {
+				t.Fatal("prior state mutated")
+			}
+			if !test.wantError && !reflect.DeepEqual(next, plan) {
+				t.Fatal("successful clear did not retain exact plan/ID")
+			}
+			if updates != 1 || reads != 2 || aws.calls != 2 {
+				t.Fatalf("confirmation not bounded: updates=%d reads=%d secret reads=%d", updates, reads, aws.calls)
 			}
 		})
 	}

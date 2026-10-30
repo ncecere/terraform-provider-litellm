@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -25,14 +26,17 @@ func (provider *externalRotationProtocolProvider) Resources(ctx context.Context)
 }
 
 type externalKeyProtocolFixture struct {
-	server  tfprotov6.ProviderServer
-	schema  *tfprotov6.Schema
-	aws     *fakeExternalSecrets
-	mu      sync.Mutex
-	info    map[string]interface{}
-	mode    string
-	reads   int
-	updates int
+	server      tfprotov6.ProviderServer
+	schema      *tfprotov6.Schema
+	aws         *fakeExternalSecrets
+	mu          sync.Mutex
+	info        map[string]interface{}
+	mode        string
+	reads       int
+	updates     int
+	ignoreClear string
+	afterUpdate func()
+	lastUpdate  map[string]interface{}
 }
 
 func newExternalKeyProtocolFixture(t *testing.T) *externalKeyProtocolFixture {
@@ -82,10 +86,14 @@ func newExternalKeyProtocolFixture(t *testing.T) *externalKeyProtocolFixture {
 				http.Error(writer, "mutation-secret "+testExternalRawKey, http.StatusInternalServerError)
 				return
 			}
+			fixture.lastUpdate = payload
 			for name, value := range payload {
-				if name != "key" {
+				if name != "key" && name != fixture.ignoreClear {
 					fixture.info[name] = value
 				}
+			}
+			if fixture.afterUpdate != nil {
+				fixture.afterUpdate()
 			}
 			_ = json.NewEncoder(writer).Encode(map[string]interface{}{"key": hash})
 		default:
@@ -195,10 +203,18 @@ func TestExternalKeyProtocolAdoptionRotationUpdateForget(t *testing.T) {
 	fixture := newExternalKeyProtocolFixture(t)
 	config := fixture.config(t, nil)
 	plan := fixture.plan(t, nil, config, nil)
-	if externalProtocolString(t, fixture, plan.PlannedState, "key") != testExternalRawKey || externalProtocolString(t, fixture, plan.PlannedState, "id") != hashKeyForID(testExternalRawKey) {
-		t.Fatal("missing-state plan did not resolve coherent binding")
+	plannedValue, err := plan.PlannedState.Unmarshal(fixture.schema.ValueType())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var plannedFields map[string]tftypes.Value
+	if err := plannedValue.As(&plannedFields); err != nil || plannedFields["key"].IsKnown() || plannedFields["id"].IsKnown() {
+		t.Fatal("missing-state plan must leave credential identity computed until adoption")
 	}
 	created := fixture.apply(t, nil, config, plan, false)
+	if externalProtocolString(t, fixture, created.NewState, "key") != testExternalRawKey || externalProtocolString(t, fixture, created.NewState, "id") != hashKeyForID(testExternalRawKey) {
+		t.Fatal("adoption did not resolve coherent credential identity")
+	}
 	if fixture.updates != 0 || fixture.reads != 2 {
 		t.Fatal("matching adoption was not read-only")
 	}
@@ -333,6 +349,168 @@ func TestExternalKeyProtocolReadFailuresRetainStateAndSanitize(t *testing.T) {
 				if strings.Contains(diagnostic.Detail, testExternalRawKey) || strings.Contains(diagnostic.Detail, "response-secret") || strings.Contains(diagnostic.Detail, "credential-secret") {
 					t.Fatal("credential leaked in diagnostic")
 				}
+			}
+		})
+	}
+}
+
+func externalProtocolClearConfig(t *testing.T, fixture *externalKeyProtocolFixture, field string) *tfprotov6.DynamicValue {
+	t.Helper()
+	overrides := map[string]tftypes.Value{}
+	if field == "tpd_limit" || field == "both" {
+		overrides["tpd_limit"] = tftypes.NewValue(tftypes.Number, 500)
+	}
+	if field == "router_settings" || field == "both" {
+		for _, attribute := range fixture.schema.Block.Attributes {
+			if attribute.Name == "router_settings" {
+				objectType := attribute.ValueType().(tftypes.Object)
+				values := make(map[string]tftypes.Value, len(objectType.AttributeTypes))
+				for name, attributeType := range objectType.AttributeTypes {
+					values[name] = tftypes.NewValue(attributeType, nil)
+				}
+				values["num_retries"] = tftypes.NewValue(tftypes.Number, 3)
+				overrides["router_settings"] = tftypes.NewValue(objectType, values)
+			}
+		}
+	}
+	return fixture.config(t, overrides)
+}
+
+func TestExternalKeyProtocolClearReadback(t *testing.T) {
+	for _, field := range []string{"tpd_limit", "router_settings", "both"} {
+		for _, mode := range []string{"success", "ignored", "token race after update", "version race after update", "identity changed after update"} {
+			t.Run(field+"/"+mode, func(t *testing.T) {
+				fixture := newExternalKeyProtocolFixture(t)
+				ownedConfig := externalProtocolClearConfig(t, fixture, field)
+				created := fixture.apply(t, nil, ownedConfig, fixture.plan(t, nil, ownedConfig, nil), false)
+				config := fixture.config(t, nil)
+				plan := fixture.plan(t, created.NewState, config, created.Private)
+				fixture.mu.Lock()
+				switch mode {
+				case "ignored":
+					fixture.ignoreClear = field
+					if field == "both" {
+						fixture.ignoreClear = "router_settings"
+					}
+				case "token race after update":
+					fixture.afterUpdate = func() { fixture.aws.token = "sk-rotatedabcdefghijklmnopqrstuvwxyz" }
+				case "version race after update":
+					fixture.afterUpdate = func() { fixture.aws.version = "changed-version" }
+				case "identity changed after update":
+					fixture.afterUpdate = func() { fixture.info["team_id"] = "response-secret" }
+				}
+				reads, updates, secrets := fixture.reads, fixture.updates, fixture.aws.calls
+				fixture.mu.Unlock()
+				applied := fixture.apply(t, created.NewState, config, plan, mode != "success")
+				fixture.mu.Lock()
+				defer fixture.mu.Unlock()
+				if fixture.updates-updates != 1 || fixture.reads-reads != 2 || fixture.aws.calls-secrets != 2 {
+					t.Fatal("clear did not use one update and one bounded fresh confirmation")
+				}
+				hash, _ := keyHashFromID(hashKeyForID(testExternalRawKey))
+				wanted := map[string]interface{}{"key": hash, "models": []interface{}{"example-model"}, "max_budget": float64(20)}
+				if field == "tpd_limit" || field == "both" {
+					wanted["tpd_limit"] = nil
+				}
+				if field == "router_settings" || field == "both" {
+					wanted["router_settings"] = map[string]interface{}{}
+				}
+				if !reflect.DeepEqual(fixture.lastUpdate, wanted) {
+					t.Fatalf("clear changed update payload: %#v", fixture.lastUpdate)
+				}
+				if mode == "success" {
+					assertKeyRawStateUnchanged(t, plan.PlannedState, applied.NewState)
+				} else {
+					assertKeyRawStateUnchanged(t, created.NewState, applied.NewState)
+				}
+				for _, diagnostic := range applied.Diagnostics {
+					if strings.Contains(diagnostic.Detail, testExternalRawKey) || strings.Contains(diagnostic.Detail, "response-secret") {
+						t.Fatal("clear response leaked")
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestExternalKeyProtocolClearPlanApplyRaces(t *testing.T) {
+	for _, field := range []string{"tpd_limit", "router_settings", "both"} {
+		for _, race := range []string{"token", "version"} {
+			t.Run(field+"/"+race, func(t *testing.T) {
+				fixture := newExternalKeyProtocolFixture(t)
+				ownedConfig := externalProtocolClearConfig(t, fixture, field)
+				created := fixture.apply(t, nil, ownedConfig, fixture.plan(t, nil, ownedConfig, nil), false)
+				config := fixture.config(t, nil)
+				plan := fixture.plan(t, created.NewState, config, created.Private)
+				fixture.mu.Lock()
+				if race == "token" {
+					fixture.aws.token = "sk-rotatedabcdefghijklmnopqrstuvwxyz"
+				} else {
+					fixture.aws.version = "changed-version"
+				}
+				updates := fixture.updates
+				fixture.mu.Unlock()
+				applied := fixture.apply(t, created.NewState, config, plan, true)
+				assertKeyRawStateUnchanged(t, created.NewState, applied.NewState)
+				fixture.mu.Lock()
+				defer fixture.mu.Unlock()
+				if fixture.updates != updates {
+					t.Fatal("plan/apply race sent a clear mutation")
+				}
+			})
+		}
+	}
+}
+
+func TestExternalKeyProtocolSavedPlanReExpansion(t *testing.T) {
+	for _, race := range []string{"unchanged", "token", "version"} {
+		t.Run(race, func(t *testing.T) {
+			fixture := newExternalKeyProtocolFixture(t)
+			config := fixture.config(t, nil)
+			created := fixture.apply(t, nil, config, fixture.plan(t, nil, config, nil), false)
+			config = fixture.config(t, map[string]tftypes.Value{"max_budget": tftypes.NewValue(tftypes.Number, 30)})
+			planned := fixture.plan(t, created.NewState, config, created.Private)
+			fixture.mu.Lock()
+			switch race {
+			case "token":
+				fixture.aws.token = "sk-rotatedabcdefghijklmnopqrstuvwxyz"
+			case "version":
+				fixture.aws.version = "changed-version"
+			}
+			updates := fixture.updates
+			fixture.mu.Unlock()
+			// Saved-plan re-expansion uses the original state private data, not
+			// planned private data. Preserve known planned identity and let Apply
+			// refuse a race instead of returning an inconsistent final plan.
+			response, err := fixture.server.PlanResourceChange(context.Background(), &tfprotov6.PlanResourceChangeRequest{
+				TypeName: "litellm_key", Config: config, PriorState: created.NewState,
+				ProposedNewState: planned.PlannedState, PriorPrivate: created.Private,
+			})
+			if err != nil {
+				t.Fatal("saved plan re-expansion protocol failed")
+			}
+			if accessGroupProtocolDiagnosticsHaveError(response.Diagnostics) {
+				t.Fatal("saved plan re-expansion failed before apply identity validation")
+			}
+			assertKeyRawStateUnchanged(t, planned.PlannedState, response.PlannedState)
+			if race != "unchanged" {
+				applied := fixture.apply(t, created.NewState, config, response, true)
+				assertKeyRawStateUnchanged(t, created.NewState, applied.NewState)
+				found := false
+				for _, diagnostic := range applied.Diagnostics {
+					found = found || strings.Contains(diagnostic.Detail, "changed after planning")
+					if strings.Contains(diagnostic.Detail, testExternalRawKey) || strings.Contains(diagnostic.Detail, fixture.aws.token) {
+						t.Fatal("apply diagnostic exposed a token")
+					}
+				}
+				if !found {
+					t.Fatal("missing actionable replan diagnostic")
+				}
+			}
+			fixture.mu.Lock()
+			defer fixture.mu.Unlock()
+			if fixture.updates != updates {
+				t.Fatal("plan re-expansion mutated the gateway")
 			}
 		})
 	}

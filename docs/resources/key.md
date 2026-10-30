@@ -96,11 +96,14 @@ secrets, missing/archived keys, malformed responses, and identity conflicts stop
 with sanitized diagnostics and do not fall back to generation. The secret ARN is
 an enrollment locator, not permission to adopt arbitrary alias matches.
 
-Apply checks the planned credential/version again before a key update. Rotation
-between plan and apply requires a fresh plan rather than a mutation of a different
-key. This cannot make AWS and LiteLLM atomic: the external rotation process must
-publish a consistent current secret, and concurrent rotation/mutation still needs
-operational coordination.
+For an enrolled key, refresh resolves the current credential into state and plan
+preserves that verified identity. Apply checks the planned credential/version again
+before a key update; rotation between plan and apply requires a fresh plan rather
+than a mutation of a different key. Initial adoption/enrollment leaves credential
+identity computed until apply and revalidates the exact configured ownership before
+adopting the current token. This cannot make AWS and LiteLLM atomic: the external
+rotation process must publish a consistent current secret, and concurrent
+rotation/mutation still needs operational coordination.
 
 `key` remains sensitive but is stored as plaintext in Terraform state and saved
 plans; protect retained snapshots. Tokens are not import IDs or command arguments,
@@ -114,11 +117,13 @@ To stop enrollment, remove the resource configuration and let Terraform forget i
 then coordinate any new ownership/import separately. Existing ordinary resources,
 IDs, and import formats are unchanged.
 
-> **Draft review limitation:** removal/clear confirmation for `tpd_limit` and
-> `router_settings` in external mode still needs dedicated ownership/convergence
-> coverage. Do not rely on this draft for those clear operations. The normal
-> provider-owned key paths retain their existing behavior. Upstream static
-> identity/provenance and operation-inventory review is also required before release.
+> **Draft review limitation:** clear confirmation for `tpd_limit` and
+> `router_settings` now checks the fresh raw exact-key response; omitted or ignored
+> clears fail closed rather than disappearing through an unowned projection.
+> Licensed LiteLLM 1.103.0 native-regeneration acceptance passed with fake AWS
+> publication and local Terraform state, including safe saved-plan race refusal.
+> Real AWS/worker delivery, cross-platform installation, and upstream static
+> identity/provenance and operation-inventory review remain required before release.
 
 ### Create a Key and Email Its User
 
