@@ -837,6 +837,29 @@ REVIEWED_V1106_RELEASE_RUNTIME_DIFF_SHA256 = (
 )
 
 
+# v2.2.2 (issue #317: hash-only key lookups), reviewed against v2.2.1 main.
+REVIEWED_ISSUE317_BASE = "788f4881ce6b7cff66770753ef12aa19c45e53d2"
+REVIEWED_ISSUE317_PATHS = (
+    'internal/provider/datasource_key.go',
+    'internal/provider/datasource_singular_presence_protocol_test.go',
+    'internal/provider/key_info_status_test.go',
+    'internal/provider/key_safe_read_protocol_test.go',
+    'internal/provider/key_safe_read_test.go',
+    'internal/provider/numeric_import_ownership_test.go',
+    'internal/provider/numeric_import_protocol_additional_test.go',
+    'internal/provider/read_test.go',
+    'internal/provider/resource_key.go',
+    'internal/provider/resource_key_numeric_regression_test.go',
+    'internal/provider/resource_key_router_settings_test.go',
+    'internal/provider/resource_key_semantic_dictionary_protocol_test.go',
+    'internal/provider/resource_key_test.go',
+    'internal/provider/service_identity_import_test.go',
+)
+REVIEWED_ISSUE317_RUNTIME_DIFF_SHA256 = (
+    "a2aa7c067dde552b2a9ceda8cf8bcb59b316b8a6143d7d7164002a38785ae34e"
+)
+
+
 def git(*args: str) -> str:
     proc = subprocess.run(
         ["git", *args], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -1056,6 +1079,12 @@ def main() -> int:
             and digest == REVIEWED_V1106_RELEASE_RUNTIME_DIFF_SHA256
         ):
             reviewed = "v2.2.1-release"
+        elif (
+            comparison == REVIEWED_ISSUE317_BASE
+            and changed_paths == REVIEWED_ISSUE317_PATHS
+            and digest == REVIEWED_ISSUE317_RUNTIME_DIFF_SHA256
+        ):
+            reviewed = "issue317"
         if reviewed is not None:
             print(
                 f"Provider runtime parity verified: reviewed={reviewed} "
