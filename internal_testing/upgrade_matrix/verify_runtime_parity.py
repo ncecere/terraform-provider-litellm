@@ -860,6 +860,17 @@ REVIEWED_ISSUE317_RUNTIME_DIFF_SHA256 = (
 )
 
 
+# v2.2.3 credential multi-line mask fix, reviewed against v2.2.2.
+REVIEWED_V223_RELEASE_BASE = "195acdff2d3e211942a6de1e1caeec49fa9a74f1"
+REVIEWED_V223_RELEASE_PATHS = (
+    'internal/provider/credential_json.go',
+    'internal/provider/credential_multiline_mask_test.go',
+)
+REVIEWED_V223_RELEASE_RUNTIME_DIFF_SHA256 = (
+    "7b375551b725683ed178c0565e523a2304fd0d067d09ba54cce8cda57e0b06bb"
+)
+
+
 def git(*args: str) -> str:
     proc = subprocess.run(
         ["git", *args], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -1085,6 +1096,12 @@ def main() -> int:
             and digest == REVIEWED_ISSUE317_RUNTIME_DIFF_SHA256
         ):
             reviewed = "issue317"
+        elif (
+            comparison == REVIEWED_V223_RELEASE_BASE
+            and changed_paths == REVIEWED_V223_RELEASE_PATHS
+            and digest == REVIEWED_V223_RELEASE_RUNTIME_DIFF_SHA256
+        ):
+            reviewed = "v2.2.3-release"
         if reviewed is not None:
             print(
                 f"Provider runtime parity verified: reviewed={reviewed} "
