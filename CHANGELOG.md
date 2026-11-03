@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.3] - 2026-11-03
+
+### Upgrade Notes
+- Patch release; no configuration changes are required. The tested backend remains exactly LiteLLM 1.106.4. The published provider source remains `registry.terraform.io/ncecere/litellm`; Terraform >= 1.1.0, OpenTofu >= 1.6.0, and Go >= 1.24.0 for provider development are unchanged, and only optional write-only attributes require Terraform or OpenTofu >= 1.11.0. Published examples continue to constrain the provider to `>= 2.0.1, < 3.0.0`. No schema changes; existing HCL, state, IDs, and imports remain valid.
+- If a `litellm_credential` apply failed under 2.2.1 or 2.2.2 with "Provider produced inconsistent result after apply" on `credential_values`, upgrade and run `terraform apply` again: the next plan shows one in-place update that rewrites the configured value. If that failed apply was a create, run `terraform untaint` on the credential first so it is updated in place instead of replaced.
+
+### Security
+- No security-sensitive behavior changes. Credential values are still never read back from LiteLLM; only LiteLLM's masked form is compared.
+
+### Fixed
+- **`litellm_credential` multi-line secret values**: A credential value that starts or ends with a newline, such as a pretty-printed GCP service-account key file in `vertex_credentials` (masked by LiteLLM as `{\n****}\n`), was not recognized as LiteLLM's mask. Create and update then stored the mask itself in state and failed with "Provider produced inconsistent result after apply: .credential_values: inconsistent values for sensitive attribute". The mask is now recognized for multi-line values, also for guardrail parameters that share the check, and a refresh of state written by 2.2.1/2.2.2 keeps that stored mask only while LiteLLM still returns the same mask, so the next apply restores the configured value. A different remote mask still fails closed. Compact single-line JSON (for example `jsonencode(...)`) was never affected.
+
 ## [2.2.2] - 2026-10-30
 
 ### Upgrade Notes

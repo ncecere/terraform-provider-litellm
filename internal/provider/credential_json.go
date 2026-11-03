@@ -19,7 +19,11 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
-var liteLLMCredentialMask = regexp.MustCompile(`^..\*{4}..$`)
+// liteLLMCredentialMask matches LiteLLM's get_masked_values output: the first
+// two and last two characters around exactly four asterisks. (?s) lets "."
+// match newlines, which pretty-printed values such as a GCP service-account
+// key file ("{\n****}\n") keep at both ends.
+var liteLLMCredentialMask = regexp.MustCompile(`(?s)^..\*{4}..$`)
 
 var (
 	errCredentialUnknown       = errors.New("credential configuration contains an unknown value")
@@ -558,6 +562,24 @@ func isLiteLLMCredentialMask(value string) bool {
 	return value == "*****" || liteLLMCredentialMask.MatchString(value)
 }
 
+// credentialMaskMatchesOwnedPrior reports whether a masked remote value still
+// corresponds to the prior owned value: either its exact mask, or the very
+// same mask already held in state. Provider releases before 2.2.3 did not
+// recognize masks of multi-line values (for example a pretty-printed GCP
+// service-account key) and stored the mask itself in state; an unchanged
+// remote mask equal to that stored mask lets refresh keep it, so the plan
+// restores the configured value instead of failing.
+func credentialMaskMatchesOwnedPrior(remoteText string, prior interface{}) bool {
+	priorText, ok := prior.(string)
+	if !ok {
+		return false
+	}
+	if isLiteLLMCredentialMask(priorText) {
+		return priorText == remoteText
+	}
+	return remoteText == maskLiteLLMCredentialString(priorText)
+}
+
 func maskLiteLLMCredentialString(value string) string {
 	runes := []rune(value)
 	if len(runes) <= 4 {
@@ -611,7 +633,7 @@ func projectCredentialValue(remote, prior interface{}, ownership *credentialOwne
 		remoteText, remoteIsText := remote.(string)
 		priorText, priorIsText := prior.(string)
 		if remoteIsText && isLiteLLMCredentialMask(remoteText) {
-			if priorIsText && !isLiteLLMCredentialMask(priorText) && remoteText == maskLiteLLMCredentialString(priorText) {
+			if priorIsText && credentialMaskMatchesOwnedPrior(remoteText, priorText) {
 				return priorText, nil
 			}
 			return nil, errors.New("LiteLLM returned a credential mask that cannot be matched to an owned value")
@@ -800,8 +822,7 @@ func validateCredentialOwnedAtomicValue(remote, prior interface{}, ownership *cr
 	}
 	if maskMode == credentialMaskScalar {
 		if remoteText, ok := remote.(string); ok && isLiteLLMCredentialMask(remoteText) {
-			priorText, priorOK := prior.(string)
-			if !priorOK || isLiteLLMCredentialMask(priorText) || remoteText != maskLiteLLMCredentialString(priorText) {
+			if !credentialMaskMatchesOwnedPrior(remoteText, prior) {
 				return errors.New("a credential mask does not match the prior owned value before PATCH")
 			}
 			return nil
@@ -843,8 +864,7 @@ func credentialRemoteFullyOwned(remote, prior map[string]interface{}, ownership 
 		mode := credentialChildMasking(masked, key, remoteValue)
 		if mode == credentialMaskScalar {
 			remoteText, remoteOK := remoteValue.(string)
-			priorText, priorOK := priorValue.(string)
-			if remoteOK && isLiteLLMCredentialMask(remoteText) && (!priorOK || isLiteLLMCredentialMask(priorText) || remoteText != maskLiteLLMCredentialString(priorText)) {
+			if remoteOK && isLiteLLMCredentialMask(remoteText) && !credentialMaskMatchesOwnedPrior(remoteText, priorValue) {
 				return false
 			}
 		}
