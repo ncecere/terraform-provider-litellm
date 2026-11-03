@@ -8,7 +8,7 @@ The provider is tested against exactly LiteLLM 1.106.4. Its API review consists 
 - reviewed `internal/contract/reviewed-operation-classification.json`, with one exact normalized `METHOD /path` entry for every operation not used by the provider; and
 - reviewed, non-generated `internal/contract/reviewed-pins.json`, which pins exact bytes and counts for all generated artifacts and the classification, plus category rationales and issue ownership.
 
-The generated files and review files are development/release inputs. They are not embedded in the provider. Provider runtime remains Go-only and uses only LiteLLM's HTTP API.
+The generated files and review files are development/release inputs. They are not embedded in the provider. Provider runtime remains Go-only. Ordinary resources use LiteLLM's HTTP API; explicitly enrolled `litellm_key.external_rotation` resources additionally read AWS Secrets Manager through the AWS SDK. That AWS read contract is tested separately and does not add a LiteLLM rotation endpoint.
 
 ## Offline verification
 

@@ -76,6 +76,9 @@ func keyHashFromID(id string) (string, error) {
 // key. The plaintext key is never used as an identifier because /key/info
 // carries it in the query string, where proxies and access logs record it.
 func keyLookupIdentifier(data *KeyResourceModel) (string, error) {
+	if keyExternalRotationEnabled(data.ExternalRotation) {
+		return keyHashFromID(data.ID.ValueString())
+	}
 	if !data.KeyWOVersion.IsNull() && !data.KeyWOVersion.IsUnknown() {
 		return keyHashFromID(data.ID.ValueString())
 	}
@@ -129,7 +132,8 @@ func NewKeyResource() resource.Resource {
 }
 
 type KeyResource struct {
-	client *Client
+	client          *Client
+	externalSecrets externalSecretResolver
 }
 
 type KeyResourceModel struct {
@@ -175,6 +179,7 @@ type KeyResourceModel struct {
 	Tags                     types.List    `tfsdk:"tags"`
 	Blocked                  types.Bool    `tfsdk:"blocked"`
 	RouterSettings           types.Object  `tfsdk:"router_settings"`
+	ExternalRotation         types.Object  `tfsdk:"external_rotation"`
 }
 
 func (r *KeyResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -273,7 +278,7 @@ func (r *KeyResource) Schema(ctx context.Context, req resource.SchemaRequest, re
 				Description: "Service account ID for team-owned keys. LiteLLM does not update this identity in place.",
 				Optional:    true,
 				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.RequiresReplace(),
+					keyServiceAccountReplacementModifier(),
 				},
 			},
 			"max_parallel_requests": schema.Int64Attribute{
@@ -439,7 +444,8 @@ func (r *KeyResource) Schema(ctx context.Context, req resource.SchemaRequest, re
 				Optional:    true,
 				Computed:    true,
 			},
-			"router_settings": keyRouterSettingsResourceAttribute(),
+			"router_settings":   keyRouterSettingsResourceAttribute(),
+			"external_rotation": keyExternalRotationAttribute(),
 		},
 	}
 }
@@ -462,6 +468,9 @@ func (r *KeyResource) Configure(ctx context.Context, req resource.ConfigureReque
 }
 
 func (r *KeyResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	if r.modifyExternalKeyPlan(ctx, req, resp) {
+		return
+	}
 	if req.Plan.Raw.IsNull() || req.State.Raw.IsNull() {
 		return
 	}
@@ -557,6 +566,9 @@ func (r *KeyResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanReq
 }
 
 func (r *KeyResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	if r.createExternalKey(ctx, req, resp) {
+		return
+	}
 	var data KeyResourceModel
 
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
@@ -741,6 +753,13 @@ func (r *KeyResource) Read(ctx context.Context, req resource.ReadRequest, resp *
 	var data KeyResourceModel
 
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if keyExternalRotationEnabled(data.ExternalRotation) {
+		r.readExternalKey(ctx, data, resp)
+		return
+	}
 	importedMarker, privateDiags := req.Private.GetKey(ctx, numericImportedPrivateKey)
 	acceptedCreateMarker, acceptedCreateDiags := req.Private.GetKey(ctx, keyAcceptedCreateRecoveryPrivateKey)
 	pendingUpdateMarker, pendingUpdateDiags := req.Private.GetKey(ctx, keyPendingUpdatePrivateKey)
@@ -831,6 +850,9 @@ func (r *KeyResource) Read(ctx context.Context, req resource.ReadRequest, resp *
 }
 
 func (r *KeyResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	if r.updateExternalKey(ctx, req, resp) {
+		return
+	}
 	var data, state, config KeyResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
@@ -1004,7 +1026,7 @@ func (r *KeyResource) Update(ctx context.Context, req resource.UpdateRequest, re
 		}
 		resp.Diagnostics.Append(resp.State.Set(localCtx, &state)...)
 	}
-	if err := r.client.DoRequestWithResponse(ctx, "POST", "/key/update", updateReq, nil); err != nil {
+	if err := r.sendKeyUpdate(ctx, updateReq); err != nil {
 		// A transport failure or non-success response cannot prove whether the
 		// mutation committed. Retain the complete prior public/private state until
 		// a later authoritative refresh reconciles it.
@@ -1045,6 +1067,13 @@ func (r *KeyResource) Delete(ctx context.Context, req resource.DeleteRequest, re
 	var data KeyResourceModel
 
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if keyExternalRotationEnabled(data.ExternalRotation) {
+		// Externally owned keys are forgotten, never deleted or resolved on destroy.
+		return
+	}
 	acceptedCreateMarker, acceptedCreateDiags := req.Private.GetKey(ctx, keyAcceptedCreateRecoveryPrivateKey)
 	pendingUpdateMarker, pendingUpdateDiags := req.Private.GetKey(ctx, keyPendingUpdatePrivateKey)
 	resp.Diagnostics.Append(acceptedCreateDiags...)
@@ -1664,6 +1693,11 @@ func (r *KeyResource) readKeyWithTransport(ctx context.Context, data *KeyResourc
 			*semantic.reconcile = reconcile
 		}
 	}
+	return projectKeyInfoWithOwnership(ctx, data, imported, semantic, result, info)
+}
+
+// projectKeyInfoWithOwnership publishes a complete validated snapshot atomically.
+func projectKeyInfoWithOwnership(ctx context.Context, data *KeyResourceModel, imported bool, semantic keySemanticReadOwnership, result, info map[string]interface{}) error {
 	original := data
 	next := *data
 	data = &next
