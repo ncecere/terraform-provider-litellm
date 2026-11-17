@@ -167,7 +167,7 @@ The following arguments are supported:
 
 * `api_version` - (Optional) string. The API version to use for the model provider.
 
-* `base_model` - (Required) string. The actual model identifier from the provider (e.g., "gpt-4", "claude-2").
+* `base_model` - (Required) string. The actual model identifier from the provider (e.g., "gpt-4", "claude-2"). For wildcard routing, set it to a pattern such as `"*"` (with `model_name = "openai/*"`). The provider then routes `litellm_params.model` to `<custom_llm_provider>/*` but does not send the pattern as `model_info.base_model`, the same as wildcard models created from the LiteLLM UI, so LiteLLM prices each request against the model that served it.
 
 * `tier` - (Optional) string. The usage tier for this model. LiteLLM accepts exactly `"free"` or `"paid"`; the provider validates the value during planning. Default: `"free"`.
 

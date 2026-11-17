@@ -1972,3 +1972,155 @@ func TestReadModelResolvesUnknownAdditionalModelInfo(t *testing.T) {
 		t.Fatalf("expected empty additional_model_info, got %d elements: %v", got, data.AdditionalModelInfo)
 	}
 }
+
+// Issue #321: a wildcard base_model is a routing pattern, not a model, so it
+// must reach litellm_params.model but never model_info.base_model, and the
+// read-back must still resolve base_model without a plan diff.
+func TestCreateModelKeepsWildcardBaseModelOutOfModelInfo(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		baseModel         string
+		wantModelInfoBase bool
+		wantLiteLLMModel  string
+	}{
+		{baseModel: "*", wantModelInfoBase: false, wantLiteLLMModel: "openai/*"},
+		{baseModel: "openai/*", wantModelInfoBase: false, wantLiteLLMModel: "openai/openai/*"},
+		{baseModel: "gpt-4o", wantModelInfoBase: true, wantLiteLLMModel: "openai/gpt-4o"},
+	} {
+		t.Run(tc.baseModel, func(t *testing.T) {
+			t.Parallel()
+
+			var created map[string]interface{}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch request.URL.Path {
+				case "/model/new":
+					defer request.Body.Close()
+					if err := json.NewDecoder(request.Body).Decode(&created); err != nil {
+						t.Errorf("decode create body: %v", err)
+					}
+					_, _ = w.Write([]byte(`{}`))
+				case "/model/info":
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": []interface{}{map[string]interface{}{
+						"model_name":     "openai-wildcard",
+						"litellm_params": created["litellm_params"],
+						"model_info":     created["model_info"],
+					}}})
+				default:
+					http.NotFound(w, request)
+				}
+			}))
+			defer server.Close()
+
+			resourceUnderTest := &ModelResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
+			var schemaResponse resource.SchemaResponse
+			resourceUnderTest.Schema(context.Background(), resource.SchemaRequest{}, &schemaResponse)
+			if schemaResponse.Diagnostics.HasError() {
+				t.Fatalf("schema diagnostics: %v", schemaResponse.Diagnostics)
+			}
+			schema := schemaResponse.Schema
+			empty := tftypes.NewValue(schema.Type().TerraformType(context.Background()), nil)
+			planned := ModelResourceModel{
+				ModelName:               types.StringValue("openai-wildcard"),
+				CustomLLMProvider:       types.StringValue("openai"),
+				BaseModel:               types.StringValue(tc.baseModel),
+				AccessGroups:            types.ListNull(types.StringType),
+				AdditionalLiteLLMParams: types.MapNull(types.StringType),
+				AdditionalModelInfo:     types.MapNull(types.StringType),
+			}
+			plan := tfsdk.Plan{Raw: empty, Schema: schema}
+			if diagnostics := plan.Set(context.Background(), &planned); diagnostics.HasError() {
+				t.Fatalf("set plan: %v", diagnostics)
+			}
+			createResponse := &resource.CreateResponse{State: tfsdk.State{Raw: empty, Schema: schema}}
+			resourceUnderTest.Create(context.Background(), resource.CreateRequest{Plan: plan, Config: tfsdk.Config{Raw: plan.Raw, Schema: schema}}, createResponse)
+			if createResponse.Diagnostics.HasError() {
+				t.Fatalf("create diagnostics: %v", createResponse.Diagnostics)
+			}
+
+			params := created["litellm_params"].(map[string]interface{})
+			if params["model"] != tc.wantLiteLLMModel {
+				t.Fatalf("litellm_params.model = %v, want %s", params["model"], tc.wantLiteLLMModel)
+			}
+			modelInfo := created["model_info"].(map[string]interface{})
+			if _, sent := modelInfo["base_model"]; sent != tc.wantModelInfoBase {
+				t.Fatalf("model_info.base_model sent = %v, want %v (model_info: %#v)", sent, tc.wantModelInfoBase, modelInfo)
+			}
+			var state ModelResourceModel
+			if diagnostics := createResponse.State.Get(context.Background(), &state); diagnostics.HasError() {
+				t.Fatalf("get state: %v", diagnostics)
+			}
+			if state.BaseModel.ValueString() != tc.baseModel {
+				t.Fatalf("state base_model = %q after read-back, want %q (would plan a diff)", state.BaseModel.ValueString(), tc.baseModel)
+			}
+		})
+	}
+}
+
+func TestPatchModelKeepsWildcardBaseModelOutOfModelInfo(t *testing.T) {
+	t.Parallel()
+
+	var capturedBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "PATCH" {
+			_ = json.NewDecoder(r.Body).Decode(&capturedBody)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok"})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	data := &ModelResourceModel{
+		ID:                      types.StringValue("model-wildcard"),
+		ModelName:               types.StringValue("openai-wildcard"),
+		CustomLLMProvider:       types.StringValue("openai"),
+		BaseModel:               types.StringValue("*"),
+		Tier:                    types.StringNull(),
+		Mode:                    types.StringNull(),
+		AdditionalLiteLLMParams: types.MapNull(types.StringType),
+		AccessGroups:            types.ListNull(types.StringType),
+	}
+	resourceUnderTest := &ModelResource{client: &Client{APIBase: server.URL, APIKey: "test-key", HTTPClient: server.Client()}}
+	if _, err := resourceUnderTest.patchModel(context.Background(), data, &ModelResourceModel{}, false, false); err != nil {
+		t.Fatalf("patchModel returned error: %v", err)
+	}
+
+	if model := capturedBody["litellm_params"].(map[string]interface{})["model"]; model != "openai/*" {
+		t.Fatalf("litellm_params.model = %v, want openai/*", model)
+	}
+	if modelInfo, ok := capturedBody["model_info"].(map[string]interface{}); ok {
+		if _, sent := modelInfo["base_model"]; sent {
+			t.Fatalf("model_info.base_model sent for a wildcard: %#v", modelInfo)
+		}
+	}
+}
+
+func TestReadModelImportDerivesWildcardBaseModelFromLiteLLMParams(t *testing.T) {
+	t.Parallel()
+
+	server, client := jsonServer(t, map[string]interface{}{
+		"data": []interface{}{map[string]interface{}{
+			"model_name": "openai-wildcard",
+			"litellm_params": map[string]interface{}{
+				"custom_llm_provider": "openai",
+				"model":               "openai/*",
+			},
+			"model_info": map[string]interface{}{"id": "model-wildcard", "db_model": true},
+		}},
+	})
+	defer server.Close()
+	data := &ModelResourceModel{
+		ID:                      types.StringValue("model-wildcard"),
+		AdditionalLiteLLMParams: types.MapNull(types.StringType),
+	}
+
+	if err := (&ModelResource{client: client}).readModelWithOwnership(context.Background(), data, modelReadOwnership{imported: true}); err != nil {
+		t.Fatalf("import read returned error: %v", err)
+	}
+	if data.BaseModel.ValueString() != "*" {
+		t.Fatalf("imported base_model = %q, want *", data.BaseModel.ValueString())
+	}
+}
