@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`litellm_model` wildcard spend tracking** ([#321](https://github.com/ncecere/terraform-provider-litellm/issues/321)): a wildcard `base_model` such as `"*"` was also written to `model_info.base_model`. LiteLLM prices requests against that field, so since LiteLLM 1.106.0 every request through the wildcard recorded $0 spend. The pattern is now only used to build `litellm_params.model`, and read and import derive `base_model` from `litellm_params.model` when `model_info.base_model` is absent, so there is no plan diff. Rows already written with `model_info.base_model = "*"` keep it until it is removed in LiteLLM, because an update shallow-merges `model_info`.
+
 ## [2.2.3] - 2026-11-03
 
 ### Upgrade Notes

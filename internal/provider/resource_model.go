@@ -1328,9 +1328,11 @@ func (r *ModelResource) createOrUpdateModel(ctx context.Context, data *ModelReso
 	}
 
 	modelInfo := map[string]interface{}{
-		"id":         modelID,
-		"db_model":   true,
-		"base_model": baseModel,
+		"id":       modelID,
+		"db_model": true,
+	}
+	if !isWildcardBaseModel(baseModel) {
+		modelInfo["base_model"] = baseModel
 	}
 
 	// Only add optional model_info fields if they have values
@@ -1449,15 +1451,17 @@ func (r *ModelResource) readModelWithOwnership(ctx context.Context, data *ModelR
 		if err := validateImportedObjectIdentity(true, "model", modelInfo, "id", data.ID.ValueString()); err != nil {
 			return err
 		}
-		if err := requireImportedStringField(true, "model", modelInfo, "base_model"); err != nil {
-			return err
-		}
 		litellmParams, err := requireImportedObjectField(true, "model", result, "litellm_params")
 		if err != nil {
 			return err
 		}
 		if err := requireImportedStringField(true, "model", litellmParams, "custom_llm_provider"); err != nil {
 			return err
+		}
+		if _, derivable := baseModelFromLiteLLMParams(litellmParams); !derivable {
+			if err := requireImportedStringField(true, "model", modelInfo, "base_model"); err != nil {
+				return err
+			}
 		}
 		if err := requireImportedStringField(true, "model", result, "model_name"); err != nil {
 			return err
@@ -1814,6 +1818,8 @@ func (r *ModelResource) readModelWithOwnership(ctx context.Context, data *ModelR
 
 	if hasModelInfo {
 		if baseModel, ok := modelInfo["base_model"].(string); ok && baseModel != "" {
+			data.BaseModel = types.StringValue(baseModel)
+		} else if baseModel, ok := baseModelFromLiteLLMParams(litellmParams); ok {
 			data.BaseModel = types.StringValue(baseModel)
 		}
 		if tier, ok := modelInfo["tier"].(string); ok && tier != "" {
@@ -2644,8 +2650,9 @@ func (r *ModelResource) patchModel(ctx context.Context, data, prior *ModelResour
 	}
 
 	// Build model_info for the PATCH request.
-	modelInfo := map[string]interface{}{
-		"base_model": baseModel,
+	modelInfo := map[string]interface{}{}
+	if !isWildcardBaseModel(baseModel) {
+		modelInfo["base_model"] = baseModel
 	}
 
 	if !data.Tier.IsNull() && !data.Tier.IsUnknown() && data.Tier.ValueString() != "" {
@@ -2907,4 +2914,29 @@ func convertStringValue(s string) interface{} {
 		}
 	}
 	return s
+}
+
+// isWildcardBaseModel reports whether base_model is a LiteLLM wildcard routing
+// pattern (e.g. "*" for "openai/*") rather than a model name. LiteLLM prices
+// requests against model_info.base_model, so a pattern must not be sent there:
+// LiteLLM >= 1.106 bills every request through such a wildcard at $0. Wildcards
+// created from the LiteLLM UI carry no model_info.base_model either.
+func isWildcardBaseModel(baseModel string) bool {
+	return strings.Contains(baseModel, "*")
+}
+
+// baseModelFromLiteLLMParams recovers base_model from litellm_params.model
+// ("<custom_llm_provider>/<base_model>"), the form create and update send, for
+// models whose model_info carries no base_model.
+func baseModelFromLiteLLMParams(litellmParams map[string]interface{}) (string, bool) {
+	model, _ := litellmParams["model"].(string)
+	provider, _ := litellmParams["custom_llm_provider"].(string)
+	if model == "" || provider == "" {
+		return "", false
+	}
+	baseModel, found := strings.CutPrefix(model, provider+"/")
+	if !found || baseModel == "" {
+		return "", false
+	}
+	return baseModel, true
 }
